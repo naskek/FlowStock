@@ -900,13 +900,13 @@ run_generic_compose_upgrade() {
     issue_integration_tls_assets "$relay_dir"
 
     log "starting old revision with generic compose up"
-    (cd "$old_dir" && cp "$runtime_env" .env && docker compose -p "$project" -f deploy/docker-compose.yml up -d --build --remove-orphans)
+    (cd "$old_dir" && docker compose --project-name "$project" --env-file "$runtime_env" -f deploy/docker-compose.yml up -d --build --remove-orphans)
     wait_for_service_status "$project" flowstock healthy
     assert_old_revision_ready "$project"
     assert_nginx_running_and_https "$project" "$runtime_env"
 
     log "upgrading same project with canonical generic compose up"
-    (cd "$relay_dir" && docker compose -p "$project" -f deploy/docker-compose.yml up -d --build --remove-orphans)
+    (cd "$relay_dir" && docker compose --project-name "$project" --env-file "$runtime_env" -f deploy/docker-compose.yml up -d --build --remove-orphans)
     wait_for_service_status "$project" flowstock healthy
     wait_for_service_status "$project" discovery-relay healthy
     assert_relay_revision_ready "$project" "$relay_compose" "$runtime_env"
