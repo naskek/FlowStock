@@ -469,7 +469,8 @@ public partial class OrderDetailsWindow : Window
         PrintPalletLabelsButton.IsEnabled = false;
         try
         {
-            if (!await ConfirmInternalSupplyBeforePlanAsync(_orderId.Value).ConfigureAwait(true))
+            var decision = await RunPrePlanCoverageFlowAsync(_orderId.Value).ConfigureAwait(true);
+            if (decision == PrePlanFlowDecision.Abort)
             {
                 return;
             }
@@ -481,16 +482,34 @@ public partial class OrderDetailsWindow : Window
                 activePalletCountBefore = beforeOptionsResult.Rows.Count;
             }
 
-            var result = await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value).ConfigureAwait(true);
+            var result = decision == PrePlanFlowDecision.PlanSafeOnly
+                ? await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value, WpfProductionPalletPlanMode.SkipInternalSupply).ConfigureAwait(true)
+                : await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
                 MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
+            if (decision == PrePlanFlowDecision.PlanSafeOnly
+                && !string.Equals(result.Mode, "skip_internal_supply", StringComparison.OrdinalIgnoreCase))
+            {
+                _services.AppLogger.Error(
+                    $"Server did not confirm skip_internal_supply mode for order_id={_orderId.Value}: mode='{result.Mode}'.");
+                MessageBox.Show(
+                    "Сервер не подтвердил режим «только позиции без предупреждения». Возможно, сформирован полный план — проверьте паллеты заказа.",
+                    "Паллеты",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+
+            var skippedSummary = BuildSkippedLinesSummary(result.SkippedLinesOrEmpty);
             if (!result.ProductionRequired)
             {
-                MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+                var infoMessage = string.IsNullOrEmpty(skippedSummary)
+                    ? result.Message
+                    : $"{result.Message}{Environment.NewLine}{Environment.NewLine}{skippedSummary}";
+                MessageBox.Show(infoMessage, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
                 LoadOrder();
                 return;
             }
@@ -549,6 +568,11 @@ public partial class OrderDetailsWindow : Window
                 $"{palletCountMessage}{Environment.NewLine}" +
                 $"Запланировано количество: {FormatQty(result.PlannedQty)}{Environment.NewLine}" +
                 $"Осталось наполнить: {FormatQty(result.RemainingQty)}";
+            if (!string.IsNullOrEmpty(skippedSummary))
+            {
+                message = $"{message}{Environment.NewLine}{Environment.NewLine}{skippedSummary}";
+            }
+
             MessageBox.Show(message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
             LoadOrder();
         }
@@ -558,47 +582,128 @@ public partial class OrderDetailsWindow : Window
         }
     }
 
-    private async Task<bool> ConfirmInternalSupplyBeforePlanAsync(long orderId)
+    private enum PrePlanFlowDecision
+    {
+        Abort,
+        PlanFull,
+        PlanSafeOnly
+    }
+
+    private async Task<PrePlanFlowDecision> RunPrePlanCoverageFlowAsync(long orderId)
     {
         if (_order?.Type != OrderType.Customer)
         {
-            return true;
+            return PrePlanFlowDecision.PlanFull;
         }
 
-        var preview = await _services.WpfProductionPalletApi.TryGetInternalSupplyWarningAsync(orderId).ConfigureAwait(true);
-        if (preview.IsSuccess)
+        var boundHuThisFlow = false;
+        while (true)
         {
-            if (!preview.HasWarning)
+            var preview = await _services.WpfProductionPalletApi.TryGetPrePlanCoveragePreviewAsync(orderId).ConfigureAwait(true);
+            if (!preview.IsSuccess)
             {
-                return true;
+                if (preview.IsEndpointMissing)
+                {
+                    _services.AppLogger.Error(
+                        $"Pre-plan coverage preview endpoint is not available on server for order_id={orderId}: {preview.Message}");
+                    return PrePlanFlowDecision.PlanFull;
+                }
+
+                _services.AppLogger.Error(
+                    $"Pre-plan coverage preview failed for order_id={orderId}: {preview.Message}");
+                var neutral = PrePlanCoverageDialog.CreateNeutral(
+                    "Не удалось проверить складские HU и ожидаемый INTERNAL-выпуск.",
+                    "Всё равно сформировать план?");
+                neutral.Owner = this;
+                return neutral.ShowDialog() == true && neutral.SelectedAction == PrePlanDialogAction.PlanAll
+                    ? PrePlanFlowDecision.PlanFull
+                    : PrePlanFlowDecision.Abort;
             }
 
-            return ShowInternalSupplyConfirmation(
+            if (boundHuThisFlow && preview.WouldPlanLineCount == 0)
+            {
+                MessageBox.Show(
+                    "Производственное планирование не требуется: нехватка закрыта складскими HU.",
+                    "Паллеты",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return PrePlanFlowDecision.Abort;
+            }
+
+            if (!preview.HasWarning && !preview.HasFreeWarehouseHu)
+            {
+                return PrePlanFlowDecision.PlanFull;
+            }
+
+            var dialog = new PrePlanCoverageDialog(
                 preview.WarningMessage,
-                "Сформировать новый паллетный план для клиентского заказа?");
-        }
+                preview.HasWarning
+                    ? "Сформировать новый паллетный план для клиентского заказа?"
+                    : "Сформировать паллетный план, не привязывая складские HU?",
+                showBindHuFirst: preview.HasFreeWarehouseHu,
+                showPlanSafeOnly: preview.HasWarning,
+                planSafeOnlyEnabled: preview.SafeLineCount > 0)
+            {
+                Owner = this
+            };
+            if (dialog.ShowDialog() != true)
+            {
+                return PrePlanFlowDecision.Abort;
+            }
 
-        if (preview.IsEndpointMissing)
-        {
-            _services.AppLogger.Error(
-                $"Internal supply warning endpoint is not available on server for order_id={orderId}: {preview.Message}");
-            return true;
-        }
+            switch (dialog.SelectedAction)
+            {
+                case PrePlanDialogAction.PlanAll:
+                    return PrePlanFlowDecision.PlanFull;
+                case PrePlanDialogAction.PlanSafeOnly:
+                    return PrePlanFlowDecision.PlanSafeOnly;
+                case PrePlanDialogAction.BindHuFirst:
+                    var bindingWindow = new ReadyHuBindingWindow(_services, orderId)
+                    {
+                        Owner = this
+                    };
+                    if (bindingWindow.ShowDialog() == true)
+                    {
+                        LoadOrder(CaptureSelectedOrderLineId());
+                        OrderStateChanged?.Invoke(this, EventArgs.Empty);
+                    }
 
-        _services.AppLogger.Error(
-            $"Internal supply warning preview failed for order_id={orderId}: {preview.Message}");
-        return ShowInternalSupplyConfirmation(
-            "Не удалось проверить ожидаемый INTERNAL-выпуск.",
-            "Всё равно сформировать план?");
+                    boundHuThisFlow = true;
+                    continue;
+                default:
+                    return PrePlanFlowDecision.Abort;
+            }
+        }
     }
 
-    private bool ShowInternalSupplyConfirmation(string warningText, string questionText)
+    private static string BuildSkippedLinesSummary(IReadOnlyList<WpfProductionPalletPlanSkippedLine> skippedLines)
     {
-        var dialog = new InternalSupplyWarningDialog(warningText, questionText)
+        if (skippedLines.Count == 0)
         {
-            Owner = this
-        };
-        return dialog.ShowDialog() == true;
+            return string.Empty;
+        }
+
+        var rows = new List<string> { "Пропущено по ожидаемому внутреннему выпуску:" };
+        foreach (var line in skippedLines)
+        {
+            if (string.Equals(line.SkippedReason, "mixed_group_contains_expected_internal_supply", StringComparison.OrdinalIgnoreCase))
+            {
+                var trigger = skippedLines.FirstOrDefault(candidate =>
+                    candidate.CustomerOrderLineId == line.TriggeredByOrderLineId);
+                var triggerText = trigger != null
+                    ? $", т.к. «{trigger.ItemName}» ожидается из внутреннего выпуска"
+                    : string.Empty;
+                rows.Add($"• {line.ItemName} — группа общего HU пропущена целиком{triggerText}");
+                continue;
+            }
+
+            var internalRefs = string.Join(", ", line.InternalRefs.Select(reference => $"заказ {reference.InternalOrderRef}"));
+            rows.Add(string.IsNullOrEmpty(internalRefs)
+                ? $"• {line.ItemName} — ожидается из внутреннего выпуска"
+                : $"• {line.ItemName} — ожидается из внутреннего выпуска ({internalRefs})");
+        }
+
+        return string.Join(Environment.NewLine, rows);
     }
 
     private void ReadyHuBinding_Click(object sender, RoutedEventArgs e)

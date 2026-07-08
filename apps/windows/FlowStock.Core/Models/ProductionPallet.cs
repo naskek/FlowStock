@@ -187,6 +187,9 @@ public sealed class ProductionPalletOrderPlanResult
     public string Message { get; init; } = string.Empty;
     public ProductionPalletSummary Summary { get; init; } = new();
     public ProductionPalletDocument Document { get; init; } = new();
+    public IReadOnlyList<ProductionPalletPlanSkippedLine> SkippedLines { get; init; } =
+        Array.Empty<ProductionPalletPlanSkippedLine>();
+    public IReadOnlyList<long> PlannedOrderLineIds { get; init; } = Array.Empty<long>();
 }
 
 public sealed class ProductionPalletPlanCleanupCounts

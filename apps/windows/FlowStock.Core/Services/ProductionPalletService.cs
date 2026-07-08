@@ -174,10 +174,113 @@ public sealed class ProductionPalletService
             : BuildNoProductionRequiredResult(orderId);
     }
 
-    public ProductionPalletInternalSupplyWarning GetCustomerPlanInternalSupplyWarning(long orderId)
+    public ProductionPalletOrderPlanResult PlanOrder(long orderId, ProductionPalletPlanMode mode)
+    {
+        if (mode == ProductionPalletPlanMode.Full)
+        {
+            return PlanOrder(orderId);
+        }
+
+        var prdDocId = 0L;
+        var wasExisting = false;
+        var productionRequired = true;
+        IReadOnlyList<ProductionPalletPlanSkippedLine> skippedLines = Array.Empty<ProductionPalletPlanSkippedLine>();
+        IReadOnlyList<long> plannedLineIds = Array.Empty<long>();
+        var noSafeLines = false;
+        _data.ExecuteInTransaction(store =>
+        {
+            var order = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+            if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+            {
+                throw new InvalidOperationException(order.Status == OrderStatus.Merged
+                    ? "Заказ объединён с другим заказом. Выпуск по нему не требуется."
+                    : "Заказ недоступен для планирования паллет.");
+            }
+
+            if (order.Type != OrderType.Customer)
+            {
+                throw new InvalidOperationException(
+                    "Режим планирования без позиций с ожидаемым внутренним выпуском доступен только для клиентского заказа.");
+            }
+
+            var scope = BuildPrePlanSafeScope(store, order);
+            skippedLines = scope.SkippedLines;
+            plannedLineIds = scope.SafeLineIds;
+            if (scope.SkippedLines.Count > 0 && scope.SafeLineIds.Count == 0)
+            {
+                noSafeLines = true;
+                return;
+            }
+
+            var preparedDoc = FindPreparedOpenProductionReceipt(store, orderId, requireRemaining: false);
+            if (preparedDoc != null)
+            {
+                prdDocId = preparedDoc.Id;
+                wasExisting = true;
+            }
+
+            // Пустой skipped означает отсутствие пересечения: safe-only эквивалентен полному планированию.
+            var scopedOrderLineIds = scope.SkippedLines.Count == 0 ? null : scope.SafeLineIds;
+            productionRequired = AppendPlannedPalletsForOrderLinesInStore(
+                store,
+                order,
+                orderId,
+                scopedOrderLineIds,
+                allowEmptyRemaining: false,
+                out prdDocId,
+                existingPrdDocId: prdDocId);
+        });
+
+        if (noSafeLines)
+        {
+            var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+            return new ProductionPalletOrderPlanResult
+            {
+                OrderId = order.Id,
+                OrderRef = order.OrderRef,
+                PrdDocId = 0,
+                PrdDocRef = string.Empty,
+                WasExisting = false,
+                ProductionRequired = false,
+                Message = "Все позиции пересекаются с ожидаемым внутренним выпуском. План не создан.",
+                Summary = new ProductionPalletSummary(),
+                Document = new ProductionPalletDocument
+                {
+                    Summary = new ProductionPalletSummary()
+                },
+                SkippedLines = skippedLines,
+                PlannedOrderLineIds = Array.Empty<long>()
+            };
+        }
+
+        var baseResult = productionRequired || prdDocId > 0
+            ? BuildOrderPlanResult(orderId, prdDocId, wasExisting)
+            : BuildNoProductionRequiredResult(orderId);
+        return new ProductionPalletOrderPlanResult
+        {
+            OrderId = baseResult.OrderId,
+            OrderRef = baseResult.OrderRef,
+            PrdDocId = baseResult.PrdDocId,
+            PrdDocRef = baseResult.PrdDocRef,
+            WasExisting = baseResult.WasExisting,
+            ProductionRequired = baseResult.ProductionRequired,
+            Message = baseResult.Message,
+            Summary = baseResult.Summary,
+            Document = baseResult.Document,
+            SkippedLines = skippedLines,
+            PlannedOrderLineIds = plannedLineIds
+        };
+    }
+
+    public ProductionPalletPrePlanCoveragePreview GetCustomerPrePlanCoveragePreview(long orderId)
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
-        var empty = new ProductionPalletInternalSupplyWarning
+        return BuildPrePlanCoveragePreviewInStore(_data, order);
+    }
+
+    internal static ProductionPalletPrePlanCoveragePreview BuildPrePlanCoveragePreviewInStore(IDataStore store, Order order)
+    {
+        var empty = new ProductionPalletPrePlanCoveragePreview
         {
             OrderId = order.Id,
             OrderRef = order.OrderRef
@@ -188,26 +291,63 @@ public sealed class ProductionPalletService
             return empty;
         }
 
+        var scope = BuildPrePlanSafeScope(store, order);
+        if (scope.WouldPlanLines.Count == 0)
+        {
+            return empty;
+        }
+
+        var freeHuLines = BuildFreeWarehouseHuLines(store, order.Id, scope.WouldPlanLines);
+        return new ProductionPalletPrePlanCoveragePreview
+        {
+            OrderId = order.Id,
+            OrderRef = order.OrderRef,
+            HasWarning = scope.WarningLines.Count > 0,
+            Message = BuildPrePlanMessage(scope.WarningLines, freeHuLines),
+            Lines = scope.WarningLines,
+            WouldPlanLineCount = scope.WouldPlanLines.Count,
+            SafeLineCount = scope.SafeLineIds.Count,
+            WarningLineCount = scope.SkippedLines.Count,
+            HasFreeWarehouseHu = freeHuLines.Count > 0,
+            FreeWarehouseHuLines = freeHuLines
+        };
+    }
+
+    private sealed record PrePlanSafeScope(
+        IReadOnlyList<OrderReceiptLine> WouldPlanLines,
+        IReadOnlyList<ProductionPalletInternalSupplyWarningLine> WarningLines,
+        IReadOnlyList<long> SafeLineIds,
+        IReadOnlyList<ProductionPalletPlanSkippedLine> SkippedLines);
+
+    private static PrePlanSafeScope BuildPrePlanSafeScope(IDataStore store, Order order)
+    {
         IReadOnlyList<OrderReceiptLine> linesToPlan;
         try
         {
-            linesToPlan = GetLinesNeedingPalletAppend(_data, order);
+            linesToPlan = GetLinesNeedingPalletAppend(store, order);
         }
         catch (InvalidOperationException)
         {
             // Preview — только советник: ошибки планирования показывает сам POST /plan.
-            return empty;
+            linesToPlan = Array.Empty<OrderReceiptLine>();
         }
 
-        linesToPlan = linesToPlan.Where(line => line.QtyRemaining > QtyTolerance).ToArray();
+        linesToPlan = linesToPlan
+            .Where(line => line.QtyRemaining > QtyTolerance)
+            .OrderBy(line => line.OrderLineId)
+            .ToArray();
         if (linesToPlan.Count == 0)
         {
-            return empty;
+            return new PrePlanSafeScope(
+                linesToPlan,
+                Array.Empty<ProductionPalletInternalSupplyWarningLine>(),
+                Array.Empty<long>(),
+                Array.Empty<ProductionPalletPlanSkippedLine>());
         }
 
         var neededItemIds = linesToPlan.Select(line => line.ItemId).ToHashSet();
         var expectedByInternalOrder = new List<(Order InternalOrder, Dictionary<long, double> ExpectedByItem)>();
-        foreach (var internalOrder in _data.GetOrders()
+        foreach (var internalOrder in store.GetOrders()
                      .Where(candidate => candidate.Type == OrderType.Internal
                                          && candidate.Status is not OrderStatus.Shipped
                                              and not OrderStatus.Cancelled
@@ -215,7 +355,7 @@ public sealed class ProductionPalletService
                      .OrderBy(candidate => candidate.Id))
         {
             var expectedByItem = new Dictionary<long, double>();
-            foreach (var line in OrderReceiptRemainingCalculator.GetRemaining(_data, internalOrder)
+            foreach (var line in OrderReceiptRemainingCalculator.GetRemaining(store, internalOrder)
                          .Where(line => neededItemIds.Contains(line.ItemId) && line.QtyRemaining > QtyTolerance))
             {
                 expectedByItem[line.ItemId] = expectedByItem.TryGetValue(line.ItemId, out var current)
@@ -229,14 +369,9 @@ public sealed class ProductionPalletService
             }
         }
 
-        if (expectedByInternalOrder.Count == 0)
-        {
-            return empty;
-        }
-
-        var itemNamesById = _data.GetItems(null).ToDictionary(item => item.Id, item => item.Name);
+        var itemNamesById = store.GetItems(null).ToDictionary(item => item.Id, item => item.Name);
         var warningLines = new List<ProductionPalletInternalSupplyWarningLine>();
-        foreach (var line in linesToPlan.OrderBy(line => line.OrderLineId))
+        foreach (var line in linesToPlan)
         {
             foreach (var (internalOrder, expectedByItem) in expectedByInternalOrder)
             {
@@ -249,9 +384,7 @@ public sealed class ProductionPalletService
                 {
                     OrderLineId = line.OrderLineId,
                     ItemId = line.ItemId,
-                    ItemName = !string.IsNullOrWhiteSpace(line.ItemName)
-                        ? line.ItemName
-                        : itemNamesById.GetValueOrDefault(line.ItemId, string.Empty),
+                    ItemName = ResolveItemName(line, itemNamesById),
                     WouldPlanQty = line.QtyRemaining,
                     InternalOrderId = internalOrder.Id,
                     InternalOrderRef = internalOrder.OrderRef,
@@ -261,31 +394,163 @@ public sealed class ProductionPalletService
             }
         }
 
-        if (warningLines.Count == 0)
+        var directAffectedLineIds = warningLines.Select(line => line.OrderLineId).ToHashSet();
+        var orderLinesById = store.GetOrderLines(order.Id).ToDictionary(line => line.Id, line => line);
+        var manualMixedLineIds = GetManualMixedOrderLineIds(linesToPlan, orderLinesById);
+        var affectedGroups = directAffectedLineIds
+            .Where(manualMixedLineIds.Contains)
+            .Select(lineId => NormalizePalletGroup(orderLinesById, lineId))
+            .Where(group => !string.IsNullOrEmpty(group))
+            .ToHashSet(StringComparer.Ordinal);
+
+        var skippedLines = new List<ProductionPalletPlanSkippedLine>();
+        var affectedLineIds = new HashSet<long>(directAffectedLineIds);
+        foreach (var line in linesToPlan)
         {
-            return empty;
+            var group = orderLinesById.TryGetValue(line.OrderLineId, out var orderLine)
+                ? orderLine.ProductionPalletGroup?.Trim()
+                : null;
+            if (directAffectedLineIds.Contains(line.OrderLineId))
+            {
+                skippedLines.Add(new ProductionPalletPlanSkippedLine
+                {
+                    OrderLineId = line.OrderLineId,
+                    ItemId = line.ItemId,
+                    ItemName = ResolveItemName(line, itemNamesById),
+                    ProductionPalletGroup = group,
+                    SkippedReason = ProductionPalletPlanSkippedReason.ExpectedInternalSupply,
+                    InternalRefs = warningLines.Where(warning => warning.OrderLineId == line.OrderLineId).ToArray()
+                });
+                continue;
+            }
+
+            var normalizedGroup = NormalizePalletGroup(orderLinesById, line.OrderLineId);
+            if (manualMixedLineIds.Contains(line.OrderLineId)
+                && !string.IsNullOrEmpty(normalizedGroup)
+                && affectedGroups.Contains(normalizedGroup))
+            {
+                affectedLineIds.Add(line.OrderLineId);
+                var triggeredBy = linesToPlan
+                    .Select(candidate => candidate.OrderLineId)
+                    .Where(directAffectedLineIds.Contains)
+                    .Where(candidateId => NormalizePalletGroup(orderLinesById, candidateId) == normalizedGroup)
+                    .Cast<long?>()
+                    .FirstOrDefault();
+                skippedLines.Add(new ProductionPalletPlanSkippedLine
+                {
+                    OrderLineId = line.OrderLineId,
+                    ItemId = line.ItemId,
+                    ItemName = ResolveItemName(line, itemNamesById),
+                    ProductionPalletGroup = group,
+                    SkippedReason = ProductionPalletPlanSkippedReason.MixedGroupContainsExpectedInternalSupply,
+                    TriggeredByOrderLineId = triggeredBy
+                });
+            }
         }
 
-        var message = new StringBuilder("По этим позициям уже ожидается выпуск во внутреннем заказе:");
-        foreach (var warningLine in warningLines)
+        var safeLineIds = linesToPlan
+            .Select(line => line.OrderLineId)
+            .Where(lineId => !affectedLineIds.Contains(lineId))
+            .ToArray();
+        return new PrePlanSafeScope(linesToPlan, warningLines, safeLineIds, skippedLines);
+    }
+
+    private static string NormalizePalletGroup(IReadOnlyDictionary<long, OrderLine> orderLinesById, long orderLineId)
+    {
+        return orderLinesById.TryGetValue(orderLineId, out var orderLine)
+               && !string.IsNullOrWhiteSpace(orderLine.ProductionPalletGroup)
+            ? orderLine.ProductionPalletGroup!.Trim().ToUpperInvariant()
+            : string.Empty;
+    }
+
+    private static string ResolveItemName(OrderReceiptLine line, IReadOnlyDictionary<long, string> itemNamesById)
+    {
+        return !string.IsNullOrWhiteSpace(line.ItemName)
+            ? line.ItemName
+            : itemNamesById.GetValueOrDefault(line.ItemId, string.Empty);
+    }
+
+    private static IReadOnlyList<ProductionPalletPrePlanFreeHuLine> BuildFreeWarehouseHuLines(
+        IDataStore store,
+        long orderId,
+        IReadOnlyList<OrderReceiptLine> wouldPlanLines)
+    {
+        if (store is not IOptimizedHuReservationCandidatesStore optimizedStore)
         {
-            var status = OrderStatusMapper.StatusFromString(warningLine.InternalOrderStatus);
-            var statusDisplay = status.HasValue
-                ? OrderStatusMapper.StatusToDisplayName(status.Value, OrderType.Internal)
-                : warningLine.InternalOrderStatus;
-            message.Append(Environment.NewLine)
-                .Append($"{warningLine.ItemName} — к планированию {FormatWarningQty(warningLine.WouldPlanQty)}, " +
-                        $"ожидается {FormatWarningQty(warningLine.ExpectedQty)} (заказ {warningLine.InternalOrderRef}, {statusDisplay})");
+            return Array.Empty<ProductionPalletPrePlanFreeHuLine>();
         }
 
-        return new ProductionPalletInternalSupplyWarning
+        var itemIds = wouldPlanLines.Select(line => line.ItemId).Distinct().ToArray();
+        var reservedHu = store.GetOrderReceiptPlanLines(orderId)
+            .Select(planLine => planLine.ToHu?.Trim())
+            .Where(hu => !string.IsNullOrWhiteSpace(hu))
+            .Select(hu => hu!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var candidates = optimizedStore.GetHuReservationCandidateSources(orderId, itemIds, Array.Empty<string>())
+                         ?? Array.Empty<HuReservationCandidateSourceRow>();
+        var freeByItem = candidates
+            .Where(candidate => string.Equals(candidate.Source, OrderHuReservationApplyService.SourceLedgerStock, StringComparison.OrdinalIgnoreCase))
+            .Where(candidate => candidate.Qty > QtyTolerance)
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.HuCode))
+            .Where(candidate => !candidate.ReservedByOrderId.HasValue || candidate.ReservedByOrderId.Value == orderId)
+            .Where(candidate => !reservedHu.Contains(candidate.HuCode.Trim()))
+            .GroupBy(candidate => (candidate.ItemId, HuCode: candidate.HuCode.Trim().ToUpperInvariant()))
+            .Select(group => group.First())
+            .GroupBy(candidate => candidate.ItemId)
+            .ToDictionary(
+                group => group.Key,
+                group => (Count: group.Count(), Qty: group.Sum(candidate => Math.Max(0, candidate.Qty))));
+
+        return wouldPlanLines
+            .Where(line => freeByItem.ContainsKey(line.ItemId))
+            .Select(line => new ProductionPalletPrePlanFreeHuLine
+            {
+                OrderLineId = line.OrderLineId,
+                ItemId = line.ItemId,
+                ItemName = line.ItemName,
+                WouldPlanQty = line.QtyRemaining,
+                FreeHuCount = freeByItem[line.ItemId].Count,
+                FreeHuQty = freeByItem[line.ItemId].Qty
+            })
+            .ToArray();
+    }
+
+    private static string BuildPrePlanMessage(
+        IReadOnlyList<ProductionPalletInternalSupplyWarningLine> warningLines,
+        IReadOnlyList<ProductionPalletPrePlanFreeHuLine> freeHuLines)
+    {
+        var message = new StringBuilder();
+        if (warningLines.Count > 0)
         {
-            OrderId = order.Id,
-            OrderRef = order.OrderRef,
-            HasWarning = true,
-            Message = message.ToString(),
-            Lines = warningLines
-        };
+            message.Append("По этим позициям уже ожидается выпуск во внутреннем заказе:");
+            foreach (var warningLine in warningLines)
+            {
+                var status = OrderStatusMapper.StatusFromString(warningLine.InternalOrderStatus);
+                var statusDisplay = status.HasValue
+                    ? OrderStatusMapper.StatusToDisplayName(status.Value, OrderType.Internal)
+                    : warningLine.InternalOrderStatus;
+                message.Append(Environment.NewLine)
+                    .Append($"{warningLine.ItemName} — к планированию {FormatWarningQty(warningLine.WouldPlanQty)}, " +
+                            $"ожидается {FormatWarningQty(warningLine.ExpectedQty)} (заказ {warningLine.InternalOrderRef}, {statusDisplay})");
+            }
+        }
+
+        if (freeHuLines.Count > 0)
+        {
+            if (message.Length > 0)
+            {
+                message.Append(Environment.NewLine).Append(Environment.NewLine);
+            }
+
+            message.Append("По части позиций есть свободные складские HU, их можно привязать вместо производства:");
+            foreach (var freeHuLine in freeHuLines)
+            {
+                message.Append(Environment.NewLine)
+                    .Append($"{freeHuLine.ItemName} — свободно {FormatWarningQty(freeHuLine.FreeHuQty)} в {freeHuLine.FreeHuCount} HU");
+            }
+        }
+
+        return message.ToString();
     }
 
     private static string FormatWarningQty(double value)

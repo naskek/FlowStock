@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
@@ -11,7 +12,9 @@ public static class ProductionPalletEndpoints
     public static void Map(WebApplication app)
     {
         app.MapPost("/api/orders/{orderId:long}/production-pallets/plan", HandlePlanOrder);
-        app.MapGet("/api/orders/{orderId:long}/production-pallets/internal-supply-warning", HandleInternalSupplyWarning);
+        app.MapGet("/api/orders/{orderId:long}/production-pallets/pre-plan-coverage-preview", HandlePrePlanCoveragePreview);
+        // Compatibility alias: старый маршрут warning из 81774cf, отдаёт тот же расширенный payload.
+        app.MapGet("/api/orders/{orderId:long}/production-pallets/internal-supply-warning", HandlePrePlanCoveragePreview);
         app.MapGet("/api/orders/{orderId:long}/production-pallets/cancel-plan-options", HandleCancelPlanOptions);
         app.MapPost("/api/orders/{orderId:long}/production-pallets/cancel-plan", HandleCancelPlan);
         app.MapPost("/api/orders/{targetCustomerOrderId:long}/production-pallets/adopt-from-internal/{sourceInternalOrderId:long}", HandleAdoptFromInternal);
@@ -176,11 +179,38 @@ public static class ProductionPalletEndpoints
         public string? Comment { get; init; }
     }
 
-    private static IResult HandlePlanOrder(long orderId, ProductionPalletService service)
+    private static async Task<IResult> HandlePlanOrder(long orderId, HttpRequest request, ProductionPalletService service)
     {
+        ProductionPalletPlanMode mode;
         try
         {
-            return Results.Ok(MapOrderPlan(service.PlanOrder(orderId)));
+            var parsedMode = await TryReadPlanModeAsync(request);
+            if (parsedMode == null)
+            {
+                return Results.BadRequest(new
+                {
+                    ok = false,
+                    error = "INVALID_PLAN_MODE",
+                    message = "Неизвестный режим планирования. Допустимо: full, skip_internal_supply."
+                });
+            }
+
+            mode = parsedMode.Value;
+        }
+        catch (JsonException)
+        {
+            return Results.BadRequest(new
+            {
+                ok = false,
+                error = "INVALID_JSON",
+                message = "Некорректное JSON-тело запроса планирования."
+            });
+        }
+
+        try
+        {
+            var modeEcho = mode == ProductionPalletPlanMode.SkipInternalSupply ? "skip_internal_supply" : "full";
+            return Results.Ok(MapOrderPlan(service.PlanOrder(orderId, mode), modeEcho));
         }
         catch (InvalidOperationException ex)
         {
@@ -188,28 +218,74 @@ public static class ProductionPalletEndpoints
         }
     }
 
-    private static IResult HandleInternalSupplyWarning(long orderId, ProductionPalletService service)
+    /// <summary>
+    /// Пустое тело, отсутствующий Content-Type, null-JSON, {} или отсутствующий mode означают Full;
+    /// неизвестный mode возвращает null (400 INVALID_PLAN_MODE). Клиентские qty/order_line_ids не читаются.
+    /// </summary>
+    private static async Task<ProductionPalletPlanMode?> TryReadPlanModeAsync(HttpRequest request)
+    {
+        string raw;
+        using (var reader = new StreamReader(request.Body))
+        {
+            raw = await reader.ReadToEndAsync();
+        }
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return ProductionPalletPlanMode.Full;
+        }
+
+        var body = JsonSerializer.Deserialize<PlanOrderRequest>(raw, PlanRequestJsonOptions);
+        var rawMode = body?.Mode?.Trim();
+        if (string.IsNullOrEmpty(rawMode) || string.Equals(rawMode, "full", StringComparison.OrdinalIgnoreCase))
+        {
+            return ProductionPalletPlanMode.Full;
+        }
+
+        if (string.Equals(rawMode, "skip_internal_supply", StringComparison.OrdinalIgnoreCase))
+        {
+            return ProductionPalletPlanMode.SkipInternalSupply;
+        }
+
+        return null;
+    }
+
+    private static readonly JsonSerializerOptions PlanRequestJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
+    private sealed class PlanOrderRequest
+    {
+        [JsonPropertyName("mode")]
+        public string? Mode { get; init; }
+    }
+
+    private static IResult HandlePrePlanCoveragePreview(long orderId, ProductionPalletService service)
     {
         try
         {
-            var warning = service.GetCustomerPlanInternalSupplyWarning(orderId);
+            var preview = service.GetCustomerPrePlanCoveragePreview(orderId);
             return Results.Ok(new
             {
                 ok = true,
-                order_id = warning.OrderId,
-                order_ref = warning.OrderRef,
-                has_warning = warning.HasWarning,
-                message = warning.Message,
-                lines = warning.Lines.Select(line => new
+                order_id = preview.OrderId,
+                order_ref = preview.OrderRef,
+                has_warning = preview.HasWarning,
+                message = preview.Message,
+                lines = preview.Lines.Select(MapInternalSupplyWarningLine),
+                would_plan_line_count = preview.WouldPlanLineCount,
+                safe_line_count = preview.SafeLineCount,
+                warning_line_count = preview.WarningLineCount,
+                has_free_warehouse_hu = preview.HasFreeWarehouseHu,
+                free_warehouse_hu = preview.FreeWarehouseHuLines.Select(line => new
                 {
                     customer_order_line_id = line.OrderLineId,
                     item_id = line.ItemId,
                     item_name = line.ItemName,
                     would_plan_qty = line.WouldPlanQty,
-                    internal_order_id = line.InternalOrderId,
-                    internal_order_ref = line.InternalOrderRef,
-                    internal_status = line.InternalOrderStatus,
-                    expected_qty = line.ExpectedQty
+                    free_hu_count = line.FreeHuCount,
+                    free_hu_qty = line.FreeHuQty
                 })
             });
         }
@@ -604,7 +680,7 @@ public static class ProductionPalletEndpoints
         };
     }
 
-    private static object MapOrderPlan(ProductionPalletOrderPlanResult result)
+    private static object MapOrderPlan(ProductionPalletOrderPlanResult result, string mode = "full")
     {
         return new
         {
@@ -616,14 +692,46 @@ public static class ProductionPalletEndpoints
             was_existing = result.WasExisting,
             production_required = result.ProductionRequired,
             message = result.Message,
+            mode,
             planned_pallet_count = result.Summary.PlannedPalletCount,
             planned_qty = result.Summary.PlannedQty,
             filled_pallet_count = result.Summary.FilledPalletCount,
             filled_qty = result.Summary.FilledQty,
             remaining_pallet_count = result.Summary.RemainingPalletCount,
             remaining_qty = result.Summary.RemainingQty,
+            planned_order_line_ids = result.PlannedOrderLineIds,
+            skipped_lines = result.SkippedLines.Select(MapPlanSkippedLine),
             summary = MapSummary(result.Summary),
             document = MapDocument(result.Document)
+        };
+    }
+
+    private static object MapPlanSkippedLine(ProductionPalletPlanSkippedLine line)
+    {
+        return new
+        {
+            customer_order_line_id = line.OrderLineId,
+            item_id = line.ItemId,
+            item_name = line.ItemName,
+            production_pallet_group = line.ProductionPalletGroup,
+            skipped_reason = line.SkippedReason,
+            triggered_by_order_line_id = line.TriggeredByOrderLineId,
+            internal_refs = line.InternalRefs.Select(MapInternalSupplyWarningLine)
+        };
+    }
+
+    private static object MapInternalSupplyWarningLine(ProductionPalletInternalSupplyWarningLine line)
+    {
+        return new
+        {
+            customer_order_line_id = line.OrderLineId,
+            item_id = line.ItemId,
+            item_name = line.ItemName,
+            would_plan_qty = line.WouldPlanQty,
+            internal_order_id = line.InternalOrderId,
+            internal_order_ref = line.InternalOrderRef,
+            internal_status = line.InternalOrderStatus,
+            expected_qty = line.ExpectedQty
         };
     }
 

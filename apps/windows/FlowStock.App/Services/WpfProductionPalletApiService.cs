@@ -24,6 +24,7 @@ public sealed class WpfProductionPalletApiService
 
     public async Task<WpfProductionPalletPlanApiResult> TryPlanOrderAsync(
         long orderId,
+        WpfProductionPalletPlanMode planMode = WpfProductionPalletPlanMode.Full,
         CancellationToken cancellationToken = default)
     {
         try
@@ -34,9 +35,13 @@ public sealed class WpfProductionPalletApiService
                 return WpfProductionPalletPlanApiResult.Failure("FlowStock Server API не настроен.");
             }
 
+            // Клиент передаёт только режим; количества и строки заказа сервер пересчитывает сам.
+            object body = planMode == WpfProductionPalletPlanMode.SkipInternalSupply
+                ? new { mode = "skip_internal_supply" }
+                : new { };
             using var handler = CreateHandler(configuration);
             using var client = CreateClient(handler, configuration);
-            using var response = await client.PostAsJsonAsync($"/api/orders/{orderId}/production-pallets/plan", new { }, cancellationToken)
+            using var response = await client.PostAsJsonAsync($"/api/orders/{orderId}/production-pallets/plan", body, cancellationToken)
                 .ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
@@ -50,6 +55,18 @@ public sealed class WpfProductionPalletApiService
                 return WpfProductionPalletPlanApiResult.Failure("Сервер вернул пустой ответ.");
             }
 
+            var skippedLines = (payload.SkippedLines ?? new List<PlanSkippedLineResponse>())
+                .Select(line => new WpfProductionPalletPlanSkippedLine(
+                    line.CustomerOrderLineId,
+                    line.ItemId,
+                    line.ItemName ?? string.Empty,
+                    line.ProductionPalletGroup,
+                    line.SkippedReason ?? string.Empty,
+                    line.TriggeredByOrderLineId,
+                    (line.InternalRefs ?? new List<InternalSupplyWarningLineResponse>())
+                        .Select(MapInternalSupplyWarningLine)
+                        .ToArray()))
+                .ToArray();
             return new WpfProductionPalletPlanApiResult(
                 true,
                 string.IsNullOrWhiteSpace(payload.Message)
@@ -66,7 +83,10 @@ public sealed class WpfProductionPalletApiService
                 payload.FilledPalletCount,
                 payload.FilledQty,
                 payload.RemainingPalletCount,
-                payload.RemainingQty);
+                payload.RemainingQty,
+                payload.Mode ?? string.Empty,
+                payload.PlannedOrderLineIds ?? (IReadOnlyList<long>)Array.Empty<long>(),
+                skippedLines);
         }
         catch (Exception ex)
         {
@@ -75,7 +95,20 @@ public sealed class WpfProductionPalletApiService
         }
     }
 
-    public async Task<WpfProductionPalletInternalSupplyWarningApiResult> TryGetInternalSupplyWarningAsync(
+    private static WpfInternalSupplyWarningLine MapInternalSupplyWarningLine(InternalSupplyWarningLineResponse line)
+    {
+        return new WpfInternalSupplyWarningLine(
+            line.CustomerOrderLineId,
+            line.ItemId,
+            line.ItemName ?? string.Empty,
+            line.WouldPlanQty,
+            line.InternalOrderId,
+            line.InternalOrderRef ?? string.Empty,
+            line.InternalStatus ?? string.Empty,
+            line.ExpectedQty);
+    }
+
+    public async Task<WpfPrePlanCoveragePreviewApiResult> TryGetPrePlanCoveragePreviewAsync(
         long orderId,
         CancellationToken cancellationToken = default)
     {
@@ -83,55 +116,61 @@ public sealed class WpfProductionPalletApiService
         {
             if (!TryLoadConfiguration(out var configuration))
             {
-                _logger.Info("Production pallet API skipped for internal supply warning: server base URL is not configured.");
-                return WpfProductionPalletInternalSupplyWarningApiResult.Failure("FlowStock Server API не настроен.");
+                _logger.Info("Production pallet API skipped for pre-plan coverage preview: server base URL is not configured.");
+                return WpfPrePlanCoveragePreviewApiResult.Failure("FlowStock Server API не настроен.");
             }
 
             using var handler = CreateHandler(configuration);
             using var client = CreateClient(handler, configuration);
-            using var response = await client.GetAsync($"/api/orders/{orderId}/production-pallets/internal-supply-warning", cancellationToken)
+            using var response = await client.GetAsync($"/api/orders/{orderId}/production-pallets/pre-plan-coverage-preview", cancellationToken)
                 .ConfigureAwait(false);
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
-                return WpfProductionPalletInternalSupplyWarningApiResult.EndpointMissing(
-                    "Сервер не поддерживает проверку ожидаемого INTERNAL-выпуска.");
+                return WpfPrePlanCoveragePreviewApiResult.EndpointMissing(
+                    "Сервер не поддерживает pre-plan coverage preview.");
             }
 
             if (!response.IsSuccessStatusCode)
             {
-                return WpfProductionPalletInternalSupplyWarningApiResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
+                return WpfPrePlanCoveragePreviewApiResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
             }
 
-            var payload = await response.Content.ReadFromJsonAsync<InternalSupplyWarningResponse>(JsonOptions, cancellationToken)
+            var payload = await response.Content.ReadFromJsonAsync<PrePlanCoveragePreviewResponse>(JsonOptions, cancellationToken)
                 .ConfigureAwait(false);
             if (payload == null)
             {
-                return WpfProductionPalletInternalSupplyWarningApiResult.Failure("Сервер вернул пустой ответ.");
+                return WpfPrePlanCoveragePreviewApiResult.Failure("Сервер вернул пустой ответ.");
             }
 
             var lines = (payload.Lines ?? new List<InternalSupplyWarningLineResponse>())
-                .Select(line => new WpfInternalSupplyWarningLine(
+                .Select(MapInternalSupplyWarningLine)
+                .ToArray();
+            var freeHuLines = (payload.FreeWarehouseHu ?? new List<PrePlanFreeHuLineResponse>())
+                .Select(line => new WpfPrePlanFreeHuLine(
                     line.CustomerOrderLineId,
                     line.ItemId,
                     line.ItemName ?? string.Empty,
                     line.WouldPlanQty,
-                    line.InternalOrderId,
-                    line.InternalOrderRef ?? string.Empty,
-                    line.InternalStatus ?? string.Empty,
-                    line.ExpectedQty))
+                    line.FreeHuCount,
+                    line.FreeHuQty))
                 .ToArray();
-            return new WpfProductionPalletInternalSupplyWarningApiResult(
+            return new WpfPrePlanCoveragePreviewApiResult(
                 true,
                 string.Empty,
                 false,
                 payload.HasWarning,
                 payload.Message ?? string.Empty,
-                lines);
+                lines,
+                payload.WouldPlanLineCount,
+                payload.SafeLineCount,
+                payload.WarningLineCount,
+                payload.HasFreeWarehouseHu,
+                freeHuLines);
         }
         catch (Exception ex)
         {
-            _logger.Error("Production pallet internal supply warning load failed", ex);
-            return WpfProductionPalletInternalSupplyWarningApiResult.Failure(ex.Message);
+            _logger.Error("Production pallet pre-plan coverage preview load failed", ex);
+            return WpfPrePlanCoveragePreviewApiResult.Failure(ex.Message);
         }
     }
 
@@ -980,9 +1019,18 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("remaining_qty")]
         public double RemainingQty { get; init; }
+
+        [JsonPropertyName("mode")]
+        public string? Mode { get; init; }
+
+        [JsonPropertyName("planned_order_line_ids")]
+        public List<long>? PlannedOrderLineIds { get; init; }
+
+        [JsonPropertyName("skipped_lines")]
+        public List<PlanSkippedLineResponse>? SkippedLines { get; init; }
     }
 
-    private sealed class InternalSupplyWarningResponse
+    private sealed class PrePlanCoveragePreviewResponse
     {
         [JsonPropertyName("order_id")]
         public long OrderId { get; init; }
@@ -998,6 +1046,66 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("lines")]
         public List<InternalSupplyWarningLineResponse>? Lines { get; init; }
+
+        [JsonPropertyName("would_plan_line_count")]
+        public int WouldPlanLineCount { get; init; }
+
+        [JsonPropertyName("safe_line_count")]
+        public int SafeLineCount { get; init; }
+
+        [JsonPropertyName("warning_line_count")]
+        public int WarningLineCount { get; init; }
+
+        [JsonPropertyName("has_free_warehouse_hu")]
+        public bool HasFreeWarehouseHu { get; init; }
+
+        [JsonPropertyName("free_warehouse_hu")]
+        public List<PrePlanFreeHuLineResponse>? FreeWarehouseHu { get; init; }
+    }
+
+    private sealed class PrePlanFreeHuLineResponse
+    {
+        [JsonPropertyName("customer_order_line_id")]
+        public long CustomerOrderLineId { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("item_name")]
+        public string? ItemName { get; init; }
+
+        [JsonPropertyName("would_plan_qty")]
+        public double WouldPlanQty { get; init; }
+
+        [JsonPropertyName("free_hu_count")]
+        public int FreeHuCount { get; init; }
+
+        [JsonPropertyName("free_hu_qty")]
+        public double FreeHuQty { get; init; }
+    }
+
+    private sealed class PlanSkippedLineResponse
+    {
+        [JsonPropertyName("customer_order_line_id")]
+        public long CustomerOrderLineId { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("item_name")]
+        public string? ItemName { get; init; }
+
+        [JsonPropertyName("production_pallet_group")]
+        public string? ProductionPalletGroup { get; init; }
+
+        [JsonPropertyName("skipped_reason")]
+        public string? SkippedReason { get; init; }
+
+        [JsonPropertyName("triggered_by_order_line_id")]
+        public long? TriggeredByOrderLineId { get; init; }
+
+        [JsonPropertyName("internal_refs")]
+        public List<InternalSupplyWarningLineResponse>? InternalRefs { get; init; }
     }
 
     private sealed class InternalSupplyWarningLineResponse
@@ -1325,6 +1433,21 @@ public sealed record WpfProductionPalletAdoptPlanApiResult(
     }
 }
 
+public enum WpfProductionPalletPlanMode
+{
+    Full,
+    SkipInternalSupply
+}
+
+public sealed record WpfProductionPalletPlanSkippedLine(
+    long CustomerOrderLineId,
+    long ItemId,
+    string ItemName,
+    string? ProductionPalletGroup,
+    string SkippedReason,
+    long? TriggeredByOrderLineId,
+    IReadOnlyList<WpfInternalSupplyWarningLine> InternalRefs);
+
 public sealed record WpfProductionPalletPlanApiResult(
     bool IsSuccess,
     string Message,
@@ -1339,34 +1462,56 @@ public sealed record WpfProductionPalletPlanApiResult(
     int FilledPalletCount,
     double FilledQty,
     int RemainingPalletCount,
-    double RemainingQty)
+    double RemainingQty,
+    string Mode = "",
+    IReadOnlyList<long>? PlannedOrderLineIds = null,
+    IReadOnlyList<WpfProductionPalletPlanSkippedLine>? SkippedLines = null)
 {
+    public IReadOnlyList<long> PlannedOrderLineIdsOrEmpty => PlannedOrderLineIds ?? Array.Empty<long>();
+    public IReadOnlyList<WpfProductionPalletPlanSkippedLine> SkippedLinesOrEmpty =>
+        SkippedLines ?? Array.Empty<WpfProductionPalletPlanSkippedLine>();
+
     public static WpfProductionPalletPlanApiResult Failure(string message)
     {
         return new WpfProductionPalletPlanApiResult(false, message, 0, string.Empty, 0, string.Empty, false, true, 0, 0, 0, 0, 0, 0);
     }
 }
 
-public sealed record WpfProductionPalletInternalSupplyWarningApiResult(
+public sealed record WpfPrePlanCoveragePreviewApiResult(
     bool IsSuccess,
     string Message,
     bool IsEndpointMissing,
     bool HasWarning,
     string WarningMessage,
-    IReadOnlyList<WpfInternalSupplyWarningLine> Lines)
+    IReadOnlyList<WpfInternalSupplyWarningLine> Lines,
+    int WouldPlanLineCount,
+    int SafeLineCount,
+    int WarningLineCount,
+    bool HasFreeWarehouseHu,
+    IReadOnlyList<WpfPrePlanFreeHuLine> FreeWarehouseHuLines)
 {
-    public static WpfProductionPalletInternalSupplyWarningApiResult Failure(string message)
+    public static WpfPrePlanCoveragePreviewApiResult Failure(string message)
     {
-        return new WpfProductionPalletInternalSupplyWarningApiResult(
-            false, message, false, false, string.Empty, Array.Empty<WpfInternalSupplyWarningLine>());
+        return new WpfPrePlanCoveragePreviewApiResult(
+            false, message, false, false, string.Empty, Array.Empty<WpfInternalSupplyWarningLine>(),
+            0, 0, 0, false, Array.Empty<WpfPrePlanFreeHuLine>());
     }
 
-    public static WpfProductionPalletInternalSupplyWarningApiResult EndpointMissing(string message)
+    public static WpfPrePlanCoveragePreviewApiResult EndpointMissing(string message)
     {
-        return new WpfProductionPalletInternalSupplyWarningApiResult(
-            false, message, true, false, string.Empty, Array.Empty<WpfInternalSupplyWarningLine>());
+        return new WpfPrePlanCoveragePreviewApiResult(
+            false, message, true, false, string.Empty, Array.Empty<WpfInternalSupplyWarningLine>(),
+            0, 0, 0, false, Array.Empty<WpfPrePlanFreeHuLine>());
     }
 }
+
+public sealed record WpfPrePlanFreeHuLine(
+    long CustomerOrderLineId,
+    long ItemId,
+    string ItemName,
+    double WouldPlanQty,
+    int FreeHuCount,
+    double FreeHuQty);
 
 public sealed record WpfInternalSupplyWarningLine(
     long CustomerOrderLineId,

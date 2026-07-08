@@ -16,7 +16,7 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         var harness = CreateCustomerWithInternalHarness(internalStatus: internalStatus);
         var service = new ProductionPalletService(harness.Store);
 
-        var warning = service.GetCustomerPlanInternalSupplyWarning(10);
+        var warning = service.GetCustomerPrePlanCoveragePreview(10);
 
         Assert.True(warning.HasWarning);
         Assert.Equal(10, warning.OrderId);
@@ -44,7 +44,7 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         var harness = CreateCustomerWithInternalHarness(internalStatus: internalStatus);
         var service = new ProductionPalletService(harness.Store);
 
-        var warning = service.GetCustomerPlanInternalSupplyWarning(10);
+        var warning = service.GetCustomerPrePlanCoveragePreview(10);
 
         Assert.False(warning.HasWarning);
         Assert.Empty(warning.Lines);
@@ -56,7 +56,7 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         var harness = CreateCustomerWithInternalHarness(internalItemId: 200);
         var service = new ProductionPalletService(harness.Store);
 
-        var warning = service.GetCustomerPlanInternalSupplyWarning(10);
+        var warning = service.GetCustomerPrePlanCoveragePreview(10);
 
         Assert.False(warning.HasWarning);
         Assert.Empty(warning.Lines);
@@ -69,7 +69,7 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         SeedClosedInternalReceipt(harness, producedQty: 300);
         var service = new ProductionPalletService(harness.Store);
 
-        var warning = service.GetCustomerPlanInternalSupplyWarning(10);
+        var warning = service.GetCustomerPrePlanCoveragePreview(10);
 
         var line = Assert.Single(warning.Lines);
         Assert.Equal(456, line.ExpectedQty);
@@ -82,7 +82,7 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         SeedClosedInternalReceipt(harness, producedQty: 756);
         var service = new ProductionPalletService(harness.Store);
 
-        var warning = service.GetCustomerPlanInternalSupplyWarning(10);
+        var warning = service.GetCustomerPrePlanCoveragePreview(10);
 
         Assert.False(warning.HasWarning);
         Assert.Empty(warning.Lines);
@@ -106,7 +106,7 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         });
         var service = new ProductionPalletService(harness.Store);
 
-        var warning = service.GetCustomerPlanInternalSupplyWarning(10);
+        var warning = service.GetCustomerPrePlanCoveragePreview(10);
 
         Assert.False(warning.HasWarning);
         Assert.Empty(warning.Lines);
@@ -118,7 +118,7 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         var harness = CreateCustomerWithInternalHarness();
         var service = new ProductionPalletService(harness.Store);
 
-        var warning = service.GetCustomerPlanInternalSupplyWarning(30);
+        var warning = service.GetCustomerPrePlanCoveragePreview(30);
 
         Assert.False(warning.HasWarning);
         Assert.Empty(warning.Lines);
@@ -130,8 +130,98 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         var harness = CreateCustomerWithInternalHarness();
         var service = new ProductionPalletService(harness.Store);
 
-        var ex = Assert.Throws<InvalidOperationException>(() => service.GetCustomerPlanInternalSupplyWarning(999));
+        var ex = Assert.Throws<InvalidOperationException>(() => service.GetCustomerPrePlanCoveragePreview(999));
         Assert.Equal("Заказ не найден.", ex.Message);
+    }
+
+    [Fact]
+    public void Preview_ReportsWouldPlanSafeAndWarningLineCounts()
+    {
+        var harness = CreateCustomerWithInternalHarness();
+        harness.SeedItem(new Item
+        {
+            Id = 300,
+            Name = "Хрен",
+            BaseUom = "шт",
+            MaxQtyPerHu = 600
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 102,
+            OrderId = 10,
+            ItemId = 300,
+            QtyOrdered = 500,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        var service = new ProductionPalletService(harness.Store);
+
+        var preview = service.GetCustomerPrePlanCoveragePreview(10);
+
+        Assert.True(preview.HasWarning);
+        Assert.Equal(2, preview.WouldPlanLineCount);
+        Assert.Equal(1, preview.SafeLineCount);
+        Assert.Equal(1, preview.WarningLineCount);
+    }
+
+    [Fact]
+    public void Preview_ReportsFreeWarehouseHuForWouldPlanLines()
+    {
+        var harness = CreateCustomerWithInternalHarness(internalItemId: 200);
+        harness.SeedBalance(100, 1, 200, "HU-FREE-01");
+        harness.SeedBalance(100, 1, 178, "HU-FREE-02");
+        var service = new ProductionPalletService(harness.Store);
+
+        var preview = service.GetCustomerPrePlanCoveragePreview(10);
+
+        Assert.False(preview.HasWarning);
+        Assert.True(preview.HasFreeWarehouseHu);
+        var freeLine = Assert.Single(preview.FreeWarehouseHuLines);
+        Assert.Equal(101, freeLine.OrderLineId);
+        Assert.Equal(100, freeLine.ItemId);
+        Assert.Equal(2, freeLine.FreeHuCount);
+        Assert.Equal(378, freeLine.FreeHuQty);
+        Assert.Contains("свободные складские HU", preview.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Preview_HuReservedByOtherOrder_IsNotFree()
+    {
+        var harness = CreateCustomerWithInternalHarness(internalItemId: 200);
+        harness.SeedBalance(100, 1, 378, "HU-OTHER-01");
+        harness.SeedOrder(new Order
+        {
+            Id = 50,
+            OrderRef = "050",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            PartnerName = "Другой клиент",
+            CreatedAt = new DateTime(2026, 7, 1, 10, 0, 0)
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 501,
+            OrderId = 50,
+            ItemId = 100,
+            QtyOrdered = 378,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        harness.SeedOrderReceiptPlanLines(50, new OrderReceiptPlanLine
+        {
+            Id = 5001,
+            OrderId = 50,
+            OrderLineId = 501,
+            ItemId = 100,
+            QtyPlanned = 378,
+            ToLocationId = 1,
+            ToHu = "HU-OTHER-01",
+            SortOrder = 1
+        });
+        var service = new ProductionPalletService(harness.Store);
+
+        var preview = service.GetCustomerPrePlanCoveragePreview(10);
+
+        Assert.False(preview.HasFreeWarehouseHu);
+        Assert.Empty(preview.FreeWarehouseHuLines);
     }
 
     [Fact]
@@ -144,7 +234,7 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         var planLinesBefore = harness.Store.GetOrderReceiptPlanLines(10).Count;
         var service = new ProductionPalletService(harness.Store);
 
-        var warning = service.GetCustomerPlanInternalSupplyWarning(10);
+        var warning = service.GetCustomerPrePlanCoveragePreview(10);
 
         Assert.True(warning.HasWarning);
         Assert.Equal(ledgerBefore, harness.LedgerEntries.Count);
@@ -160,7 +250,7 @@ public sealed class ProductionPalletInternalSupplyWarningTests
     {
         var previewedHarness = CreateCustomerWithInternalHarness();
         var previewedService = new ProductionPalletService(previewedHarness.Store);
-        previewedService.GetCustomerPlanInternalSupplyWarning(10);
+        previewedService.GetCustomerPrePlanCoveragePreview(10);
         var previewedPlan = previewedService.PlanOrder(10);
 
         var directHarness = CreateCustomerWithInternalHarness();
@@ -172,8 +262,10 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         Assert.Equal(1, previewedPlan.Summary.PlannedPalletCount);
     }
 
-    [Fact]
-    public async Task Api_ReturnsSnakeCaseContract_AndDoesNotMutateState()
+    [Theory]
+    [InlineData("/api/orders/10/production-pallets/pre-plan-coverage-preview")]
+    [InlineData("/api/orders/10/production-pallets/internal-supply-warning")] // compatibility alias
+    public async Task Api_ReturnsSnakeCaseContract_AndDoesNotMutateState(string route)
     {
         var harness = CreateCustomerWithInternalHarness();
         var ledgerBefore = harness.LedgerEntries.Count;
@@ -181,7 +273,7 @@ public sealed class ProductionPalletInternalSupplyWarningTests
 
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
 
-        using var response = await host.Client.GetAsync("/api/orders/10/production-pallets/internal-supply-warning");
+        using var response = await host.Client.GetAsync(route);
         var body = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -200,6 +292,12 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         Assert.Equal("104", line.GetProperty("internal_order_ref").GetString());
         Assert.Equal("IN_PROGRESS", line.GetProperty("internal_status").GetString());
         Assert.Equal(756, line.GetProperty("expected_qty").GetDouble());
+
+        Assert.Equal(1, json.RootElement.GetProperty("would_plan_line_count").GetInt32());
+        Assert.Equal(0, json.RootElement.GetProperty("safe_line_count").GetInt32());
+        Assert.Equal(1, json.RootElement.GetProperty("warning_line_count").GetInt32());
+        Assert.False(json.RootElement.GetProperty("has_free_warehouse_hu").GetBoolean());
+        Assert.Empty(json.RootElement.GetProperty("free_warehouse_hu").EnumerateArray());
 
         Assert.Equal(ledgerBefore, harness.LedgerEntries.Count);
         Assert.Equal(docsBefore, harness.Store.GetDocsByOrder(10).Count);
@@ -227,10 +325,10 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfProductionPalletApiService.cs");
         var method = SliceMethod(
             source,
-            "    public async Task<WpfProductionPalletInternalSupplyWarningApiResult> TryGetInternalSupplyWarningAsync(",
+            "    public async Task<WpfPrePlanCoveragePreviewApiResult> TryGetPrePlanCoveragePreviewAsync(",
             "    public async Task<WpfProductionPalletPrintRowsApiResult> TryGetPrintRowsAsync(");
 
-        Assert.Contains("/api/orders/{orderId}/production-pallets/internal-supply-warning", method, StringComparison.Ordinal);
+        Assert.Contains("/api/orders/{orderId}/production-pallets/pre-plan-coverage-preview", method, StringComparison.Ordinal);
         Assert.Contains("client.GetAsync", method, StringComparison.Ordinal);
         Assert.Contains("HttpStatusCode.NotFound", method, StringComparison.Ordinal);
         Assert.Contains("EndpointMissing", method, StringComparison.Ordinal);
@@ -240,31 +338,42 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         Assert.Contains("[JsonPropertyName(\"would_plan_qty\")]", source, StringComparison.Ordinal);
         Assert.Contains("[JsonPropertyName(\"internal_order_ref\")]", source, StringComparison.Ordinal);
         Assert.Contains("[JsonPropertyName(\"expected_qty\")]", source, StringComparison.Ordinal);
+        Assert.Contains("[JsonPropertyName(\"would_plan_line_count\")]", source, StringComparison.Ordinal);
+        Assert.Contains("[JsonPropertyName(\"safe_line_count\")]", source, StringComparison.Ordinal);
+        Assert.Contains("[JsonPropertyName(\"has_free_warehouse_hu\")]", source, StringComparison.Ordinal);
+        Assert.Contains("[JsonPropertyName(\"skipped_lines\")]", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void WpfPlanClick_ConfirmsInternalSupplyBeforePlan_WithoutClientQuantities()
+    public void WpfPlanClick_RunsPrePlanCoverageFlowBeforePlan_WithoutClientQuantities()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
         var clickMethod = SliceMethod(
             source,
             "    private async void PlanPallets_Click(",
-            "    private async Task<bool> ConfirmInternalSupplyBeforePlanAsync(");
-        var confirmMethod = SliceMethod(
+            "    private enum PrePlanFlowDecision");
+        var flowMethod = SliceMethod(
             source,
-            "    private async Task<bool> ConfirmInternalSupplyBeforePlanAsync(",
-            "    private void ReadyHuBinding_Click(");
+            "    private async Task<PrePlanFlowDecision> RunPrePlanCoverageFlowAsync(",
+            "    private static string BuildSkippedLinesSummary(");
 
-        // Подтверждение выполняется до вызова POST /plan.
-        var confirmIndex = clickMethod.IndexOf("ConfirmInternalSupplyBeforePlanAsync", StringComparison.Ordinal);
+        // Pre-plan flow выполняется до вызова POST /plan.
+        var flowIndex = clickMethod.IndexOf("RunPrePlanCoverageFlowAsync", StringComparison.Ordinal);
         var planIndex = clickMethod.IndexOf("TryPlanOrderAsync", StringComparison.Ordinal);
-        Assert.True(confirmIndex >= 0 && planIndex > confirmIndex);
+        Assert.True(flowIndex >= 0 && planIndex > flowIndex);
 
-        // Отмена в диалоге возвращает false и не вызывает POST /plan; qty на сервер не передаются.
-        Assert.Contains("TryGetInternalSupplyWarningAsync", confirmMethod, StringComparison.Ordinal);
-        Assert.Contains("IsEndpointMissing", confirmMethod, StringComparison.Ordinal);
-        Assert.Contains("Не удалось проверить ожидаемый INTERNAL-выпуск.", confirmMethod, StringComparison.Ordinal);
-        Assert.DoesNotContain("qty", confirmMethod, StringComparison.OrdinalIgnoreCase);
+        // Safe-only передаёт только режим, qty/строки не передаются.
+        Assert.Contains("WpfProductionPalletPlanMode.SkipInternalSupply", clickMethod, StringComparison.Ordinal);
+
+        // Preview-цикл: свежий preview после привязки; при нулевой нехватке POST /plan не вызывается.
+        Assert.Contains("TryGetPrePlanCoveragePreviewAsync", flowMethod, StringComparison.Ordinal);
+        Assert.Contains("IsEndpointMissing", flowMethod, StringComparison.Ordinal);
+        Assert.Contains("Не удалось проверить складские HU и ожидаемый INTERNAL-выпуск.", flowMethod, StringComparison.Ordinal);
+        Assert.Contains("WouldPlanLineCount == 0", flowMethod, StringComparison.Ordinal);
+        Assert.Contains("Производственное планирование не требуется: нехватка закрыта складскими HU.", flowMethod, StringComparison.Ordinal);
+        Assert.Contains("new ReadyHuBindingWindow(_services, orderId)", flowMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryPlanOrderAsync", flowMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("qty", flowMethod, StringComparison.OrdinalIgnoreCase);
     }
 
     private static CloseDocumentHarness CreateCustomerWithInternalHarness(
