@@ -174,6 +174,125 @@ public sealed class ProductionPalletService
             : BuildNoProductionRequiredResult(orderId);
     }
 
+    public ProductionPalletInternalSupplyWarning GetCustomerPlanInternalSupplyWarning(long orderId)
+    {
+        var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        var empty = new ProductionPalletInternalSupplyWarning
+        {
+            OrderId = order.Id,
+            OrderRef = order.OrderRef
+        };
+        if (order.Type != OrderType.Customer
+            || order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+        {
+            return empty;
+        }
+
+        IReadOnlyList<OrderReceiptLine> linesToPlan;
+        try
+        {
+            linesToPlan = GetLinesNeedingPalletAppend(_data, order);
+        }
+        catch (InvalidOperationException)
+        {
+            // Preview — только советник: ошибки планирования показывает сам POST /plan.
+            return empty;
+        }
+
+        linesToPlan = linesToPlan.Where(line => line.QtyRemaining > QtyTolerance).ToArray();
+        if (linesToPlan.Count == 0)
+        {
+            return empty;
+        }
+
+        var neededItemIds = linesToPlan.Select(line => line.ItemId).ToHashSet();
+        var expectedByInternalOrder = new List<(Order InternalOrder, Dictionary<long, double> ExpectedByItem)>();
+        foreach (var internalOrder in _data.GetOrders()
+                     .Where(candidate => candidate.Type == OrderType.Internal
+                                         && candidate.Status is not OrderStatus.Shipped
+                                             and not OrderStatus.Cancelled
+                                             and not OrderStatus.Merged)
+                     .OrderBy(candidate => candidate.Id))
+        {
+            var expectedByItem = new Dictionary<long, double>();
+            foreach (var line in OrderReceiptRemainingCalculator.GetRemaining(_data, internalOrder)
+                         .Where(line => neededItemIds.Contains(line.ItemId) && line.QtyRemaining > QtyTolerance))
+            {
+                expectedByItem[line.ItemId] = expectedByItem.TryGetValue(line.ItemId, out var current)
+                    ? current + line.QtyRemaining
+                    : line.QtyRemaining;
+            }
+
+            if (expectedByItem.Count > 0)
+            {
+                expectedByInternalOrder.Add((internalOrder, expectedByItem));
+            }
+        }
+
+        if (expectedByInternalOrder.Count == 0)
+        {
+            return empty;
+        }
+
+        var itemNamesById = _data.GetItems(null).ToDictionary(item => item.Id, item => item.Name);
+        var warningLines = new List<ProductionPalletInternalSupplyWarningLine>();
+        foreach (var line in linesToPlan.OrderBy(line => line.OrderLineId))
+        {
+            foreach (var (internalOrder, expectedByItem) in expectedByInternalOrder)
+            {
+                if (!expectedByItem.TryGetValue(line.ItemId, out var expectedQty))
+                {
+                    continue;
+                }
+
+                warningLines.Add(new ProductionPalletInternalSupplyWarningLine
+                {
+                    OrderLineId = line.OrderLineId,
+                    ItemId = line.ItemId,
+                    ItemName = !string.IsNullOrWhiteSpace(line.ItemName)
+                        ? line.ItemName
+                        : itemNamesById.GetValueOrDefault(line.ItemId, string.Empty),
+                    WouldPlanQty = line.QtyRemaining,
+                    InternalOrderId = internalOrder.Id,
+                    InternalOrderRef = internalOrder.OrderRef,
+                    InternalOrderStatus = OrderStatusMapper.StatusToString(internalOrder.Status),
+                    ExpectedQty = expectedQty
+                });
+            }
+        }
+
+        if (warningLines.Count == 0)
+        {
+            return empty;
+        }
+
+        var message = new StringBuilder("По этим позициям уже ожидается выпуск во внутреннем заказе:");
+        foreach (var warningLine in warningLines)
+        {
+            var status = OrderStatusMapper.StatusFromString(warningLine.InternalOrderStatus);
+            var statusDisplay = status.HasValue
+                ? OrderStatusMapper.StatusToDisplayName(status.Value, OrderType.Internal)
+                : warningLine.InternalOrderStatus;
+            message.Append(Environment.NewLine)
+                .Append($"{warningLine.ItemName} — к планированию {FormatWarningQty(warningLine.WouldPlanQty)}, " +
+                        $"ожидается {FormatWarningQty(warningLine.ExpectedQty)} (заказ {warningLine.InternalOrderRef}, {statusDisplay})");
+        }
+
+        return new ProductionPalletInternalSupplyWarning
+        {
+            OrderId = order.Id,
+            OrderRef = order.OrderRef,
+            HasWarning = true,
+            Message = message.ToString(),
+            Lines = warningLines
+        };
+    }
+
+    private static string FormatWarningQty(double value)
+    {
+        return value.ToString("0.###", CultureInfo.CurrentCulture);
+    }
+
     private static bool AppendPlannedPalletsForOrderLinesInStore(
         IDataStore store,
         Order order,

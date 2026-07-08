@@ -11,6 +11,7 @@ public static class ProductionPalletEndpoints
     public static void Map(WebApplication app)
     {
         app.MapPost("/api/orders/{orderId:long}/production-pallets/plan", HandlePlanOrder);
+        app.MapGet("/api/orders/{orderId:long}/production-pallets/internal-supply-warning", HandleInternalSupplyWarning);
         app.MapGet("/api/orders/{orderId:long}/production-pallets/cancel-plan-options", HandleCancelPlanOptions);
         app.MapPost("/api/orders/{orderId:long}/production-pallets/cancel-plan", HandleCancelPlan);
         app.MapPost("/api/orders/{targetCustomerOrderId:long}/production-pallets/adopt-from-internal/{sourceInternalOrderId:long}", HandleAdoptFromInternal);
@@ -180,6 +181,37 @@ public static class ProductionPalletEndpoints
         try
         {
             return Results.Ok(MapOrderPlan(service.PlanOrder(orderId)));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { ok = false, error = ex.Message, message = ex.Message });
+        }
+    }
+
+    private static IResult HandleInternalSupplyWarning(long orderId, ProductionPalletService service)
+    {
+        try
+        {
+            var warning = service.GetCustomerPlanInternalSupplyWarning(orderId);
+            return Results.Ok(new
+            {
+                ok = true,
+                order_id = warning.OrderId,
+                order_ref = warning.OrderRef,
+                has_warning = warning.HasWarning,
+                message = warning.Message,
+                lines = warning.Lines.Select(line => new
+                {
+                    customer_order_line_id = line.OrderLineId,
+                    item_id = line.ItemId,
+                    item_name = line.ItemName,
+                    would_plan_qty = line.WouldPlanQty,
+                    internal_order_id = line.InternalOrderId,
+                    internal_order_ref = line.InternalOrderRef,
+                    internal_status = line.InternalOrderStatus,
+                    expected_qty = line.ExpectedQty
+                })
+            });
         }
         catch (InvalidOperationException ex)
         {

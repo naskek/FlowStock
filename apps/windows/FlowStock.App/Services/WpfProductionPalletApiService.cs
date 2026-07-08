@@ -75,6 +75,66 @@ public sealed class WpfProductionPalletApiService
         }
     }
 
+    public async Task<WpfProductionPalletInternalSupplyWarningApiResult> TryGetInternalSupplyWarningAsync(
+        long orderId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                _logger.Info("Production pallet API skipped for internal supply warning: server base URL is not configured.");
+                return WpfProductionPalletInternalSupplyWarningApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = CreateClient(handler, configuration);
+            using var response = await client.GetAsync($"/api/orders/{orderId}/production-pallets/internal-supply-warning", cancellationToken)
+                .ConfigureAwait(false);
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return WpfProductionPalletInternalSupplyWarningApiResult.EndpointMissing(
+                    "Сервер не поддерживает проверку ожидаемого INTERNAL-выпуска.");
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return WpfProductionPalletInternalSupplyWarningApiResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<InternalSupplyWarningResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            if (payload == null)
+            {
+                return WpfProductionPalletInternalSupplyWarningApiResult.Failure("Сервер вернул пустой ответ.");
+            }
+
+            var lines = (payload.Lines ?? new List<InternalSupplyWarningLineResponse>())
+                .Select(line => new WpfInternalSupplyWarningLine(
+                    line.CustomerOrderLineId,
+                    line.ItemId,
+                    line.ItemName ?? string.Empty,
+                    line.WouldPlanQty,
+                    line.InternalOrderId,
+                    line.InternalOrderRef ?? string.Empty,
+                    line.InternalStatus ?? string.Empty,
+                    line.ExpectedQty))
+                .ToArray();
+            return new WpfProductionPalletInternalSupplyWarningApiResult(
+                true,
+                string.Empty,
+                false,
+                payload.HasWarning,
+                payload.Message ?? string.Empty,
+                lines);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Production pallet internal supply warning load failed", ex);
+            return WpfProductionPalletInternalSupplyWarningApiResult.Failure(ex.Message);
+        }
+    }
+
     public async Task<WpfProductionPalletPrintRowsApiResult> TryGetPrintRowsAsync(
         long orderId,
         CancellationToken cancellationToken = default)
@@ -922,6 +982,51 @@ public sealed class WpfProductionPalletApiService
         public double RemainingQty { get; init; }
     }
 
+    private sealed class InternalSupplyWarningResponse
+    {
+        [JsonPropertyName("order_id")]
+        public long OrderId { get; init; }
+
+        [JsonPropertyName("order_ref")]
+        public string? OrderRef { get; init; }
+
+        [JsonPropertyName("has_warning")]
+        public bool HasWarning { get; init; }
+
+        [JsonPropertyName("message")]
+        public string? Message { get; init; }
+
+        [JsonPropertyName("lines")]
+        public List<InternalSupplyWarningLineResponse>? Lines { get; init; }
+    }
+
+    private sealed class InternalSupplyWarningLineResponse
+    {
+        [JsonPropertyName("customer_order_line_id")]
+        public long CustomerOrderLineId { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("item_name")]
+        public string? ItemName { get; init; }
+
+        [JsonPropertyName("would_plan_qty")]
+        public double WouldPlanQty { get; init; }
+
+        [JsonPropertyName("internal_order_id")]
+        public long InternalOrderId { get; init; }
+
+        [JsonPropertyName("internal_order_ref")]
+        public string? InternalOrderRef { get; init; }
+
+        [JsonPropertyName("internal_status")]
+        public string? InternalStatus { get; init; }
+
+        [JsonPropertyName("expected_qty")]
+        public double ExpectedQty { get; init; }
+    }
+
     private sealed class PrintRowResponse
     {
         [JsonPropertyName("pallet_id")]
@@ -1241,6 +1346,37 @@ public sealed record WpfProductionPalletPlanApiResult(
         return new WpfProductionPalletPlanApiResult(false, message, 0, string.Empty, 0, string.Empty, false, true, 0, 0, 0, 0, 0, 0);
     }
 }
+
+public sealed record WpfProductionPalletInternalSupplyWarningApiResult(
+    bool IsSuccess,
+    string Message,
+    bool IsEndpointMissing,
+    bool HasWarning,
+    string WarningMessage,
+    IReadOnlyList<WpfInternalSupplyWarningLine> Lines)
+{
+    public static WpfProductionPalletInternalSupplyWarningApiResult Failure(string message)
+    {
+        return new WpfProductionPalletInternalSupplyWarningApiResult(
+            false, message, false, false, string.Empty, Array.Empty<WpfInternalSupplyWarningLine>());
+    }
+
+    public static WpfProductionPalletInternalSupplyWarningApiResult EndpointMissing(string message)
+    {
+        return new WpfProductionPalletInternalSupplyWarningApiResult(
+            false, message, true, false, string.Empty, Array.Empty<WpfInternalSupplyWarningLine>());
+    }
+}
+
+public sealed record WpfInternalSupplyWarningLine(
+    long CustomerOrderLineId,
+    long ItemId,
+    string ItemName,
+    double WouldPlanQty,
+    long InternalOrderId,
+    string InternalOrderRef,
+    string InternalStatus,
+    double ExpectedQty);
 
 public sealed record WpfProductionPalletPrintRowsApiResult(
     bool IsSuccess,

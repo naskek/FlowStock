@@ -469,6 +469,11 @@ public partial class OrderDetailsWindow : Window
         PrintPalletLabelsButton.IsEnabled = false;
         try
         {
+            if (!await ConfirmInternalSupplyBeforePlanAsync(_orderId.Value).ConfigureAwait(true))
+            {
+                return;
+            }
+
             int? activePalletCountBefore = null;
             var beforeOptionsResult = await _services.WpfProductionPalletApi.TryGetCancelPlanOptionsAsync(_orderId.Value).ConfigureAwait(true);
             if (beforeOptionsResult.IsSuccess)
@@ -551,6 +556,49 @@ public partial class OrderDetailsWindow : Window
         {
             UpdatePalletButtons();
         }
+    }
+
+    private async Task<bool> ConfirmInternalSupplyBeforePlanAsync(long orderId)
+    {
+        if (_order?.Type != OrderType.Customer)
+        {
+            return true;
+        }
+
+        var preview = await _services.WpfProductionPalletApi.TryGetInternalSupplyWarningAsync(orderId).ConfigureAwait(true);
+        if (preview.IsSuccess)
+        {
+            if (!preview.HasWarning)
+            {
+                return true;
+            }
+
+            return ShowInternalSupplyConfirmation(
+                preview.WarningMessage,
+                "Сформировать новый паллетный план для клиентского заказа?");
+        }
+
+        if (preview.IsEndpointMissing)
+        {
+            _services.AppLogger.Error(
+                $"Internal supply warning endpoint is not available on server for order_id={orderId}: {preview.Message}");
+            return true;
+        }
+
+        _services.AppLogger.Error(
+            $"Internal supply warning preview failed for order_id={orderId}: {preview.Message}");
+        return ShowInternalSupplyConfirmation(
+            "Не удалось проверить ожидаемый INTERNAL-выпуск.",
+            "Всё равно сформировать план?");
+    }
+
+    private bool ShowInternalSupplyConfirmation(string warningText, string questionText)
+    {
+        var dialog = new InternalSupplyWarningDialog(warningText, questionText)
+        {
+            Owner = this
+        };
+        return dialog.ShowDialog() == true;
     }
 
     private void ReadyHuBinding_Click(object sender, RoutedEventArgs e)

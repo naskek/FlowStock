@@ -1,0 +1,31 @@
+<Window x:Class="FlowStock.App.InternalSupplyWarningDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="План паллет"
+        Height="320" Width="560"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBox x:Name="WarningTextBox"
+                 Grid.Row="0"
+                 IsReadOnly="True"
+                 BorderThickness="0"
+                 Background="Transparent"
+                 TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto" />
+        <TextBlock x:Name="QuestionTextBlock"
+                   Grid.Row="1"
+                   Margin="0,12,0,0"
+                   TextWrapping="Wrap"
+                   FontWeight="SemiBold" />
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Всё равно сформировать" Width="180" Click="Proceed_Click" />
+            <Button Content="Отмена" Width="120" Margin="8,0,0,0" IsCancel="True" IsDefault="True" />
+        </StackPanel>
+    </Grid>
+</Window>
