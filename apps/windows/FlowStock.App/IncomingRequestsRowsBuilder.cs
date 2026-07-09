@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using FlowStock.Core.Models;
 
@@ -8,25 +7,20 @@ public enum IncomingRequestTypeFilter
 {
     All,
     Item,
-    Order,
-    ReadyHu
+    Order
 }
 
 public enum IncomingRequestRowKind
 {
     Item,
-    Order,
-    ReadyHu
+    Order
 }
 
 public sealed record IncomingRequestRow
 {
-    public const string ReadyHuBindingRequestType = "READY_HU_BINDING_AVAILABLE";
-
     public required IncomingRequestRowKind Kind { get; init; }
     public ItemRequest? ItemRequest { get; init; }
     public OrderRequest? OrderRequest { get; init; }
-    public WpfReadyHuBindingReadModel? ReadyHuBinding { get; init; }
     public required string SourceDisplay { get; init; }
     public required string TypeDisplay { get; init; }
     public required string Summary { get; init; }
@@ -47,7 +41,6 @@ public static class IncomingRequestsRowsBuilder
     public static IReadOnlyList<IncomingRequestRow> Build(
         IReadOnlyList<ItemRequest> itemRequests,
         IReadOnlyList<OrderRequest> orderRequests,
-        WpfReadyHuBindingReadModel? readyHuBinding,
         IncomingRequestTypeFilter filter,
         DateTime now)
     {
@@ -97,27 +90,6 @@ public static class IncomingRequestsRowsBuilder
             });
         }
 
-        if (readyHuBinding is { HuCount: > 0 })
-        {
-            merged.Add(new IncomingRequestRow
-            {
-                Kind = IncomingRequestRowKind.ReadyHu,
-                ReadyHuBinding = readyHuBinding,
-                SourceDisplay = "Склад",
-                TypeDisplay = "Готовые HU",
-                Summary = $"Свободных HU: {readyHuBinding.HuCount} · подходящих заказов: {readyHuBinding.OrderCount} · строк: {readyHuBinding.LineCount}",
-                RequestedBy = "-",
-                StatusDisplay = "Доступно",
-                CreatedAt = now,
-                ResolutionNote = "Computed notification",
-                CanApprove = false,
-                CanReject = false,
-                CanOpenDetails = true,
-                RequestTypeCode = IncomingRequestRow.ReadyHuBindingRequestType,
-                DetailsPreview = BuildReadyHuDetailsPreview(readyHuBinding)
-            });
-        }
-
         return merged
             .Where(row => MatchesFilter(row, filter))
             .OrderByDescending(row => row.CreatedAt)
@@ -129,7 +101,6 @@ public static class IncomingRequestsRowsBuilder
         {
             IncomingRequestTypeFilter.Item => row.Kind == IncomingRequestRowKind.Item,
             IncomingRequestTypeFilter.Order => row.Kind == IncomingRequestRowKind.Order,
-            IncomingRequestTypeFilter.ReadyHu => row.Kind == IncomingRequestRowKind.ReadyHu,
             _ => true
         };
 
@@ -171,27 +142,6 @@ public static class IncomingRequestsRowsBuilder
         }
 
         return request.PayloadJson;
-    }
-
-    private static string BuildReadyHuDetailsPreview(WpfReadyHuBindingReadModel model)
-    {
-        var rows = model.HuRows
-            .Take(3)
-            .Select(row =>
-            {
-                var orders = row.CompatibleOrders
-                    .Select(order => string.IsNullOrWhiteSpace(order.OrderRef) ? $"ID={order.OrderId}" : order.OrderRef)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .Take(3)
-                    .ToArray();
-                var orderText = orders.Length == 0 ? "-" : string.Join(", ", orders);
-                var location = string.IsNullOrWhiteSpace(row.LocationDisplay) ? "-" : row.LocationDisplay;
-                var origin = string.IsNullOrWhiteSpace(row.OriginInternalOrderRef) ? string.Empty : $" · источник: {row.OriginInternalOrderRef}";
-                return $"{row.HuCode}: {row.ItemName}, {row.Qty.ToString("G", CultureInfo.InvariantCulture)} шт · {location}{origin} · заказы: {orderText}";
-            })
-            .ToArray();
-
-        return rows.Length == 0 ? string.Empty : string.Join(Environment.NewLine, rows);
     }
 
     private static string BuildRequestedBy(string? login, string? deviceId)

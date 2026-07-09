@@ -438,7 +438,9 @@ public sealed record IncomingRequestsSummary(
     int ReadyHuBindingPending,
     int BusinessNotificationsUnread = 0)
 {
-    public int ActionRequiredCount => ItemRequestsPending + OrderRequestsPending + ReadyHuBindingPending;
+    // ReadyHuBindingPending всё ещё парсится ради серверной совместимости, но legacy ready-HU
+    // UI-flow удалён, поэтому в badge/tooltip Центра событий он больше не учитывается.
+    public int ActionRequiredCount => ItemRequestsPending + OrderRequestsPending;
     public int TotalPending => ActionRequiredCount + BusinessNotificationsUnread;
 }
 

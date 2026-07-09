@@ -18,8 +18,7 @@ public partial class IncomingRequestsWindow : Window
     [
         new("Все", IncomingRequestTypeFilter.All),
         new("Товары", IncomingRequestTypeFilter.Item),
-        new("Заказы", IncomingRequestTypeFilter.Order),
-        new("Готовые HU", IncomingRequestTypeFilter.ReadyHu)
+        new("Заказы", IncomingRequestTypeFilter.Order)
     ];
 
     public IncomingRequestsWindow(AppServices services, Action? onChanged)
@@ -70,14 +69,9 @@ public partial class IncomingRequestsWindow : Window
             ? apiOrderRequests
             : Array.Empty<OrderRequest>();
 
-        var readyHuBinding = _services.WpfReadApi.TryGetReadyHuBindingReadModel(out var apiReadyHuBinding)
-            ? apiReadyHuBinding
-            : null;
-
         var rows = IncomingRequestsRowsBuilder.Build(
             itemRequests,
             orderRequests,
-            readyHuBinding,
             GetSelectedFilter(),
             DateTime.Now);
 
@@ -322,32 +316,11 @@ public partial class IncomingRequestsWindow : Window
         LoadRequests();
     }
 
-    private void ManualReadyHuBinding_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_services.WpfReadApi.TryGetReadyHuBindingReadModel(out var readyHuBinding))
-        {
-            MessageBox.Show(
-                "Не удалось загрузить список готовых HU. Проверьте подключение к серверу и повторите действие.",
-                "Привязка готовых HU",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return;
-        }
-
-        OpenGlobalReadyHuBinding(readyHuBinding);
-    }
-
     private void Details_Click(object sender, RoutedEventArgs e)
     {
         if (RequestsGrid.SelectedItem is not IncomingRequestRow row)
         {
             MessageBox.Show("Выберите одну заявку.", "Центр событий", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (row.Kind == IncomingRequestRowKind.ReadyHu)
-        {
-            OpenGlobalReadyHuBinding(row.ReadyHuBinding);
             return;
         }
 
@@ -362,12 +335,6 @@ public partial class IncomingRequestsWindow : Window
 
     private void RequestsGrid_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
-        if (RequestsGrid.SelectedItem is IncomingRequestRow { Kind: IncomingRequestRowKind.ReadyHu } readyHuRow)
-        {
-            OpenGlobalReadyHuBinding(readyHuRow.ReadyHuBinding);
-            return;
-        }
-
         if (RequestsGrid.SelectedItem is IncomingRequestRow row && row.OrderRequest != null)
         {
             OpenOrderRequestDetails(row.OrderRequest);
@@ -381,19 +348,6 @@ public partial class IncomingRequestsWindow : Window
             Owner = this
         };
         window.ShowDialog();
-    }
-
-    private void OpenGlobalReadyHuBinding(WpfReadyHuBindingReadModel? readyHuBinding)
-    {
-        var window = new GlobalReadyHuBindingWindow(_services, readyHuBinding)
-        {
-            Owner = this
-        };
-        if (window.ShowDialog() == true)
-        {
-            LoadRequests();
-            _onChanged?.Invoke();
-        }
     }
 
     private void ShowResolvedCheck_Changed(object sender, RoutedEventArgs e)

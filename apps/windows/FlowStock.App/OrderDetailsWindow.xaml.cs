@@ -543,6 +543,7 @@ public partial class OrderDetailsWindow : Window
                     : $"{result.Message}{Environment.NewLine}{Environment.NewLine}{skippedSummary}";
                 MessageBox.Show(infoMessage, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
                 LoadOrder();
+                OrderStateChanged?.Invoke(this, EventArgs.Empty);
                 return;
             }
 
@@ -619,6 +620,7 @@ public partial class OrderDetailsWindow : Window
 
             MessageBox.Show(message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
             LoadOrder();
+            OrderStateChanged?.Invoke(this, EventArgs.Empty);
         }
         finally
         {
@@ -778,31 +780,6 @@ public partial class OrderDetailsWindow : Window
         }
 
         return string.Join(Environment.NewLine, rows);
-    }
-
-    private void ReadyHuBinding_Click(object sender, RoutedEventArgs e)
-    {
-        if (_order?.Type != OrderType.Customer || !_orderId.HasValue)
-        {
-            MessageBox.Show("Привязка HU доступна только для сохранённого клиентского заказа.", "Привязка HU", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (_hasUnsavedChanges)
-        {
-            MessageBox.Show("Сохраните заказ перед привязкой HU.", "Привязка HU", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var dialog = new ReadyHuBindingWindow(_services, _orderId.Value)
-        {
-            Owner = this
-        };
-        if (dialog.ShowDialog() == true)
-        {
-            LoadOrder(CaptureSelectedOrderLineId());
-            OrderStateChanged?.Invoke(this, EventArgs.Empty);
-        }
     }
 
     private async void DeletePalletPlan_Click(object sender, RoutedEventArgs e)
@@ -2953,28 +2930,6 @@ public partial class OrderDetailsWindow : Window
         {
             SyncHuBindingLines();
         }
-
-        UpdateReadyHuBindingButton();
-    }
-
-    private void UpdateReadyHuBindingButton()
-    {
-        var isCustomer = GetSelectedOrderType() == OrderType.Customer;
-        var canEdit = _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged);
-        ReadyHuBindingButton.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
-        ReadyHuBindingButton.IsEnabled = isCustomer
-                                         && _orderId.HasValue
-                                         && canEdit
-                                         && !_hasUnsavedChanges;
-        ReadyHuBindingButton.ToolTip = !isCustomer
-            ? null
-            : !_orderId.HasValue
-                ? "Сохраните заказ, чтобы привязать HU."
-                : !canEdit
-                    ? "Привязка HU недоступна для закрытого заказа."
-                    : _hasUnsavedChanges
-                        ? "Сохраните заказ перед привязкой HU."
-                        : "Открыть управление привязками HU для этого заказа.";
     }
 
     private OrderType GetSelectedOrderType()
@@ -3016,7 +2971,6 @@ public partial class OrderDetailsWindow : Window
         _isLoading = false;
         _hasCompletedInitialLoad = true;
         _hasUnsavedChanges = false;
-        UpdateReadyHuBindingButton();
         if (wasInitialLoad)
         {
             _liveRefreshPending = false;
@@ -3038,7 +2992,6 @@ public partial class OrderDetailsWindow : Window
 
         _hasUnsavedChanges = true;
         SaveStatusText.Text = string.Empty;
-        UpdateReadyHuBindingButton();
     }
 
     private bool TryGetHeaderValues(bool allowBlankOrderRef, out string orderRef, out OrderType type, out long? partnerId, out DateTime? dueDate, out string? comment)

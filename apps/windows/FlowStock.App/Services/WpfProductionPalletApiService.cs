@@ -41,13 +41,8 @@ public sealed class WpfProductionPalletApiService
             {
                 WpfProductionPalletPlanMode.SkipInternalSupply => new { mode = "skip_internal_supply" },
                 WpfProductionPalletPlanMode.AdoptInternalThenPlan => new { mode = "adopt_internal_then_plan" },
-                WpfProductionPalletPlanMode.ApplySelectedCoverageThenPlan => new
-                {
-                    mode = "apply_selected_coverage_then_plan",
-                    selected_warehouse_hus = selectedCoverage?.SelectedWarehouseHus ?? Array.Empty<WpfSelectedWarehouseHu>(),
-                    selected_internal_production_pallet_ids = selectedCoverage?.SelectedInternalProductionPalletIds ?? Array.Empty<long>(),
-                    plan_remainder = selectedCoverage?.PlanRemainder ?? true
-                },
+                WpfProductionPalletPlanMode.ApplySelectedCoverageThenPlan =>
+                    BuildApplySelectedCoverageBody(selectedCoverage),
                 _ => new { }
             };
             using var handler = CreateHandler(configuration);
@@ -122,6 +117,59 @@ public sealed class WpfProductionPalletApiService
             _logger.Error("Production pallet plan failed", ex);
             return WpfProductionPalletPlanApiResult.Failure(ex.Message);
         }
+    }
+
+    // Явный DTO с [JsonPropertyName] гарантирует snake_case независимо от дефолтной camelCase-политики
+    // System.Net.Http.Json (PostAsJsonAsync использует JsonSerializerOptions.Web). Сервер различает
+    // hu_code vs huCode (PropertyNameCaseInsensitive не игнорирует подчёркивания), поэтому имена обязаны
+    // точно совпадать, иначе поля не биндятся и apply падает с INVALID_WAREHOUSE_SELECTION.
+    internal static ApplySelectedCoverageThenPlanRequestBody BuildApplySelectedCoverageBody(
+        WpfSelectedCoveragePlanRequest? request)
+    {
+        var warehouseHus = (request?.SelectedWarehouseHus ?? Array.Empty<WpfSelectedWarehouseHu>())
+            .Select(row => new SelectedWarehouseHuBody
+            {
+                HuCode = row.HuCode,
+                ItemId = row.ItemId,
+                TargetOrderLineId = row.TargetOrderLineId
+            })
+            .ToArray();
+        return new ApplySelectedCoverageThenPlanRequestBody
+        {
+            SelectedWarehouseHus = warehouseHus,
+            SelectedInternalProductionPalletIds =
+                request?.SelectedInternalProductionPalletIds ?? Array.Empty<long>(),
+            PlanRemainder = request?.PlanRemainder ?? true
+        };
+    }
+
+    internal sealed class ApplySelectedCoverageThenPlanRequestBody
+    {
+        [JsonPropertyName("mode")]
+        public string Mode { get; init; } = "apply_selected_coverage_then_plan";
+
+        [JsonPropertyName("selected_warehouse_hus")]
+        public IReadOnlyList<SelectedWarehouseHuBody> SelectedWarehouseHus { get; init; } =
+            Array.Empty<SelectedWarehouseHuBody>();
+
+        [JsonPropertyName("selected_internal_production_pallet_ids")]
+        public IReadOnlyList<long> SelectedInternalProductionPalletIds { get; init; } =
+            Array.Empty<long>();
+
+        [JsonPropertyName("plan_remainder")]
+        public bool PlanRemainder { get; init; } = true;
+    }
+
+    internal sealed class SelectedWarehouseHuBody
+    {
+        [JsonPropertyName("hu_code")]
+        public string HuCode { get; init; } = string.Empty;
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("target_order_line_id")]
+        public long TargetOrderLineId { get; init; }
     }
 
     private static WpfInternalSupplyWarningLine MapInternalSupplyWarningLine(InternalSupplyWarningLineResponse line)

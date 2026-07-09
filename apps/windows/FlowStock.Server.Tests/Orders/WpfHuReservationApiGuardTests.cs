@@ -50,34 +50,25 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
-    public void WpfIncomingRequests_MapsReadyHuBindingSummary()
+    public void WpfIncomingRequests_ParsesReadyHuBindingSummaryButExcludesItFromActionCount()
     {
+        // Legacy ready-HU UI-flow удалён: поле парсится ради серверной совместимости, но в
+        // ActionRequiredCount больше не входит, иначе колокольчик вёл бы в несуществующий flow.
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfIncomingRequestsApiService.cs");
 
         Assert.Contains("ready_hu_binding_pending", source);
-        Assert.Contains("ReadyHuBindingPending", source);
-        Assert.Contains("ItemRequestsPending + OrderRequestsPending + ReadyHuBindingPending", source);
+        Assert.Contains("public int ActionRequiredCount => ItemRequestsPending + OrderRequestsPending;", source);
+        Assert.DoesNotContain("ItemRequestsPending + OrderRequestsPending + ReadyHuBindingPending", source);
     }
 
     [Fact]
-    public void WpfReadApiService_BuildsReadyHuBindingReadModelRequest()
+    public void WpfReadApiService_DoesNotExposeReadyHuBindingReadModel()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfReadApiService.cs");
-        var models = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfReadyHuBindingApiModels.cs");
 
-        Assert.Contains("TryGetReadyHuBindingReadModel", source);
-        Assert.Contains("/api/orders/hu-bindings/ready", source);
-        Assert.Contains("request_type", source);
-        Assert.Contains("hu_count", source);
-        Assert.Contains("order_count", source);
-        Assert.Contains("line_count", source);
-        Assert.Contains("compatible_orders", source);
-        Assert.Contains("current_bound_hu_codes", source);
-        Assert.Contains("max_additional_bind_qty", source);
-        Assert.Contains("WpfReadyHuBindingReadModel", models);
-        Assert.Contains("WpfReadyHuBindingHuRow", models);
-        Assert.Contains("WpfReadyHuBindingCompatibleOrderRow", models);
-        Assert.Contains("WpfReadyHuBindingCompatibleLineRow", models);
+        Assert.DoesNotContain("TryGetReadyHuBindingReadModel", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("/api/orders/hu-bindings/ready", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("WpfReadyHuBindingReadModel", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -139,113 +130,74 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
-    public void IncomingRequestsWindow_ExposesReadyHuFilterAndOpensGlobalWindow()
+    public void IncomingRequestsWindow_DoesNotExposeLegacyReadyHuFlow()
     {
+        // Legacy Event Center ready-HU flow удалён: нет кнопки/фильтра/действия, notification
+        // READY_HU_BINDING_AVAILABLE не генерируется, GlobalReadyHuBindingWindow не открывается.
         var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "IncomingRequestsWindow.xaml");
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "IncomingRequestsWindow.xaml.cs");
         var builder = ReadRepoFile("apps", "windows", "FlowStock.App", "IncomingRequestsRowsBuilder.cs");
 
-        Assert.Contains("RequestTypeFilterCombo", xaml);
-        Assert.Contains("Привязка готовых HU", xaml);
-        Assert.Contains("ManualReadyHuBinding_Click", source);
-        Assert.Contains("TryGetReadyHuBindingReadModel(out var readyHuBinding)", source);
-        Assert.Contains("Готовые HU", source);
-        Assert.Contains("TryGetReadyHuBindingReadModel", source);
-        Assert.Contains("READY_HU_BINDING_AVAILABLE", builder);
-        Assert.Contains("CanApprove = false", builder);
-        Assert.Contains("CanReject = false", builder);
-        Assert.Contains("CanOpenDetails = true", builder);
-        Assert.Contains("OpenGlobalReadyHuBinding", source);
-        Assert.Contains("OpenGlobalReadyHuBinding(readyHuBinding)", source);
-        Assert.Contains("OpenGlobalReadyHuBinding(row.ReadyHuBinding)", source);
-        Assert.Contains("new GlobalReadyHuBindingWindow(_services, readyHuBinding)", source);
-        Assert.DoesNotContain("new ReadyHuBindingWindow", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("TryApplyFinalHuBindings", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("TryApplyHuReservations", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("/hu-reservations/apply", source, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Привязка готовых HU", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ManualReadyHuBinding_Click", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("OpenGlobalReadyHuBinding", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("GlobalReadyHuBindingWindow", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryGetReadyHuBindingReadModel", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("IncomingRequestRowKind.ReadyHu", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("READY_HU_BINDING_AVAILABLE", builder, StringComparison.Ordinal);
+        Assert.DoesNotContain("IncomingRequestRowKind.ReadyHu", builder, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void GlobalReadyHuBindingWindow_ExistsAndUsesApplyFinalOnly()
+    public void GlobalReadyHuBindingWindow_IsRemoved()
     {
-        var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "GlobalReadyHuBindingWindow.xaml");
-        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "GlobalReadyHuBindingWindow.xaml.cs");
-        var session = ReadRepoFile("apps", "windows", "FlowStock.App", "GlobalReadyHuBindingSession.cs");
-
-        Assert.Contains("Глобальная привязка готовых HU", xaml);
-        Assert.Contains("Авто", xaml);
-        Assert.Contains("Обновить", xaml);
-        Assert.Contains("Сохранить", xaml);
-        Assert.Contains("Закрыть", xaml);
-        Assert.Contains("TryApplyFinalHuBindings", source);
-        Assert.Contains("BuildApplyFinalByOrder", session);
-        Assert.Contains("ExpectedBoundHuCodes", session);
-        Assert.Contains("FinalHuCodes", session);
-        Assert.Contains("MarkOrderApplySuccess", source);
-        Assert.Contains("Обновите список перед продолжением", source);
-        Assert.DoesNotContain("TryApplyHuReservations", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("TryApplyHuReservations", session, StringComparison.Ordinal);
-        Assert.DoesNotContain("/hu-reservations/apply", source, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("/hu-reservations/apply", session, StringComparison.OrdinalIgnoreCase);
+        AssertRepoFileMissing("apps", "windows", "FlowStock.App", "GlobalReadyHuBindingWindow.xaml");
+        AssertRepoFileMissing("apps", "windows", "FlowStock.App", "GlobalReadyHuBindingWindow.xaml.cs");
+        AssertRepoFileMissing("apps", "windows", "FlowStock.App", "GlobalReadyHuBindingSession.cs");
     }
 
     [Fact]
-    public void OrderDetailsWindow_ExposesOrderScopedHuBindingButtonForCustomerOnly()
+    public void OrderDetailsWindow_DoesNotExposeOrderScopedReadyHuBinding()
     {
         var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml");
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
 
-        Assert.Contains("x:Name=\"ReadyHuBindingButton\"", xaml);
-        Assert.Contains("Content=\"Привязка HU\"", xaml);
-        Assert.Contains("ReadyHuBinding_Click", source);
-        Assert.Contains("ReadyHuBindingButton.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;", source);
-        Assert.Contains("&& !_hasUnsavedChanges", source);
-        Assert.Contains("new ReadyHuBindingWindow(_services, _orderId.Value)", source);
-
-        var palletBlockStart = xaml.IndexOf("Header=\"Паллетный план\"", StringComparison.Ordinal);
-        Assert.True(palletBlockStart >= 0);
-        var palletBlockEnd = xaml.IndexOf("</GroupBox>", palletBlockStart, StringComparison.Ordinal);
-        Assert.True(palletBlockEnd > palletBlockStart);
-        var palletBlock = xaml[palletBlockStart..palletBlockEnd];
-        Assert.Contains("ReadyHuBindingButton", palletBlock);
-
-        var linesBlockStart = xaml.IndexOf("Header=\"Строки заказа\"", StringComparison.Ordinal);
-        Assert.True(linesBlockStart >= 0);
-        var linesBlockEnd = xaml.IndexOf("</GroupBox>", linesBlockStart, StringComparison.Ordinal);
-        Assert.True(linesBlockEnd > linesBlockStart);
-        var linesBlock = xaml[linesBlockStart..linesBlockEnd];
-        Assert.DoesNotContain("ReadyHuBindingButton", linesBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReadyHuBindingButton", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"Привязка HU\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReadyHuBinding_Click", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new ReadyHuBindingWindow", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpdateReadyHuBindingButton", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void ReadyHuBindingWindow_UsesApplyFinalAndNotLegacyApply()
+    public void OrderScopedReadyHuBindingUi_IsRemoved()
     {
-        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "ReadyHuBindingWindow.xaml.cs");
-        var session = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderScopedHuBindingSession.cs");
-
-        Assert.Contains("TryApplyFinalHuBindings", source);
-        Assert.Contains("BuildApplyFinalLines", session);
-        Assert.Contains("ExpectedBoundHuCodes", session);
-        Assert.Contains("FinalHuCodes", session);
-        Assert.Contains("Список HU изменился. Обновите заказ и повторите действие.", source);
-        Assert.DoesNotContain("TryApplyHuReservations", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("/hu-reservations/apply", source, StringComparison.OrdinalIgnoreCase);
+        AssertRepoFileMissing("apps", "windows", "FlowStock.App", "ReadyHuBindingWindow.xaml");
+        AssertRepoFileMissing("apps", "windows", "FlowStock.App", "ReadyHuBindingWindow.xaml.cs");
+        AssertRepoFileMissing("apps", "windows", "FlowStock.App", "OrderScopedHuBindingSession.cs");
     }
 
     [Fact]
-    public void ReadyHuBindingWindow_PreservesTreeExpandedAndSelectionState()
+    public void OrderDetailsWindow_PlanPalletsNotifiesOrderStateAfterSuccess()
     {
-        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "ReadyHuBindingWindow.xaml.cs");
-        var session = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderScopedHuBindingSession.cs");
+        // После unified apply нужно обновить summary/bell, иначе stale-нотификация зависнет.
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
 
-        Assert.Contains("CaptureTreeState", source);
-        Assert.Contains("RestoreTreeState", source);
-        Assert.Contains("CollectExpandedKeys", source);
-        Assert.Contains("RestoreExpandedKeys", source);
-        Assert.Contains("SelectTreeItem", source);
-        Assert.Contains("CaptureUiState", session);
-        Assert.Contains("ExpandedCandidateGroupKeys", session);
-        Assert.Contains("ExpandedOrderGroupKeys", session);
+        var methodStart = source.IndexOf("private async void PlanPallets_Click", StringComparison.Ordinal);
+        Assert.True(methodStart >= 0);
+        var methodEnd = source.IndexOf("private enum PrePlanFlowDecision", methodStart, StringComparison.Ordinal);
+        Assert.True(methodEnd > methodStart);
+        var method = source[methodStart..methodEnd];
+
+        Assert.Contains("OrderStateChanged?.Invoke(this, EventArgs.Empty);", method);
+    }
+
+    [Fact]
+    public void ServerReadyHuBindingGuardsAndHelpersArePreserved()
+    {
+        // Server-side ready-HU helper переиспользуется unified writer — удаляется только WPF UI.
+        AssertRepoFileExists("apps", "windows", "FlowStock.Core", "Services", "HuBindingApplyShared.cs");
+        AssertRepoFileExists("apps", "windows", "FlowStock.Server.Tests", "Orders", "ReadyHuBindingEndpointTests.cs");
     }
 
     [Fact]
@@ -342,7 +294,7 @@ public sealed class WpfHuReservationApiGuardTests
 
         var methodStart = source.IndexOf("private async void PlanPallets_Click", StringComparison.Ordinal);
         Assert.True(methodStart >= 0);
-        var methodEnd = source.IndexOf("private void ReadyHuBinding_Click", methodStart, StringComparison.Ordinal);
+        var methodEnd = source.IndexOf("private enum PrePlanFlowDecision", methodStart, StringComparison.Ordinal);
         Assert.True(methodEnd > methodStart);
         var method = source[methodStart..methodEnd];
 
@@ -593,6 +545,16 @@ public sealed class WpfHuReservationApiGuardTests
     private static string ReadRepoFile(params string[] parts)
     {
         return File.ReadAllText(FindRepoFile(parts).FullName);
+    }
+
+    private static void AssertRepoFileMissing(params string[] parts)
+    {
+        Assert.Throws<FileNotFoundException>(() => FindRepoFile(parts));
+    }
+
+    private static void AssertRepoFileExists(params string[] parts)
+    {
+        _ = FindRepoFile(parts);
     }
 
     private static FileInfo FindRepoFile(params string[] parts)

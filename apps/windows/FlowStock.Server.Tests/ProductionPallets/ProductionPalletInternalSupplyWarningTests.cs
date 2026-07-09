@@ -384,7 +384,9 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         Assert.Contains("BuildSelectedCoverageRequest", flowMethod, StringComparison.Ordinal);
         Assert.Contains("PrePlanDialogAction.ApplySelectedCoverageThenPlan", flowMethod, StringComparison.Ordinal);
         Assert.Contains("BuildProjectedAdoptionSummary", flowMethod, StringComparison.Ordinal);
-        Assert.DoesNotContain("new ReadyHuBindingWindow(_services, orderId)", flowMethod, StringComparison.Ordinal);
+        // Unified flow — единственный путь покрытия для CUSTOMER: legacy ready-HU окно не открывается.
+        Assert.DoesNotContain("ReadyHuBindingWindow", clickMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReadyHuBindingWindow", flowMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("TryPlanOrderAsync", flowMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("qty", flowMethod, StringComparison.OrdinalIgnoreCase);
     }
