@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="План паллет"
-        Height="360" Width="720"
+        Height="440" Width="940"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False">
     <Grid Margin="12">
@@ -23,31 +23,37 @@
                    Margin="0,12,0,0"
                    TextWrapping="Wrap"
                    FontWeight="SemiBold" />
-        <DockPanel Grid.Row="2" Margin="0,12,0,0" LastChildFill="False">
+        <StackPanel Grid.Row="2"
+                    Margin="0,12,0,0"
+                    HorizontalAlignment="Right"
+                    Orientation="Vertical">
             <Button x:Name="BindHuFirstButton"
-                    DockPanel.Dock="Left"
                     Content="Сначала привязать складские HU…"
-                    Width="230"
+                    Width="260"
+                    Margin="0,0,0,8"
                     Visibility="Collapsed"
                     Click="BindHuFirst_Click" />
-            <Button DockPanel.Dock="Right"
-                    Content="Отмена"
-                    Width="100"
-                    Margin="8,0,0,0"
-                    IsCancel="True"
-                    IsDefault="True" />
+            <Button x:Name="AdoptInternalButton"
+                    Content="Перенести и допланировать"
+                    Width="260"
+                    Margin="0,0,0,8"
+                    FontWeight="SemiBold"
+                    Visibility="Collapsed"
+                    Click="AdoptInternal_Click" />
             <Button x:Name="PlanAllButton"
-                    DockPanel.Dock="Right"
-                    Content="Всё равно сформировать всё"
-                    Width="200"
-                    Margin="8,0,0,0"
+                    Content="План без переноса"
+                    Width="260"
+                    Margin="0,0,0,8"
                     Click="PlanAll_Click" />
             <Button x:Name="PlanSafeOnlyButton"
-                    DockPanel.Dock="Right"
-                    Content="Сформировать только позиции без предупреждения"
-                    Width="330"
+                    Content="Только безопасные"
+                    Width="260"
+                    Margin="0,0,0,8"
                     Visibility="Collapsed"
                     Click="PlanSafeOnly_Click" />
-        </DockPanel>
+            <Button Content="Отмена"
+                    Width="260"
+                    IsCancel="True" />
+        </StackPanel>
     </Grid>
 </Window>

@@ -36,9 +36,12 @@ public sealed class WpfProductionPalletApiService
             }
 
             // Клиент передаёт только режим; количества и строки заказа сервер пересчитывает сам.
-            object body = planMode == WpfProductionPalletPlanMode.SkipInternalSupply
-                ? new { mode = "skip_internal_supply" }
-                : new { };
+            object body = planMode switch
+            {
+                WpfProductionPalletPlanMode.SkipInternalSupply => new { mode = "skip_internal_supply" },
+                WpfProductionPalletPlanMode.AdoptInternalThenPlan => new { mode = "adopt_internal_then_plan" },
+                _ => new { }
+            };
             using var handler = CreateHandler(configuration);
             using var client = CreateClient(handler, configuration);
             using var response = await client.PostAsJsonAsync($"/api/orders/{orderId}/production-pallets/plan", body, cancellationToken)
@@ -67,6 +70,12 @@ public sealed class WpfProductionPalletApiService
                         .Select(MapInternalSupplyWarningLine)
                         .ToArray()))
                 .ToArray();
+            var adoptedHus = (payload.AdoptedInternalPlannedHus ?? new List<AdoptionHuResponse>())
+                .Select(MapAdoptionHu)
+                .ToArray();
+            var reprintRequiredHus = (payload.ReprintRequiredHus ?? new List<AdoptionHuResponse>())
+                .Select(MapAdoptionHu)
+                .ToArray();
             return new WpfProductionPalletPlanApiResult(
                 true,
                 string.IsNullOrWhiteSpace(payload.Message)
@@ -86,7 +95,13 @@ public sealed class WpfProductionPalletApiService
                 payload.RemainingQty,
                 payload.Mode ?? string.Empty,
                 payload.PlannedOrderLineIds ?? (IReadOnlyList<long>)Array.Empty<long>(),
-                skippedLines);
+                skippedLines,
+                adoptedHus,
+                reprintRequiredHus,
+                payload.AdoptedPalletCount,
+                payload.AdoptedQty,
+                payload.NewlyPlannedPalletCount,
+                payload.NewlyPlannedQty);
         }
         catch (Exception ex)
         {
@@ -106,6 +121,46 @@ public sealed class WpfProductionPalletApiService
             line.InternalOrderRef ?? string.Empty,
             line.InternalStatus ?? string.Empty,
             line.ExpectedQty);
+    }
+
+    private static WpfProjectedAdoptionHu MapAdoptionHu(AdoptionHuResponse row)
+    {
+        return new WpfProjectedAdoptionHu(
+            row.ProductionPalletId,
+            row.HuCode ?? string.Empty,
+            row.SourceOrderId,
+            row.SourceOrderRef ?? string.Empty,
+            row.SourcePrdDocId,
+            row.SourcePrdDocRef ?? string.Empty,
+            row.SourceStatus ?? string.Empty,
+            row.TargetOrderLineId,
+            row.ItemId,
+            row.ItemName ?? string.Empty,
+            row.PlannedQty,
+            row.ProductionPalletGroup,
+            row.IsMixed,
+            row.Status ?? string.Empty,
+            row.WillRequireReprint);
+    }
+
+    private static WpfAdoptionSkippedCandidate MapAdoptionSkippedCandidate(AdoptionSkippedCandidateResponse row)
+    {
+        return new WpfAdoptionSkippedCandidate(
+            row.ProductionPalletId,
+            row.HuCode ?? string.Empty,
+            row.SourceOrderId,
+            row.SourceOrderRef ?? string.Empty,
+            row.SourcePrdDocId,
+            row.SourcePrdDocRef ?? string.Empty,
+            row.SourceStatus ?? string.Empty,
+            row.TargetOrderLineId,
+            row.ItemId,
+            row.ItemName ?? string.Empty,
+            row.PlannedQty,
+            row.ProductionPalletGroup,
+            row.IsMixed,
+            row.Status ?? string.Empty,
+            row.SkipReason ?? string.Empty);
     }
 
     public async Task<WpfPrePlanCoveragePreviewApiResult> TryGetPrePlanCoveragePreviewAsync(
@@ -154,6 +209,12 @@ public sealed class WpfProductionPalletApiService
                     line.FreeHuCount,
                     line.FreeHuQty))
                 .ToArray();
+            var adoptableHus = (payload.AdoptableInternalPlannedHus ?? new List<AdoptionHuResponse>())
+                .Select(MapAdoptionHu)
+                .ToArray();
+            var skippedCandidates = (payload.AdoptionSkippedCandidates ?? new List<AdoptionSkippedCandidateResponse>())
+                .Select(MapAdoptionSkippedCandidate)
+                .ToArray();
             return new WpfPrePlanCoveragePreviewApiResult(
                 true,
                 string.Empty,
@@ -165,7 +226,12 @@ public sealed class WpfProductionPalletApiService
                 payload.SafeLineCount,
                 payload.WarningLineCount,
                 payload.HasFreeWarehouseHu,
-                freeHuLines);
+                freeHuLines,
+                adoptableHus,
+                skippedCandidates,
+                payload.ProjectedAdoptedPalletCount,
+                payload.ProjectedAdoptedQty,
+                payload.ProjectedRemainingQtyAfterAdoption);
         }
         catch (Exception ex)
         {
@@ -1028,6 +1094,24 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("skipped_lines")]
         public List<PlanSkippedLineResponse>? SkippedLines { get; init; }
+
+        [JsonPropertyName("adopted_internal_planned_hus")]
+        public List<AdoptionHuResponse>? AdoptedInternalPlannedHus { get; init; }
+
+        [JsonPropertyName("reprint_required_hus")]
+        public List<AdoptionHuResponse>? ReprintRequiredHus { get; init; }
+
+        [JsonPropertyName("adopted_pallet_count")]
+        public int AdoptedPalletCount { get; init; }
+
+        [JsonPropertyName("adopted_qty")]
+        public double AdoptedQty { get; init; }
+
+        [JsonPropertyName("newly_planned_pallet_count")]
+        public int NewlyPlannedPalletCount { get; init; }
+
+        [JsonPropertyName("newly_planned_qty")]
+        public double NewlyPlannedQty { get; init; }
     }
 
     private sealed class PrePlanCoveragePreviewResponse
@@ -1061,6 +1145,75 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("free_warehouse_hu")]
         public List<PrePlanFreeHuLineResponse>? FreeWarehouseHu { get; init; }
+
+        [JsonPropertyName("adoptable_internal_planned_hus")]
+        public List<AdoptionHuResponse>? AdoptableInternalPlannedHus { get; init; }
+
+        [JsonPropertyName("adoption_skipped_candidates")]
+        public List<AdoptionSkippedCandidateResponse>? AdoptionSkippedCandidates { get; init; }
+
+        [JsonPropertyName("projected_adopted_pallet_count")]
+        public int ProjectedAdoptedPalletCount { get; init; }
+
+        [JsonPropertyName("projected_adopted_qty")]
+        public double ProjectedAdoptedQty { get; init; }
+
+        [JsonPropertyName("projected_remaining_qty_after_adoption")]
+        public double ProjectedRemainingQtyAfterAdoption { get; init; }
+    }
+
+    private class AdoptionHuResponse
+    {
+        [JsonPropertyName("production_pallet_id")]
+        public long ProductionPalletId { get; init; }
+
+        [JsonPropertyName("hu_code")]
+        public string? HuCode { get; init; }
+
+        [JsonPropertyName("source_order_id")]
+        public long SourceOrderId { get; init; }
+
+        [JsonPropertyName("source_order_ref")]
+        public string? SourceOrderRef { get; init; }
+
+        [JsonPropertyName("source_prd_doc_id")]
+        public long SourcePrdDocId { get; init; }
+
+        [JsonPropertyName("source_prd_doc_ref")]
+        public string? SourcePrdDocRef { get; init; }
+
+        [JsonPropertyName("source_status")]
+        public string? SourceStatus { get; init; }
+
+        [JsonPropertyName("target_order_line_id")]
+        public long? TargetOrderLineId { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("item_name")]
+        public string? ItemName { get; init; }
+
+        [JsonPropertyName("planned_qty")]
+        public double PlannedQty { get; init; }
+
+        [JsonPropertyName("production_pallet_group")]
+        public string? ProductionPalletGroup { get; init; }
+
+        [JsonPropertyName("is_mixed")]
+        public bool IsMixed { get; init; }
+
+        [JsonPropertyName("status")]
+        public string? Status { get; init; }
+
+        [JsonPropertyName("will_require_reprint")]
+        public bool WillRequireReprint { get; init; }
+    }
+
+    private sealed class AdoptionSkippedCandidateResponse : AdoptionHuResponse
+    {
+        [JsonPropertyName("skip_reason")]
+        public string? SkipReason { get; init; }
     }
 
     private sealed class PrePlanFreeHuLineResponse
@@ -1436,7 +1589,8 @@ public sealed record WpfProductionPalletAdoptPlanApiResult(
 public enum WpfProductionPalletPlanMode
 {
     Full,
-    SkipInternalSupply
+    SkipInternalSupply,
+    AdoptInternalThenPlan
 }
 
 public sealed record WpfProductionPalletPlanSkippedLine(
@@ -1465,11 +1619,21 @@ public sealed record WpfProductionPalletPlanApiResult(
     double RemainingQty,
     string Mode = "",
     IReadOnlyList<long>? PlannedOrderLineIds = null,
-    IReadOnlyList<WpfProductionPalletPlanSkippedLine>? SkippedLines = null)
+    IReadOnlyList<WpfProductionPalletPlanSkippedLine>? SkippedLines = null,
+    IReadOnlyList<WpfProjectedAdoptionHu>? AdoptedInternalPlannedHus = null,
+    IReadOnlyList<WpfProjectedAdoptionHu>? ReprintRequiredHus = null,
+    int AdoptedPalletCount = 0,
+    double AdoptedQty = 0,
+    int NewlyPlannedPalletCount = 0,
+    double NewlyPlannedQty = 0)
 {
     public IReadOnlyList<long> PlannedOrderLineIdsOrEmpty => PlannedOrderLineIds ?? Array.Empty<long>();
     public IReadOnlyList<WpfProductionPalletPlanSkippedLine> SkippedLinesOrEmpty =>
         SkippedLines ?? Array.Empty<WpfProductionPalletPlanSkippedLine>();
+    public IReadOnlyList<WpfProjectedAdoptionHu> AdoptedInternalPlannedHusOrEmpty =>
+        AdoptedInternalPlannedHus ?? Array.Empty<WpfProjectedAdoptionHu>();
+    public IReadOnlyList<WpfProjectedAdoptionHu> ReprintRequiredHusOrEmpty =>
+        ReprintRequiredHus ?? Array.Empty<WpfProjectedAdoptionHu>();
 
     public static WpfProductionPalletPlanApiResult Failure(string message)
     {
@@ -1488,8 +1652,18 @@ public sealed record WpfPrePlanCoveragePreviewApiResult(
     int SafeLineCount,
     int WarningLineCount,
     bool HasFreeWarehouseHu,
-    IReadOnlyList<WpfPrePlanFreeHuLine> FreeWarehouseHuLines)
+    IReadOnlyList<WpfPrePlanFreeHuLine> FreeWarehouseHuLines,
+    IReadOnlyList<WpfProjectedAdoptionHu>? AdoptableInternalPlannedHus = null,
+    IReadOnlyList<WpfAdoptionSkippedCandidate>? AdoptionSkippedCandidates = null,
+    int ProjectedAdoptedPalletCount = 0,
+    double ProjectedAdoptedQty = 0,
+    double ProjectedRemainingQtyAfterAdoption = 0)
 {
+    public IReadOnlyList<WpfProjectedAdoptionHu> AdoptableInternalPlannedHusOrEmpty =>
+        AdoptableInternalPlannedHus ?? Array.Empty<WpfProjectedAdoptionHu>();
+    public IReadOnlyList<WpfAdoptionSkippedCandidate> AdoptionSkippedCandidatesOrEmpty =>
+        AdoptionSkippedCandidates ?? Array.Empty<WpfAdoptionSkippedCandidate>();
+
     public static WpfPrePlanCoveragePreviewApiResult Failure(string message)
     {
         return new WpfPrePlanCoveragePreviewApiResult(
@@ -1504,6 +1678,40 @@ public sealed record WpfPrePlanCoveragePreviewApiResult(
             0, 0, 0, false, Array.Empty<WpfPrePlanFreeHuLine>());
     }
 }
+
+public sealed record WpfProjectedAdoptionHu(
+    long ProductionPalletId,
+    string HuCode,
+    long SourceOrderId,
+    string SourceOrderRef,
+    long SourcePrdDocId,
+    string SourcePrdDocRef,
+    string SourceStatus,
+    long? TargetOrderLineId,
+    long ItemId,
+    string ItemName,
+    double PlannedQty,
+    string? ProductionPalletGroup,
+    bool IsMixed,
+    string Status,
+    bool WillRequireReprint);
+
+public sealed record WpfAdoptionSkippedCandidate(
+    long ProductionPalletId,
+    string HuCode,
+    long SourceOrderId,
+    string SourceOrderRef,
+    long SourcePrdDocId,
+    string SourcePrdDocRef,
+    string SourceStatus,
+    long? TargetOrderLineId,
+    long ItemId,
+    string ItemName,
+    double PlannedQty,
+    string? ProductionPalletGroup,
+    bool IsMixed,
+    string Status,
+    string SkipReason);
 
 public sealed record WpfPrePlanFreeHuLine(
     long CustomerOrderLineId,

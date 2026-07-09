@@ -7,6 +7,7 @@ public enum PrePlanDialogAction
     Cancel,
     PlanAll,
     PlanSafeOnly,
+    AdoptInternalThenPlan,
     BindHuFirst
 }
 
@@ -19,7 +20,8 @@ public partial class PrePlanCoverageDialog : Window
         string questionText,
         bool showBindHuFirst,
         bool showPlanSafeOnly,
-        bool planSafeOnlyEnabled)
+        bool planSafeOnlyEnabled,
+        bool showAdoptInternal = false)
     {
         InitializeComponent();
         WarningTextBox.Text = warningText;
@@ -27,6 +29,9 @@ public partial class PrePlanCoverageDialog : Window
         BindHuFirstButton.Visibility = showBindHuFirst ? Visibility.Visible : Visibility.Collapsed;
         PlanSafeOnlyButton.Visibility = showPlanSafeOnly ? Visibility.Visible : Visibility.Collapsed;
         PlanSafeOnlyButton.IsEnabled = planSafeOnlyEnabled;
+        AdoptInternalButton.Visibility = showAdoptInternal ? Visibility.Visible : Visibility.Collapsed;
+        AdoptInternalButton.IsDefault = showAdoptInternal;
+        PlanAllButton.IsDefault = !showAdoptInternal;
     }
 
     public static PrePlanCoverageDialog CreateNeutral(string warningText, string questionText)
@@ -48,6 +53,12 @@ public partial class PrePlanCoverageDialog : Window
     private void PlanSafeOnly_Click(object sender, RoutedEventArgs e)
     {
         SelectedAction = PrePlanDialogAction.PlanSafeOnly;
+        DialogResult = true;
+    }
+
+    private void AdoptInternal_Click(object sender, RoutedEventArgs e)
+    {
+        SelectedAction = PrePlanDialogAction.AdoptInternalThenPlan;
         DialogResult = true;
     }
 

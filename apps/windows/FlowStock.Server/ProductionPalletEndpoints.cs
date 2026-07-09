@@ -191,7 +191,7 @@ public static class ProductionPalletEndpoints
                 {
                     ok = false,
                     error = "INVALID_PLAN_MODE",
-                    message = "Неизвестный режим планирования. Допустимо: full, skip_internal_supply."
+                    message = "Неизвестный режим планирования. Допустимо: full, skip_internal_supply, adopt_internal_then_plan."
                 });
             }
 
@@ -209,7 +209,12 @@ public static class ProductionPalletEndpoints
 
         try
         {
-            var modeEcho = mode == ProductionPalletPlanMode.SkipInternalSupply ? "skip_internal_supply" : "full";
+            var modeEcho = mode switch
+            {
+                ProductionPalletPlanMode.SkipInternalSupply => "skip_internal_supply",
+                ProductionPalletPlanMode.AdoptInternalThenPlan => "adopt_internal_then_plan",
+                _ => "full"
+            };
             return Results.Ok(MapOrderPlan(service.PlanOrder(orderId, mode), modeEcho));
         }
         catch (InvalidOperationException ex)
@@ -247,6 +252,11 @@ public static class ProductionPalletEndpoints
             return ProductionPalletPlanMode.SkipInternalSupply;
         }
 
+        if (string.Equals(rawMode, "adopt_internal_then_plan", StringComparison.OrdinalIgnoreCase))
+        {
+            return ProductionPalletPlanMode.AdoptInternalThenPlan;
+        }
+
         return null;
     }
 
@@ -277,6 +287,11 @@ public static class ProductionPalletEndpoints
                 would_plan_line_count = preview.WouldPlanLineCount,
                 safe_line_count = preview.SafeLineCount,
                 warning_line_count = preview.WarningLineCount,
+                adoptable_internal_planned_hus = preview.AdoptableInternalPlannedHus.Select(MapProjectedAdoptionHu),
+                adoption_skipped_candidates = preview.AdoptionSkippedCandidates.Select(MapAdoptionSkippedCandidate),
+                projected_adopted_pallet_count = preview.ProjectedAdoptedPalletCount,
+                projected_adopted_qty = preview.ProjectedAdoptedQty,
+                projected_remaining_qty_after_adoption = preview.ProjectedRemainingQtyAfterAdoption,
                 has_free_warehouse_hu = preview.HasFreeWarehouseHu,
                 free_warehouse_hu = preview.FreeWarehouseHuLines.Select(line => new
                 {
@@ -701,6 +716,13 @@ public static class ProductionPalletEndpoints
             remaining_qty = result.Summary.RemainingQty,
             planned_order_line_ids = result.PlannedOrderLineIds,
             skipped_lines = result.SkippedLines.Select(MapPlanSkippedLine),
+            adopted_internal_planned_hus = result.AdoptedInternalPlannedHus.Select(MapProjectedAdoptionHu),
+            adoption_skipped_candidates = result.AdoptionSkippedCandidates.Select(MapAdoptionSkippedCandidate),
+            reprint_required_hus = result.ReprintRequiredHus.Select(MapProjectedAdoptionHu),
+            adopted_pallet_count = result.AdoptedPalletCount,
+            adopted_qty = result.AdoptedQty,
+            newly_planned_pallet_count = result.NewlyPlannedPalletCount,
+            newly_planned_qty = result.NewlyPlannedQty,
             summary = MapSummary(result.Summary),
             document = MapDocument(result.Document)
         };
@@ -732,6 +754,59 @@ public static class ProductionPalletEndpoints
             internal_order_ref = line.InternalOrderRef,
             internal_status = line.InternalOrderStatus,
             expected_qty = line.ExpectedQty
+        };
+    }
+
+    private static object MapProjectedAdoptionHu(ProductionPalletProjectedAdoptionHu row)
+    {
+        return new
+        {
+            production_pallet_id = row.ProductionPalletId,
+            hu_code = row.HuCode,
+            source_order_id = row.SourceOrderId,
+            source_order_ref = row.SourceOrderRef,
+            source_prd_doc_id = row.SourcePrdDocId,
+            source_prd_doc_ref = row.SourcePrdDocRef,
+            source_status = row.SourceStatus,
+            target_order_line_id = row.TargetOrderLineId,
+            item_id = row.ItemId,
+            item_name = row.ItemName,
+            planned_qty = row.PlannedQty,
+            production_pallet_group = row.ProductionPalletGroup,
+            is_mixed = row.IsMixed,
+            status = row.Status,
+            will_require_reprint = row.WillRequireReprint,
+            lines = row.Lines.Select(line => new
+            {
+                source_order_line_id = line.SourceOrderLineId,
+                target_order_line_id = line.TargetOrderLineId,
+                doc_line_id = line.DocLineId,
+                item_id = line.ItemId,
+                item_name = line.ItemName,
+                planned_qty = line.PlannedQty
+            })
+        };
+    }
+
+    private static object MapAdoptionSkippedCandidate(ProductionPalletAdoptionSkippedCandidate row)
+    {
+        return new
+        {
+            production_pallet_id = row.ProductionPalletId,
+            hu_code = row.HuCode,
+            source_order_id = row.SourceOrderId,
+            source_order_ref = row.SourceOrderRef,
+            source_prd_doc_id = row.SourcePrdDocId,
+            source_prd_doc_ref = row.SourcePrdDocRef,
+            source_status = row.SourceStatus,
+            target_order_line_id = row.TargetOrderLineId,
+            item_id = row.ItemId,
+            item_name = row.ItemName,
+            planned_qty = row.PlannedQty,
+            production_pallet_group = row.ProductionPalletGroup,
+            is_mixed = row.IsMixed,
+            status = row.Status,
+            skip_reason = row.SkipReason
         };
     }
 

@@ -195,6 +195,82 @@ public sealed class ProductionPalletSafeOnlyPlanTests
         Assert.Equal(102, pallets[0].OrderLineId);
     }
 
+    [Fact]
+    public async Task Api_PlanWithAdoptInternalThenPlanMode_ReturnsActualAdoptionSummary()
+    {
+        var harness = CreateTwoLineHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 40,
+            DocRef = "PRD-2026-000040",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 30,
+            OrderRef = "104",
+            CreatedAt = new DateTime(2026, 7, 1, 10, 0, 0)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 401,
+            DocId = 40,
+            OrderLineId = 301,
+            ProductionPurpose = ProductionLinePurpose.InternalStock,
+            ItemId = 100,
+            Qty = 378,
+            ToLocationId = 1,
+            ToHu = "HU-INT-PRINTED",
+            PackSingleHu = true
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 4001,
+            PrdDocId = 40,
+            DocLineId = 401,
+            OrderId = 30,
+            OrderLineId = 301,
+            ItemId = 100,
+            ItemName = "Аджика",
+            HuCode = "HU-INT-PRINTED",
+            PlannedQty = 378,
+            ToLocationId = 1,
+            Status = ProductionPalletStatus.Printed,
+            PrintedAt = new DateTime(2026, 7, 2, 8, 0, 0),
+            CreatedAt = new DateTime(2026, 7, 1, 10, 0, 0),
+            Lines = new[]
+            {
+                new ProductionPalletComponentLine
+                {
+                    Id = 4001001,
+                    ProductionPalletId = 4001,
+                    DocLineId = 401,
+                    OrderLineId = 301,
+                    ItemId = 100,
+                    ItemName = "Аджика",
+                    PlannedQty = 378,
+                    CreatedAt = new DateTime(2026, 7, 1, 10, 0, 0)
+                }
+            }
+        });
+
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        using var content = new StringContent("{\"mode\":\"adopt_internal_then_plan\"}", Encoding.UTF8, "application/json");
+        using var response = await host.Client.PostAsync("/api/orders/10/production-pallets/plan", content);
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var json = JsonDocument.Parse(responseBody);
+        Assert.Equal("adopt_internal_then_plan", json.RootElement.GetProperty("mode").GetString());
+        Assert.Equal(1, json.RootElement.GetProperty("adopted_pallet_count").GetInt32());
+        Assert.Equal(378, json.RootElement.GetProperty("adopted_qty").GetDouble());
+        var adopted = Assert.Single(json.RootElement.GetProperty("adopted_internal_planned_hus").EnumerateArray());
+        Assert.Equal("HU-INT-PRINTED", adopted.GetProperty("hu_code").GetString());
+        Assert.False(adopted.GetProperty("will_require_reprint").GetBoolean());
+        Assert.Empty(json.RootElement.GetProperty("reprint_required_hus").EnumerateArray());
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Empty(harness.Store.GetOrderReceiptPlanLines(10));
+    }
+
     [Theory]
     [InlineData("{\"mode\":\"x\"}", "INVALID_PLAN_MODE")]
     [InlineData("not-json", "INVALID_JSON")]

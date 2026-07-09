@@ -484,6 +484,8 @@ public partial class OrderDetailsWindow : Window
 
             var result = decision == PrePlanFlowDecision.PlanSafeOnly
                 ? await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value, WpfProductionPalletPlanMode.SkipInternalSupply).ConfigureAwait(true)
+                : decision == PrePlanFlowDecision.AdoptInternalThenPlan
+                    ? await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value, WpfProductionPalletPlanMode.AdoptInternalThenPlan).ConfigureAwait(true)
                 : await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
@@ -498,6 +500,18 @@ public partial class OrderDetailsWindow : Window
                     $"Server did not confirm skip_internal_supply mode for order_id={_orderId.Value}: mode='{result.Mode}'.");
                 MessageBox.Show(
                     "Сервер не подтвердил режим «только позиции без предупреждения». Возможно, сформирован полный план — проверьте паллеты заказа.",
+                    "Паллеты",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+
+            if (decision == PrePlanFlowDecision.AdoptInternalThenPlan
+                && !string.Equals(result.Mode, "adopt_internal_then_plan", StringComparison.OrdinalIgnoreCase))
+            {
+                _services.AppLogger.Error(
+                    $"Server did not confirm adopt_internal_then_plan mode for order_id={_orderId.Value}: mode='{result.Mode}'.");
+                MessageBox.Show(
+                    "Сервер не подтвердил перенос planned HU из внутреннего заказа. Проверьте паллеты заказа.",
                     "Паллеты",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
@@ -573,6 +587,12 @@ public partial class OrderDetailsWindow : Window
                 message = $"{message}{Environment.NewLine}{Environment.NewLine}{skippedSummary}";
             }
 
+            var adoptedSummary = BuildAdoptedInternalHusSummary(result.AdoptedInternalPlannedHusOrEmpty, result.ReprintRequiredHusOrEmpty);
+            if (!string.IsNullOrEmpty(adoptedSummary))
+            {
+                message = $"{message}{Environment.NewLine}{Environment.NewLine}{adoptedSummary}";
+            }
+
             MessageBox.Show(message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
             LoadOrder();
         }
@@ -586,7 +606,8 @@ public partial class OrderDetailsWindow : Window
     {
         Abort,
         PlanFull,
-        PlanSafeOnly
+        PlanSafeOnly,
+        AdoptInternalThenPlan
     }
 
     private async Task<PrePlanFlowDecision> RunPrePlanCoverageFlowAsync(long orderId)
@@ -635,14 +656,19 @@ public partial class OrderDetailsWindow : Window
                 return PrePlanFlowDecision.PlanFull;
             }
 
+            var projectedAdoptionSummary = BuildProjectedAdoptionSummary(preview.AdoptableInternalPlannedHusOrEmpty);
+            var dialogMessage = string.IsNullOrEmpty(projectedAdoptionSummary)
+                ? preview.WarningMessage
+                : $"{preview.WarningMessage}{Environment.NewLine}{Environment.NewLine}{projectedAdoptionSummary}";
             var dialog = new PrePlanCoverageDialog(
-                preview.WarningMessage,
+                dialogMessage,
                 preview.HasWarning
                     ? "Сформировать новый паллетный план для клиентского заказа?"
                     : "Сформировать паллетный план, не привязывая складские HU?",
                 showBindHuFirst: preview.HasFreeWarehouseHu,
                 showPlanSafeOnly: preview.HasWarning,
-                planSafeOnlyEnabled: preview.SafeLineCount > 0)
+                planSafeOnlyEnabled: preview.SafeLineCount > 0,
+                showAdoptInternal: preview.AdoptableInternalPlannedHusOrEmpty.Count > 0)
             {
                 Owner = this
             };
@@ -657,6 +683,8 @@ public partial class OrderDetailsWindow : Window
                     return PrePlanFlowDecision.PlanFull;
                 case PrePlanDialogAction.PlanSafeOnly:
                     return PrePlanFlowDecision.PlanSafeOnly;
+                case PrePlanDialogAction.AdoptInternalThenPlan:
+                    return PrePlanFlowDecision.AdoptInternalThenPlan;
                 case PrePlanDialogAction.BindHuFirst:
                     var bindingWindow = new ReadyHuBindingWindow(_services, orderId)
                     {
@@ -674,6 +702,48 @@ public partial class OrderDetailsWindow : Window
                     return PrePlanFlowDecision.Abort;
             }
         }
+    }
+
+    private static string BuildProjectedAdoptionSummary(IReadOnlyList<WpfProjectedAdoptionHu> rows)
+    {
+        if (rows.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var lines = new List<string>
+        {
+            "Будут перенесены planned HU из внутреннего заказа:"
+        };
+        foreach (var row in rows)
+        {
+            var reprint = row.WillRequireReprint ? " — требуется перепечатка" : string.Empty;
+            lines.Add($"• {row.HuCode}: {row.ItemName}, {FormatQty(row.PlannedQty)}, заказ {row.SourceOrderRef}, статус {row.Status}{reprint}");
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string BuildAdoptedInternalHusSummary(
+        IReadOnlyList<WpfProjectedAdoptionHu> adoptedRows,
+        IReadOnlyList<WpfProjectedAdoptionHu> reprintRows)
+    {
+        if (adoptedRows.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var lines = new List<string>
+        {
+            $"Перенесено HU из внутреннего заказа: {adoptedRows.Count}"
+        };
+        if (reprintRows.Count > 0)
+        {
+            lines.Add("Требуют перепечатки под клиентский заказ:");
+            lines.AddRange(reprintRows.Select(row => $"• {row.HuCode}"));
+        }
+
+        return string.Join(Environment.NewLine, lines);
     }
 
     private static string BuildSkippedLinesSummary(IReadOnlyList<WpfProductionPalletPlanSkippedLine> skippedLines)

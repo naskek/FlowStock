@@ -190,6 +190,37 @@ public sealed class ProductionPalletOrderPlanResult
     public IReadOnlyList<ProductionPalletPlanSkippedLine> SkippedLines { get; init; } =
         Array.Empty<ProductionPalletPlanSkippedLine>();
     public IReadOnlyList<long> PlannedOrderLineIds { get; init; } = Array.Empty<long>();
+    public IReadOnlyList<ProductionPalletProjectedAdoptionHu> AdoptedInternalPlannedHus { get; init; } =
+        Array.Empty<ProductionPalletProjectedAdoptionHu>();
+    public IReadOnlyList<ProductionPalletAdoptionSkippedCandidate> AdoptionSkippedCandidates { get; init; } =
+        Array.Empty<ProductionPalletAdoptionSkippedCandidate>();
+    public IReadOnlyList<ProductionPalletProjectedAdoptionHu> ReprintRequiredHus { get; init; } =
+        Array.Empty<ProductionPalletProjectedAdoptionHu>();
+    public int AdoptedPalletCount { get; init; }
+    public double AdoptedQty { get; init; }
+    public int NewlyPlannedPalletCount { get; init; }
+    public double NewlyPlannedQty { get; init; }
+}
+
+public sealed class ProductionPalletSelectedAdoption
+{
+    public long ProductionPalletId { get; init; }
+    public long SourceOrderId { get; init; }
+    public long SourcePrdDocId { get; init; }
+    public string ExpectedStatus { get; init; } = ProductionPalletStatus.Planned;
+    public string HuCode { get; init; } = string.Empty;
+    public long? TargetOrderLineId { get; init; }
+    public IReadOnlyList<ProductionPalletSelectedAdoptionLine> Lines { get; init; } =
+        Array.Empty<ProductionPalletSelectedAdoptionLine>();
+}
+
+public sealed class ProductionPalletSelectedAdoptionLine
+{
+    public long DocLineId { get; init; }
+    public long SourceOrderLineId { get; init; }
+    public long TargetOrderLineId { get; init; }
+    public long ItemId { get; init; }
+    public double PlannedQty { get; init; }
 }
 
 public sealed class ProductionPalletPlanCleanupCounts

@@ -181,6 +181,11 @@ public sealed class ProductionPalletService
             return PlanOrder(orderId);
         }
 
+        if (mode == ProductionPalletPlanMode.AdoptInternalThenPlan)
+        {
+            return PlanOrderAdoptInternalThenPlan(orderId);
+        }
+
         var prdDocId = 0L;
         var wasExisting = false;
         var productionRequired = true;
@@ -272,6 +277,362 @@ public sealed class ProductionPalletService
         };
     }
 
+    private ProductionPalletOrderPlanResult PlanOrderAdoptInternalThenPlan(long orderId)
+    {
+        var prdDocId = 0L;
+        var wasExisting = false;
+        var productionRequired = true;
+        IReadOnlyList<ProductionPalletProjectedAdoptionHu> adopted = Array.Empty<ProductionPalletProjectedAdoptionHu>();
+        IReadOnlyList<ProductionPalletAdoptionSkippedCandidate> skippedCandidates = Array.Empty<ProductionPalletAdoptionSkippedCandidate>();
+        IReadOnlyList<long> plannedLineIds = Array.Empty<long>();
+        int newlyPlannedPalletCount = 0;
+        double newlyPlannedQty = 0;
+
+        _data.ExecuteInTransaction(store =>
+        {
+            var targetOrder = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+            if (targetOrder.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+            {
+                throw new InvalidOperationException(targetOrder.Status == OrderStatus.Merged
+                    ? "Заказ объединён с другим заказом. Выпуск по нему не требуется."
+                    : "Заказ недоступен для планирования паллет.");
+            }
+
+            if (targetOrder.Type != OrderType.Customer)
+            {
+                throw new InvalidOperationException(
+                    "Режим переноса planned HU из внутреннего заказа доступен только для клиентского заказа.");
+            }
+
+            var lockedSourceOrderIds = store.GetOrders()
+                .Where(order => order.Type == OrderType.Internal)
+                .Where(order => order.Status is OrderStatus.Draft or OrderStatus.InProgress)
+                .Select(order => order.Id)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToArray();
+            var lockOrderIds = lockedSourceOrderIds
+                .Append(orderId)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToArray();
+            if (lockOrderIds.Length > 0)
+            {
+                if (!store.LockOrdersForUpdate(lockOrderIds))
+                {
+                    throw new InvalidOperationException("Не удалось заблокировать заказы для планирования паллет.");
+                }
+            }
+
+            targetOrder = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+            var linesToPlan = GetLinesNeedingPalletAppend(store, targetOrder)
+                .Where(line => line.QtyRemaining > QtyTolerance)
+                .ToArray();
+            plannedLineIds = linesToPlan.Select(line => line.OrderLineId).Distinct().ToArray();
+
+            var projection = BuildInternalPlanAdoptionProjection(store, targetOrder, linesToPlan, lockedSourceOrderIds);
+            adopted = projection.Adoptable;
+            skippedCandidates = projection.Skipped;
+
+            if (adopted.Count > 0)
+            {
+                var existingDoc = FindPreparedOpenProductionReceipt(store, orderId, requireRemaining: false)
+                                  ?? FindReusableEmptyProductionReceipt(store, orderId);
+                if (existingDoc != null)
+                {
+                    prdDocId = existingDoc.Id;
+                    wasExisting = true;
+                }
+                else
+                {
+                    prdDocId = CreateProductionReceipt(store, targetOrder).Id;
+                    wasExisting = false;
+                }
+
+                ValidateSourceQuantityReductionForAdoption(store, adopted);
+                var transferredCount = store.AdoptSelectedProductionPallets(
+                    prdDocId,
+                    orderId,
+                    BuildSelectedAdoptionRows(adopted));
+                if (transferredCount != adopted.Count)
+                {
+                    throw new InvalidOperationException(
+                        "Нельзя перенести planned HU: часть выбранных паллет изменилась до переноса. Обновите заказ и повторите планирование.");
+                }
+
+                ReduceSourceInternalOrderLines(store, adopted);
+
+                foreach (var sourceDocId in adopted.Select(candidate => candidate.SourcePrdDocId).Distinct())
+                {
+                    var sourceOrderId = adopted.First(candidate => candidate.SourcePrdDocId == sourceDocId).SourceOrderId;
+                    EmptyDraftProductionReceiptCleanup.TryDeleteEmptyDraftProductionReceiptIfSafe(
+                        store,
+                        sourceOrderId,
+                        sourceDocId);
+                }
+
+                CleanupDepletedSourceInternalOrderLines(store, adopted);
+
+                foreach (var sourceOrderId in adopted.Select(candidate => candidate.SourceOrderId).Distinct())
+                {
+                    InternalOrderMergeService.TryMarkAsMerged(
+                        store,
+                        sourceOrderId,
+                        orderId,
+                        targetOrder.OrderRef);
+                }
+            }
+
+            var palletIdsBeforeAppend = GetProductionPalletsByOrder(store, orderId)
+                .Select(pallet => pallet.Id)
+                .ToHashSet();
+            var preparedDoc = FindPreparedOpenProductionReceipt(store, orderId, requireRemaining: false);
+            if (preparedDoc != null)
+            {
+                prdDocId = preparedDoc.Id;
+                wasExisting = wasExisting || adopted.Count == 0;
+            }
+
+            productionRequired = AppendPlannedPalletsForOrderLinesInStore(
+                store,
+                targetOrder,
+                orderId,
+                scopedOrderLineIds: null,
+                allowEmptyRemaining: adopted.Count > 0,
+                out prdDocId,
+                existingPrdDocId: prdDocId);
+
+            var newPallets = GetProductionPalletsByOrder(store, orderId)
+                .Where(pallet => !palletIdsBeforeAppend.Contains(pallet.Id))
+                .ToArray();
+            newlyPlannedPalletCount = newPallets.Length;
+            newlyPlannedQty = newPallets.Sum(pallet => Math.Max(0, pallet.PlannedQty));
+        });
+
+        var baseResult = productionRequired || prdDocId > 0
+            ? BuildOrderPlanResult(orderId, prdDocId, wasExisting)
+            : BuildNoProductionRequiredResult(orderId);
+        var adoptedQty = adopted.Sum(candidate => candidate.PlannedQty);
+        var message = adopted.Count > 0
+            ? $"Перенесено planned HU из внутреннего заказа: {adopted.Count}. Сформирован остаток к производству."
+            : baseResult.Message;
+        return new ProductionPalletOrderPlanResult
+        {
+            OrderId = baseResult.OrderId,
+            OrderRef = baseResult.OrderRef,
+            PrdDocId = baseResult.PrdDocId,
+            PrdDocRef = baseResult.PrdDocRef,
+            WasExisting = baseResult.WasExisting,
+            ProductionRequired = baseResult.ProductionRequired,
+            Message = message,
+            Summary = baseResult.Summary,
+            Document = baseResult.Document,
+            PlannedOrderLineIds = plannedLineIds,
+            AdoptedInternalPlannedHus = adopted,
+            AdoptionSkippedCandidates = skippedCandidates,
+            ReprintRequiredHus = adopted.Where(candidate => candidate.WillRequireReprint).ToArray(),
+            AdoptedPalletCount = adopted.Count,
+            AdoptedQty = adoptedQty,
+            NewlyPlannedPalletCount = newlyPlannedPalletCount,
+            NewlyPlannedQty = newlyPlannedQty
+        };
+    }
+
+    private static IReadOnlyList<ProductionPalletSelectedAdoption> BuildSelectedAdoptionRows(
+        IReadOnlyList<ProductionPalletProjectedAdoptionHu> adopted)
+    {
+        return adopted
+            .Select(candidate => new ProductionPalletSelectedAdoption
+            {
+                ProductionPalletId = candidate.ProductionPalletId,
+                SourceOrderId = candidate.SourceOrderId,
+                SourcePrdDocId = candidate.SourcePrdDocId,
+                ExpectedStatus = candidate.Status,
+                HuCode = candidate.HuCode,
+                TargetOrderLineId = candidate.TargetOrderLineId,
+                Lines = candidate.Lines
+                    .Select(line => new ProductionPalletSelectedAdoptionLine
+                    {
+                        DocLineId = line.DocLineId,
+                        SourceOrderLineId = line.SourceOrderLineId,
+                        TargetOrderLineId = line.TargetOrderLineId,
+                        ItemId = line.ItemId,
+                        PlannedQty = line.PlannedQty
+                    })
+                    .ToArray()
+            })
+            .ToArray();
+    }
+
+    private static void ValidateSourceQuantityReductionForAdoption(
+        IDataStore store,
+        IReadOnlyList<ProductionPalletProjectedAdoptionHu> adopted)
+    {
+        var selectedPalletIds = adopted.Select(candidate => candidate.ProductionPalletId).ToHashSet();
+        foreach (var sourceGroup in adopted.GroupBy(candidate => candidate.SourceOrderId))
+        {
+            var sourceOrder = store.GetOrder(sourceGroup.Key)
+                              ?? throw new InvalidOperationException("Внутренний заказ-источник не найден.");
+            var sourceLines = store.GetOrderLines(sourceOrder.Id)
+                .ToDictionary(line => line.Id, line => line);
+            var confirmedByLine = BuildInternalPlanningCoverage(store, sourceOrder.Id, sourceLines.Values.ToArray());
+            var reductionByLine = sourceGroup
+                .SelectMany(candidate => candidate.Lines)
+                .GroupBy(line => line.SourceOrderLineId)
+                .ToDictionary(group => group.Key, group => group.Sum(line => line.PlannedQty));
+
+            foreach (var (sourceLineId, reductionQty) in reductionByLine)
+            {
+                if (!sourceLines.TryGetValue(sourceLineId, out var sourceLine))
+                {
+                    throw new InvalidOperationException("Строка внутреннего заказа для переноса не найдена.");
+                }
+
+                var newQtyOrdered = Math.Max(0, sourceLine.QtyOrdered - reductionQty);
+                var confirmedQty = confirmedByLine.TryGetValue(sourceLineId, out var confirmed) ? confirmed : 0d;
+                var activeNonTransferredQty = GetOpenProductionPalletsForOrderLine(store, sourceOrder.Id, sourceLineId)
+                    .Where(pallet => !selectedPalletIds.Contains(pallet.Id))
+                    .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, sourceLineId));
+                var minimumAllowed = confirmedQty + activeNonTransferredQty;
+                if (newQtyOrdered + QtyTolerance < minimumAllowed)
+                {
+                    throw new InvalidOperationException(
+                        "Нельзя перенести planned HU: уменьшение внутреннего заказа опустит ожидаемый выпуск ниже уже произведённого или активного непереносимого покрытия.");
+                }
+            }
+        }
+    }
+
+    private static void ReduceSourceInternalOrderLines(
+        IDataStore store,
+        IReadOnlyList<ProductionPalletProjectedAdoptionHu> adopted)
+    {
+        foreach (var sourceGroup in adopted.GroupBy(candidate => candidate.SourceOrderId))
+        {
+            var sourceLines = store.GetOrderLines(sourceGroup.Key)
+                .ToDictionary(line => line.Id, line => line);
+            var reductionByLine = sourceGroup
+                .SelectMany(candidate => candidate.Lines)
+                .GroupBy(line => line.SourceOrderLineId)
+                .ToDictionary(group => group.Key, group => group.Sum(line => line.PlannedQty));
+
+            foreach (var (sourceLineId, reductionQty) in reductionByLine)
+            {
+                if (!sourceLines.TryGetValue(sourceLineId, out var sourceLine))
+                {
+                    throw new InvalidOperationException("Строка внутреннего заказа для переноса не найдена.");
+                }
+
+                var newQtyOrdered = Math.Max(0, sourceLine.QtyOrdered - reductionQty);
+                store.UpdateOrderLineQty(sourceLineId, newQtyOrdered);
+            }
+        }
+    }
+
+    private static void CleanupDepletedSourceInternalOrderLines(
+        IDataStore store,
+        IReadOnlyList<ProductionPalletProjectedAdoptionHu> adopted)
+    {
+        foreach (var sourceGroup in adopted.GroupBy(candidate => candidate.SourceOrderId))
+        {
+            var sourceOrder = store.GetOrder(sourceGroup.Key);
+            if (sourceOrder?.Type != OrderType.Internal)
+            {
+                continue;
+            }
+
+            var candidateLineIds = sourceGroup
+                .SelectMany(candidate => candidate.Lines)
+                .Select(line => line.SourceOrderLineId)
+                .Distinct()
+                .ToHashSet();
+            if (candidateLineIds.Count == 0)
+            {
+                continue;
+            }
+
+            var sourceLines = store.GetOrderLines(sourceOrder.Id);
+            var producedByLine = BuildInternalPlanningCoverage(store, sourceOrder.Id, sourceLines);
+            foreach (var sourceLine in sourceLines.Where(line => candidateLineIds.Contains(line.Id)).ToArray())
+            {
+                if (sourceLine.QtyOrdered > QtyTolerance)
+                {
+                    continue;
+                }
+
+                var producedQty = producedByLine.TryGetValue(sourceLine.Id, out var produced) ? produced : 0d;
+                if (producedQty > QtyTolerance)
+                {
+                    continue;
+                }
+
+                var blocker = GetSourceInternalOrderLineCleanupBlocker(store, sourceOrder.Id, sourceLine.Id);
+                if (blocker != SourceInternalOrderLineCleanupBlocker.None)
+                {
+                    continue;
+                }
+
+                ClearStaleInternalReceiptPlanRowsForDepletedSourceLine(store, sourceOrder.Id, sourceLine.Id);
+                if (store.GetOrderReceiptPlanLines(sourceOrder.Id).Any(line => line.OrderLineId == sourceLine.Id))
+                {
+                    continue;
+                }
+
+                store.DeleteOrderLine(sourceLine.Id);
+            }
+        }
+    }
+
+    private enum SourceInternalOrderLineCleanupBlocker
+    {
+        None,
+        RemainingDocLine,
+        ActiveProductionPallet
+    }
+
+    private static SourceInternalOrderLineCleanupBlocker GetSourceInternalOrderLineCleanupBlocker(
+        IDataStore store,
+        long sourceOrderId,
+        long sourceOrderLineId)
+    {
+        foreach (var doc in store.GetDocsByOrder(sourceOrderId))
+        {
+            if (store.GetDocLines(doc.Id).Any(line => line.OrderLineId == sourceOrderLineId))
+            {
+                return SourceInternalOrderLineCleanupBlocker.RemainingDocLine;
+            }
+
+            if (doc.Type != DocType.ProductionReceipt)
+            {
+                continue;
+            }
+
+            var hasActivePalletReference = store.GetProductionPalletsByDoc(doc.Id)
+                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                .Any(pallet => PalletAppliesToOrderLine(pallet, sourceOrderLineId));
+            if (hasActivePalletReference)
+            {
+                return SourceInternalOrderLineCleanupBlocker.ActiveProductionPallet;
+            }
+        }
+
+        return SourceInternalOrderLineCleanupBlocker.None;
+    }
+
+    private static void ClearStaleInternalReceiptPlanRowsForDepletedSourceLine(
+        IDataStore store,
+        long sourceOrderId,
+        long sourceOrderLineId)
+    {
+        if (store.GetOrderReceiptPlanLines(sourceOrderId).Any(line => line.OrderLineId == sourceOrderLineId))
+        {
+            store.ReplaceOrderReceiptPlanLinesForOrderLines(
+                sourceOrderId,
+                [sourceOrderLineId],
+                Array.Empty<OrderReceiptPlanLine>());
+        }
+    }
+
     public ProductionPalletPrePlanCoveragePreview GetCustomerPrePlanCoveragePreview(long orderId)
     {
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
@@ -298,6 +659,7 @@ public sealed class ProductionPalletService
         }
 
         var freeHuLines = BuildFreeWarehouseHuLines(store, order.Id, scope.WouldPlanLines);
+        var adoptionProjection = BuildInternalPlanAdoptionProjection(store, order, scope.WouldPlanLines);
         return new ProductionPalletPrePlanCoveragePreview
         {
             OrderId = order.Id,
@@ -309,9 +671,19 @@ public sealed class ProductionPalletService
             SafeLineCount = scope.SafeLineIds.Count,
             WarningLineCount = scope.SkippedLines.Count,
             HasFreeWarehouseHu = freeHuLines.Count > 0,
-            FreeWarehouseHuLines = freeHuLines
+            FreeWarehouseHuLines = freeHuLines,
+            AdoptableInternalPlannedHus = adoptionProjection.Adoptable,
+            AdoptionSkippedCandidates = adoptionProjection.Skipped,
+            ProjectedAdoptedPalletCount = adoptionProjection.Adoptable.Count,
+            ProjectedAdoptedQty = adoptionProjection.Adoptable.Sum(candidate => candidate.PlannedQty),
+            ProjectedRemainingQtyAfterAdoption = adoptionProjection.RemainingQtyAfterAdoption
         };
     }
+
+    private sealed record InternalPlanAdoptionProjection(
+        IReadOnlyList<ProductionPalletProjectedAdoptionHu> Adoptable,
+        IReadOnlyList<ProductionPalletAdoptionSkippedCandidate> Skipped,
+        double RemainingQtyAfterAdoption);
 
     private sealed record PrePlanSafeScope(
         IReadOnlyList<OrderReceiptLine> WouldPlanLines,
@@ -453,6 +825,287 @@ public sealed class ProductionPalletService
             .Where(lineId => !affectedLineIds.Contains(lineId))
             .ToArray();
         return new PrePlanSafeScope(linesToPlan, warningLines, safeLineIds, skippedLines);
+    }
+
+    private static InternalPlanAdoptionProjection BuildInternalPlanAdoptionProjection(
+        IDataStore store,
+        Order targetOrder,
+        IReadOnlyList<OrderReceiptLine> linesToPlan,
+        IReadOnlyCollection<long>? allowedSourceOrderIds = null)
+    {
+        if (targetOrder.Type != OrderType.Customer || linesToPlan.Count == 0)
+        {
+            return new InternalPlanAdoptionProjection(
+                Array.Empty<ProductionPalletProjectedAdoptionHu>(),
+                Array.Empty<ProductionPalletAdoptionSkippedCandidate>(),
+                0);
+        }
+
+        var remainingByTargetLine = linesToPlan
+            .Where(line => line.QtyRemaining > QtyTolerance)
+            .ToDictionary(line => line.OrderLineId, line => Math.Max(0, line.QtyRemaining));
+        if (remainingByTargetLine.Count == 0)
+        {
+            return new InternalPlanAdoptionProjection(
+                Array.Empty<ProductionPalletProjectedAdoptionHu>(),
+                Array.Empty<ProductionPalletAdoptionSkippedCandidate>(),
+                0);
+        }
+
+        var targetOrderLinesById = store.GetOrderLines(targetOrder.Id)
+            .ToDictionary(line => line.Id, line => line);
+        var itemNamesById = store.GetItems(null).ToDictionary(item => item.Id, item => item.Name);
+        var neededItems = linesToPlan.Select(line => line.ItemId).ToHashSet();
+        var allowedSourceOrderIdSet = allowedSourceOrderIds?.ToHashSet();
+        var adoptable = new List<ProductionPalletProjectedAdoptionHu>();
+        var skipped = new List<ProductionPalletAdoptionSkippedCandidate>();
+
+        foreach (var sourceOrder in store.GetOrders()
+                     .Where(order => order.Type == OrderType.Internal)
+                     .Where(order => order.Status is OrderStatus.Draft or OrderStatus.InProgress)
+                     .Where(order => allowedSourceOrderIdSet == null || allowedSourceOrderIdSet.Contains(order.Id))
+                     .OrderBy(order => order.Id))
+        {
+            foreach (var sourceDoc in store.GetDocsByOrder(sourceOrder.Id)
+                         .Where(doc => doc.Type == DocType.ProductionReceipt)
+                         .OrderBy(doc => doc.Id))
+            {
+                var docHasLedger = store.CountLedgerEntriesByDocId(sourceDoc.Id) > 0;
+                foreach (var pallet in store.GetProductionPalletsByDoc(sourceDoc.Id)
+                             .Where(pallet => GetPalletLines(pallet).Any(line => neededItems.Contains(line.ItemId)))
+                             .OrderBy(pallet => pallet.Id))
+                {
+                    if (sourceDoc.Status == DocStatus.Closed)
+                    {
+                        skipped.Add(BuildSkippedAdoptionCandidate(sourceOrder, sourceDoc, pallet, null, null, ProductionPalletPlanSkippedReason.SourcePrdClosed));
+                        continue;
+                    }
+
+                    if (docHasLedger)
+                    {
+                        skipped.Add(BuildSkippedAdoptionCandidate(sourceOrder, sourceDoc, pallet, null, null, ProductionPalletPlanSkippedReason.SourcePrdHasLedger));
+                        continue;
+                    }
+
+                    if (!IsEmptyAdoptablePalletStatus(pallet.Status)
+                        || string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                    {
+                        skipped.Add(BuildSkippedAdoptionCandidate(sourceOrder, sourceDoc, pallet, null, null, ProductionPalletPlanSkippedReason.StatusNotEligible));
+                        continue;
+                    }
+
+                    if (pallet.FilledAt.HasValue || pallet.HasComponentProgress)
+                    {
+                        skipped.Add(BuildSkippedAdoptionCandidate(sourceOrder, sourceDoc, pallet, null, null, ProductionPalletPlanSkippedReason.PartialProgress));
+                        continue;
+                    }
+
+                    var lines = GetPalletLines(pallet).ToArray();
+                    if (lines.Any(line => !line.OrderLineId.HasValue))
+                    {
+                        skipped.Add(BuildSkippedAdoptionCandidate(sourceOrder, sourceDoc, pallet, null, null, ProductionPalletPlanSkippedReason.MissingSourceOrderLine));
+                        continue;
+                    }
+
+                    if (!TryBuildProjectedAdoption(
+                            sourceOrder,
+                            sourceDoc,
+                            pallet,
+                            lines,
+                            targetOrderLinesById,
+                            remainingByTargetLine,
+                            itemNamesById,
+                            out var projected,
+                            out var skipReason))
+                    {
+                        skipped.Add(BuildSkippedAdoptionCandidate(sourceOrder, sourceDoc, pallet, null, null, skipReason));
+                        continue;
+                    }
+
+                    foreach (var line in projected.Lines)
+                    {
+                        remainingByTargetLine[line.TargetOrderLineId] -= line.PlannedQty;
+                    }
+
+                    adoptable.Add(projected);
+                }
+            }
+        }
+
+        return new InternalPlanAdoptionProjection(
+            adoptable,
+            skipped,
+            remainingByTargetLine.Values.Sum(qty => Math.Max(0, qty)));
+    }
+
+    private static bool TryBuildProjectedAdoption(
+        Order sourceOrder,
+        Doc sourceDoc,
+        ProductionPallet pallet,
+        IReadOnlyList<ProductionPalletComponentLine> sourceLines,
+        IReadOnlyDictionary<long, OrderLine> targetOrderLinesById,
+        IReadOnlyDictionary<long, double> remainingByTargetLine,
+        IReadOnlyDictionary<long, string> itemNamesById,
+        out ProductionPalletProjectedAdoptionHu projected,
+        out string skipReason)
+    {
+        projected = new ProductionPalletProjectedAdoptionHu();
+        skipReason = string.Empty;
+        var mappedLines = new List<ProductionPalletProjectedAdoptionLine>();
+        var targetLineIds = new List<long>();
+
+        if (sourceLines.Count > 1)
+        {
+            var candidates = sourceLines
+                .Select(sourceLine => FindTargetLineForItem(sourceLine.ItemId, targetOrderLinesById, remainingByTargetLine, requireMixedGroup: true))
+                .ToArray();
+            if (candidates.Any(candidate => candidate == null))
+            {
+                skipReason = ProductionPalletPlanSkippedReason.MixedGroupMismatch;
+                return false;
+            }
+
+            var group = NormalizePalletGroup(targetOrderLinesById, candidates[0]!.Id);
+            if (string.IsNullOrWhiteSpace(group)
+                || candidates.Any(candidate => NormalizePalletGroup(targetOrderLinesById, candidate!.Id) != group))
+            {
+                skipReason = ProductionPalletPlanSkippedReason.MixedGroupMismatch;
+                return false;
+            }
+
+            foreach (var sourceLine in sourceLines)
+            {
+                var targetLine = candidates.First(candidate => candidate!.ItemId == sourceLine.ItemId)!;
+                if (!HasEnoughRemaining(remainingByTargetLine, targetLine.Id, sourceLine.PlannedQty))
+                {
+                    skipReason = ProductionPalletPlanSkippedReason.QtyExceedsShortage;
+                    return false;
+                }
+
+                mappedLines.Add(BuildProjectedLine(sourceLine, targetLine, itemNamesById));
+                targetLineIds.Add(targetLine.Id);
+            }
+        }
+        else
+        {
+            var sourceLine = sourceLines[0];
+            var targetLine = FindTargetLineForItem(sourceLine.ItemId, targetOrderLinesById, remainingByTargetLine, requireMixedGroup: false);
+            if (targetLine == null)
+            {
+                skipReason = ProductionPalletPlanSkippedReason.MixedGroupMismatch;
+                return false;
+            }
+
+            if (!HasEnoughRemaining(remainingByTargetLine, targetLine.Id, sourceLine.PlannedQty))
+            {
+                skipReason = ProductionPalletPlanSkippedReason.QtyExceedsShortage;
+                return false;
+            }
+
+            mappedLines.Add(BuildProjectedLine(sourceLine, targetLine, itemNamesById));
+            targetLineIds.Add(targetLine.Id);
+        }
+
+        var targetGroup = targetLineIds.Count > 0 ? NormalizePalletGroup(targetOrderLinesById, targetLineIds[0]) : string.Empty;
+        projected = new ProductionPalletProjectedAdoptionHu
+        {
+            ProductionPalletId = pallet.Id,
+            HuCode = pallet.HuCode,
+            SourceOrderId = sourceOrder.Id,
+            SourceOrderRef = sourceOrder.OrderRef,
+            SourcePrdDocId = sourceDoc.Id,
+            SourcePrdDocRef = sourceDoc.DocRef,
+            SourceStatus = OrderStatusMapper.StatusToString(sourceOrder.Status),
+            TargetOrderLineId = targetLineIds.Count == 1 ? targetLineIds[0] : null,
+            ItemId = pallet.ItemId,
+            ItemName = string.IsNullOrWhiteSpace(pallet.ItemName)
+                ? itemNamesById.GetValueOrDefault(pallet.ItemId, string.Empty)
+                : pallet.ItemName,
+            PlannedQty = mappedLines.Sum(line => line.PlannedQty),
+            ProductionPalletGroup = string.IsNullOrWhiteSpace(targetGroup) ? null : targetGroup,
+            IsMixed = sourceLines.Count > 1,
+            Status = pallet.Status,
+            WillRequireReprint = false,
+            Lines = mappedLines
+        };
+        return true;
+    }
+
+    private static OrderLine? FindTargetLineForItem(
+        long itemId,
+        IReadOnlyDictionary<long, OrderLine> targetOrderLinesById,
+        IReadOnlyDictionary<long, double> remainingByTargetLine,
+        bool requireMixedGroup)
+    {
+        return targetOrderLinesById.Values
+            .Where(line => line.ItemId == itemId)
+            .Where(line => remainingByTargetLine.TryGetValue(line.Id, out var remaining) && remaining > QtyTolerance)
+            .Where(line => requireMixedGroup == !string.IsNullOrWhiteSpace(line.ProductionPalletGroup))
+            .OrderBy(line => line.Id)
+            .FirstOrDefault();
+    }
+
+    private static bool HasEnoughRemaining(
+        IReadOnlyDictionary<long, double> remainingByTargetLine,
+        long targetOrderLineId,
+        double qty)
+    {
+        return remainingByTargetLine.TryGetValue(targetOrderLineId, out var remaining)
+               && qty > QtyTolerance
+               && qty <= remaining + QtyTolerance;
+    }
+
+    private static ProductionPalletProjectedAdoptionLine BuildProjectedLine(
+        ProductionPalletComponentLine sourceLine,
+        OrderLine targetLine,
+        IReadOnlyDictionary<long, string> itemNamesById)
+    {
+        return new ProductionPalletProjectedAdoptionLine
+        {
+            SourceOrderLineId = sourceLine.OrderLineId!.Value,
+            TargetOrderLineId = targetLine.Id,
+            DocLineId = sourceLine.DocLineId,
+            ItemId = sourceLine.ItemId,
+            ItemName = string.IsNullOrWhiteSpace(sourceLine.ItemName)
+                ? itemNamesById.GetValueOrDefault(sourceLine.ItemId, string.Empty)
+                : sourceLine.ItemName,
+            PlannedQty = Math.Max(0, sourceLine.PlannedQty)
+        };
+    }
+
+    private static ProductionPalletAdoptionSkippedCandidate BuildSkippedAdoptionCandidate(
+        Order sourceOrder,
+        Doc sourceDoc,
+        ProductionPallet pallet,
+        long? targetOrderLineId,
+        string? productionPalletGroup,
+        string skipReason)
+    {
+        return new ProductionPalletAdoptionSkippedCandidate
+        {
+            ProductionPalletId = pallet.Id,
+            HuCode = pallet.HuCode,
+            SourceOrderId = sourceOrder.Id,
+            SourceOrderRef = sourceOrder.OrderRef,
+            SourcePrdDocId = sourceDoc.Id,
+            SourcePrdDocRef = sourceDoc.DocRef,
+            SourceStatus = OrderStatusMapper.StatusToString(sourceOrder.Status),
+            TargetOrderLineId = targetOrderLineId,
+            ItemId = pallet.ItemId,
+            ItemName = pallet.ItemName,
+            PlannedQty = pallet.PlannedQty,
+            ProductionPalletGroup = productionPalletGroup,
+            IsMixed = pallet.IsMixedPallet,
+            Status = pallet.Status,
+            SkipReason = skipReason
+        };
+    }
+
+    private static bool IsEmptyAdoptablePalletStatus(string status)
+    {
+        return string.Equals(status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizePalletGroup(IReadOnlyDictionary<long, OrderLine> orderLinesById, long orderLineId)

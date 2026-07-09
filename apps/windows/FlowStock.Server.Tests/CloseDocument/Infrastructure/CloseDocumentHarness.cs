@@ -6,6 +6,13 @@ using Moq;
 
 namespace FlowStock.Server.Tests.CloseDocument.Infrastructure;
 
+public enum SelectedAdoptionComponentLineMutation
+{
+    Remove,
+    Change,
+    AddExtra
+}
+
 internal sealed class CloseDocumentHarness
 {
     private readonly Mock<IDataStore> _store;
@@ -40,6 +47,9 @@ internal sealed class CloseDocumentHarness
     private long _nextProductionPalletId = 1;
     private long _nextProductionPalletHuNumber = 1;
     private bool _failNextUpdateOrderLineQty;
+    private (long PalletId, string Status)? _nextSelectedAdoptionStatusChange;
+    private (long PalletId, SelectedAdoptionComponentLineMutation Mutation)? _nextSelectedAdoptionComponentLineMutation;
+    private Action? _afterNextLockOrdersForUpdate;
 
     public CloseDocumentHarness()
     {
@@ -129,6 +139,23 @@ internal sealed class CloseDocumentHarness
     public void FailNextUpdateOrderLineQty()
     {
         _failNextUpdateOrderLineQty = true;
+    }
+
+    public void RunAfterNextLockOrdersForUpdate(Action action)
+    {
+        _afterNextLockOrdersForUpdate = action ?? throw new ArgumentNullException(nameof(action));
+    }
+
+    public void ChangeNextSelectedAdoptionPalletStatusBeforeTransfer(long palletId, string status)
+    {
+        _nextSelectedAdoptionStatusChange = (palletId, status);
+    }
+
+    public void ChangeNextSelectedAdoptionComponentLinesBeforeTransfer(
+        long palletId,
+        SelectedAdoptionComponentLineMutation mutation)
+    {
+        _nextSelectedAdoptionComponentLineMutation = (palletId, mutation);
     }
 
     public DocumentService CreateService()
@@ -843,7 +870,11 @@ internal sealed class CloseDocumentHarness
             .Returns<IReadOnlyCollection<long>>(ids =>
             {
                 var normalized = ids?.Where(id => id > 0).Distinct().ToArray() ?? Array.Empty<long>();
-                return normalized.All(id => _orders.ContainsKey(id));
+                var locked = normalized.All(id => _orders.ContainsKey(id));
+                var afterLock = _afterNextLockOrdersForUpdate;
+                _afterNextLockOrdersForUpdate = null;
+                afterLock?.Invoke();
+                return locked;
             });
 
         _store.Setup(store => store.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
@@ -2363,6 +2394,12 @@ internal sealed class CloseDocumentHarness
 
         _store.Setup(store => store.AssignProductionPalletToPrdDoc(It.IsAny<long>(), It.IsAny<long>()))
             .Callback<long, long>(AssignProductionPalletToPrdDocInHarness);
+
+        _store.Setup(store => store.AdoptSelectedProductionPallets(
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyList<ProductionPalletSelectedAdoption>>()))
+            .Returns<long, long, IReadOnlyList<ProductionPalletSelectedAdoption>>(AdoptSelectedProductionPalletsInHarness);
 
         _store.Setup(store => store.AdoptProductionPalletPlan(
                 It.IsAny<long>(),
@@ -4707,6 +4744,277 @@ internal sealed class CloseDocumentHarness
             CreatedAt = pallet.CreatedAt,
             Lines = pallet.Lines
         };
+    }
+
+    private int AdoptSelectedProductionPalletsInHarness(
+        long targetPrdDocId,
+        long targetOrderId,
+        IReadOnlyList<ProductionPalletSelectedAdoption> selectedPallets)
+    {
+        if (!_linesByDoc.TryGetValue(targetPrdDocId, out var targetLines))
+        {
+            targetLines = new List<DocLine>();
+            _linesByDoc[targetPrdDocId] = targetLines;
+        }
+
+        var count = 0;
+        foreach (var selection in selectedPallets)
+        {
+            if (!_productionPallets.TryGetValue(selection.ProductionPalletId, out var pallet))
+            {
+                throw new InvalidOperationException("Нельзя перенести planned HU: выбранная паллета не найдена.");
+            }
+
+            if (_nextSelectedAdoptionStatusChange is { } statusChange
+                && statusChange.PalletId == selection.ProductionPalletId)
+            {
+                _nextSelectedAdoptionStatusChange = null;
+                var staleFilled = string.Equals(statusChange.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
+                pallet = CloneProductionPallet(new ProductionPallet
+                {
+                    Id = pallet.Id,
+                    PrdDocId = pallet.PrdDocId,
+                    DocLineId = pallet.DocLineId,
+                    OrderId = pallet.OrderId,
+                    OrderLineId = pallet.OrderLineId,
+                    ItemId = pallet.ItemId,
+                    ItemName = pallet.ItemName,
+                    HuCode = pallet.HuCode,
+                    PlannedQty = pallet.PlannedQty,
+                    ToLocationId = pallet.ToLocationId,
+                    ToLocationCode = pallet.ToLocationCode,
+                    Status = statusChange.Status,
+                    PalletNo = pallet.PalletNo,
+                    PalletCount = pallet.PalletCount,
+                    PrintedAt = pallet.PrintedAt,
+                    FilledAt = staleFilled ? DateTime.UtcNow : pallet.FilledAt,
+                    FilledByDeviceId = staleFilled ? "TEST-RACE" : pallet.FilledByDeviceId,
+                    CancelReason = pallet.CancelReason,
+                    CancelledAt = string.Equals(statusChange.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+                        ? DateTime.UtcNow
+                        : pallet.CancelledAt,
+                    CreatedAt = pallet.CreatedAt,
+                    Lines = pallet.Lines
+                });
+                _productionPallets[pallet.Id] = pallet;
+            }
+
+            if (_nextSelectedAdoptionComponentLineMutation is { } lineMutation
+                && lineMutation.PalletId == selection.ProductionPalletId)
+            {
+                _nextSelectedAdoptionComponentLineMutation = null;
+                pallet = ApplySelectedAdoptionComponentLineMutation(pallet, lineMutation.Mutation);
+                _productionPallets[pallet.Id] = pallet;
+            }
+
+            if (pallet.PrdDocId != selection.SourcePrdDocId
+                || pallet.OrderId != selection.SourceOrderId
+                || !string.Equals(NormalizeHu(pallet.HuCode), NormalizeHu(selection.HuCode), StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(pallet.Status, selection.ExpectedStatus, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                   && !string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
+                || pallet.FilledAt.HasValue
+                || pallet.HasComponentProgress
+                || !_docs.TryGetValue(selection.SourcePrdDocId, out var sourceDoc)
+                || sourceDoc.Status == DocStatus.Closed
+                || sourceDoc.Type != DocType.ProductionReceipt
+                || sourceDoc.OrderId != selection.SourceOrderId
+                || _postedLedger.Any(entry => entry.DocId == selection.SourcePrdDocId))
+            {
+                throw new InvalidOperationException(
+                    "Нельзя перенести planned HU: выбранная паллета изменилась или больше не подходит для переноса.");
+            }
+
+            GuardSelectedProductionPalletLinesForAdoptionInHarness(pallet, selection);
+            var lineMap = selection.Lines.ToDictionary(line => line.DocLineId, line => line.TargetOrderLineId);
+            var movedDocLineCount = 0;
+            if (_linesByDoc.TryGetValue(pallet.PrdDocId, out var sourceLines))
+            {
+                foreach (var line in sourceLines.Where(line => lineMap.ContainsKey(line.Id)).ToArray())
+                {
+                    sourceLines.Remove(line);
+                    movedDocLineCount++;
+                    targetLines.Add(new DocLine
+                    {
+                        Id = line.Id,
+                        DocId = targetPrdDocId,
+                        ReplacesLineId = line.ReplacesLineId,
+                        OrderLineId = lineMap[line.Id],
+                        ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+                        ItemId = line.ItemId,
+                        Qty = line.Qty,
+                        QtyInput = line.QtyInput,
+                        UomCode = line.UomCode,
+                        FromLocationId = line.FromLocationId,
+                        ToLocationId = line.ToLocationId,
+                        FromHu = line.FromHu,
+                        ToHu = line.ToHu,
+                        PackSingleHu = line.PackSingleHu
+                    });
+                }
+            }
+
+            if (movedDocLineCount != lineMap.Count)
+            {
+                throw new InvalidOperationException("Нельзя перенести planned HU: строка выпуска изменилась до переноса.");
+            }
+
+            _productionPallets[pallet.Id] = new ProductionPallet
+            {
+                Id = pallet.Id,
+                PrdDocId = targetPrdDocId,
+                DocLineId = pallet.DocLineId,
+                OrderId = targetOrderId,
+                OrderLineId = selection.TargetOrderLineId,
+                ItemId = pallet.ItemId,
+                ItemName = pallet.ItemName,
+                HuCode = pallet.HuCode,
+                PlannedQty = pallet.PlannedQty,
+                ToLocationId = pallet.ToLocationId,
+                ToLocationCode = pallet.ToLocationCode,
+                Status = pallet.Status,
+                PalletNo = pallet.PalletNo,
+                PalletCount = pallet.PalletCount,
+                PrintedAt = pallet.PrintedAt,
+                FilledAt = pallet.FilledAt,
+                FilledByDeviceId = pallet.FilledByDeviceId,
+                CancelReason = pallet.CancelReason,
+                CancelledAt = pallet.CancelledAt,
+                CreatedAt = pallet.CreatedAt,
+                Lines = pallet.Lines.Select(line => new ProductionPalletComponentLine
+                {
+                    Id = line.Id,
+                    ProductionPalletId = line.ProductionPalletId,
+                    DocLineId = line.DocLineId,
+                    OrderLineId = lineMap.TryGetValue(line.DocLineId, out var targetLineId)
+                        ? targetLineId
+                        : line.OrderLineId,
+                    ItemId = line.ItemId,
+                    ItemName = line.ItemName,
+                    Brand = line.Brand,
+                    Uom = line.Uom,
+                    PlannedQty = line.PlannedQty,
+                    FilledQty = line.FilledQty,
+                    FilledAt = line.FilledAt,
+                    CreatedAt = line.CreatedAt
+                }).ToArray()
+            };
+            count++;
+        }
+
+        return count;
+    }
+
+    private static ProductionPallet ApplySelectedAdoptionComponentLineMutation(
+        ProductionPallet pallet,
+        SelectedAdoptionComponentLineMutation mutation)
+    {
+        var lines = pallet.Lines.Select(line => new ProductionPalletComponentLine
+        {
+            Id = line.Id,
+            ProductionPalletId = line.ProductionPalletId,
+            DocLineId = line.DocLineId,
+            OrderLineId = line.OrderLineId,
+            ItemId = line.ItemId,
+            ItemName = line.ItemName,
+            Brand = line.Brand,
+            Uom = line.Uom,
+            PlannedQty = line.PlannedQty,
+            FilledQty = line.FilledQty,
+            FilledAt = line.FilledAt,
+            CreatedAt = line.CreatedAt
+        }).ToList();
+
+        switch (mutation)
+        {
+            case SelectedAdoptionComponentLineMutation.Remove:
+                lines.Clear();
+                break;
+            case SelectedAdoptionComponentLineMutation.Change:
+                if (lines.Count > 0)
+                {
+                    var current = lines[0];
+                    lines[0] = new ProductionPalletComponentLine
+                    {
+                        Id = current.Id,
+                        ProductionPalletId = current.ProductionPalletId,
+                        DocLineId = current.DocLineId,
+                        OrderLineId = current.OrderLineId,
+                        ItemId = current.ItemId,
+                        ItemName = current.ItemName,
+                        Brand = current.Brand,
+                        Uom = current.Uom,
+                        PlannedQty = current.PlannedQty + 1,
+                        FilledQty = current.FilledQty,
+                        FilledAt = current.FilledAt,
+                        CreatedAt = current.CreatedAt
+                    };
+                }
+                break;
+            case SelectedAdoptionComponentLineMutation.AddExtra:
+                var first = lines.FirstOrDefault();
+                lines.Add(new ProductionPalletComponentLine
+                {
+                    Id = (first?.Id ?? (pallet.Id * 1000)) + 99,
+                    ProductionPalletId = pallet.Id,
+                    DocLineId = (first?.DocLineId ?? pallet.DocLineId) + 99,
+                    OrderLineId = first?.OrderLineId ?? pallet.OrderLineId,
+                    ItemId = first?.ItemId ?? pallet.ItemId,
+                    ItemName = first?.ItemName ?? pallet.ItemName,
+                    PlannedQty = 1,
+                    CreatedAt = pallet.CreatedAt
+                });
+                break;
+        }
+
+        return new ProductionPallet
+        {
+            Id = pallet.Id,
+            PrdDocId = pallet.PrdDocId,
+            DocLineId = pallet.DocLineId,
+            OrderId = pallet.OrderId,
+            OrderLineId = pallet.OrderLineId,
+            ItemId = pallet.ItemId,
+            ItemName = pallet.ItemName,
+            HuCode = pallet.HuCode,
+            PlannedQty = pallet.PlannedQty,
+            ToLocationId = pallet.ToLocationId,
+            ToLocationCode = pallet.ToLocationCode,
+            Status = pallet.Status,
+            PalletNo = pallet.PalletNo,
+            PalletCount = pallet.PalletCount,
+            PrintedAt = pallet.PrintedAt,
+            FilledAt = pallet.FilledAt,
+            FilledByDeviceId = pallet.FilledByDeviceId,
+            CancelReason = pallet.CancelReason,
+            CancelledAt = pallet.CancelledAt,
+            CreatedAt = pallet.CreatedAt,
+            Lines = lines.ToArray()
+        };
+    }
+
+    private static void GuardSelectedProductionPalletLinesForAdoptionInHarness(
+        ProductionPallet pallet,
+        ProductionPalletSelectedAdoption selection)
+    {
+        if (selection.Lines.Count == 0 || pallet.Lines.Count != selection.Lines.Count)
+        {
+            throw new InvalidOperationException("Нельзя перенести planned HU: состав паллеты изменился до переноса.");
+        }
+
+        var selectedByDocLine = selection.Lines.ToDictionary(line => line.DocLineId, line => line);
+        foreach (var current in pallet.Lines)
+        {
+            if (!selectedByDocLine.TryGetValue(current.DocLineId, out var selected)
+                || current.OrderLineId != selected.SourceOrderLineId
+                || current.ItemId != selected.ItemId
+                || Math.Abs(current.PlannedQty - selected.PlannedQty) > StockQuantityRules.QtyTolerance
+                || current.FilledQty > StockQuantityRules.QtyTolerance
+                || current.FilledAt.HasValue)
+            {
+                throw new InvalidOperationException("Нельзя перенести planned HU: состав паллеты изменился до переноса.");
+            }
+        }
     }
 
     private void ClearProductionPalletPlanInHarness(long docId)

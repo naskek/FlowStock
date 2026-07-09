@@ -341,6 +341,10 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         Assert.Contains("[JsonPropertyName(\"would_plan_line_count\")]", source, StringComparison.Ordinal);
         Assert.Contains("[JsonPropertyName(\"safe_line_count\")]", source, StringComparison.Ordinal);
         Assert.Contains("[JsonPropertyName(\"has_free_warehouse_hu\")]", source, StringComparison.Ordinal);
+        Assert.Contains("[JsonPropertyName(\"adoptable_internal_planned_hus\")]", source, StringComparison.Ordinal);
+        Assert.Contains("[JsonPropertyName(\"adoption_skipped_candidates\")]", source, StringComparison.Ordinal);
+        Assert.Contains("[JsonPropertyName(\"projected_adopted_pallet_count\")]", source, StringComparison.Ordinal);
+        Assert.Contains("[JsonPropertyName(\"will_require_reprint\")]", source, StringComparison.Ordinal);
         Assert.Contains("[JsonPropertyName(\"skipped_lines\")]", source, StringComparison.Ordinal);
     }
 
@@ -355,7 +359,7 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         var flowMethod = SliceMethod(
             source,
             "    private async Task<PrePlanFlowDecision> RunPrePlanCoverageFlowAsync(",
-            "    private static string BuildSkippedLinesSummary(");
+            "    private static string BuildProjectedAdoptionSummary(");
 
         // Pre-plan flow выполняется до вызова POST /plan.
         var flowIndex = clickMethod.IndexOf("RunPrePlanCoverageFlowAsync", StringComparison.Ordinal);
@@ -364,6 +368,8 @@ public sealed class ProductionPalletInternalSupplyWarningTests
 
         // Safe-only передаёт только режим, qty/строки не передаются.
         Assert.Contains("WpfProductionPalletPlanMode.SkipInternalSupply", clickMethod, StringComparison.Ordinal);
+        Assert.Contains("WpfProductionPalletPlanMode.AdoptInternalThenPlan", clickMethod, StringComparison.Ordinal);
+        Assert.Contains("adopt_internal_then_plan", clickMethod, StringComparison.Ordinal);
 
         // Preview-цикл: свежий preview после привязки; при нулевой нехватке POST /plan не вызывается.
         Assert.Contains("TryGetPrePlanCoveragePreviewAsync", flowMethod, StringComparison.Ordinal);
@@ -372,6 +378,8 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         Assert.Contains("WouldPlanLineCount == 0", flowMethod, StringComparison.Ordinal);
         Assert.Contains("Производственное планирование не требуется: нехватка закрыта складскими HU.", flowMethod, StringComparison.Ordinal);
         Assert.Contains("new ReadyHuBindingWindow(_services, orderId)", flowMethod, StringComparison.Ordinal);
+        Assert.Contains("PrePlanDialogAction.AdoptInternalThenPlan", flowMethod, StringComparison.Ordinal);
+        Assert.Contains("BuildProjectedAdoptionSummary", flowMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("TryPlanOrderAsync", flowMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("qty", flowMethod, StringComparison.OrdinalIgnoreCase);
     }

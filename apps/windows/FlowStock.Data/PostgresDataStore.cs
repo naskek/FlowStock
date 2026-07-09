@@ -4245,6 +4245,205 @@ WHERE dl.id IN (
         });
     }
 
+    public int AdoptSelectedProductionPallets(
+        long targetPrdDocId,
+        long targetOrderId,
+        IReadOnlyList<ProductionPalletSelectedAdoption> selectedPallets)
+    {
+        var rows = selectedPallets
+            .Where(row => row.ProductionPalletId > 0)
+            .ToArray();
+        if (rows.Length == 0)
+        {
+            return 0;
+        }
+
+        return WithConnection(connection =>
+        {
+            var updated = 0;
+            foreach (var row in rows)
+            {
+                GuardSelectedProductionPalletLinesForAdoption(connection, row);
+
+                using (var updatePallet = CreateCommand(connection, @"
+UPDATE production_pallets pp
+SET prd_doc_id = @target_prd_doc_id,
+    order_id = @target_order_id,
+    order_line_id = @target_order_line_id
+FROM docs d
+WHERE pp.id = @production_pallet_id
+  AND pp.prd_doc_id = @source_prd_doc_id
+  AND pp.order_id = @source_order_id
+  AND UPPER(BTRIM(pp.hu_code)) = UPPER(BTRIM(@hu_code))
+  AND pp.status = @expected_status
+  AND pp.status IN (@planned_status, @printed_status)
+  AND pp.filled_at IS NULL
+  AND d.id = pp.prd_doc_id
+  AND d.id = @source_prd_doc_id
+  AND d.order_id = @source_order_id
+  AND d.type = @production_receipt_type
+  AND d.status <> @closed_status
+  AND NOT EXISTS (
+      SELECT 1
+      FROM ledger l
+      WHERE l.doc_id = pp.prd_doc_id)
+  AND NOT EXISTS (
+      SELECT 1
+      FROM production_pallet_lines pll
+      WHERE pll.production_pallet_id = pp.id
+        AND (pll.filled_qty > @qty_tolerance OR pll.filled_at IS NOT NULL));
+"))
+                {
+                    updatePallet.Parameters.AddWithValue("@target_prd_doc_id", targetPrdDocId);
+                    updatePallet.Parameters.AddWithValue("@target_order_id", targetOrderId);
+                    updatePallet.Parameters.AddWithValue("@target_order_line_id", row.TargetOrderLineId.HasValue ? row.TargetOrderLineId.Value : DBNull.Value);
+                    updatePallet.Parameters.AddWithValue("@production_pallet_id", row.ProductionPalletId);
+                    updatePallet.Parameters.AddWithValue("@source_prd_doc_id", row.SourcePrdDocId);
+                    updatePallet.Parameters.AddWithValue("@source_order_id", row.SourceOrderId);
+                    updatePallet.Parameters.AddWithValue("@hu_code", row.HuCode);
+                    updatePallet.Parameters.AddWithValue("@expected_status", row.ExpectedStatus);
+                    updatePallet.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+                    updatePallet.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+                    updatePallet.Parameters.AddWithValue("@production_receipt_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+                    updatePallet.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+                    updatePallet.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+                    var affected = updatePallet.ExecuteNonQuery();
+                    if (affected != 1)
+                    {
+                        throw new InvalidOperationException(
+                            "Нельзя перенести planned HU: выбранная паллета изменилась или больше не подходит для переноса.");
+                    }
+
+                    updated += affected;
+                }
+
+                foreach (var line in row.Lines)
+                {
+                    using (var updatePalletLine = CreateCommand(connection, @"
+UPDATE production_pallet_lines
+SET order_line_id = @target_order_line_id
+WHERE production_pallet_id = @production_pallet_id
+  AND doc_line_id = @doc_line_id
+  AND order_line_id = @source_order_line_id
+  AND item_id = @item_id
+  AND ABS(planned_qty - @planned_qty) <= @qty_tolerance
+  AND filled_qty <= @qty_tolerance
+  AND filled_at IS NULL;
+"))
+                    {
+                        updatePalletLine.Parameters.AddWithValue("@target_order_line_id", line.TargetOrderLineId);
+                        updatePalletLine.Parameters.AddWithValue("@production_pallet_id", row.ProductionPalletId);
+                        updatePalletLine.Parameters.AddWithValue("@doc_line_id", line.DocLineId);
+                        updatePalletLine.Parameters.AddWithValue("@source_order_line_id", line.SourceOrderLineId);
+                        updatePalletLine.Parameters.AddWithValue("@item_id", line.ItemId);
+                        updatePalletLine.Parameters.AddWithValue("@planned_qty", line.PlannedQty);
+                        updatePalletLine.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+                        if (updatePalletLine.ExecuteNonQuery() != 1)
+                        {
+                            throw new InvalidOperationException(
+                                "Нельзя перенести planned HU: строка состава паллеты изменилась до переноса.");
+                        }
+                    }
+
+                    using var updateDocLine = CreateCommand(connection, @"
+UPDATE doc_lines
+SET doc_id = @target_prd_doc_id,
+    order_line_id = @target_order_line_id,
+    production_purpose = @target_purpose
+WHERE id = @doc_line_id
+  AND doc_id = @source_prd_doc_id
+  AND order_line_id = @source_order_line_id
+  AND item_id = @item_id
+  AND ABS(qty - @planned_qty) <= @qty_tolerance;
+");
+                    updateDocLine.Parameters.AddWithValue("@target_prd_doc_id", targetPrdDocId);
+                    updateDocLine.Parameters.AddWithValue("@target_order_line_id", line.TargetOrderLineId);
+                    updateDocLine.Parameters.AddWithValue("@target_purpose", ProductionLinePurposeMapper.ToDbValue(ProductionLinePurpose.CustomerOrder));
+                    updateDocLine.Parameters.AddWithValue("@doc_line_id", line.DocLineId);
+                    updateDocLine.Parameters.AddWithValue("@source_prd_doc_id", row.SourcePrdDocId);
+                    updateDocLine.Parameters.AddWithValue("@source_order_line_id", line.SourceOrderLineId);
+                    updateDocLine.Parameters.AddWithValue("@item_id", line.ItemId);
+                    updateDocLine.Parameters.AddWithValue("@planned_qty", line.PlannedQty);
+                    updateDocLine.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+                    if (updateDocLine.ExecuteNonQuery() != 1)
+                    {
+                        throw new InvalidOperationException(
+                            "Нельзя перенести planned HU: строка выпуска изменилась до переноса.");
+                    }
+                }
+            }
+
+            return updated;
+        });
+    }
+
+    private void GuardSelectedProductionPalletLinesForAdoption(
+        NpgsqlConnection connection,
+        ProductionPalletSelectedAdoption row)
+    {
+        if (row.Lines.Count == 0)
+        {
+            throw new InvalidOperationException("Нельзя перенести planned HU: состав паллеты не найден.");
+        }
+
+        using var command = CreateCommand(connection, @"
+WITH selected AS (
+    SELECT *
+    FROM unnest(
+        @doc_line_ids::bigint[],
+        @source_order_line_ids::bigint[],
+        @item_ids::bigint[],
+        @planned_qtys::double precision[]) AS s(doc_line_id, source_order_line_id, item_id, planned_qty)
+),
+current_lines AS (
+    SELECT pll.doc_line_id,
+           pll.order_line_id,
+           pll.item_id,
+           pll.planned_qty,
+           pll.filled_qty,
+           pll.filled_at
+    FROM production_pallet_lines pll
+    WHERE pll.production_pallet_id = @production_pallet_id
+),
+matched_lines AS (
+    SELECT cl.doc_line_id
+    FROM current_lines cl
+    INNER JOIN selected s ON s.doc_line_id = cl.doc_line_id
+    WHERE cl.order_line_id = s.source_order_line_id
+      AND cl.item_id = s.item_id
+      AND ABS(cl.planned_qty - s.planned_qty) <= @qty_tolerance
+      AND cl.filled_qty <= @qty_tolerance
+      AND cl.filled_at IS NULL
+)
+SELECT
+    (SELECT COUNT(*) FROM current_lines) AS current_count,
+    (SELECT COUNT(*) FROM selected) AS selected_count,
+    (SELECT COUNT(*) FROM matched_lines) AS matched_count;
+");
+        command.Parameters.AddWithValue("@production_pallet_id", row.ProductionPalletId);
+        command.Parameters.AddWithValue("@doc_line_ids", row.Lines.Select(line => line.DocLineId).ToArray());
+        command.Parameters.AddWithValue("@source_order_line_ids", row.Lines.Select(line => line.SourceOrderLineId).ToArray());
+        command.Parameters.AddWithValue("@item_ids", row.Lines.Select(line => line.ItemId).ToArray());
+        command.Parameters.AddWithValue("@planned_qtys", row.Lines.Select(line => line.PlannedQty).ToArray());
+        command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            throw new InvalidOperationException("Нельзя перенести planned HU: состав паллеты не найден.");
+        }
+
+        var currentCount = Convert.ToInt32(reader.GetValue(0), CultureInfo.InvariantCulture);
+        var selectedCount = Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture);
+        var matchedCount = Convert.ToInt32(reader.GetValue(2), CultureInfo.InvariantCulture);
+        if (currentCount != row.Lines.Count
+            || selectedCount != row.Lines.Count
+            || matchedCount != row.Lines.Count)
+        {
+            throw new InvalidOperationException(
+                "Нельзя перенести planned HU: состав паллеты изменился до переноса.");
+        }
+    }
+
     private static void AddTargetLineParameters(NpgsqlCommand command, IReadOnlyDictionary<long, long> targetOrderLineIdByItemId)
     {
         var index = 0;
