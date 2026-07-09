@@ -341,6 +341,8 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         Assert.Contains("[JsonPropertyName(\"would_plan_line_count\")]", source, StringComparison.Ordinal);
         Assert.Contains("[JsonPropertyName(\"safe_line_count\")]", source, StringComparison.Ordinal);
         Assert.Contains("[JsonPropertyName(\"has_free_warehouse_hu\")]", source, StringComparison.Ordinal);
+        Assert.Contains("[JsonPropertyName(\"warehouse_hu_candidates\")]", source, StringComparison.Ordinal);
+        Assert.Contains("[JsonPropertyName(\"internal_planned_hu_candidates\")]", source, StringComparison.Ordinal);
         Assert.Contains("[JsonPropertyName(\"adoptable_internal_planned_hus\")]", source, StringComparison.Ordinal);
         Assert.Contains("[JsonPropertyName(\"adoption_skipped_candidates\")]", source, StringComparison.Ordinal);
         Assert.Contains("[JsonPropertyName(\"projected_adopted_pallet_count\")]", source, StringComparison.Ordinal);
@@ -369,19 +371,40 @@ public sealed class ProductionPalletInternalSupplyWarningTests
         // Safe-only передаёт только режим, qty/строки не передаются.
         Assert.Contains("WpfProductionPalletPlanMode.SkipInternalSupply", clickMethod, StringComparison.Ordinal);
         Assert.Contains("WpfProductionPalletPlanMode.AdoptInternalThenPlan", clickMethod, StringComparison.Ordinal);
+        Assert.Contains("WpfProductionPalletPlanMode.ApplySelectedCoverageThenPlan", clickMethod, StringComparison.Ordinal);
         Assert.Contains("adopt_internal_then_plan", clickMethod, StringComparison.Ordinal);
+        Assert.Contains("apply_selected_coverage_then_plan", clickMethod, StringComparison.Ordinal);
 
-        // Preview-цикл: свежий preview после привязки; при нулевой нехватке POST /plan не вызывается.
+        // Unified preview: WPF показывает кандидаты и отправляет только selected HU ids/codes как preference.
         Assert.Contains("TryGetPrePlanCoveragePreviewAsync", flowMethod, StringComparison.Ordinal);
         Assert.Contains("IsEndpointMissing", flowMethod, StringComparison.Ordinal);
         Assert.Contains("Не удалось проверить складские HU и ожидаемый INTERNAL-выпуск.", flowMethod, StringComparison.Ordinal);
-        Assert.Contains("WouldPlanLineCount == 0", flowMethod, StringComparison.Ordinal);
-        Assert.Contains("Производственное планирование не требуется: нехватка закрыта складскими HU.", flowMethod, StringComparison.Ordinal);
-        Assert.Contains("new ReadyHuBindingWindow(_services, orderId)", flowMethod, StringComparison.Ordinal);
-        Assert.Contains("PrePlanDialogAction.AdoptInternalThenPlan", flowMethod, StringComparison.Ordinal);
+        Assert.Contains("WarehouseHuCandidatesOrEmpty", flowMethod, StringComparison.Ordinal);
+        Assert.Contains("InternalPlannedHuCandidatesOrEmpty", flowMethod, StringComparison.Ordinal);
+        Assert.Contains("BuildSelectedCoverageRequest", flowMethod, StringComparison.Ordinal);
+        Assert.Contains("PrePlanDialogAction.ApplySelectedCoverageThenPlan", flowMethod, StringComparison.Ordinal);
         Assert.Contains("BuildProjectedAdoptionSummary", flowMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("new ReadyHuBindingWindow(_services, orderId)", flowMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("TryPlanOrderAsync", flowMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("qty", flowMethod, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void WpfPrePlanCoverageDialog_DisabledCandidatesAreVisibleButNotSent()
+    {
+        var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "PrePlanCoverageDialog.xaml");
+        var source = ReadRepoFile("apps", "windows", "FlowStock.App", "PrePlanCoverageDialog.xaml.cs");
+        var buildRequestMethod = SliceMethod(
+            source,
+            "    public WpfSelectedCoveragePlanRequest BuildSelectedCoverageRequest()",
+            "    private void PlanAll_Click(");
+
+        Assert.Contains("IsEnabled=\"{Binding CanSelect}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding DisabledReason}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("public bool CanSelect", source, StringComparison.Ordinal);
+        Assert.Contains("public string DisabledReason", source, StringComparison.Ordinal);
+        Assert.Contains("IsSelected = candidate.SelectedByDefault && CanSelect", source, StringComparison.Ordinal);
+        Assert.Contains("row.IsSelected && row.CanSelect", buildRequestMethod, StringComparison.Ordinal);
     }
 
     private static CloseDocumentHarness CreateCustomerWithInternalHarness(

@@ -7,6 +7,274 @@ namespace FlowStock.Server.Tests.ProductionPallets;
 public sealed class ProductionPalletAdoptInternalThenPlanTests
 {
     [Fact]
+    public void ApplySelectedCoverageThenPlan_BindsWarehouse_AdoptsInternal_AndPlansRemainder()
+    {
+        var harness = CreateHarness(customerQty: 1134, sourceQty: 378);
+        harness.SeedBalance(100, 1, 378, "HU-WH-001");
+        SeedSourcePallet(harness, 4001, 401, "HU-INT-001", 378, ProductionPalletStatus.Planned);
+        var service = new ProductionPalletService(harness.Store);
+        var preview = service.GetCustomerPrePlanCoveragePreview(10);
+
+        var result = service.PlanOrderApplySelectedCoverageThenPlan(10, BuildSelectedCoverageRequest(preview));
+
+        Assert.Equal(1, result.BoundWarehouseHuCount);
+        Assert.Equal(378, result.BoundWarehouseQty);
+        Assert.Equal(1, result.AdoptedPalletCount);
+        Assert.Equal(378, result.AdoptedQty);
+        Assert.Equal(1, result.NewlyPlannedPalletCount);
+        Assert.Equal(378, result.NewlyPlannedQty);
+        Assert.Contains(harness.Store.GetOrderReceiptPlanLines(10), line => line.ToHu == "HU-WH-001" && line.QtyPlanned == 378);
+        Assert.Empty(harness.Store.GetOrderLines(30));
+        var activeCustomerPallets = harness.Store.GetDocsByOrder(10)
+            .SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id))
+            .Where(pallet => pallet.Status != ProductionPalletStatus.Cancelled)
+            .ToArray();
+        Assert.Equal(2, activeCustomerPallets.Length);
+        Assert.Contains(activeCustomerPallets, pallet => pallet.HuCode == "HU-INT-001" && pallet.OrderId == 10);
+        Assert.Contains(activeCustomerPallets, pallet => pallet.HuCode != "HU-INT-001" && pallet.PlannedQty == 378);
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ApplySelectedCoverageThenPlan_WhenWarehouseSelectionStale_AbortsEverything()
+    {
+        var harness = CreateHarness(customerQty: 756, sourceQty: 378);
+        harness.SeedBalance(100, 1, 378, "HU-WH-STALE");
+        SeedSourcePallet(harness, 4001, 401, "HU-INT-001", 378, ProductionPalletStatus.Planned);
+        var service = new ProductionPalletService(harness.Store);
+        var preview = service.GetCustomerPrePlanCoveragePreview(10);
+        harness.SeedOrderReceiptPlanLines(11, new OrderReceiptPlanLine
+        {
+            Id = 9101,
+            OrderId = 11,
+            OrderLineId = 111,
+            ItemId = 100,
+            QtyPlanned = 378,
+            ToHu = "HU-WH-STALE"
+        });
+
+        var ex = Assert.Throws<ProductionPalletSelectedCoverageException>(
+            () => service.PlanOrderApplySelectedCoverageThenPlan(10, BuildSelectedCoverageRequest(preview)));
+
+        Assert.Equal("HU_RESERVED_BY_OTHER_ORDER", ex.Code);
+        Assert.Empty(harness.Store.GetOrderReceiptPlanLines(10));
+        Assert.Equal(378, harness.Store.GetOrderLines(30).Single().QtyOrdered);
+        var sourcePallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(40));
+        Assert.Equal(30, sourcePallet.OrderId);
+        Assert.Empty(harness.Store.GetDocsByOrder(10).SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id)));
+    }
+
+    [Fact]
+    public void ApplySelectedCoverageThenPlan_WhenWarehouseHuBoundToOtherLineOfSameOrder_AbortsEverything()
+    {
+        var harness = CreateHarness(customerQty: 378, sourceQty: 0);
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 102,
+            OrderId = 10,
+            ItemId = 100,
+            QtyOrdered = 378,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        harness.SeedBalance(100, 1, 378, "HU-WH-SAME-ORDER");
+        harness.SeedOrderReceiptPlanLines(10, new OrderReceiptPlanLine
+        {
+            Id = 9201,
+            OrderId = 10,
+            OrderLineId = 102,
+            ItemId = 100,
+            QtyPlanned = 378,
+            ToHu = "HU-WH-SAME-ORDER"
+        });
+        var service = new ProductionPalletService(harness.Store);
+
+        var ex = Assert.Throws<ProductionPalletSelectedCoverageException>(
+            () => service.PlanOrderApplySelectedCoverageThenPlan(10, new ProductionPalletSelectedCoveragePlanRequest
+            {
+                SelectedWarehouseHus =
+                [
+                    new ProductionPalletSelectedWarehouseHu
+                    {
+                        HuCode = "HU-WH-SAME-ORDER",
+                        ItemId = 100,
+                        TargetOrderLineId = 101
+                    }
+                ]
+            }));
+
+        Assert.Equal("HU_RESERVED_BY_OTHER_ORDER", ex.Code);
+        var reservation = Assert.Single(harness.Store.GetOrderReceiptPlanLines(10));
+        Assert.Equal(102, reservation.OrderLineId);
+        Assert.Equal("HU-WH-SAME-ORDER", reservation.ToHu);
+        Assert.Empty(harness.Store.GetDocsByOrder(10).SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id)));
+    }
+
+    [Theory]
+    [InlineData(OrderStatus.Shipped)]
+    [InlineData(OrderStatus.Cancelled)]
+    [InlineData(OrderStatus.Merged)]
+    public void ApplySelectedCoverageThenPlan_WhenTargetOrderClosesAfterLock_AbortsWithoutWrites(OrderStatus staleStatus)
+    {
+        var harness = CreateHarness(customerQty: 378, sourceQty: 0);
+        harness.SeedBalance(100, 1, 378, "HU-WH-TARGET-RACE");
+        harness.RunAfterNextLockOrdersForUpdate(() =>
+        {
+            harness.SeedOrder(new Order
+            {
+                Id = 10,
+                OrderRef = "086",
+                Type = OrderType.Customer,
+                Status = staleStatus,
+                PartnerName = "Клиент",
+                CreatedAt = new DateTime(2026, 7, 1, 8, 0, 0)
+            });
+        });
+        var service = new ProductionPalletService(harness.Store);
+
+        Assert.Throws<InvalidOperationException>(
+            () => service.PlanOrderApplySelectedCoverageThenPlan(10, new ProductionPalletSelectedCoveragePlanRequest
+            {
+                SelectedWarehouseHus =
+                [
+                    new ProductionPalletSelectedWarehouseHu
+                    {
+                        HuCode = "HU-WH-TARGET-RACE",
+                        ItemId = 100,
+                        TargetOrderLineId = 101
+                    }
+                ]
+            }));
+
+        Assert.Empty(harness.Store.GetOrderReceiptPlanLines(10));
+        Assert.Empty(harness.Store.GetDocsByOrder(10).SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id)));
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void ApplySelectedCoverageThenPlan_WhenInternalSelectionStale_RollsBackWarehouseBinding()
+    {
+        var harness = CreateHarness(customerQty: 756, sourceQty: 378);
+        harness.SeedBalance(100, 1, 378, "HU-WH-ROLLBACK");
+        SeedSourcePallet(harness, 4001, 401, "HU-INT-STALE", 378, ProductionPalletStatus.Planned);
+        var service = new ProductionPalletService(harness.Store);
+        var preview = service.GetCustomerPrePlanCoveragePreview(10);
+        harness.ChangeNextSelectedAdoptionPalletStatusBeforeTransfer(4001, ProductionPalletStatus.Filled);
+
+        var ex = Assert.Throws<ProductionPalletSelectedCoverageException>(
+            () => service.PlanOrderApplySelectedCoverageThenPlan(10, BuildSelectedCoverageRequest(preview)));
+
+        Assert.Equal("STALE_INTERNAL_SELECTION", ex.Code);
+        Assert.Empty(harness.Store.GetOrderReceiptPlanLines(10));
+        Assert.Equal(378, harness.Store.GetOrderLines(30).Single().QtyOrdered);
+        var sourcePallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(40));
+        Assert.Equal(30, sourcePallet.OrderId);
+        Assert.Equal(ProductionPalletStatus.Planned, sourcePallet.Status);
+        Assert.Empty(harness.Store.GetDocsByOrder(10).SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id)));
+    }
+
+    [Fact]
+    public void ApplySelectedCoverageThenPlan_UncheckedWarehouseHuRemainsAvailableForAnotherCustomer()
+    {
+        var harness = CreateHarness(customerQty: 756, sourceQty: 0);
+        harness.SeedBalance(100, 1, 378, "HU-WH-SELECTED");
+        harness.SeedBalance(100, 1, 378, "HU-WH-UNSELECTED");
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.PlanOrderApplySelectedCoverageThenPlan(10, new ProductionPalletSelectedCoveragePlanRequest
+        {
+            SelectedWarehouseHus =
+            [
+                new ProductionPalletSelectedWarehouseHu
+                {
+                    HuCode = "HU-WH-SELECTED",
+                    ItemId = 100,
+                    TargetOrderLineId = 101
+                }
+            ]
+        });
+
+        Assert.Equal(1, result.BoundWarehouseHuCount);
+        Assert.Contains(harness.Store.GetOrderReceiptPlanLines(10), line => line.ToHu == "HU-WH-SELECTED");
+        var previewForSecondCustomer = service.GetCustomerPrePlanCoveragePreview(11);
+        Assert.Contains(previewForSecondCustomer.WarehouseHuCandidates, candidate => candidate.HuCode == "HU-WH-UNSELECTED");
+        Assert.DoesNotContain(previewForSecondCustomer.WarehouseHuCandidates, candidate => candidate.HuCode == "HU-WH-SELECTED");
+    }
+
+    [Fact]
+    public void ApplySelectedCoverageThenPlan_WhenSelectedCoverageExceedsShortage_RejectsAndRollsBack()
+    {
+        var harness = CreateHarness(customerQty: 378, sourceQty: 0);
+        harness.SeedBalance(100, 1, 378, "HU-WH-001");
+        harness.SeedBalance(100, 1, 378, "HU-WH-002");
+        var service = new ProductionPalletService(harness.Store);
+
+        var ex = Assert.Throws<ProductionPalletSelectedCoverageException>(
+            () => service.PlanOrderApplySelectedCoverageThenPlan(10, new ProductionPalletSelectedCoveragePlanRequest
+            {
+                SelectedWarehouseHus =
+                [
+                    new ProductionPalletSelectedWarehouseHu { HuCode = "HU-WH-001", ItemId = 100, TargetOrderLineId = 101 },
+                    new ProductionPalletSelectedWarehouseHu { HuCode = "HU-WH-002", ItemId = 100, TargetOrderLineId = 101 }
+                ]
+            }));
+
+        Assert.Equal("WAREHOUSE_QTY_EXCEEDS_REMAINING", ex.Code);
+        Assert.Empty(harness.Store.GetOrderReceiptPlanLines(10));
+        Assert.Empty(harness.Store.GetDocsByOrder(10).SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id)));
+    }
+
+    [Fact]
+    public void ApplySelectedCoverageThenPlan_WithExistingCustomerPlannedPallet_CancelsSafeSurplusAndDoesNotDuplicate()
+    {
+        var harness = CreateHarness(customerQty: 378, sourceQty: 0);
+        harness.SeedBalance(100, 1, 378, "HU-WH-REPLACE");
+        var service = new ProductionPalletService(harness.Store);
+        var initialPlan = service.PlanOrder(10);
+        var initialPallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(initialPlan.PrdDocId));
+
+        var result = service.PlanOrderApplySelectedCoverageThenPlan(10, new ProductionPalletSelectedCoveragePlanRequest
+        {
+            SelectedWarehouseHus =
+            [
+                new ProductionPalletSelectedWarehouseHu { HuCode = "HU-WH-REPLACE", ItemId = 100, TargetOrderLineId = 101 }
+            ]
+        });
+
+        Assert.Equal(1, result.BoundWarehouseHuCount);
+        var updatedPallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(initialPlan.PrdDocId));
+        Assert.Equal(initialPallet.Id, updatedPallet.Id);
+        Assert.Equal(ProductionPalletStatus.Cancelled, updatedPallet.Status);
+        Assert.Single(harness.Store.GetOrderReceiptPlanLines(10));
+        Assert.DoesNotContain(
+            harness.Store.GetDocsByOrder(10)
+                .SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id)),
+            pallet => pallet.Status != ProductionPalletStatus.Cancelled);
+    }
+
+    [Fact]
+    public void ApplySelectedCoverageThenPlan_WithExistingPrintedCustomerPallet_DoesNotDeleteUnsafePallet()
+    {
+        var harness = CreateHarness(customerQty: 378, sourceQty: 0);
+        harness.SeedBalance(100, 1, 378, "HU-WH-PRINTED-BLOCK");
+        SeedCustomerPallet(harness, 5001, 501, "HU-CUST-PRINTED", 378, ProductionPalletStatus.Printed);
+        var service = new ProductionPalletService(harness.Store);
+
+        var ex = Assert.Throws<ProductionPalletSelectedCoverageException>(
+            () => service.PlanOrderApplySelectedCoverageThenPlan(10, new ProductionPalletSelectedCoveragePlanRequest
+            {
+                SelectedWarehouseHus =
+                [
+                    new ProductionPalletSelectedWarehouseHu { HuCode = "HU-WH-PRINTED-BLOCK", ItemId = 100, TargetOrderLineId = 101 }
+                ]
+            }));
+
+        Assert.Equal("HU_BINDING_PLAN_CONFLICT", ex.Code);
+        Assert.Empty(harness.Store.GetOrderReceiptPlanLines(10));
+        var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(50));
+        Assert.Equal(ProductionPalletStatus.Printed, pallet.Status);
+    }
+
+    [Fact]
     public void Preview_ProjectsPlannedAndPrintedInternalHu_ForAdoption()
     {
         var harness = CreateHarness(customerQty: 756, sourceQty: 756);
@@ -502,6 +770,89 @@ public sealed class ProductionPalletAdoptInternalThenPlanTests
                 }
             }
         });
+    }
+
+    private static void SeedCustomerPallet(
+        CloseDocumentHarness harness,
+        long palletId,
+        long docLineId,
+        string huCode,
+        double qty,
+        string status)
+    {
+        harness.SeedDoc(new Doc
+        {
+            Id = 50,
+            DocRef = "PRD-2026-000050",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 10,
+            OrderRef = "086",
+            CreatedAt = new DateTime(2026, 7, 1, 11, 0, 0)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = docLineId,
+            DocId = 50,
+            OrderLineId = 101,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
+            ItemId = 100,
+            Qty = qty,
+            ToLocationId = 1,
+            ToHu = huCode,
+            PackSingleHu = true
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = palletId,
+            PrdDocId = 50,
+            DocLineId = docLineId,
+            OrderId = 10,
+            OrderLineId = 101,
+            ItemId = 100,
+            ItemName = "Аджика",
+            HuCode = huCode,
+            PlannedQty = qty,
+            ToLocationId = 1,
+            Status = status,
+            PrintedAt = status == ProductionPalletStatus.Printed ? new DateTime(2026, 7, 2, 8, 0, 0) : null,
+            CreatedAt = new DateTime(2026, 7, 1, 11, 0, 0),
+            Lines = new[]
+            {
+                new ProductionPalletComponentLine
+                {
+                    Id = palletId * 1000 + 1,
+                    ProductionPalletId = palletId,
+                    DocLineId = docLineId,
+                    OrderLineId = 101,
+                    ItemId = 100,
+                    ItemName = "Аджика",
+                    PlannedQty = qty,
+                    CreatedAt = new DateTime(2026, 7, 1, 11, 0, 0)
+                }
+            }
+        });
+    }
+
+    private static ProductionPalletSelectedCoveragePlanRequest BuildSelectedCoverageRequest(
+        ProductionPalletPrePlanCoveragePreview preview)
+    {
+        return new ProductionPalletSelectedCoveragePlanRequest
+        {
+            SelectedWarehouseHus = preview.WarehouseHuCandidates
+                .Where(candidate => candidate.SelectedByDefault)
+                .Select(candidate => new ProductionPalletSelectedWarehouseHu
+                {
+                    HuCode = candidate.HuCode,
+                    ItemId = candidate.ItemId,
+                    TargetOrderLineId = candidate.TargetOrderLineId
+                })
+                .ToArray(),
+            SelectedInternalProductionPalletIds = preview.InternalPlannedHuCandidates
+                .Where(candidate => candidate.SelectedByDefault)
+                .Select(candidate => candidate.ProductionPalletId)
+                .ToArray()
+        };
     }
 
     private static IReadOnlyList<OrderReceiptLine> OrderReceiptRemainingForTest(CloseDocumentHarness harness, long orderId)

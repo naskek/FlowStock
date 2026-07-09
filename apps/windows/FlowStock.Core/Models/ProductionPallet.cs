@@ -196,8 +196,12 @@ public sealed class ProductionPalletOrderPlanResult
         Array.Empty<ProductionPalletAdoptionSkippedCandidate>();
     public IReadOnlyList<ProductionPalletProjectedAdoptionHu> ReprintRequiredHus { get; init; } =
         Array.Empty<ProductionPalletProjectedAdoptionHu>();
+    public IReadOnlyList<ProductionPalletWarehouseHuCandidate> BoundWarehouseHus { get; init; } =
+        Array.Empty<ProductionPalletWarehouseHuCandidate>();
     public int AdoptedPalletCount { get; init; }
     public double AdoptedQty { get; init; }
+    public int BoundWarehouseHuCount { get; init; }
+    public double BoundWarehouseQty { get; init; }
     public int NewlyPlannedPalletCount { get; init; }
     public double NewlyPlannedQty { get; init; }
 }

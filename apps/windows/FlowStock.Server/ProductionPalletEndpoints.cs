@@ -181,17 +181,19 @@ public static class ProductionPalletEndpoints
 
     private static async Task<IResult> HandlePlanOrder(long orderId, HttpRequest request, ProductionPalletService service)
     {
+        PlanOrderRequest parsedRequest;
         ProductionPalletPlanMode mode;
         try
         {
-            var parsedMode = await TryReadPlanModeAsync(request);
+            parsedRequest = await TryReadPlanRequestAsync(request);
+            var parsedMode = TryParsePlanMode(parsedRequest.Mode);
             if (parsedMode == null)
             {
                 return Results.BadRequest(new
                 {
                     ok = false,
                     error = "INVALID_PLAN_MODE",
-                    message = "Неизвестный режим планирования. Допустимо: full, skip_internal_supply, adopt_internal_then_plan."
+                    message = "Неизвестный режим планирования. Допустимо: full, skip_internal_supply, adopt_internal_then_plan, apply_selected_coverage_then_plan."
                 });
             }
 
@@ -213,9 +215,38 @@ public static class ProductionPalletEndpoints
             {
                 ProductionPalletPlanMode.SkipInternalSupply => "skip_internal_supply",
                 ProductionPalletPlanMode.AdoptInternalThenPlan => "adopt_internal_then_plan",
+                ProductionPalletPlanMode.ApplySelectedCoverageThenPlan => "apply_selected_coverage_then_plan",
                 _ => "full"
             };
-            return Results.Ok(MapOrderPlan(service.PlanOrder(orderId, mode), modeEcho));
+            var result = mode == ProductionPalletPlanMode.ApplySelectedCoverageThenPlan
+                ? service.PlanOrderApplySelectedCoverageThenPlan(
+                    orderId,
+                    new ProductionPalletSelectedCoveragePlanRequest
+                    {
+                        SelectedWarehouseHus = (parsedRequest.SelectedWarehouseHus ?? Array.Empty<SelectedWarehouseHuRequest>())
+                            .Select(row => new ProductionPalletSelectedWarehouseHu
+                            {
+                                HuCode = row.HuCode ?? string.Empty,
+                                ItemId = row.ItemId,
+                                TargetOrderLineId = row.TargetOrderLineId
+                            })
+                            .ToArray(),
+                        SelectedInternalProductionPalletIds =
+                            parsedRequest.SelectedInternalProductionPalletIds ?? Array.Empty<long>(),
+                        PlanRemainder = parsedRequest.PlanRemainder ?? true
+                    })
+                : service.PlanOrder(orderId, mode);
+            return Results.Ok(MapOrderPlan(result, modeEcho));
+        }
+        catch (ProductionPalletSelectedCoverageException ex)
+        {
+            return Results.Conflict(new
+            {
+                ok = false,
+                error = ex.Code,
+                message = ex.Message,
+                problems = ex.Problems
+            });
         }
         catch (InvalidOperationException ex)
         {
@@ -227,7 +258,7 @@ public static class ProductionPalletEndpoints
     /// Пустое тело, отсутствующий Content-Type, null-JSON, {} или отсутствующий mode означают Full;
     /// неизвестный mode возвращает null (400 INVALID_PLAN_MODE). Клиентские qty/order_line_ids не читаются.
     /// </summary>
-    private static async Task<ProductionPalletPlanMode?> TryReadPlanModeAsync(HttpRequest request)
+    private static async Task<PlanOrderRequest> TryReadPlanRequestAsync(HttpRequest request)
     {
         string raw;
         using (var reader = new StreamReader(request.Body))
@@ -237,11 +268,15 @@ public static class ProductionPalletEndpoints
 
         if (string.IsNullOrWhiteSpace(raw))
         {
-            return ProductionPalletPlanMode.Full;
+            return new PlanOrderRequest();
         }
 
-        var body = JsonSerializer.Deserialize<PlanOrderRequest>(raw, PlanRequestJsonOptions);
-        var rawMode = body?.Mode?.Trim();
+        return JsonSerializer.Deserialize<PlanOrderRequest>(raw, PlanRequestJsonOptions) ?? new PlanOrderRequest();
+    }
+
+    private static ProductionPalletPlanMode? TryParsePlanMode(string? mode)
+    {
+        var rawMode = mode?.Trim();
         if (string.IsNullOrEmpty(rawMode) || string.Equals(rawMode, "full", StringComparison.OrdinalIgnoreCase))
         {
             return ProductionPalletPlanMode.Full;
@@ -257,6 +292,11 @@ public static class ProductionPalletEndpoints
             return ProductionPalletPlanMode.AdoptInternalThenPlan;
         }
 
+        if (string.Equals(rawMode, "apply_selected_coverage_then_plan", StringComparison.OrdinalIgnoreCase))
+        {
+            return ProductionPalletPlanMode.ApplySelectedCoverageThenPlan;
+        }
+
         return null;
     }
 
@@ -269,6 +309,27 @@ public static class ProductionPalletEndpoints
     {
         [JsonPropertyName("mode")]
         public string? Mode { get; init; }
+
+        [JsonPropertyName("selected_warehouse_hus")]
+        public IReadOnlyList<SelectedWarehouseHuRequest>? SelectedWarehouseHus { get; init; }
+
+        [JsonPropertyName("selected_internal_production_pallet_ids")]
+        public IReadOnlyList<long>? SelectedInternalProductionPalletIds { get; init; }
+
+        [JsonPropertyName("plan_remainder")]
+        public bool? PlanRemainder { get; init; }
+    }
+
+    private sealed class SelectedWarehouseHuRequest
+    {
+        [JsonPropertyName("hu_code")]
+        public string? HuCode { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("target_order_line_id")]
+        public long TargetOrderLineId { get; init; }
     }
 
     private static IResult HandlePrePlanCoveragePreview(long orderId, ProductionPalletService service)
@@ -287,6 +348,8 @@ public static class ProductionPalletEndpoints
                 would_plan_line_count = preview.WouldPlanLineCount,
                 safe_line_count = preview.SafeLineCount,
                 warning_line_count = preview.WarningLineCount,
+                warehouse_hu_candidates = preview.WarehouseHuCandidates.Select(MapWarehouseHuCandidate),
+                internal_planned_hu_candidates = preview.InternalPlannedHuCandidates.Select(MapInternalPlannedHuCandidate),
                 adoptable_internal_planned_hus = preview.AdoptableInternalPlannedHus.Select(MapProjectedAdoptionHu),
                 adoption_skipped_candidates = preview.AdoptionSkippedCandidates.Select(MapAdoptionSkippedCandidate),
                 projected_adopted_pallet_count = preview.ProjectedAdoptedPalletCount,
@@ -719,12 +782,58 @@ public static class ProductionPalletEndpoints
             adopted_internal_planned_hus = result.AdoptedInternalPlannedHus.Select(MapProjectedAdoptionHu),
             adoption_skipped_candidates = result.AdoptionSkippedCandidates.Select(MapAdoptionSkippedCandidate),
             reprint_required_hus = result.ReprintRequiredHus.Select(MapProjectedAdoptionHu),
+            bound_warehouse_hus = result.BoundWarehouseHus.Select(MapWarehouseHuCandidate),
             adopted_pallet_count = result.AdoptedPalletCount,
             adopted_qty = result.AdoptedQty,
+            bound_warehouse_hu_count = result.BoundWarehouseHuCount,
+            bound_warehouse_qty = result.BoundWarehouseQty,
             newly_planned_pallet_count = result.NewlyPlannedPalletCount,
             newly_planned_qty = result.NewlyPlannedQty,
             summary = MapSummary(result.Summary),
             document = MapDocument(result.Document)
+        };
+    }
+
+    private static object MapWarehouseHuCandidate(ProductionPalletWarehouseHuCandidate row)
+    {
+        return new
+        {
+            source_type = row.SourceType,
+            hu_code = row.HuCode,
+            item_id = row.ItemId,
+            item_name = row.ItemName,
+            target_order_line_id = row.TargetOrderLineId,
+            qty = row.Qty,
+            status = row.Status,
+            source_ref = row.SourceRef,
+            recommended = row.Recommended,
+            selected_by_default = row.SelectedByDefault,
+            disabled_reason = row.DisabledReason
+        };
+    }
+
+    private static object MapInternalPlannedHuCandidate(ProductionPalletInternalPlannedHuCandidate row)
+    {
+        return new
+        {
+            source_type = row.SourceType,
+            production_pallet_id = row.ProductionPalletId,
+            hu_code = row.HuCode,
+            source_order_id = row.SourceOrderId,
+            source_order_ref = row.SourceOrderRef,
+            source_prd_doc_id = row.SourcePrdDocId,
+            source_prd_doc_ref = row.SourcePrdDocRef,
+            source_status = row.SourceStatus,
+            target_order_line_id = row.TargetOrderLineId,
+            item_id = row.ItemId,
+            item_name = row.ItemName,
+            planned_qty = row.PlannedQty,
+            production_pallet_group = row.ProductionPalletGroup,
+            is_mixed = row.IsMixed,
+            status = row.Status,
+            recommended = row.Recommended,
+            selected_by_default = row.SelectedByDefault,
+            disabled_reason = row.DisabledReason
         };
     }
 

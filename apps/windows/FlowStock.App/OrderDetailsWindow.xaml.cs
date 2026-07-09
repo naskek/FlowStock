@@ -49,6 +49,7 @@ public partial class OrderDetailsWindow : Window
     private long _orderLinesGridSortingGeneration;
     private readonly IDisposable _liveRefreshSubscription;
     private long _huFateDisplayLoadGeneration;
+    private WpfSelectedCoveragePlanRequest? _pendingSelectedCoveragePlanRequest;
     private readonly CustomerOrderHuBindingCoordinator _huBinding;
 
     public event EventHandler? OrderStateChanged;
@@ -486,6 +487,11 @@ public partial class OrderDetailsWindow : Window
                 ? await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value, WpfProductionPalletPlanMode.SkipInternalSupply).ConfigureAwait(true)
                 : decision == PrePlanFlowDecision.AdoptInternalThenPlan
                     ? await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value, WpfProductionPalletPlanMode.AdoptInternalThenPlan).ConfigureAwait(true)
+                : decision == PrePlanFlowDecision.ApplySelectedCoverageThenPlan
+                    ? await _services.WpfProductionPalletApi.TryPlanOrderAsync(
+                        _orderId.Value,
+                        WpfProductionPalletPlanMode.ApplySelectedCoverageThenPlan,
+                        _pendingSelectedCoveragePlanRequest).ConfigureAwait(true)
                 : await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
@@ -512,6 +518,18 @@ public partial class OrderDetailsWindow : Window
                     $"Server did not confirm adopt_internal_then_plan mode for order_id={_orderId.Value}: mode='{result.Mode}'.");
                 MessageBox.Show(
                     "Сервер не подтвердил перенос planned HU из внутреннего заказа. Проверьте паллеты заказа.",
+                    "Паллеты",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+
+            if (decision == PrePlanFlowDecision.ApplySelectedCoverageThenPlan
+                && !string.Equals(result.Mode, "apply_selected_coverage_then_plan", StringComparison.OrdinalIgnoreCase))
+            {
+                _services.AppLogger.Error(
+                    $"Server did not confirm apply_selected_coverage_then_plan mode for order_id={_orderId.Value}: mode='{result.Mode}'.");
+                MessageBox.Show(
+                    "Сервер не подтвердил применение выбранного покрытия. Проверьте паллеты заказа.",
                     "Паллеты",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
@@ -593,6 +611,12 @@ public partial class OrderDetailsWindow : Window
                 message = $"{message}{Environment.NewLine}{Environment.NewLine}{adoptedSummary}";
             }
 
+            if (result.BoundWarehouseHusOrEmpty.Count > 0)
+            {
+                message = $"{message}{Environment.NewLine}{Environment.NewLine}" +
+                          $"Привязано складских HU: {result.BoundWarehouseHuCount}, количество {FormatQty(result.BoundWarehouseQty)}";
+            }
+
             MessageBox.Show(message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
             LoadOrder();
         }
@@ -607,100 +631,80 @@ public partial class OrderDetailsWindow : Window
         Abort,
         PlanFull,
         PlanSafeOnly,
-        AdoptInternalThenPlan
+        AdoptInternalThenPlan,
+        ApplySelectedCoverageThenPlan
     }
 
     private async Task<PrePlanFlowDecision> RunPrePlanCoverageFlowAsync(long orderId)
     {
+        _pendingSelectedCoveragePlanRequest = null;
         if (_order?.Type != OrderType.Customer)
         {
             return PrePlanFlowDecision.PlanFull;
         }
 
-        var boundHuThisFlow = false;
-        while (true)
+        var preview = await _services.WpfProductionPalletApi.TryGetPrePlanCoveragePreviewAsync(orderId).ConfigureAwait(true);
+        if (!preview.IsSuccess)
         {
-            var preview = await _services.WpfProductionPalletApi.TryGetPrePlanCoveragePreviewAsync(orderId).ConfigureAwait(true);
-            if (!preview.IsSuccess)
+            if (preview.IsEndpointMissing)
             {
-                if (preview.IsEndpointMissing)
-                {
-                    _services.AppLogger.Error(
-                        $"Pre-plan coverage preview endpoint is not available on server for order_id={orderId}: {preview.Message}");
-                    return PrePlanFlowDecision.PlanFull;
-                }
-
                 _services.AppLogger.Error(
-                    $"Pre-plan coverage preview failed for order_id={orderId}: {preview.Message}");
-                var neutral = PrePlanCoverageDialog.CreateNeutral(
-                    "Не удалось проверить складские HU и ожидаемый INTERNAL-выпуск.",
-                    "Всё равно сформировать план?");
-                neutral.Owner = this;
-                return neutral.ShowDialog() == true && neutral.SelectedAction == PrePlanDialogAction.PlanAll
-                    ? PrePlanFlowDecision.PlanFull
-                    : PrePlanFlowDecision.Abort;
-            }
-
-            if (boundHuThisFlow && preview.WouldPlanLineCount == 0)
-            {
-                MessageBox.Show(
-                    "Производственное планирование не требуется: нехватка закрыта складскими HU.",
-                    "Паллеты",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-                return PrePlanFlowDecision.Abort;
-            }
-
-            if (!preview.HasWarning && !preview.HasFreeWarehouseHu)
-            {
+                    $"Pre-plan coverage preview endpoint is not available on server for order_id={orderId}: {preview.Message}");
                 return PrePlanFlowDecision.PlanFull;
             }
 
-            var projectedAdoptionSummary = BuildProjectedAdoptionSummary(preview.AdoptableInternalPlannedHusOrEmpty);
-            var dialogMessage = string.IsNullOrEmpty(projectedAdoptionSummary)
-                ? preview.WarningMessage
-                : $"{preview.WarningMessage}{Environment.NewLine}{Environment.NewLine}{projectedAdoptionSummary}";
-            var dialog = new PrePlanCoverageDialog(
-                dialogMessage,
-                preview.HasWarning
-                    ? "Сформировать новый паллетный план для клиентского заказа?"
-                    : "Сформировать паллетный план, не привязывая складские HU?",
-                showBindHuFirst: preview.HasFreeWarehouseHu,
-                showPlanSafeOnly: preview.HasWarning,
-                planSafeOnlyEnabled: preview.SafeLineCount > 0,
-                showAdoptInternal: preview.AdoptableInternalPlannedHusOrEmpty.Count > 0)
-            {
-                Owner = this
-            };
-            if (dialog.ShowDialog() != true)
-            {
+            _services.AppLogger.Error(
+                $"Pre-plan coverage preview failed for order_id={orderId}: {preview.Message}");
+            var neutral = PrePlanCoverageDialog.CreateNeutral(
+                "Не удалось проверить складские HU и ожидаемый INTERNAL-выпуск.",
+                "Всё равно сформировать план?");
+            neutral.Owner = this;
+            return neutral.ShowDialog() == true && neutral.SelectedAction == PrePlanDialogAction.PlanAll
+                ? PrePlanFlowDecision.PlanFull
+                : PrePlanFlowDecision.Abort;
+        }
+
+        var hasUnifiedCandidates = preview.WarehouseHuCandidatesOrEmpty.Count > 0
+                                   || preview.InternalPlannedHuCandidatesOrEmpty.Count > 0;
+        if (!preview.HasWarning && !hasUnifiedCandidates)
+        {
+            return PrePlanFlowDecision.PlanFull;
+        }
+
+        var projectedAdoptionSummary = BuildProjectedAdoptionSummary(preview.AdoptableInternalPlannedHusOrEmpty);
+        var dialogMessage = string.IsNullOrWhiteSpace(preview.WarningMessage)
+            ? "Можно применить доступное покрытие перед формированием паллетного плана."
+            : preview.WarningMessage;
+        if (!string.IsNullOrEmpty(projectedAdoptionSummary))
+        {
+            dialogMessage = $"{dialogMessage}{Environment.NewLine}{Environment.NewLine}{projectedAdoptionSummary}";
+        }
+
+        var dialog = new PrePlanCoverageDialog(
+            preview,
+            dialogMessage,
+            "Выберите покрытие и действие.",
+            showPlanSafeOnly: preview.HasWarning,
+            planSafeOnlyEnabled: preview.SafeLineCount > 0)
+        {
+            Owner = this
+        };
+        if (dialog.ShowDialog() != true)
+        {
+            return PrePlanFlowDecision.Abort;
+        }
+
+        switch (dialog.SelectedAction)
+        {
+            case PrePlanDialogAction.PlanAll:
+                return PrePlanFlowDecision.PlanFull;
+            case PrePlanDialogAction.PlanSafeOnly:
+                return PrePlanFlowDecision.PlanSafeOnly;
+            case PrePlanDialogAction.ApplySelectedCoverageThenPlan:
+                _pendingSelectedCoveragePlanRequest = dialog.BuildSelectedCoverageRequest();
+                return PrePlanFlowDecision.ApplySelectedCoverageThenPlan;
+            default:
                 return PrePlanFlowDecision.Abort;
-            }
-
-            switch (dialog.SelectedAction)
-            {
-                case PrePlanDialogAction.PlanAll:
-                    return PrePlanFlowDecision.PlanFull;
-                case PrePlanDialogAction.PlanSafeOnly:
-                    return PrePlanFlowDecision.PlanSafeOnly;
-                case PrePlanDialogAction.AdoptInternalThenPlan:
-                    return PrePlanFlowDecision.AdoptInternalThenPlan;
-                case PrePlanDialogAction.BindHuFirst:
-                    var bindingWindow = new ReadyHuBindingWindow(_services, orderId)
-                    {
-                        Owner = this
-                    };
-                    if (bindingWindow.ShowDialog() == true)
-                    {
-                        LoadOrder(CaptureSelectedOrderLineId());
-                        OrderStateChanged?.Invoke(this, EventArgs.Empty);
-                    }
-
-                    boundHuThisFlow = true;
-                    continue;
-                default:
-                    return PrePlanFlowDecision.Abort;
-            }
         }
     }
 

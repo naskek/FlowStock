@@ -4,7 +4,8 @@ public enum ProductionPalletPlanMode
 {
     Full,
     SkipInternalSupply,
-    AdoptInternalThenPlan
+    AdoptInternalThenPlan,
+    ApplySelectedCoverageThenPlan
 }
 
 public sealed class ProductionPalletPrePlanCoveragePreview
@@ -21,6 +22,10 @@ public sealed class ProductionPalletPrePlanCoveragePreview
     public bool HasFreeWarehouseHu { get; init; }
     public IReadOnlyList<ProductionPalletPrePlanFreeHuLine> FreeWarehouseHuLines { get; init; } =
         Array.Empty<ProductionPalletPrePlanFreeHuLine>();
+    public IReadOnlyList<ProductionPalletWarehouseHuCandidate> WarehouseHuCandidates { get; init; } =
+        Array.Empty<ProductionPalletWarehouseHuCandidate>();
+    public IReadOnlyList<ProductionPalletInternalPlannedHuCandidate> InternalPlannedHuCandidates { get; init; } =
+        Array.Empty<ProductionPalletInternalPlannedHuCandidate>();
     public IReadOnlyList<ProductionPalletProjectedAdoptionHu> AdoptableInternalPlannedHus { get; init; } =
         Array.Empty<ProductionPalletProjectedAdoptionHu>();
     public IReadOnlyList<ProductionPalletAdoptionSkippedCandidate> AdoptionSkippedCandidates { get; init; } =
@@ -28,6 +33,74 @@ public sealed class ProductionPalletPrePlanCoveragePreview
     public int ProjectedAdoptedPalletCount { get; init; }
     public double ProjectedAdoptedQty { get; init; }
     public double ProjectedRemainingQtyAfterAdoption { get; init; }
+}
+
+public sealed class ProductionPalletSelectedCoveragePlanRequest
+{
+    public IReadOnlyList<ProductionPalletSelectedWarehouseHu> SelectedWarehouseHus { get; init; } =
+        Array.Empty<ProductionPalletSelectedWarehouseHu>();
+    public IReadOnlyList<long> SelectedInternalProductionPalletIds { get; init; } = Array.Empty<long>();
+    public bool PlanRemainder { get; init; } = true;
+}
+
+public sealed class ProductionPalletSelectedWarehouseHu
+{
+    public string HuCode { get; init; } = string.Empty;
+    public long ItemId { get; init; }
+    public long TargetOrderLineId { get; init; }
+}
+
+public sealed class ProductionPalletSelectedCoverageException : InvalidOperationException
+{
+    public ProductionPalletSelectedCoverageException(
+        string code,
+        string message,
+        IReadOnlyList<string>? problems = null)
+        : base(message)
+    {
+        Code = code;
+        Problems = problems ?? Array.Empty<string>();
+    }
+
+    public string Code { get; }
+    public IReadOnlyList<string> Problems { get; }
+}
+
+public sealed class ProductionPalletWarehouseHuCandidate
+{
+    public string SourceType { get; init; } = "warehouse";
+    public string HuCode { get; init; } = string.Empty;
+    public long ItemId { get; init; }
+    public string ItemName { get; init; } = string.Empty;
+    public long TargetOrderLineId { get; init; }
+    public double Qty { get; init; }
+    public string Status { get; init; } = "LEDGER_STOCK";
+    public string SourceRef { get; init; } = string.Empty;
+    public bool Recommended { get; init; }
+    public bool SelectedByDefault { get; init; }
+    public string DisabledReason { get; init; } = string.Empty;
+}
+
+public sealed class ProductionPalletInternalPlannedHuCandidate
+{
+    public string SourceType { get; init; } = "internal_plan";
+    public long ProductionPalletId { get; init; }
+    public string HuCode { get; init; } = string.Empty;
+    public long SourceOrderId { get; init; }
+    public string SourceOrderRef { get; init; } = string.Empty;
+    public long SourcePrdDocId { get; init; }
+    public string SourcePrdDocRef { get; init; } = string.Empty;
+    public string SourceStatus { get; init; } = string.Empty;
+    public long? TargetOrderLineId { get; init; }
+    public long ItemId { get; init; }
+    public string ItemName { get; init; } = string.Empty;
+    public double PlannedQty { get; init; }
+    public string? ProductionPalletGroup { get; init; }
+    public bool IsMixed { get; init; }
+    public string Status { get; init; } = ProductionPalletStatus.Planned;
+    public bool Recommended { get; init; }
+    public bool SelectedByDefault { get; init; }
+    public string DisabledReason { get; init; } = string.Empty;
 }
 
 public sealed class ProductionPalletProjectedAdoptionHu

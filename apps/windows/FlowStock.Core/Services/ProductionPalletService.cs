@@ -10,6 +10,7 @@ public sealed class ProductionPalletService
 {
     private const double QtyTolerance = 0.000001d;
     private const string PlanHuCreatedBy = "PRODUCTION-PALLET-PLAN";
+    private const string ReplacedByReadyHuReason = "replaced_by_ready_hu";
     private readonly IDataStore _data;
     private readonly ProductionFillCloseService? _fillClose;
 
@@ -186,6 +187,11 @@ public sealed class ProductionPalletService
             return PlanOrderAdoptInternalThenPlan(orderId);
         }
 
+        if (mode == ProductionPalletPlanMode.ApplySelectedCoverageThenPlan)
+        {
+            return PlanOrderApplySelectedCoverageThenPlan(orderId, new ProductionPalletSelectedCoveragePlanRequest());
+        }
+
         var prdDocId = 0L;
         var wasExisting = false;
         var productionRequired = true;
@@ -274,6 +280,211 @@ public sealed class ProductionPalletService
             Document = baseResult.Document,
             SkippedLines = skippedLines,
             PlannedOrderLineIds = plannedLineIds
+        };
+    }
+
+    public ProductionPalletOrderPlanResult PlanOrderApplySelectedCoverageThenPlan(
+        long orderId,
+        ProductionPalletSelectedCoveragePlanRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var prdDocId = 0L;
+        var wasExisting = false;
+        var productionRequired = true;
+        IReadOnlyList<ProductionPalletWarehouseHuCandidate> boundWarehouseHus = Array.Empty<ProductionPalletWarehouseHuCandidate>();
+        IReadOnlyList<ProductionPalletProjectedAdoptionHu> adopted = Array.Empty<ProductionPalletProjectedAdoptionHu>();
+        IReadOnlyList<ProductionPalletAdoptionSkippedCandidate> skippedCandidates = Array.Empty<ProductionPalletAdoptionSkippedCandidate>();
+        IReadOnlyList<long> plannedLineIds = Array.Empty<long>();
+        int newlyPlannedPalletCount = 0;
+        double newlyPlannedQty = 0;
+
+        _data.ExecuteInTransaction(store =>
+        {
+            var targetOrder = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+            if (targetOrder.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+            {
+                throw new InvalidOperationException(targetOrder.Status == OrderStatus.Merged
+                    ? "Заказ объединён с другим заказом. Выпуск по нему не требуется."
+                    : "Заказ недоступен для планирования паллет.");
+            }
+
+            if (targetOrder.Type != OrderType.Customer)
+            {
+                throw new InvalidOperationException(
+                    "Режим выбранного покрытия доступен только для клиентского заказа.");
+            }
+
+            var lockedSourceOrderIds = store.GetOrders()
+                .Where(order => order.Type == OrderType.Internal)
+                .Where(order => order.Status is OrderStatus.Draft or OrderStatus.InProgress)
+                .Select(order => order.Id)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToArray();
+            var lockOrderIds = lockedSourceOrderIds
+                .Append(orderId)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToArray();
+            if (lockOrderIds.Length > 0 && !store.LockOrdersForUpdate(lockOrderIds))
+            {
+                throw new InvalidOperationException("Не удалось заблокировать заказы для планирования паллет.");
+            }
+
+            targetOrder = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+            EnsureSelectedCoverageTargetOrderIsOpenCustomer(targetOrder);
+            boundWarehouseHus = ApplySelectedWarehouseHuCoverageInStore(store, targetOrder, request.SelectedWarehouseHus);
+
+            var linesToPlan = GetLinesNeedingPalletAppend(store, targetOrder)
+                .Where(line => line.QtyRemaining > QtyTolerance)
+                .ToArray();
+            plannedLineIds = linesToPlan.Select(line => line.OrderLineId).Distinct().ToArray();
+
+            var selectedInternalIds = (request.SelectedInternalProductionPalletIds ?? Array.Empty<long>())
+                .Where(id => id > 0)
+                .Distinct()
+                .ToHashSet();
+            var projection = BuildInternalPlanAdoptionProjection(store, targetOrder, linesToPlan, lockedSourceOrderIds);
+            skippedCandidates = projection.Skipped;
+            adopted = selectedInternalIds.Count == 0
+                ? Array.Empty<ProductionPalletProjectedAdoptionHu>()
+                : projection.Adoptable
+                    .Where(candidate => selectedInternalIds.Contains(candidate.ProductionPalletId))
+                    .ToArray();
+
+            var adoptedIds = adopted.Select(candidate => candidate.ProductionPalletId).ToHashSet();
+            var missingSelectedInternalIds = selectedInternalIds.Where(id => !adoptedIds.Contains(id)).OrderBy(id => id).ToArray();
+            if (missingSelectedInternalIds.Length > 0)
+            {
+                throw SelectedCoverageError(
+                    "STALE_INTERNAL_SELECTION",
+                    "Выбранные planned HU из INTERNAL изменились или больше не подходят. Обновите preview и повторите действие.",
+                    missingSelectedInternalIds.Select(id => $"production_pallet_id={id}").ToArray());
+            }
+
+            if (adopted.Count > 0)
+            {
+                var existingDoc = FindPreparedOpenProductionReceipt(store, orderId, requireRemaining: false)
+                                  ?? FindReusableEmptyProductionReceipt(store, orderId);
+                if (existingDoc != null)
+                {
+                    prdDocId = existingDoc.Id;
+                    wasExisting = true;
+                }
+                else
+                {
+                    prdDocId = CreateProductionReceipt(store, targetOrder).Id;
+                    wasExisting = false;
+                }
+
+                ValidateSourceQuantityReductionForAdoption(store, adopted);
+                int transferredCount;
+                try
+                {
+                    transferredCount = store.AdoptSelectedProductionPallets(
+                        prdDocId,
+                        orderId,
+                        BuildSelectedAdoptionRows(adopted));
+                }
+                catch (InvalidOperationException ex)
+                {
+                    throw SelectedCoverageError(
+                        "STALE_INTERNAL_SELECTION",
+                        ex.Message);
+                }
+
+                if (transferredCount != adopted.Count)
+                {
+                    throw SelectedCoverageError(
+                        "STALE_INTERNAL_SELECTION",
+                        "Нельзя перенести planned HU: часть выбранных паллет изменилась до переноса. Обновите preview и повторите действие.");
+                }
+
+                ReduceSourceInternalOrderLines(store, adopted);
+
+                foreach (var sourceDocId in adopted.Select(candidate => candidate.SourcePrdDocId).Distinct())
+                {
+                    var sourceOrderId = adopted.First(candidate => candidate.SourcePrdDocId == sourceDocId).SourceOrderId;
+                    EmptyDraftProductionReceiptCleanup.TryDeleteEmptyDraftProductionReceiptIfSafe(
+                        store,
+                        sourceOrderId,
+                        sourceDocId);
+                }
+
+                CleanupDepletedSourceInternalOrderLines(store, adopted);
+
+                foreach (var sourceOrderId in adopted.Select(candidate => candidate.SourceOrderId).Distinct())
+                {
+                    InternalOrderMergeService.TryMarkAsMerged(
+                        store,
+                        sourceOrderId,
+                        orderId,
+                        targetOrder.OrderRef);
+                }
+            }
+
+            var palletIdsBeforeAppend = GetProductionPalletsByOrder(store, orderId)
+                .Select(pallet => pallet.Id)
+                .ToHashSet();
+            var preparedDoc = FindPreparedOpenProductionReceipt(store, orderId, requireRemaining: false);
+            if (preparedDoc != null)
+            {
+                prdDocId = preparedDoc.Id;
+                wasExisting = wasExisting || adopted.Count == 0;
+            }
+
+            if (request.PlanRemainder)
+            {
+                productionRequired = AppendPlannedPalletsForOrderLinesInStore(
+                    store,
+                    targetOrder,
+                    orderId,
+                    scopedOrderLineIds: null,
+                    allowEmptyRemaining: adopted.Count > 0 || boundWarehouseHus.Count > 0,
+                    out prdDocId,
+                    existingPrdDocId: prdDocId);
+            }
+            else
+            {
+                productionRequired = false;
+            }
+
+            var newPallets = GetProductionPalletsByOrder(store, orderId)
+                .Where(pallet => !palletIdsBeforeAppend.Contains(pallet.Id))
+                .ToArray();
+            newlyPlannedPalletCount = newPallets.Length;
+            newlyPlannedQty = newPallets.Sum(pallet => Math.Max(0, pallet.PlannedQty));
+        });
+
+        var baseResult = productionRequired || prdDocId > 0
+            ? BuildOrderPlanResult(orderId, prdDocId, wasExisting)
+            : BuildNoProductionRequiredResult(orderId);
+        var message = boundWarehouseHus.Count > 0 || adopted.Count > 0
+            ? $"Применено покрытие: складских HU {boundWarehouseHus.Count}, planned HU из INTERNAL {adopted.Count}. Сформирован остаток к производству."
+            : baseResult.Message;
+        return new ProductionPalletOrderPlanResult
+        {
+            OrderId = baseResult.OrderId,
+            OrderRef = baseResult.OrderRef,
+            PrdDocId = baseResult.PrdDocId,
+            PrdDocRef = baseResult.PrdDocRef,
+            WasExisting = baseResult.WasExisting,
+            ProductionRequired = baseResult.ProductionRequired,
+            Message = message,
+            Summary = baseResult.Summary,
+            Document = baseResult.Document,
+            PlannedOrderLineIds = plannedLineIds,
+            AdoptedInternalPlannedHus = adopted,
+            AdoptionSkippedCandidates = skippedCandidates,
+            ReprintRequiredHus = adopted.Where(candidate => candidate.WillRequireReprint).ToArray(),
+            BoundWarehouseHus = boundWarehouseHus,
+            AdoptedPalletCount = adopted.Count,
+            AdoptedQty = adopted.Sum(candidate => candidate.PlannedQty),
+            BoundWarehouseHuCount = boundWarehouseHus.Count,
+            BoundWarehouseQty = boundWarehouseHus.Sum(candidate => candidate.Qty),
+            NewlyPlannedPalletCount = newlyPlannedPalletCount,
+            NewlyPlannedQty = newlyPlannedQty
         };
     }
 
@@ -462,6 +673,307 @@ public sealed class ProductionPalletService
                     .ToArray()
             })
             .ToArray();
+    }
+
+    private static IReadOnlyList<ProductionPalletWarehouseHuCandidate> ApplySelectedWarehouseHuCoverageInStore(
+        IDataStore store,
+        Order targetOrder,
+        IReadOnlyList<ProductionPalletSelectedWarehouseHu>? selectedWarehouseHus)
+    {
+        selectedWarehouseHus ??= Array.Empty<ProductionPalletSelectedWarehouseHu>();
+        if (selectedWarehouseHus.Count == 0)
+        {
+            return Array.Empty<ProductionPalletWarehouseHuCandidate>();
+        }
+
+        if (store is not IOptimizedHuReservationCandidatesStore)
+        {
+            throw SelectedCoverageError(
+                "WAREHOUSE_CANDIDATES_UNSUPPORTED",
+                "Хранилище не поддерживает проверку складских HU.");
+        }
+
+        var normalizedSelections = selectedWarehouseHus
+            .Select(selection => new
+            {
+                HuCode = HuBindingApplyShared.NormalizeHu(selection.HuCode),
+                selection.ItemId,
+                selection.TargetOrderLineId
+            })
+            .ToArray();
+        if (normalizedSelections.Any(selection => string.IsNullOrWhiteSpace(selection.HuCode)
+                                                  || selection.ItemId <= 0
+                                                  || selection.TargetOrderLineId <= 0))
+        {
+            throw SelectedCoverageError(
+                "INVALID_WAREHOUSE_SELECTION",
+                "Некорректный выбор складских HU. Обновите preview и повторите действие.");
+        }
+
+        var duplicateHu = normalizedSelections
+            .GroupBy(selection => selection.HuCode!, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicateHu != null)
+        {
+            throw SelectedCoverageError(
+                "DUPLICATE_WAREHOUSE_HU_SELECTION",
+                $"HU '{duplicateHu.Key}' выбран более одного раза.");
+        }
+
+        var orderLines = store.GetOrderLines(targetOrder.Id)
+            .Where(line => line.Id > 0)
+            .ToDictionary(line => line.Id);
+        var itemNamesById = store.GetItems(null).ToDictionary(item => item.Id, item => item.Name);
+        var existingPlanLines = store.GetOrderReceiptPlanLines(targetOrder.Id)
+            .Where(line => line.QtyPlanned > QtyTolerance)
+            .ToArray();
+        var shipmentRemainingByLine = store.GetOrderShipmentRemaining(targetOrder.Id)
+            .ToDictionary(line => line.OrderLineId);
+        var reservedByOtherActiveCustomerOrders = store.GetReservedOrderReceiptHuCodes(targetOrder.Id)
+            .Select(HuBindingApplyShared.NormalizeHu)
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Cast<string>()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var reservedOwnerByHu = (store.GetHuOrderContextRows() ?? Array.Empty<HuOrderContextRow>())
+            .Where(row => row.ReservedCustomerOrderId.HasValue && row.ReservedCustomerOrderId.Value != targetOrder.Id)
+            .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
+            .GroupBy(row => HuBindingApplyShared.NormalizeHu(row.HuCode)!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var candidatesService = new HuReservationCandidatesService(store);
+        var affectedLineIds = normalizedSelections.Select(selection => selection.TargetOrderLineId).Distinct().ToHashSet();
+        var duplicateHuGuard = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        var replacementLines = new List<OrderReceiptPlanLine>();
+        var applied = new List<ProductionPalletWarehouseHuCandidate>();
+        var palletsToCancel = new List<long>();
+
+        foreach (var group in normalizedSelections.GroupBy(selection => selection.TargetOrderLineId))
+        {
+            if (!orderLines.TryGetValue(group.Key, out var orderLine))
+            {
+                throw SelectedCoverageError(
+                    "WAREHOUSE_TARGET_LINE_NOT_FOUND",
+                    $"Строка заказа {group.Key} не найдена.");
+            }
+
+            var selectedForLine = group.ToArray();
+            if (selectedForLine.Any(selection => selection.ItemId != orderLine.ItemId))
+            {
+                throw SelectedCoverageError(
+                    "WAREHOUSE_ITEM_MISMATCH",
+                    $"Выбранная складская HU не соответствует товару строки {orderLine.Id}.");
+            }
+
+            var currentPlanForLine = existingPlanLines
+                .Where(line => line.OrderLineId == orderLine.Id)
+                .OrderBy(line => line.SortOrder)
+                .ThenBy(line => line.Id)
+                .ToArray();
+            var previousHuCodes = currentPlanForLine
+                .Select(line => HuBindingApplyShared.NormalizeHu(line.ToHu))
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Cast<string>()
+                .ToArray();
+            var previousHuSet = previousHuCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var finalHuCodes = previousHuCodes
+                .Concat(selectedForLine.Select(selection => selection.HuCode!))
+                .ToArray();
+            try
+            {
+                HuBindingApplyShared.ValidateDuplicateHuInFinalSelection(finalHuCodes, orderLine.Id, duplicateHuGuard);
+                HuBindingApplyShared.ValidateHuNotReservedOnOtherUnaffectedLine(
+                    targetOrder.Id,
+                    orderLine.Id,
+                    finalHuCodes,
+                    affectedLineIds,
+                    existingPlanLines);
+            }
+            catch (OrderHuBindingApplyFinalException ex)
+            {
+                throw SelectedCoverageError(ex.ErrorCode, ex.Message, ex.Problems);
+            }
+
+            var candidatesByHu = HuBindingApplyShared.BuildCandidatesByHu(candidatesService, targetOrder.Id, orderLine);
+            var selectedCandidates = new List<HuReservationCandidateResult>();
+            foreach (var selection in selectedForLine)
+            {
+                var huCode = selection.HuCode!;
+                if (previousHuSet.Contains(huCode))
+                {
+                    throw SelectedCoverageError(
+                        "WAREHOUSE_HU_ALREADY_BOUND",
+                        $"HU '{huCode}' уже привязана к заказу. Обновите preview и повторите действие.");
+                }
+
+                if (reservedByOtherActiveCustomerOrders.Contains(huCode))
+                {
+                    if (reservedOwnerByHu.TryGetValue(huCode, out var owner))
+                    {
+                        throw SelectedCoverageError(
+                            "HU_RESERVED_BY_OTHER_ORDER",
+                            $"HU '{huCode}' уже закреплён за другим активным клиентским заказом.",
+                            [$"HU '{huCode}' принадлежит заказу {owner.ReservedCustomerOrderRef ?? owner.ReservedCustomerOrderId!.Value.ToString(CultureInfo.InvariantCulture)}."]);
+                    }
+
+                    throw SelectedCoverageError(
+                        "HU_RESERVED_BY_OTHER_ORDER",
+                        $"HU '{huCode}' уже зарезервирован другим активным клиентским заказом.",
+                        [$"HU '{huCode}' не может быть выбран для заказа {targetOrder.Id}."]);
+                }
+
+                if (!candidatesByHu.TryGetValue(huCode, out var candidate)
+                    || !string.Equals(candidate.Source, OrderHuReservationApplyService.SourceLedgerStock, StringComparison.OrdinalIgnoreCase)
+                    || candidate.Qty <= QtyTolerance)
+                {
+                    throw SelectedCoverageError(
+                        "STALE_WAREHOUSE_SELECTION",
+                        $"HU '{huCode}' больше не доступна как свободная складская HU. Обновите preview и повторите действие.");
+                }
+
+                if (candidate.ReservedByOrderId.HasValue && candidate.ReservedByOrderId.Value != targetOrder.Id)
+                {
+                    throw SelectedCoverageError(
+                        "WAREHOUSE_HU_RESERVED_BY_OTHER_ORDER",
+                        $"HU '{huCode}' уже зарезервирована другим клиентским заказом.");
+                }
+
+                selectedCandidates.Add(candidate);
+            }
+
+            var previousQty = currentPlanForLine.Sum(line => Math.Max(0, line.QtyPlanned));
+            var selectedQty = selectedCandidates.Sum(candidate => Math.Max(0, candidate.Qty));
+            var finalBoundQty = previousQty + selectedQty;
+            var remainingQty = HuBindingApplyShared.ResolveShipmentRemaining(orderLine, shipmentRemainingByLine);
+            if (finalBoundQty > remainingQty + QtyTolerance)
+            {
+                throw SelectedCoverageError(
+                    "WAREHOUSE_QTY_EXCEEDS_REMAINING",
+                    "Выбранные складские HU превышают остаток строки заказа.",
+                    [$"order_line_id={orderLine.Id}", $"final_bound_qty={finalBoundQty:0.###}", $"remaining_qty={remainingQty:0.###}"]);
+            }
+
+            var finalBoundQtyByHu = currentPlanForLine
+                .Where(line => !string.IsNullOrWhiteSpace(line.ToHu))
+                .GroupBy(line => HuBindingApplyShared.NormalizeHu(line.ToHu)!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.Sum(line => Math.Max(0, line.QtyPlanned)), StringComparer.OrdinalIgnoreCase);
+            foreach (var candidate in selectedCandidates)
+            {
+                finalBoundQtyByHu[candidate.HuCode] = finalBoundQtyByHu.TryGetValue(candidate.HuCode, out var current)
+                    ? current + Math.Max(0, candidate.Qty)
+                    : Math.Max(0, candidate.Qty);
+            }
+
+            var surplus = HuBindingApplyShared.ComputeCancellableFuturePlanSurplus(
+                store,
+                targetOrder.Id,
+                orderLine,
+                finalBoundQtyByHu);
+            try
+            {
+                palletsToCancel.AddRange(HuBindingApplyShared.SelectFuturePlanPalletsToCancel(
+                    store,
+                    targetOrder.Id,
+                    orderLine,
+                    surplus));
+            }
+            catch (OrderHuBindingApplyFinalException ex)
+            {
+                throw SelectedCoverageError(
+                    ex.ErrorCode,
+                    ex.Message,
+                    ex.Problems);
+            }
+
+            var sortOrder = 0;
+            foreach (var current in currentPlanForLine)
+            {
+                replacementLines.Add(new OrderReceiptPlanLine
+                {
+                    OrderId = targetOrder.Id,
+                    OrderLineId = orderLine.Id,
+                    ItemId = orderLine.ItemId,
+                    ItemName = current.ItemName,
+                    QtyPlanned = current.QtyPlanned,
+                    ToLocationId = current.ToLocationId,
+                    ToLocationCode = current.ToLocationCode,
+                    ToHu = current.ToHu,
+                    SortOrder = sortOrder++
+                });
+            }
+
+            foreach (var candidate in selectedCandidates)
+            {
+                replacementLines.Add(new OrderReceiptPlanLine
+                {
+                    OrderId = targetOrder.Id,
+                    OrderLineId = orderLine.Id,
+                    ItemId = orderLine.ItemId,
+                    ItemName = itemNamesById.GetValueOrDefault(orderLine.ItemId, string.Empty),
+                    QtyPlanned = candidate.Qty,
+                    ToHu = candidate.HuCode,
+                    SortOrder = sortOrder++
+                });
+                applied.Add(new ProductionPalletWarehouseHuCandidate
+                {
+                    HuCode = candidate.HuCode,
+                    ItemId = orderLine.ItemId,
+                    ItemName = itemNamesById.GetValueOrDefault(orderLine.ItemId, string.Empty),
+                    TargetOrderLineId = orderLine.Id,
+                    Qty = candidate.Qty,
+                    Status = "LEDGER_STOCK",
+                    SourceRef = candidate.Note,
+                    Recommended = true,
+                    SelectedByDefault = true
+                });
+            }
+        }
+
+        store.ReplaceOrderReceiptPlanLinesForOrderLines(targetOrder.Id, affectedLineIds, replacementLines);
+        if (applied.Count > 0 && !targetOrder.UseReservedStock)
+        {
+            store.UpdateOrder(HuBindingApplyShared.CopyOrderWithReservedStock(targetOrder));
+        }
+
+        if (palletsToCancel.Count > 0)
+        {
+            var distinctPalletIds = palletsToCancel.Distinct().ToArray();
+            var cancelled = store.CancelProductionPalletsForReadyHuBinding(
+                distinctPalletIds,
+                ReplacedByReadyHuReason,
+                DateTime.UtcNow);
+            if (cancelled != distinctPalletIds.Length)
+            {
+                throw SelectedCoverageError(
+                    "HU_BINDING_PLAN_CONFLICT",
+                    "Плановые паллеты изменились и не могут быть безопасно отменены.");
+            }
+
+            store.RemoveDocLinesForProductionPallets(distinctPalletIds);
+        }
+
+        new OrderService(store).RefreshPersistedStatus(targetOrder.Id);
+        return applied;
+    }
+
+    private static ProductionPalletSelectedCoverageException SelectedCoverageError(
+        string code,
+        string message,
+        IReadOnlyList<string>? problems = null) =>
+        new(code, message, problems);
+
+    private static void EnsureSelectedCoverageTargetOrderIsOpenCustomer(Order targetOrder)
+    {
+        if (targetOrder.Type != OrderType.Customer)
+        {
+            throw new InvalidOperationException(
+                "Режим выбранного покрытия доступен только для клиентского заказа.");
+        }
+
+        if (targetOrder.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+        {
+            throw new InvalidOperationException(targetOrder.Status == OrderStatus.Merged
+                ? "Заказ объединён с другим заказом. Выпуск по нему не требуется."
+                : "Заказ недоступен для планирования паллет.");
+        }
     }
 
     private static void ValidateSourceQuantityReductionForAdoption(
@@ -658,8 +1170,31 @@ public sealed class ProductionPalletService
             return empty;
         }
 
-        var freeHuLines = BuildFreeWarehouseHuLines(store, order.Id, scope.WouldPlanLines);
-        var adoptionProjection = BuildInternalPlanAdoptionProjection(store, order, scope.WouldPlanLines);
+        var warehouseCandidates = BuildWarehouseHuCandidates(store, order.Id, scope.WouldPlanLines);
+        var freeHuLines = BuildFreeWarehouseHuLines(scope.WouldPlanLines, warehouseCandidates);
+        var linesAfterDefaultWarehouseCoverage = SubtractSelectedWarehouseCandidates(scope.WouldPlanLines, warehouseCandidates);
+        var adoptionProjection = BuildInternalPlanAdoptionProjection(store, order, linesAfterDefaultWarehouseCoverage);
+        var internalCandidates = adoptionProjection.Adoptable
+            .Select(candidate => new ProductionPalletInternalPlannedHuCandidate
+            {
+                ProductionPalletId = candidate.ProductionPalletId,
+                HuCode = candidate.HuCode,
+                SourceOrderId = candidate.SourceOrderId,
+                SourceOrderRef = candidate.SourceOrderRef,
+                SourcePrdDocId = candidate.SourcePrdDocId,
+                SourcePrdDocRef = candidate.SourcePrdDocRef,
+                SourceStatus = candidate.SourceStatus,
+                TargetOrderLineId = candidate.TargetOrderLineId,
+                ItemId = candidate.ItemId,
+                ItemName = candidate.ItemName,
+                PlannedQty = candidate.PlannedQty,
+                ProductionPalletGroup = candidate.ProductionPalletGroup,
+                IsMixed = candidate.IsMixed,
+                Status = candidate.Status,
+                Recommended = true,
+                SelectedByDefault = true
+            })
+            .ToArray();
         return new ProductionPalletPrePlanCoveragePreview
         {
             OrderId = order.Id,
@@ -670,8 +1205,10 @@ public sealed class ProductionPalletService
             WouldPlanLineCount = scope.WouldPlanLines.Count,
             SafeLineCount = scope.SafeLineIds.Count,
             WarningLineCount = scope.SkippedLines.Count,
-            HasFreeWarehouseHu = freeHuLines.Count > 0,
+            HasFreeWarehouseHu = warehouseCandidates.Count > 0,
             FreeWarehouseHuLines = freeHuLines,
+            WarehouseHuCandidates = warehouseCandidates,
+            InternalPlannedHuCandidates = internalCandidates,
             AdoptableInternalPlannedHus = adoptionProjection.Adoptable,
             AdoptionSkippedCandidates = adoptionProjection.Skipped,
             ProjectedAdoptedPalletCount = adoptionProjection.Adoptable.Count,
@@ -1123,48 +1660,127 @@ public sealed class ProductionPalletService
             : itemNamesById.GetValueOrDefault(line.ItemId, string.Empty);
     }
 
-    private static IReadOnlyList<ProductionPalletPrePlanFreeHuLine> BuildFreeWarehouseHuLines(
+    private static IReadOnlyList<ProductionPalletWarehouseHuCandidate> BuildWarehouseHuCandidates(
         IDataStore store,
         long orderId,
         IReadOnlyList<OrderReceiptLine> wouldPlanLines)
     {
-        if (store is not IOptimizedHuReservationCandidatesStore optimizedStore)
+        if (store is not IOptimizedHuReservationCandidatesStore || wouldPlanLines.Count == 0)
         {
-            return Array.Empty<ProductionPalletPrePlanFreeHuLine>();
+            return Array.Empty<ProductionPalletWarehouseHuCandidate>();
         }
 
-        var itemIds = wouldPlanLines.Select(line => line.ItemId).Distinct().ToArray();
         var reservedHu = store.GetOrderReceiptPlanLines(orderId)
             .Select(planLine => planLine.ToHu?.Trim())
             .Where(hu => !string.IsNullOrWhiteSpace(hu))
             .Select(hu => hu!)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var candidates = optimizedStore.GetHuReservationCandidateSources(orderId, itemIds, Array.Empty<string>())
-                         ?? Array.Empty<HuReservationCandidateSourceRow>();
-        var freeByItem = candidates
-            .Where(candidate => string.Equals(candidate.Source, OrderHuReservationApplyService.SourceLedgerStock, StringComparison.OrdinalIgnoreCase))
-            .Where(candidate => candidate.Qty > QtyTolerance)
-            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.HuCode))
-            .Where(candidate => !candidate.ReservedByOrderId.HasValue || candidate.ReservedByOrderId.Value == orderId)
-            .Where(candidate => !reservedHu.Contains(candidate.HuCode.Trim()))
-            .GroupBy(candidate => (candidate.ItemId, HuCode: candidate.HuCode.Trim().ToUpperInvariant()))
+            .ToArray();
+        var result = new HuReservationCandidatesService(store).Build(new HuReservationCandidatesQuery
+        {
+            OrderId = orderId,
+            Lines = wouldPlanLines
+                .Select(line => new HuReservationCandidatesLineQuery
+                {
+                    ClientLineKey = line.OrderLineId.ToString(CultureInfo.InvariantCulture),
+                    OrderLineId = line.OrderLineId,
+                    ItemId = line.ItemId,
+                    QtyOrdered = line.QtyRemaining
+                })
+                .ToArray(),
+            ExcludeHuCodes = reservedHu
+        });
+
+        return result.Lines
+            .SelectMany(line => line.Candidates.Select(candidate => (Line: line, Candidate: candidate)))
+            .Where(entry => string.Equals(entry.Candidate.Source, OrderHuReservationApplyService.SourceLedgerStock, StringComparison.OrdinalIgnoreCase))
+            .Where(entry => entry.Candidate.Qty > QtyTolerance)
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.Candidate.HuCode))
+            .GroupBy(entry => (entry.Line.OrderLineId, HuCode: entry.Candidate.HuCode.Trim().ToUpperInvariant()))
             .Select(group => group.First())
-            .GroupBy(candidate => candidate.ItemId)
+            .Select(entry =>
+            {
+                var sourceRef = entry.Candidate.ReservedByOrderRef
+                                ?? entry.Candidate.SourceOrderRef
+                                ?? entry.Candidate.SourcePrdRef
+                                ?? entry.Candidate.Note
+                                ?? string.Empty;
+                return new ProductionPalletWarehouseHuCandidate
+                {
+                    HuCode = entry.Candidate.HuCode,
+                    ItemId = entry.Line.ItemId,
+                    ItemName = wouldPlanLines.FirstOrDefault(line => line.OrderLineId == entry.Line.OrderLineId)?.ItemName ?? string.Empty,
+                    TargetOrderLineId = entry.Line.OrderLineId ?? 0,
+                    Qty = entry.Candidate.Qty,
+                    Status = "LEDGER_STOCK",
+                    SourceRef = sourceRef,
+                    Recommended = entry.Candidate.AutoSelected,
+                    SelectedByDefault = entry.Candidate.AutoSelected
+                };
+            })
+            .Where(candidate => candidate.TargetOrderLineId > 0)
+            .OrderBy(candidate => candidate.TargetOrderLineId)
+            .ThenBy(candidate => candidate.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static IReadOnlyList<ProductionPalletPrePlanFreeHuLine> BuildFreeWarehouseHuLines(
+        IReadOnlyList<OrderReceiptLine> wouldPlanLines,
+        IReadOnlyList<ProductionPalletWarehouseHuCandidate> warehouseCandidates)
+    {
+        var freeByLine = warehouseCandidates
+            .GroupBy(candidate => candidate.TargetOrderLineId)
             .ToDictionary(
                 group => group.Key,
                 group => (Count: group.Count(), Qty: group.Sum(candidate => Math.Max(0, candidate.Qty))));
-
         return wouldPlanLines
-            .Where(line => freeByItem.ContainsKey(line.ItemId))
+            .Where(line => freeByLine.ContainsKey(line.OrderLineId))
             .Select(line => new ProductionPalletPrePlanFreeHuLine
             {
                 OrderLineId = line.OrderLineId,
                 ItemId = line.ItemId,
                 ItemName = line.ItemName,
                 WouldPlanQty = line.QtyRemaining,
-                FreeHuCount = freeByItem[line.ItemId].Count,
-                FreeHuQty = freeByItem[line.ItemId].Qty
+                FreeHuCount = freeByLine[line.OrderLineId].Count,
+                FreeHuQty = freeByLine[line.OrderLineId].Qty
             })
+            .ToArray();
+    }
+
+    private static IReadOnlyList<OrderReceiptLine> SubtractSelectedWarehouseCandidates(
+        IReadOnlyList<OrderReceiptLine> wouldPlanLines,
+        IReadOnlyList<ProductionPalletWarehouseHuCandidate> warehouseCandidates)
+    {
+        var selectedQtyByLine = warehouseCandidates
+            .Where(candidate => candidate.SelectedByDefault && string.IsNullOrWhiteSpace(candidate.DisabledReason))
+            .GroupBy(candidate => candidate.TargetOrderLineId)
+            .ToDictionary(group => group.Key, group => group.Sum(candidate => Math.Max(0, candidate.Qty)));
+        if (selectedQtyByLine.Count == 0)
+        {
+            return wouldPlanLines;
+        }
+
+        return wouldPlanLines
+            .Select(line =>
+            {
+                var selectedQty = selectedQtyByLine.TryGetValue(line.OrderLineId, out var qty) ? qty : 0d;
+                var remaining = Math.Max(0, line.QtyRemaining - selectedQty);
+                return new OrderReceiptLine
+                {
+                    OrderLineId = line.OrderLineId,
+                    OrderId = line.OrderId,
+                    ItemId = line.ItemId,
+                    ItemName = line.ItemName,
+                    QtyOrdered = line.QtyOrdered,
+                    QtyReceived = line.QtyReceived,
+                    QtyRemaining = remaining,
+                    ProductionPurpose = line.ProductionPurpose,
+                    ToLocationId = line.ToLocationId,
+                    ToLocation = line.ToLocation,
+                    ToHu = line.ToHu,
+                    SortOrder = line.SortOrder
+                };
+            })
+            .Where(line => line.QtyRemaining > QtyTolerance)
             .ToArray();
     }
 
