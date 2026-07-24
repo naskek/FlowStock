@@ -174,6 +174,16 @@
                         <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="150" IsReadOnly="True" />
                         <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="150" IsReadOnly="True" />
                         <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="140" IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="UnitPriceGrossColumn"
+                                            Header="Цена с НДС"
+                                            Binding="{Binding UnitPriceGross, StringFormat={}{0:0.####}}"
+                                            Width="110"
+                                            IsReadOnly="True" />
+                        <DataGridTextColumn x:Name="VatRateColumn"
+                                            Header="НДС, %"
+                                            Binding="{Binding VatRate, StringFormat={}{0:0.####}}"
+                                            Width="85"
+                                            IsReadOnly="True" />
                         <DataGridTextColumn x:Name="HuAvailableColumn" Header="Доступно HU" Binding="{Binding AvailableHuDisplay}" Width="120" IsReadOnly="True" />
                         <DataGridTemplateColumn x:Name="HuBoundColumn" Header="HU по строке" Width="460" MinWidth="420">
                             <DataGridTemplateColumn.CellTemplate>
@@ -268,4 +278,3 @@
         </Grid>
     </Grid>
 </Window>
-

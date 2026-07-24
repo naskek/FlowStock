@@ -405,16 +405,37 @@ public sealed class OrderService
 
         _data.ExecuteInTransaction(store =>
         {
+            var commercialTermsByLine = new Dictionary<OrderLineView, CommercialTermsResolution?>();
+            var resolver = new CommercialTermsResolver(store);
+            foreach (var line in normalized)
+            {
+                if (type == OrderType.Internal)
+                {
+                    ValidateInternalCommercialIntent(line);
+                    commercialTermsByLine[line] = null;
+                    continue;
+                }
+
+                commercialTermsByLine[line] = resolver.ResolveForNewCustomerLine(
+                    partnerId!.Value,
+                    line.ItemId,
+                    line.ChangeUnitPriceGross,
+                    line.UnitPriceGross);
+            }
+
             orderId = store.AddOrder(order);
             foreach (var line in normalized)
             {
+                var terms = commercialTermsByLine[line];
                 store.AddOrderLine(new OrderLine
                 {
                     OrderId = orderId,
                     ItemId = line.ItemId,
                     QtyOrdered = line.QtyOrdered,
                     ProductionPurpose = ResolveLinePurpose(type, line.ProductionPurpose),
-                    ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup)
+                    ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup),
+                    UnitPriceGross = terms?.UnitPriceGross,
+                    VatRate = terms?.VatRate
                 });
             }
 
@@ -521,17 +542,108 @@ public sealed class OrderService
 
         _data.ExecuteInTransaction(store =>
         {
-            store.UpdateOrder(updated);
-
             var existingLines = store.GetOrderLines(orderId);
+            var activeExistingLines = existingLines
+                .Where(line => !line.CancelledAt.HasValue)
+                .ToList();
+            if (activeExistingLines.Count > 0
+                && existing.PartnerId != updated.PartnerId)
+            {
+                throw new CommercialTermsException(
+                    "ORDER_PARTNER_CHANGE_REQUIRES_EMPTY_ORDER",
+                    "Нельзя изменить контрагента заказа с активными строками. Сначала удалите строки или создайте новый заказ.");
+            }
+
+            if (activeExistingLines.Count > 0 && existing.Type != updated.Type)
+            {
+                throw new CommercialTermsException(
+                    "ORDER_TYPE_CHANGE_REQUIRES_EMPTY_ORDER",
+                    "Нельзя изменить тип заказа с активными строками.");
+            }
+
             var existingByItem = existingLines
                 .GroupBy(line => (line.ItemId, ProductionPurpose: ResolveLinePurpose(type, line.ProductionPurpose)))
                 .ToDictionary(group => group.Key, group => group.OrderBy(line => line.Id).ToList());
+            var existingById = existingLines.ToDictionary(line => line.Id);
             var incomingKeys = normalized
                 .Select(line => (line.ItemId, ProductionPurpose: ResolveLinePurpose(type, line.ProductionPurpose)))
                 .ToHashSet();
             var linesNeedingPalletSync = new List<(long OrderLineId, double OrderedQty, double OldOrderedQty)>();
             var additionallyAffectedPalletLineIds = new HashSet<long>();
+            var newCommercialTermsByKey =
+                new Dictionary<(long ItemId, ProductionLinePurpose ProductionPurpose), CommercialTermsResolution?>();
+            var priceUpdatesByLineId = new Dictionary<long, decimal>();
+            var commercialTermsResolver = new CommercialTermsResolver(store);
+
+            foreach (var line in normalized)
+            {
+                var linePurpose = ResolveLinePurpose(type, line.ProductionPurpose);
+                var key = (line.ItemId, ProductionPurpose: linePurpose);
+                if (line.Id > 0)
+                {
+                    if (!existingById.TryGetValue(line.Id, out var identified)
+                        || identified.ItemId != line.ItemId
+                        || ResolveLinePurpose(type, identified.ProductionPurpose) != linePurpose)
+                    {
+                        throw new CommercialTermsException(
+                            "ORDER_LINE_NOT_FOUND",
+                            "Строка заказа не найдена или не соответствует переданному товару.");
+                    }
+                }
+
+                if (existingByItem.TryGetValue(key, out var matched) && matched.Count > 0)
+                {
+                    if (!line.ChangeUnitPriceGross)
+                    {
+                        if (line.UnitPriceGross.HasValue)
+                        {
+                            throw new CommercialTermsException(
+                                CommercialTermsResolver.UnitPriceIntentRequired,
+                                "Для ручной цены необходимо явно указать намерение изменить цену.");
+                        }
+
+                        continue;
+                    }
+
+                    if (type == OrderType.Internal)
+                    {
+                        ValidateInternalCommercialIntent(line);
+                    }
+
+                    var newPrice = CommercialTermsResolver.ValidateManualPrice(line.UnitPriceGross);
+                    var primary = line.Id > 0
+                        ? matched.First(candidate => candidate.Id == line.Id)
+                        : matched[0];
+                    if (primary.UnitPriceGross == newPrice)
+                    {
+                        continue;
+                    }
+
+                    if (store.HasCommercialShipmentForOrderLine(primary.Id))
+                    {
+                        throw new CommercialTermsException(
+                            CommercialTermsResolver.CommercialTermsLocked,
+                            "Цена строки заказа не может быть изменена после проведённой отгрузки.");
+                    }
+
+                    priceUpdatesByLineId[primary.Id] = newPrice;
+                    continue;
+                }
+
+                if (type == OrderType.Internal)
+                {
+                    ValidateInternalCommercialIntent(line);
+                    newCommercialTermsByKey[key] = null;
+                }
+                else
+                {
+                    newCommercialTermsByKey[key] = commercialTermsResolver.ResolveForNewCustomerLine(
+                        partnerId!.Value,
+                        line.ItemId,
+                        line.ChangeUnitPriceGross,
+                        line.UnitPriceGross);
+                }
+            }
 
             foreach (var entry in existingByItem)
             {
@@ -550,6 +662,8 @@ public sealed class OrderService
                     }
                 }
             }
+
+            store.UpdateOrder(updated);
 
             foreach (var line in normalized)
             {
@@ -585,6 +699,11 @@ public sealed class OrderService
                         store.UpdateOrderLinePurpose(primary.Id, linePurpose);
                     }
 
+                    if (priceUpdatesByLineId.TryGetValue(primary.Id, out var updatedUnitPriceGross))
+                    {
+                        store.UpdateOrderLineUnitPriceGross(primary.Id, updatedUnitPriceGross);
+                    }
+
                     var incomingGroup = NormalizePalletGroup(line.ProductionPalletGroup);
                     if (!string.Equals(NormalizePalletGroup(primary.ProductionPalletGroup), incomingGroup, StringComparison.OrdinalIgnoreCase))
                     {
@@ -616,7 +735,9 @@ public sealed class OrderService
                     ItemId = line.ItemId,
                     QtyOrdered = line.QtyOrdered,
                     ProductionPurpose = linePurpose,
-                    ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup)
+                    ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup),
+                    UnitPriceGross = newCommercialTermsByKey[key]?.UnitPriceGross,
+                    VatRate = newCommercialTermsByKey[key]?.VatRate
                 });
                 if (type is OrderType.Internal or OrderType.Customer)
                 {
@@ -1544,21 +1665,62 @@ public sealed class OrderService
             var key = (line.ItemId, purpose);
             if (grouped.TryGetValue(key, out var existing))
             {
+                if (existing.Id > 0 && line.Id > 0 && existing.Id != line.Id)
+                {
+                    throw new CommercialTermsException(
+                        "CONFLICTING_ORDER_LINE_IDS",
+                        "Нельзя объединить разные существующие строки заказа.");
+                }
+
+                if (line.ChangeUnitPriceGross)
+                {
+                    if (existing.ChangeUnitPriceGross
+                        && existing.UnitPriceGross != line.UnitPriceGross)
+                    {
+                        throw new CommercialTermsException(
+                            "CONFLICTING_LINE_PRICE_OVERRIDES",
+                            "Для объединяемых строк переданы разные ручные цены.");
+                    }
+
+                    existing.ChangeUnitPriceGross = true;
+                    existing.UnitPriceGross = line.UnitPriceGross;
+                }
+                else if (line.UnitPriceGross.HasValue)
+                {
+                    throw new CommercialTermsException(
+                        CommercialTermsResolver.UnitPriceIntentRequired,
+                        "Для ручной цены необходимо явно указать намерение изменить цену.");
+                }
+
                 existing.QtyOrdered += line.QtyOrdered;
                 continue;
             }
 
             grouped[key] = new OrderLineView
             {
+                Id = line.Id,
                 ItemId = line.ItemId,
                 ItemName = line.ItemName,
                 QtyOrdered = line.QtyOrdered,
+                UnitPriceGross = line.UnitPriceGross,
+                VatRate = line.VatRate,
+                ChangeUnitPriceGross = line.ChangeUnitPriceGross,
                 ProductionPurpose = purpose,
                 ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup)
             };
         }
 
         return grouped.Values.ToList();
+    }
+
+    private static void ValidateInternalCommercialIntent(OrderLineView line)
+    {
+        if (line.ChangeUnitPriceGross || line.UnitPriceGross.HasValue)
+        {
+            throw new CommercialTermsException(
+                CommercialTermsResolver.CommercialTermsNotAllowedForInternal,
+                "Для внутреннего заказа нельзя задавать коммерческую цену.");
+        }
     }
 
     private static ProductionLinePurpose ResolveLinePurpose(OrderType orderType, ProductionLinePurpose requested)

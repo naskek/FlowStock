@@ -125,7 +125,11 @@ public sealed class CustomerHuAutoBindPhase1Tests
             Name = "Товар",
             BaseUom = "шт",
             ItemTypeId = itemTypeId,
-            MaxQtyPerHu = 600
+            MaxQtyPerHu = 600,
+            DefaultSalePriceGross = 100m,
+            DefaultSaleVatRateId = 1,
+            DefaultSaleVatRate = 22m,
+            DefaultSaleVatRateIsActive = true
         });
         harness.SeedPartner(new Partner { Id = partnerId, Code = "CUST", Name = "Покупатель" });
         harness.SeedBalance(itemId, locationId, 600, huCode);

@@ -29,7 +29,7 @@ public sealed class WpfCompatibilityTests
                 orderId,
                 "002",
                 OrderType.Customer,
-                202,
+                200,
                 new DateTime(2026, 3, 30),
                 OrderStatus.InProgress,
                 "WPF update bridge",
@@ -44,7 +44,7 @@ public sealed class WpfCompatibilityTests
 
         var order = harness.GetOrder(orderId);
         Assert.Equal("002", order.OrderRef);
-        Assert.Equal(202, order.PartnerId);
+        Assert.Equal(200, order.PartnerId);
         Assert.Equal(OrderStatus.InProgress, order.Status);
         Assert.Equal(new DateTime(2026, 3, 30), order.DueDate);
     }

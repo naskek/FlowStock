@@ -77,5 +77,11 @@ internal static class UpdateOrderHttpApi
 
         [JsonPropertyName("selected_hu_codes")]
         public IReadOnlyList<string>? SelectedHuCodes { get; init; }
+
+        [JsonPropertyName("change_unit_price_gross")]
+        public bool? ChangeUnitPriceGross { get; init; }
+
+        [JsonPropertyName("unit_price_gross")]
+        public decimal? UnitPriceGross { get; init; }
     }
 }

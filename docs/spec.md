@@ -65,7 +65,9 @@
 - При показе native setup для смены сервера scanner dispatch останавливается: скрытый WebView не принимает сканы. Возврат к текущему серверу восстанавливает существующую session без очистки cookies/WebStorage; фактическая очистка session выполняется только при подтверждённой смене origin.
 
 ## Модель данных (server DB)
-- `items(id, name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, storage_conditions, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty)`; `storage_conditions` — опциональные условия хранения товара (`NULL`, если не заданы); `is_marked` является legacy-полем старой KM-модели и не участвует в новой ЧЗ-логике.
+- `items(id, name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, storage_conditions, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty, default_sale_price_gross, default_sale_vat_rate_id)`; `storage_conditions` — опциональные условия хранения товара (`NULL`, если не заданы); `default_sale_price_gross NUMERIC(19,4) NULL` — базовая цена продажи с НДС за базовую единицу; `default_sale_vat_rate_id BIGINT NULL` — выбранная ставка исходящего НДС; `is_marked` является legacy-полем старой KM-модели и не участвует в новой ЧЗ-логике.
+- `vat_rates(id, name, rate, is_active, sort_order)` — вручную управляемый справочник ставок исходящего НДС; `rate NUMERIC(7,4)`, отрицательные значения запрещены, seed ставки `22%` отсутствует.
+- `partner_item_sale_prices(id, partner_id, item_id, unit_price_gross, is_active)` — текущая индивидуальная цена с НДС для уникальной пары клиент–товар; `unit_price_gross NUMERIC(19,4)`.
 - `item_types(id, name, code, sort_order, is_active, is_visible_in_product_catalog, enable_min_stock_control, min_stock_uses_order_binding, enable_order_reservation, enable_hu_distribution, enable_marking)`
 - `taras(id, name)`
 - `item_requests(id, barcode, comment, device_id, login, status, created_at, resolved_at)`
@@ -74,7 +76,7 @@
 - `locations(id, code, name)`
 - `partners(id, name, inn, ... )`
 - `orders(id, order_ref, order_type, partner_id NULL, due_date, status, comment, created_at, bind_reserved_stock, marking_status, marking_excel_generated_at, marking_printed_at, marking_responsibility)` // canonical схема и семантика полей — в [`spec_orders.md`](spec_orders.md)
-- `order_lines(id, order_id, item_id, qty_ordered, production_pallet_group NULL, cancelled_at NULL, cancelled_by_actor NULL, cancelled_by_device_id NULL, cancel_reason NULL, revision)` // `production_pallet_group` задает группу микс-паллеты; canonical схема — в [`spec_orders.md`](spec_orders.md)
+- `order_lines(id, order_id, item_id, qty_ordered, unit_price_gross NULL, vat_rate NULL, production_pallet_group NULL, cancelled_at NULL, cancelled_by_actor NULL, cancelled_by_device_id NULL, cancel_reason NULL, revision)` // `unit_price_gross NUMERIC(19,4)` и `vat_rate NUMERIC(7,4)` — самостоятельные числовые snapshots коммерческих условий; `production_pallet_group` задает группу микс-паллеты; canonical схема — в [`spec_orders.md`](spec_orders.md)
 - `order_receipt_plan_lines(id, order_id, order_line_id, item_id, qty_planned, to_location_id, to_hu, sort_order)` // серверный план выпуска по заказу
 - `docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code, comment, production_batch_no)`
 - `doc_lines(id, doc_id, replaces_line_id NULL, order_line_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu)`
@@ -88,6 +90,32 @@
 - `client_blocks(block_key, is_enabled, updated_at)`
 - Контроль готовых заказов: `order_control_tasks`, `order_control_task_orders`, `order_control_task_hus`, `order_control_task_hu_lines`, `order_control_events`. Это отдельная модель `order_control_*`, не Warehouse Task Board.
 - Складские задания Warehouse Task Board (deprecated, архив): `warehouse_action_bundles`, `warehouse_action_lines`, `warehouse_tasks`, `warehouse_task_lines`, `warehouse_task_events` — не использовать как модель normal TSD
+
+## Исходящий НДС, цены клиентов и коммерческая статистика
+
+- Справочник `vat_rates` ведётся оператором через WPF `Справочники → Ставки НДС...`. Входящий НДС не входит в эту модель. Ставка не зашивается в сервер, миграцию, WPF или формулы.
+- Товар хранит nullable базовую цену с НДС и nullable ссылку на ставку продажи. Nullable-схема нужна для аддитивной миграции и существующих данных, но новая строка `CUSTOMER` без ставки не создаётся.
+- Товару можно назначить только активную ставку. Текущая впоследствии деактивированная ставка продолжает отображаться в карточке с пометкой и не сбрасывается при сохранении остальных полей. Новую `CUSTOMER`-строку с такой ставкой сервер отклоняет кодом `VAT_RATE_INACTIVE_FOR_NEW_ORDER_LINE`.
+- При отсутствии ставки товара новая `CUSTOMER`-строка отклоняется кодом `ITEM_SALE_VAT_RATE_REQUIRED` и сообщением «Для товара не выбрана ставка НДС продажи. Укажите ставку в карточке товара.». Автоматический выбор ставки и fallback `22%` запрещены.
+- Числовое значение используемой товаром ставки неизменяемо. Название, сортировку и активность менять можно. Используемую ставку можно деактивировать, но нельзя удалить; для новой числовой ставки создаётся новая запись и товары переназначаются явно.
+- Назначение ставки товару, изменение числового значения ставки и её деактивация выполняются сервером в PostgreSQL-транзакции с блокировкой строки `vat_rates`. Поэтому конкурентная операция не может назначить уже деактивированную ставку или изменить числовой смысл уже назначенной ставки; WPF не является окончательным guard.
+- Индивидуальная цена хранится для уникальной пары партнёр роли `Client`/`Both` и товар. Активная индивидуальная цена имеет приоритет над базовой; неактивная запись игнорируется. Удалять можно только предварительно деактивированную запись. Проверка `is_active` и физическое удаление выполняются одной серверной транзакцией с блокировкой строки; конкурентная реактивация не допускает удаления активной записи.
+- Для нового `CUSTOMER` fact цена разрешается сервером в порядке: явный manual override с intent-флагом; активная цена клиент–товар; базовая цена товара. Цена `0` является известной ценой. При отсутствии цены возвращается `ITEM_SALE_PRICE_REQUIRED`.
+- Preview WPF не является источником цены и не устанавливает intent. `ITEM_SALE_PRICE_REQUIRED` допускает явный manual override, а `ITEM_SALE_VAT_RATE_REQUIRED`, `VAT_RATE_INACTIVE_FOR_NEW_ORDER_LINE` и `ITEM_SALE_VAT_RATE_REFERENCE_INVALID` блокируют локальное добавление строки; save-time resolver сервера остаётся окончательным guard. Без `change_unit_price_gross=true` числовое значение из write-команды отклоняется. Override не изменяет master-данные и не отменяет обязательность VAT.
+- Новая `CUSTOMER`-строка атомарно получает только числовые snapshots `order_lines.unit_price_gross` и `order_lines.vat_rate`. FK на источник цены или VAT в строке заказа отсутствует. `INTERNAL` хранит оба поля как `NULL`.
+- Существующая строка не переснимает условия при quantity-only, legacy update, смене defaults товара или изменении справочников. В частности, matched legacy `CUSTOMER`-строка с `unit_price_gross = NULL` допускает изменение только количества без price intent и сохраняет `NULL`-snapshot. VAT строки не редактируется. Цена меняется только по явному intent до первой фактически проведённой отгрузки; повтор прежнего значения является no-op.
+- Партнёр выбирается до добавления строк `CUSTOMER`. Смена партнёра при наличии активных строк отклоняется `ORDER_PARTNER_CHANGE_REQUIRES_EMPTY_ORDER`; автоматического repricing нет.
+- Старые `NULL` не backfill-ятся. Количественная статистика учитывает их, денежная показывает неполноту данных и не использует текущие товары, цены клиентов или ставки как fallback.
+
+Read-only `GET /api/commercial-statistics` поддерживает режимы `orders|sales`, группировки `partner|item|gtin|brand|volume`, включительный период `from`/`to`, опциональный `detail_month`, фильтры `partner_id`, `item_id`, `gtin`, `brand`, `volume`, а для Orders — `statuses`. Пагинация применяется к группам; помесячная сводка всегда рассчитывается за весь период.
+
+- WPF хранит `offset`, показывает диапазон и `total_count`, предоставляет переходы между страницами и сбрасывает страницу при изменении критериев. Выбор строки помесячной сводки задаёт `detail_month` для правой таблицы; отдельное действие возвращает детализацию всего периода. Ответ предыдущего запроса не применяется после запуска более нового.
+- Orders использует `orders.created_at`, `orders.partner_id`, активные `order_lines.qty_ordered` и snapshots строки заказа.
+- Sales использует `docs.closed_at`, строго `docs.partner_id`, активные положительные строки закрытых `CUSTOMER OUTBOUND` и snapshots связанной `order_lines`. Поздняя отмена заказа или строки не удаляет состоявшуюся продажу.
+- `items` присоединяется только для текущих имени, GTIN, бренда и объёма. Изменение этих классификационных полей может намеренно перегруппировать историю.
+- Для финансово полного факта: `quantity = round(source_qty::numeric, 6)`, `gross = round(quantity × unit_price_gross, 2)`, `vat = round(gross × vat_rate / (100 + vat_rate), 2)`, `net = gross - vat`. Суммируются fact-level суммы; поэтому `gross = net + vat`. Для VAT `0` налог равен нулю.
+- Ответ содержит summary, monthly, paged groups и data-quality counters для отсутствующей цены/VAT, финансово неполных, непривязанных и несовпадающих Sales facts. Запрос статистики не изменяет `ledger`, документы, заказы, резервы, планы или справочники.
+- Возвраты, коммерческий storno и входящий НДС не входят в MVP. Финансовые поля в `doc_lines` не добавляются.
 
 ## Инварианты
 - Остатки рассчитываются только из `ledger`.

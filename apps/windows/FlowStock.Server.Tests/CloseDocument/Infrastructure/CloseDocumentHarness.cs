@@ -37,6 +37,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<Guid, MarkingCode> _markingCodes = new();
     private readonly Dictionary<long, int> _kmCodeCountByReceiptLine = new();
     private readonly HashSet<long> _ordersWithOutboundDocs = new();
+    private readonly HashSet<long> _commerciallyLockedOrderLineIds = new();
     private readonly Dictionary<string, HuRecord> _hus = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<(long ItemId, long LocationId, string? HuCode), double> _seedBalances = new();
     private readonly List<LedgerEntry> _postedLedger = new();
@@ -289,6 +290,8 @@ internal sealed class CloseDocumentHarness
             OrderId = line.OrderId,
             ItemId = line.ItemId,
             QtyOrdered = line.QtyOrdered,
+            UnitPriceGross = line.UnitPriceGross,
+            VatRate = line.VatRate,
             ProductionPurpose = line.ProductionPurpose,
             ProductionPalletGroup = line.ProductionPalletGroup
         };
@@ -637,6 +640,11 @@ internal sealed class CloseDocumentHarness
         _nextOrderLineId = Math.Max(_nextOrderLineId, line.Id + 1);
     }
 
+    public void SeedCommercialShipment(long orderLineId)
+    {
+        _commerciallyLockedOrderLineIds.Add(orderLineId);
+    }
+
     public void SeedOrderRequest(OrderRequest request)
     {
         _orderRequests[request.Id] = CloneOrderRequest(request);
@@ -912,6 +920,9 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.GetItems(It.IsAny<string?>()))
             .Returns(() => _items.Values.ToArray());
 
+        _store.Setup(store => store.GetActivePartnerItemSalePrice(It.IsAny<long>(), It.IsAny<long>()))
+            .Returns((PartnerItemSalePrice?)null);
+
         _store.Setup(store => store.GetItemType(It.IsAny<long>()))
             .Returns<long>(itemTypeId => _itemTypes.TryGetValue(itemTypeId, out var itemType) ? itemType : null);
 
@@ -1134,6 +1145,16 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.GetOrderLines(It.IsAny<long>()))
             .Returns<long>(orderId => GetOrderLines(orderId));
 
+        _store.Setup(store => store.HasCommercialShipmentForOrderLine(It.IsAny<long>()))
+            .Returns<long>(orderLineId => _commerciallyLockedOrderLineIds.Contains(orderLineId));
+
+        _store.Setup(store => store.GetCommerciallyLockedOrderLineIds(It.IsAny<long>()))
+            .Returns<long>(orderId =>
+                GetOrderLines(orderId)
+                    .Select(line => line.Id)
+                    .Where(_commerciallyLockedOrderLineIds.Contains)
+                    .ToHashSet());
+
         _store.Setup(store => store.GetOrderIdsByOrderLineIds(It.IsAny<IReadOnlyCollection<long>>()))
             .Returns<IReadOnlyCollection<long>>(orderLineIds =>
             {
@@ -1160,6 +1181,8 @@ internal sealed class CloseDocumentHarness
                         ItemId = line.ItemId,
                         ItemName = _items.TryGetValue(line.ItemId, out var item) ? item.Name : string.Empty,
                         QtyOrdered = line.QtyOrdered,
+                        UnitPriceGross = line.UnitPriceGross,
+                        VatRate = line.VatRate,
                         ProductionPurpose = line.ProductionPurpose,
                         ProductionPalletGroup = line.ProductionPalletGroup
                     })
@@ -1426,6 +1449,8 @@ internal sealed class CloseDocumentHarness
                     OrderId = line.OrderId,
                     ItemId = line.ItemId,
                     QtyOrdered = line.QtyOrdered,
+                    UnitPriceGross = line.UnitPriceGross,
+                    VatRate = line.VatRate,
                     ProductionPurpose = line.ProductionPurpose,
                     ProductionPalletGroup = line.ProductionPalletGroup
                 });
@@ -1459,6 +1484,37 @@ internal sealed class CloseDocumentHarness
                             OrderId = current.OrderId,
                             ItemId = current.ItemId,
                             QtyOrdered = qtyOrdered,
+                            UnitPriceGross = current.UnitPriceGross,
+                            VatRate = current.VatRate,
+                            ProductionPurpose = current.ProductionPurpose,
+                            ProductionPalletGroup = current.ProductionPalletGroup
+                        };
+                        return;
+                    }
+                }
+            });
+
+        _store.Setup(store => store.UpdateOrderLineUnitPriceGross(It.IsAny<long>(), It.IsAny<decimal?>()))
+            .Callback<long, decimal?>((orderLineId, unitPriceGross) =>
+            {
+                foreach (var pair in _orderLinesByOrder)
+                {
+                    for (var index = 0; index < pair.Value.Count; index++)
+                    {
+                        if (pair.Value[index].Id != orderLineId)
+                        {
+                            continue;
+                        }
+
+                        var current = pair.Value[index];
+                        pair.Value[index] = new OrderLine
+                        {
+                            Id = current.Id,
+                            OrderId = current.OrderId,
+                            ItemId = current.ItemId,
+                            QtyOrdered = current.QtyOrdered,
+                            UnitPriceGross = unitPriceGross,
+                            VatRate = current.VatRate,
                             ProductionPurpose = current.ProductionPurpose,
                             ProductionPalletGroup = current.ProductionPalletGroup
                         };
@@ -1486,6 +1542,8 @@ internal sealed class CloseDocumentHarness
                             OrderId = current.OrderId,
                             ItemId = current.ItemId,
                             QtyOrdered = current.QtyOrdered,
+                            UnitPriceGross = current.UnitPriceGross,
+                            VatRate = current.VatRate,
                             ProductionPurpose = purpose,
                             ProductionPalletGroup = current.ProductionPalletGroup
                         };
@@ -1513,6 +1571,8 @@ internal sealed class CloseDocumentHarness
                             OrderId = current.OrderId,
                             ItemId = current.ItemId,
                             QtyOrdered = current.QtyOrdered,
+                            UnitPriceGross = current.UnitPriceGross,
+                            VatRate = current.VatRate,
                             ProductionPurpose = current.ProductionPurpose,
                             ProductionPalletGroup = groupCode
                         };

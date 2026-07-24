@@ -2585,6 +2585,7 @@ public sealed class ProductionPalletServiceTests
             Id = 10,
             OrderRef = "086",
             Type = OrderType.Customer,
+            PartnerId = 500,
             Status = OrderStatus.InProgress,
             UseReservedStock = true,
             PartnerName = "Клиент",

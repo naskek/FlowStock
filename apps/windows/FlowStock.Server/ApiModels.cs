@@ -306,6 +306,12 @@ public sealed class CreateOrderLineRequest
 
     [JsonPropertyName("production_pallet_group")]
     public string? ProductionPalletGroup { get; set; }
+
+    [JsonPropertyName("change_unit_price_gross")]
+    public bool? ChangeUnitPriceGross { get; set; }
+
+    [JsonPropertyName("unit_price_gross")]
+    public decimal? UnitPriceGross { get; set; }
 }
 
 public sealed class CreateOrderRequest
@@ -381,6 +387,12 @@ public sealed class UpdateOrderLineRequest
 
     [JsonPropertyName("selected_hu_codes")]
     public List<string>? SelectedHuCodes { get; set; }
+
+    [JsonPropertyName("change_unit_price_gross")]
+    public bool? ChangeUnitPriceGross { get; set; }
+
+    [JsonPropertyName("unit_price_gross")]
+    public decimal? UnitPriceGross { get; set; }
 }
 
 public sealed class UpdateOrderRequest
@@ -717,6 +729,42 @@ public sealed class UpsertItemRequest
 
     [JsonPropertyName("min_stock_qty")]
     public double? MinStockQty { get; set; }
+
+    [JsonPropertyName("default_sale_price_gross")]
+    public decimal? DefaultSalePriceGross { get; set; }
+
+    [JsonPropertyName("default_sale_vat_rate_id")]
+    public long? DefaultSaleVatRateId { get; set; }
+}
+
+public sealed class UpsertVatRateRequest
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("rate")]
+    public decimal Rate { get; set; }
+
+    [JsonPropertyName("is_active")]
+    public bool IsActive { get; set; } = true;
+
+    [JsonPropertyName("sort_order")]
+    public int SortOrder { get; set; }
+}
+
+public sealed class UpsertPartnerItemSalePriceRequest
+{
+    [JsonPropertyName("partner_id")]
+    public long PartnerId { get; set; }
+
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; set; }
+
+    [JsonPropertyName("unit_price_gross")]
+    public decimal UnitPriceGross { get; set; }
+
+    [JsonPropertyName("is_active")]
+    public bool IsActive { get; set; } = true;
 }
 
 public sealed class UpsertItemTypeRequest
@@ -1181,4 +1229,3 @@ public sealed class OrderAutoRedistributeIgnoredDto
     [JsonPropertyName("reason")]
     public string Reason { get; init; } = string.Empty;
 }
-

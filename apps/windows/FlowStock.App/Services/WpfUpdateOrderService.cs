@@ -44,6 +44,8 @@ public sealed class WpfUpdateOrderService
                     OrderLineId = line.Id > 0 ? line.Id : null,
                     ItemId = line.ItemId,
                     QtyOrdered = line.QtyOrdered,
+                    ChangeUnitPriceGross = line.ChangeUnitPriceGross ? true : null,
+                    UnitPriceGross = line.ChangeUnitPriceGross ? line.UnitPriceGross : null,
                     ProductionPurpose = ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose),
                     ProductionPalletGroup = NormalizeValue(line.ProductionPalletGroup)?.ToUpperInvariant(),
                     SelectedHuCodes = context.CustomerReservedHuSelectionsByOrderLineId != null

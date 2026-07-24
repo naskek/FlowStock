@@ -122,6 +122,14 @@ public sealed class CreateOrderApiLineRequest
     [JsonPropertyName("qty_ordered")]
     public double QtyOrdered { get; init; }
 
+    [JsonPropertyName("change_unit_price_gross")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? ChangeUnitPriceGross { get; init; }
+
+    [JsonPropertyName("unit_price_gross")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? UnitPriceGross { get; init; }
+
     [JsonPropertyName("production_purpose")]
     public string? ProductionPurpose { get; init; }
 

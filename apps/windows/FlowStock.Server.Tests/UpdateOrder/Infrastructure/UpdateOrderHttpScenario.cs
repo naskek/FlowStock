@@ -5,7 +5,8 @@ namespace FlowStock.Server.Tests.UpdateOrder.Infrastructure;
 
 internal static class UpdateOrderHttpScenario
 {
-    public static (CloseDocumentHarness Harness, InMemoryApiDocStore ApiStore, long OrderId) CreateCustomerScenario()
+    public static (CloseDocumentHarness Harness, InMemoryApiDocStore ApiStore, long OrderId) CreateCustomerScenario(
+        decimal? firstLineUnitPriceGross = 100m)
     {
         var harness = new CloseDocumentHarness();
         harness.SeedPartner(new Partner
@@ -29,9 +30,9 @@ internal static class UpdateOrderHttpScenario
             Name = "Покупатель 202",
             CreatedAt = new DateTime(2026, 3, 10, 10, 0, 0, DateTimeKind.Utc)
         });
-        harness.SeedItem(new Item { Id = 1001, Name = "Горчица", Barcode = "4660011933641" });
-        harness.SeedItem(new Item { Id = 1002, Name = "Кетчуп", Barcode = "4660011933642" });
-        harness.SeedItem(new Item { Id = 1003, Name = "Соус", Barcode = "4660011933643" });
+        harness.SeedItem(CommercialItem(1001, "Горчица", "4660011933641", 100m));
+        harness.SeedItem(CommercialItem(1002, "Кетчуп", "4660011933642", 120m));
+        harness.SeedItem(CommercialItem(1003, "Соус", "4660011933643", 140m));
 
         const long orderId = 10;
         harness.SeedOrder(new Order
@@ -45,8 +46,16 @@ internal static class UpdateOrderHttpScenario
             Comment = "Исходный заказ",
             CreatedAt = new DateTime(2026, 3, 10, 10, 0, 0, DateTimeKind.Utc)
         });
-        harness.SeedOrderLine(new OrderLine { Id = 101, OrderId = orderId, ItemId = 1001, QtyOrdered = 10 });
-        harness.SeedOrderLine(new OrderLine { Id = 102, OrderId = orderId, ItemId = 1002, QtyOrdered = 5 });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 101, OrderId = orderId, ItemId = 1001, QtyOrdered = 10,
+            UnitPriceGross = firstLineUnitPriceGross, VatRate = 22m
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 102, OrderId = orderId, ItemId = 1002, QtyOrdered = 5,
+            UnitPriceGross = 120m, VatRate = 22m
+        });
 
         return (harness, new InMemoryApiDocStore(), orderId);
     }
@@ -111,4 +120,16 @@ internal static class UpdateOrderHttpScenario
 
         return (harness, new InMemoryApiDocStore(), orderId);
     }
+
+    private static Item CommercialItem(long id, string name, string barcode, decimal price) =>
+        new()
+        {
+            Id = id,
+            Name = name,
+            Barcode = barcode,
+            DefaultSalePriceGross = price,
+            DefaultSaleVatRateId = 1,
+            DefaultSaleVatRate = 22m,
+            DefaultSaleVatRateIsActive = true
+        };
 }

@@ -11,6 +11,8 @@ namespace FlowStock.Server;
 
 public static class OrderCreateEndpoint
 {
+    private static readonly PartnerRoleResolver PartnerRoles = new();
+
     public static void Map(WebApplication app)
     {
         app.MapPost("/api/orders", HandleCreateAsync);
@@ -91,11 +93,7 @@ public static class OrderCreateEndpoint
                 return Results.BadRequest(new ApiResult(false, "PARTNER_NOT_FOUND"));
             }
 
-            var partnerStatuses = LoadPartnerStatuses();
-            var partnerRole = partnerStatuses.TryGetValue(partner.Id, out var storedRole)
-                ? storedRole
-                : LocalPartnerRole.Both;
-            if (partnerRole == LocalPartnerRole.Supplier)
+            if (!PartnerRoles.IsCustomer(partner.Id))
             {
                 return Results.BadRequest(new ApiResult(false, "PARTNER_IS_SUPPLIER"));
             }
@@ -133,6 +131,8 @@ public static class OrderCreateEndpoint
                 ItemId = item.Id,
                 ItemName = item.Name,
                 QtyOrdered = line.QtyOrdered,
+                UnitPriceGross = line.UnitPriceGross,
+                ChangeUnitPriceGross = line.ChangeUnitPriceGross == true,
                 ProductionPurpose = orderType.Value == OrderType.Customer
                     ? ProductionLinePurpose.CustomerOrder
                     : ProductionLinePurposeMapper.FromDbValue(line.ProductionPurpose),
@@ -165,6 +165,10 @@ public static class OrderCreateEndpoint
                 lines,
                 orderType.Value,
                 createRequest.BindReservedStock);
+        }
+        catch (CommercialTermsException ex)
+        {
+            return Results.BadRequest(new ApiErrorResult(false, ex.ErrorCode, ex.Message));
         }
         catch (ArgumentException ex)
         {
@@ -265,35 +269,4 @@ public static class OrderCreateEndpoint
         return "ORDER_CREATE_FAILED";
     }
 
-    private static IReadOnlyDictionary<long, LocalPartnerRole> LoadPartnerStatuses()
-    {
-        var path = Path.Combine(ServerPaths.BaseDir, "partner_statuses.json");
-        if (!File.Exists(path))
-        {
-            return new Dictionary<long, LocalPartnerRole>();
-        }
-
-        try
-        {
-            var json = File.ReadAllText(path);
-            var options = new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-                Converters = { new JsonStringEnumConverter() }
-            };
-            var data = JsonSerializer.Deserialize<Dictionary<long, LocalPartnerRole>>(json, options);
-            return data ?? new Dictionary<long, LocalPartnerRole>();
-        }
-        catch
-        {
-            return new Dictionary<long, LocalPartnerRole>();
-        }
-    }
-
-    private enum LocalPartnerRole
-    {
-        Client,
-        Supplier,
-        Both
-    }
 }

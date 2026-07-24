@@ -1221,6 +1221,26 @@ LEFT JOIN active_order_control aoc ON aoc.order_id = ob.id";
         transaction.Commit();
     }
 
+    private T ExecuteAtomic<T>(Func<PostgresDataStore, T> work)
+    {
+        if (_connection != null && _transaction != null)
+        {
+            return work(this);
+        }
+
+        using var connection = new NpgsqlConnection(_connectionString);
+        connection.Open();
+        using var transaction = connection.BeginTransaction();
+        var scoped = new PostgresDataStore(
+            connection,
+            transaction,
+            _orderSqlDiagnosticsSink,
+            _orderSqlExplainDiagnosticsSink);
+        var result = work(scoped);
+        transaction.Commit();
+        return result;
+    }
+
     public IDisposable BeginOrderListSqlDiagnostics(
         string operation,
         bool queryPresent,
@@ -1398,7 +1418,9 @@ SELECT id,
        cancelled_by_actor,
        cancelled_by_device_id,
        cancel_reason,
-       revision
+       revision,
+       unit_price_gross,
+       vat_rate
 FROM order_lines
 WHERE order_id = ANY(@order_ids)
 ORDER BY order_id, id;
@@ -1855,7 +1877,7 @@ ON CONFLICT (notification_id, reader_key) DO NOTHING;");
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
             command.Parameters.AddWithValue("@barcode", barcode);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -1866,7 +1888,7 @@ ON CONFLICT (notification_id, reader_key) DO NOTHING;");
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.gtin = @gtin");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id WHERE i.gtin = @gtin");
             command.Parameters.AddWithValue("@gtin", gtin);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -1877,7 +1899,7 @@ ON CONFLICT (notification_id, reader_key) DO NOTHING;");
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.id = @id");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id WHERE i.id = @id");
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -1907,11 +1929,17 @@ ON CONFLICT (notification_id, reader_key) DO NOTHING;");
 
     public long AddItem(Item item)
     {
+        return ExecuteAtomic(store => store.AddItemCore(item));
+    }
+
+    private long AddItemCore(Item item)
+    {
+        LockVatRateForItemAssignment(item.DefaultSaleVatRateId, currentVatRateId: null);
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO items(name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty, storage_conditions)
-VALUES(@name, @is_active, @barcode, @gtin, @base_uom, @default_packaging_id, @brand, @volume, @shelf_life_months, @max_qty_per_hu, @tara_id, @is_marked, @item_type_id, @min_stock_qty, @storage_conditions)
+INSERT INTO items(name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty, storage_conditions, default_sale_price_gross, default_sale_vat_rate_id)
+VALUES(@name, @is_active, @barcode, @gtin, @base_uom, @default_packaging_id, @brand, @volume, @shelf_life_months, @max_qty_per_hu, @tara_id, @is_marked, @item_type_id, @min_stock_qty, @storage_conditions, @default_sale_price_gross, @default_sale_vat_rate_id)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
@@ -1929,6 +1957,8 @@ RETURNING id;
             command.Parameters.AddWithValue("@item_type_id", item.ItemTypeId.HasValue ? item.ItemTypeId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@min_stock_qty", item.MinStockQty.HasValue ? item.MinStockQty.Value : DBNull.Value);
             command.Parameters.AddWithValue("@storage_conditions", NormalizeStorageConditionsForDb(item.StorageConditions));
+            command.Parameters.AddWithValue("@default_sale_price_gross", item.DefaultSalePriceGross.HasValue ? item.DefaultSalePriceGross.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@default_sale_vat_rate_id", item.DefaultSaleVatRateId.HasValue ? item.DefaultSaleVatRateId.Value : DBNull.Value);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -1947,9 +1977,16 @@ RETURNING id;
 
     public void UpdateItem(Item item)
     {
-        WithConnection(connection =>
+        ExecuteAtomic(store =>
         {
-            using var command = CreateCommand(connection, @"
+            var (exists, currentVatRateId) = store.LockItemVatRate(item.Id);
+            if (!exists)
+            {
+                throw new InvalidOperationException("Товар не найден.");
+            }
+
+            store.LockVatRateForItemAssignment(item.DefaultSaleVatRateId, currentVatRateId);
+            using var command = store.CreateCommand(store._connection!, @"
 UPDATE items
 SET name = @name,
     is_active = @is_active,
@@ -1965,7 +2002,9 @@ SET name = @name,
     is_marked = @is_marked,
     item_type_id = @item_type_id,
     min_stock_qty = @min_stock_qty,
-    storage_conditions = @storage_conditions
+    storage_conditions = @storage_conditions,
+    default_sale_price_gross = @default_sale_price_gross,
+    default_sale_vat_rate_id = @default_sale_vat_rate_id
 WHERE id = @id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
@@ -1983,9 +2022,34 @@ WHERE id = @id;
             command.Parameters.AddWithValue("@item_type_id", item.ItemTypeId.HasValue ? item.ItemTypeId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@min_stock_qty", item.MinStockQty.HasValue ? item.MinStockQty.Value : DBNull.Value);
             command.Parameters.AddWithValue("@storage_conditions", NormalizeStorageConditionsForDb(item.StorageConditions));
+            command.Parameters.AddWithValue("@default_sale_price_gross", item.DefaultSalePriceGross.HasValue ? item.DefaultSalePriceGross.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@default_sale_vat_rate_id", item.DefaultSaleVatRateId.HasValue ? item.DefaultSaleVatRateId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@id", item.Id);
             command.ExecuteNonQuery();
             return 0;
+        });
+    }
+
+    private (bool Exists, long? VatRateId) LockItemVatRate(long itemId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, """
+SELECT default_sale_vat_rate_id
+FROM items
+WHERE id = @id
+FOR UPDATE;
+""");
+            command.Parameters.AddWithValue("@id", itemId);
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return (Exists: false, VatRateId: (long?)null);
+            }
+
+            return (
+                Exists: true,
+                VatRateId: reader.IsDBNull(0) ? (long?)null : reader.GetInt64(0));
         });
     }
 
@@ -2020,7 +2084,16 @@ WHERE id = @id;
 
             using var ledgerCommand = CreateCommand(connection, "SELECT 1 FROM ledger WHERE item_id = @id LIMIT 1");
             ledgerCommand.Parameters.AddWithValue("@id", itemId);
-            return ledgerCommand.ExecuteScalar() != null;
+            if (ledgerCommand.ExecuteScalar() != null)
+            {
+                return true;
+            }
+
+            using var priceCommand = CreateCommand(
+                connection,
+                "SELECT 1 FROM partner_item_sale_prices WHERE item_id = @id LIMIT 1");
+            priceCommand.Parameters.AddWithValue("@id", itemId);
+            return priceCommand.ExecuteScalar() != null;
         });
     }
 
@@ -2545,6 +2618,370 @@ WHERE id = @id;");
         });
     }
 
+    public IReadOnlyList<VatRate> GetVatRates(bool includeInactive)
+    {
+        return WithConnection(connection =>
+        {
+            var sql = "SELECT id, name, rate, is_active, sort_order FROM vat_rates";
+            if (!includeInactive)
+            {
+                sql += " WHERE is_active = TRUE";
+            }
+
+            sql += " ORDER BY sort_order, name, id;";
+            using var command = CreateCommand(connection, sql);
+            using var reader = command.ExecuteReader();
+            var list = new List<VatRate>();
+            while (reader.Read())
+            {
+                list.Add(ReadVatRate(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public VatRate? GetVatRate(long id)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(
+                connection,
+                "SELECT id, name, rate, is_active, sort_order FROM vat_rates WHERE id = @id LIMIT 1;");
+            command.Parameters.AddWithValue("@id", id);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadVatRate(reader) : null;
+        });
+    }
+
+    public long AddVatRate(VatRate vatRate)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO vat_rates(name, rate, is_active, sort_order)
+VALUES(@name, @rate, @is_active, @sort_order)
+RETURNING id;");
+            command.Parameters.AddWithValue("@name", vatRate.Name);
+            command.Parameters.AddWithValue("@rate", vatRate.Rate);
+            command.Parameters.AddWithValue("@is_active", vatRate.IsActive);
+            command.Parameters.AddWithValue("@sort_order", vatRate.SortOrder);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdateVatRate(VatRate vatRate)
+    {
+        ExecuteAtomic(store =>
+        {
+            var existing = store.LockVatRate(vatRate.Id)
+                ?? throw new InvalidOperationException("Ставка НДС не найдена.");
+            if (existing.Rate != vatRate.Rate && store.IsVatRateUsedByItems(vatRate.Id))
+            {
+                throw new InvalidOperationException(
+                    "Нельзя изменить числовое значение ставки НДС, которая назначена товарам. Создайте новую ставку и переназначьте товары.");
+            }
+
+            using var command = store.CreateCommand(store._connection!, @"
+UPDATE vat_rates
+SET name = @name,
+    rate = @rate,
+    is_active = @is_active,
+    sort_order = @sort_order
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@name", vatRate.Name);
+            command.Parameters.AddWithValue("@rate", vatRate.Rate);
+            command.Parameters.AddWithValue("@is_active", vatRate.IsActive);
+            command.Parameters.AddWithValue("@sort_order", vatRate.SortOrder);
+            command.Parameters.AddWithValue("@id", vatRate.Id);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    private VatRate? LockVatRate(long vatRateId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, """
+SELECT id, name, rate, is_active, sort_order
+FROM vat_rates
+WHERE id = @id
+FOR UPDATE;
+""");
+            command.Parameters.AddWithValue("@id", vatRateId);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadVatRate(reader) : null;
+        });
+    }
+
+    private void LockVatRateForItemAssignment(long? vatRateId, long? currentVatRateId)
+    {
+        if (!vatRateId.HasValue)
+        {
+            return;
+        }
+
+        var vatRate = LockVatRate(vatRateId.Value)
+            ?? throw new InvalidOperationException("Выбранная ставка НДС не найдена.");
+        if (!vatRate.IsActive && vatRateId != currentVatRateId)
+        {
+            throw new InvalidOperationException("Товару можно назначить только активную ставку НДС.");
+        }
+    }
+
+    public void DeleteVatRate(long vatRateId)
+    {
+        ExecuteAtomic(store =>
+        {
+            _ = store.LockVatRate(vatRateId)
+                ?? throw new InvalidOperationException("Ставка НДС не найдена.");
+            if (store.IsVatRateUsedByItems(vatRateId))
+            {
+                throw new InvalidOperationException(
+                    "Нельзя удалить ставку НДС, которая назначена товарам. Ставку можно деактивировать.");
+            }
+
+            using var command = store.CreateCommand(
+                store._connection!,
+                "DELETE FROM vat_rates WHERE id = @id;");
+            command.Parameters.AddWithValue("@id", vatRateId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public bool IsVatRateUsedByItems(long vatRateId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(
+                connection,
+                "SELECT 1 FROM items WHERE default_sale_vat_rate_id = @id LIMIT 1;");
+            command.Parameters.AddWithValue("@id", vatRateId);
+            return command.ExecuteScalar() != null;
+        });
+    }
+
+    public PartnerItemSalePrice? GetPartnerItemSalePrice(long id)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT pisp.id,
+       pisp.partner_id,
+       p.name,
+       p.code,
+       pisp.item_id,
+       i.name,
+       pisp.unit_price_gross,
+       pisp.is_active
+FROM partner_item_sale_prices pisp
+INNER JOIN partners p ON p.id = pisp.partner_id
+INNER JOIN items i ON i.id = pisp.item_id
+WHERE pisp.id = @id
+LIMIT 1;");
+            command.Parameters.AddWithValue("@id", id);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadPartnerItemSalePrice(reader) : null;
+        });
+    }
+
+    public PartnerItemSalePrice? GetActivePartnerItemSalePrice(long partnerId, long itemId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT pisp.id,
+       pisp.partner_id,
+       p.name,
+       p.code,
+       pisp.item_id,
+       i.name,
+       pisp.unit_price_gross,
+       pisp.is_active
+FROM partner_item_sale_prices pisp
+INNER JOIN partners p ON p.id = pisp.partner_id
+INNER JOIN items i ON i.id = pisp.item_id
+WHERE pisp.partner_id = @partner_id
+  AND pisp.item_id = @item_id
+  AND pisp.is_active = TRUE
+LIMIT 1;");
+            command.Parameters.AddWithValue("@partner_id", partnerId);
+            command.Parameters.AddWithValue("@item_id", itemId);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadPartnerItemSalePrice(reader) : null;
+        });
+    }
+
+    public PartnerItemSalePricePage GetPartnerItemSalePrices(
+        long? partnerId,
+        long? itemId,
+        bool? isActive,
+        string? search,
+        int limit,
+        int offset)
+    {
+        return WithConnection(connection =>
+        {
+            var where = new List<string>();
+            if (partnerId.HasValue)
+            {
+                where.Add("pisp.partner_id = @partner_id");
+            }
+            if (itemId.HasValue)
+            {
+                where.Add("pisp.item_id = @item_id");
+            }
+            if (isActive.HasValue)
+            {
+                where.Add("pisp.is_active = @is_active");
+            }
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                where.Add("(p.name ILIKE @search OR COALESCE(p.code, '') ILIKE @search OR i.name ILIKE @search)");
+            }
+
+            var whereSql = where.Count == 0 ? string.Empty : $"WHERE {string.Join(" AND ", where)}";
+            using var countCommand = CreateCommand(connection, $@"
+SELECT COUNT(*)
+FROM partner_item_sale_prices pisp
+INNER JOIN partners p ON p.id = pisp.partner_id
+INNER JOIN items i ON i.id = pisp.item_id
+{whereSql};");
+            AddPartnerItemSalePriceFilterParameters(countCommand, partnerId, itemId, isActive, search);
+            var totalCount = Convert.ToInt32(countCommand.ExecuteScalar() ?? 0);
+
+            using var command = CreateCommand(connection, $@"
+SELECT pisp.id,
+       pisp.partner_id,
+       p.name,
+       p.code,
+       pisp.item_id,
+       i.name,
+       pisp.unit_price_gross,
+       pisp.is_active
+FROM partner_item_sale_prices pisp
+INNER JOIN partners p ON p.id = pisp.partner_id
+INNER JOIN items i ON i.id = pisp.item_id
+{whereSql}
+ORDER BY p.name, i.name, pisp.id
+LIMIT @limit OFFSET @offset;");
+            AddPartnerItemSalePriceFilterParameters(command, partnerId, itemId, isActive, search);
+            command.Parameters.AddWithValue("@limit", limit);
+            command.Parameters.AddWithValue("@offset", offset);
+            using var reader = command.ExecuteReader();
+            var rows = new List<PartnerItemSalePrice>();
+            while (reader.Read())
+            {
+                rows.Add(ReadPartnerItemSalePrice(reader));
+            }
+
+            return new PartnerItemSalePricePage(rows, totalCount, limit, offset);
+        });
+    }
+
+    public long AddPartnerItemSalePrice(PartnerItemSalePrice price)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO partner_item_sale_prices(partner_id, item_id, unit_price_gross, is_active)
+VALUES(@partner_id, @item_id, @unit_price_gross, @is_active)
+RETURNING id;");
+            command.Parameters.AddWithValue("@partner_id", price.PartnerId);
+            command.Parameters.AddWithValue("@item_id", price.ItemId);
+            command.Parameters.AddWithValue("@unit_price_gross", price.UnitPriceGross);
+            command.Parameters.AddWithValue("@is_active", price.IsActive);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdatePartnerItemSalePrice(PartnerItemSalePrice price)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE partner_item_sale_prices
+SET partner_id = @partner_id,
+    item_id = @item_id,
+    unit_price_gross = @unit_price_gross,
+    is_active = @is_active
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@partner_id", price.PartnerId);
+            command.Parameters.AddWithValue("@item_id", price.ItemId);
+            command.Parameters.AddWithValue("@unit_price_gross", price.UnitPriceGross);
+            command.Parameters.AddWithValue("@is_active", price.IsActive);
+            command.Parameters.AddWithValue("@id", price.Id);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void DeletePartnerItemSalePrice(long id)
+    {
+        ExecuteAtomic(store =>
+        {
+            var isActive = store.LockPartnerItemSalePriceState(id)
+                ?? throw new CommercialTermsException(
+                    "PARTNER_ITEM_SALE_PRICE_NOT_FOUND",
+                    "Цена клиента не найдена.");
+            if (isActive)
+            {
+                throw new CommercialTermsException(
+                    "PARTNER_ITEM_PRICE_MUST_BE_INACTIVE_BEFORE_DELETE",
+                    "Перед удалением цену клиента необходимо деактивировать.");
+            }
+
+            using var command = store.CreateCommand(
+                store._connection!,
+                "DELETE FROM partner_item_sale_prices WHERE id = @id;");
+            command.Parameters.AddWithValue("@id", id);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    private bool? LockPartnerItemSalePriceState(long id)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, """
+SELECT is_active
+FROM partner_item_sale_prices
+WHERE id = @id
+FOR UPDATE;
+""");
+            command.Parameters.AddWithValue("@id", id);
+            var value = command.ExecuteScalar();
+            return value == null ? (bool?)null : Convert.ToBoolean(value);
+        });
+    }
+
+    public bool HasPartnerItemSalePricesForPartner(long partnerId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(
+                connection,
+                "SELECT 1 FROM partner_item_sale_prices WHERE partner_id = @partner_id LIMIT 1;");
+            command.Parameters.AddWithValue("@partner_id", partnerId);
+            return command.ExecuteScalar() != null;
+        });
+    }
+
+    public bool HasPartnerItemSalePricesForItem(long itemId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(
+                connection,
+                "SELECT 1 FROM partner_item_sale_prices WHERE item_id = @item_id LIMIT 1;");
+            command.Parameters.AddWithValue("@item_id", itemId);
+            return command.ExecuteScalar() != null;
+        });
+    }
+
     public Partner? GetPartner(long id)
     {
         return WithConnection(connection =>
@@ -2646,7 +3083,16 @@ WHERE id = @id;
 
             using var orderCommand = CreateCommand(connection, "SELECT 1 FROM orders WHERE partner_id = @id LIMIT 1");
             orderCommand.Parameters.AddWithValue("@id", partnerId);
-            return orderCommand.ExecuteScalar() != null;
+            if (orderCommand.ExecuteScalar() != null)
+            {
+                return true;
+            }
+
+            using var priceCommand = CreateCommand(
+                connection,
+                "SELECT 1 FROM partner_item_sale_prices WHERE partner_id = @id LIMIT 1");
+            priceCommand.Parameters.AddWithValue("@id", partnerId);
+            return priceCommand.ExecuteScalar() != null;
         });
     }
 
@@ -7983,7 +8429,9 @@ SELECT id,
        cancelled_by_actor,
        cancelled_by_device_id,
        cancel_reason,
-       revision
+       revision,
+       unit_price_gross,
+       vat_rate
 FROM order_lines
 WHERE order_id = @order_id
 ORDER BY id");
@@ -8087,7 +8535,23 @@ SELECT ol.id,
        COALESCE(pm.planned_pallet_count, 0),
        COALESCE(pm.filled_pallet_count, 0),
        COALESCE(pm.planned_pallet_qty, 0),
-       COALESCE(pm.filled_pallet_qty, 0)
+       COALESCE(pm.filled_pallet_qty, 0),
+       ol.unit_price_gross,
+       ol.vat_rate,
+       EXISTS (
+           SELECT 1
+           FROM doc_lines shipped_line
+           INNER JOIN docs shipped_doc ON shipped_doc.id = shipped_line.doc_id
+           WHERE shipped_line.order_line_id = ol.id
+             AND shipped_line.qty > @qty_tolerance
+             AND shipped_doc.type = @outbound_doc_type
+             AND shipped_doc.status = @closed_doc_status
+             AND NOT EXISTS (
+                 SELECT 1
+                 FROM doc_lines newer
+                 WHERE newer.replaces_line_id = shipped_line.id
+             )
+       )
 FROM order_lines ol
 INNER JOIN items i ON i.id = ol.item_id
 LEFT JOIN pallet_metrics pm ON pm.order_line_id = ol.id
@@ -8098,6 +8562,8 @@ ORDER BY i.name, ol.id;
             command.Parameters.AddWithValue("@pallet_filled_status", ProductionPalletStatus.Filled);
             command.Parameters.AddWithValue("@pallet_cancelled_status", ProductionPalletStatus.Cancelled);
             command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
             using var reader = command.ExecuteReader();
             var lines = new List<OrderLineView>();
             while (reader.Read())
@@ -8116,7 +8582,10 @@ ORDER BY i.name, ol.id;
                     PlannedPalletCount = reader.GetInt32(9),
                     FilledPalletCount = reader.GetInt32(10),
                     PlannedPalletQty = reader.GetDouble(11),
-                    FilledPalletQty = reader.GetDouble(12)
+                    FilledPalletQty = reader.GetDouble(12),
+                    UnitPriceGross = reader.IsDBNull(13) ? null : reader.GetDecimal(13),
+                    VatRate = reader.IsDBNull(14) ? null : reader.GetDecimal(14),
+                    CommercialTermsLocked = reader.GetBoolean(15)
                 });
             }
 
@@ -8146,6 +8615,8 @@ WITH line_scope AS (
            ol.qty_ordered,
            ol.production_purpose,
            ol.production_pallet_group,
+           ol.unit_price_gross,
+           ol.vat_rate,
            o.order_type,
            COALESCE(o.bind_reserved_stock, FALSE) AS bind_reserved_stock,
            COALESCE(it.enable_order_reservation, FALSE) AS enable_order_reservation
@@ -8542,6 +9013,9 @@ SELECT id,
                 0,
                 qty_ordered - qty_customer_covered)
         END AS shortage,
+       unit_price_gross,
+       vat_rate,
+       qty_shipped > @qty_tolerance AS commercial_terms_locked,
        order_type
 FROM line_totals
 ORDER BY order_id, item_name, id;
@@ -8585,9 +9059,12 @@ ORDER BY order_id, item_name, id;
                     QtyAvailable = reader.GetDouble(15),
                     QtyRemaining = reader.GetDouble(16),
                     CanShipNow = reader.GetDouble(17),
-                    Shortage = reader.GetDouble(18)
+                    Shortage = reader.GetDouble(18),
+                    UnitPriceGross = reader.IsDBNull(19) ? null : reader.GetDecimal(19),
+                    VatRate = reader.IsDBNull(20) ? null : reader.GetDecimal(20),
+                    CommercialTermsLocked = reader.GetBoolean(21)
                 };
-                var orderType = OrderStatusMapper.TypeFromString(reader.GetString(19)) ?? OrderType.Customer;
+                var orderType = OrderStatusMapper.TypeFromString(reader.GetString(22)) ?? OrderType.Customer;
                 OrderLinePalletFillPresentationService.Apply(new Order
                 {
                     Id = orderId,
@@ -11047,8 +11524,8 @@ ORDER BY ol.id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO order_lines(order_id, item_id, qty_ordered, production_purpose, production_pallet_group)
-VALUES(@order_id, @item_id, @qty_ordered, @production_purpose, @production_pallet_group)
+INSERT INTO order_lines(order_id, item_id, qty_ordered, production_purpose, production_pallet_group, unit_price_gross, vat_rate)
+VALUES(@order_id, @item_id, @qty_ordered, @production_purpose, @production_pallet_group, @unit_price_gross, @vat_rate)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@order_id", line.OrderId);
@@ -11056,6 +11533,8 @@ RETURNING id;
             command.Parameters.AddWithValue("@qty_ordered", line.QtyOrdered);
             command.Parameters.AddWithValue("@production_purpose", ProductionLinePurposeMapper.ToDbValue(line.ProductionPurpose));
             command.Parameters.AddWithValue("@production_pallet_group", string.IsNullOrWhiteSpace(line.ProductionPalletGroup) ? DBNull.Value : line.ProductionPalletGroup.Trim());
+            command.Parameters.AddWithValue("@unit_price_gross", line.UnitPriceGross.HasValue ? line.UnitPriceGross.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@vat_rate", line.VatRate.HasValue ? line.VatRate.Value : DBNull.Value);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -11069,6 +11548,79 @@ RETURNING id;
             command.Parameters.AddWithValue("@id", orderLineId);
             command.ExecuteNonQuery();
             return 0;
+        });
+    }
+
+    public void UpdateOrderLineUnitPriceGross(long orderLineId, decimal? unitPriceGross)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(
+                connection,
+                "UPDATE order_lines SET unit_price_gross = @unit_price_gross WHERE id = @id;");
+            command.Parameters.AddWithValue("@unit_price_gross", unitPriceGross.HasValue ? unitPriceGross.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@id", orderLineId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public bool HasCommercialShipmentForOrderLine(long orderLineId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT 1
+FROM doc_lines dl
+INNER JOIN docs d ON d.id = dl.doc_id
+WHERE dl.order_line_id = @order_line_id
+  AND dl.qty > @qty_tolerance
+  AND d.type = @outbound_doc_type
+  AND d.status = @closed_doc_status
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  )
+LIMIT 1;");
+            command.Parameters.AddWithValue("@order_line_id", orderLineId);
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            return command.ExecuteScalar() != null;
+        });
+    }
+
+    public IReadOnlySet<long> GetCommerciallyLockedOrderLineIds(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT DISTINCT dl.order_line_id
+FROM doc_lines dl
+INNER JOIN docs d ON d.id = dl.doc_id
+INNER JOIN order_lines ol ON ol.id = dl.order_line_id
+WHERE ol.order_id = @order_id
+  AND dl.qty > @qty_tolerance
+  AND d.type = @outbound_doc_type
+  AND d.status = @closed_doc_status
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  );");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            using var reader = command.ExecuteReader();
+            var result = new HashSet<long>();
+            while (reader.Read())
+            {
+                result.Add(reader.GetInt64(0));
+            }
+
+            return result;
         });
     }
 
@@ -11885,6 +12437,436 @@ LIMIT 1;
         });
     }
 
+    public CommercialStatisticsResult GetCommercialStatistics(CommercialStatisticsQuery query)
+    {
+        return WithConnection(connection =>
+        {
+            var factsSql = BuildCommercialStatisticsFactsSql(query);
+            var summary = ReadCommercialStatisticsAmounts(
+                connection,
+                $@"
+WITH facts AS (
+{factsSql}
+),
+calculated AS (
+    SELECT *,
+           ROUND(source_qty::numeric, 6) AS quantity,
+           CASE
+               WHEN is_linked AND NOT item_mismatch
+                    AND unit_price_gross IS NOT NULL AND vat_rate IS NOT NULL
+               THEN ROUND(ROUND(source_qty::numeric, 6) * unit_price_gross, 2)
+           END AS gross
+    FROM facts
+),
+financial AS (
+    SELECT *,
+           CASE
+               WHEN gross IS NOT NULL AND vat_rate = 0 THEN 0::numeric
+               WHEN gross IS NOT NULL THEN ROUND(gross * vat_rate / (100 + vat_rate), 2)
+           END AS vat
+    FROM calculated
+)
+SELECT COUNT(DISTINCT order_id)::integer,
+       COUNT(DISTINCT doc_id)::integer,
+       COUNT(*)::integer,
+       COALESCE(SUM(quantity), 0),
+       COALESCE(SUM(quantity) FILTER (WHERE gross IS NOT NULL), 0),
+       COALESCE(SUM(gross), 0),
+       COALESCE(SUM(gross - vat), 0),
+       COALESCE(SUM(vat), 0)
+FROM financial;",
+                query);
+
+            var dataQuality = ReadCommercialStatisticsDataQuality(
+                connection,
+                $@"
+WITH facts AS (
+{factsSql}
+),
+calculated AS (
+    SELECT *,
+           ROUND(source_qty::numeric, 6) AS quantity
+    FROM facts
+)
+SELECT COUNT(*) FILTER (WHERE is_linked AND NOT item_mismatch AND unit_price_gross IS NULL)::integer,
+       COALESCE(SUM(quantity) FILTER (WHERE is_linked AND NOT item_mismatch AND unit_price_gross IS NULL), 0),
+       COUNT(*) FILTER (WHERE is_linked AND NOT item_mismatch AND vat_rate IS NULL)::integer,
+       COALESCE(SUM(quantity) FILTER (WHERE is_linked AND NOT item_mismatch AND vat_rate IS NULL), 0),
+       COUNT(*) FILTER (
+           WHERE NOT is_linked OR item_mismatch OR unit_price_gross IS NULL OR vat_rate IS NULL
+       )::integer,
+       COALESCE(SUM(quantity) FILTER (
+           WHERE NOT is_linked OR item_mismatch OR unit_price_gross IS NULL OR vat_rate IS NULL
+       ), 0),
+       COUNT(*) FILTER (WHERE NOT is_linked)::integer,
+       COALESCE(SUM(quantity) FILTER (WHERE NOT is_linked), 0),
+       COUNT(*) FILTER (WHERE item_mismatch)::integer,
+       COALESCE(SUM(quantity) FILTER (WHERE item_mismatch), 0)
+FROM calculated;",
+                query);
+
+            var monthly = ReadCommercialStatisticsMonths(connection, factsSql, query);
+            var groups = ReadCommercialStatisticsGroups(connection, factsSql, query, out var totalGroupCount);
+            return new CommercialStatisticsResult(summary, monthly, groups, totalGroupCount, dataQuality);
+        });
+    }
+
+    private static string BuildCommercialStatisticsFactsSql(CommercialStatisticsQuery query)
+    {
+        var filters = new List<string>();
+        if (query.PartnerId.HasValue)
+        {
+            filters.Add(query.Mode == CommercialStatisticsMode.Orders
+                ? "o.partner_id = @partner_id"
+                : "d.partner_id = @partner_id");
+        }
+        if (query.ItemId.HasValue)
+        {
+            filters.Add(query.Mode == CommercialStatisticsMode.Orders
+                ? "ol.item_id = @item_id"
+                : "dl.item_id = @item_id");
+        }
+        if (!string.IsNullOrWhiteSpace(query.Gtin))
+        {
+            filters.Add("COALESCE(i.gtin, '') = @gtin");
+        }
+        if (!string.IsNullOrWhiteSpace(query.Brand))
+        {
+            filters.Add("COALESCE(i.brand, '') ILIKE @brand");
+        }
+        if (!string.IsNullOrWhiteSpace(query.Volume))
+        {
+            filters.Add("COALESCE(i.volume, '') ILIKE @volume");
+        }
+
+        var extraFilters = filters.Count == 0
+            ? string.Empty
+            : $"\n  AND {string.Join("\n  AND ", filters)}";
+        if (query.Mode == CommercialStatisticsMode.Orders)
+        {
+            return $@"
+SELECT o.created_at AS fact_date,
+       o.id AS order_id,
+       NULL::bigint AS doc_id,
+       o.partner_id,
+       CASE
+           WHEN o.partner_id IS NULL THEN 'Не указано'
+           WHEN NULLIF(BTRIM(p.code), '') IS NOT NULL THEN p.code || ' — ' || p.name
+           ELSE p.name
+       END AS partner_label,
+       ol.item_id,
+       i.name AS item_label,
+       i.gtin,
+       i.brand,
+       i.volume,
+       ol.qty_ordered AS source_qty,
+       ol.unit_price_gross,
+       ol.vat_rate,
+       TRUE AS is_linked,
+       FALSE AS item_mismatch
+FROM orders o
+INNER JOIN order_lines ol ON ol.order_id = o.id
+INNER JOIN items i ON i.id = ol.item_id
+LEFT JOIN partners p ON p.id = o.partner_id
+WHERE o.order_type = 'CUSTOMER'
+  AND o.status = ANY(@statuses)
+  AND o.status NOT IN ('CANCELLED', 'MERGED')
+  AND ol.cancelled_at IS NULL
+  AND o.created_at >= @from_date
+  AND o.created_at < @to_date{extraFilters}";
+        }
+
+        return $@"
+SELECT d.closed_at AS fact_date,
+       d.order_id,
+       d.id AS doc_id,
+       d.partner_id,
+       CASE
+           WHEN d.partner_id IS NULL THEN 'Не указано'
+           WHEN NULLIF(BTRIM(p.code), '') IS NOT NULL THEN p.code || ' — ' || p.name
+           ELSE p.name
+       END AS partner_label,
+       dl.item_id,
+       i.name AS item_label,
+       i.gtin,
+       i.brand,
+       i.volume,
+       dl.qty AS source_qty,
+       CASE WHEN ol.id IS NOT NULL AND ol.item_id = dl.item_id THEN ol.unit_price_gross END AS unit_price_gross,
+       CASE WHEN ol.id IS NOT NULL AND ol.item_id = dl.item_id THEN ol.vat_rate END AS vat_rate,
+       ol.id IS NOT NULL AS is_linked,
+       ol.id IS NOT NULL AND ol.item_id <> dl.item_id AS item_mismatch
+FROM docs d
+INNER JOIN orders o ON o.id = d.order_id AND o.order_type = 'CUSTOMER'
+INNER JOIN doc_lines dl ON dl.doc_id = d.id
+INNER JOIN items i ON i.id = dl.item_id
+LEFT JOIN order_lines ol ON ol.id = dl.order_line_id
+LEFT JOIN partners p ON p.id = d.partner_id
+WHERE d.type = 'OUTBOUND'
+  AND d.status = 'CLOSED'
+  AND d.closed_at IS NOT NULL
+  AND dl.qty > @qty_tolerance
+  AND d.closed_at >= @from_date
+  AND d.closed_at < @to_date
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  ){extraFilters}";
+    }
+
+    private CommercialStatisticsAmounts ReadCommercialStatisticsAmounts(
+        NpgsqlConnection connection,
+        string sql,
+        CommercialStatisticsQuery query,
+        DateTime? detailMonth = null)
+    {
+        using var command = CreateCommand(connection, sql);
+        AddCommercialStatisticsParameters(command, query, detailMonth);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return EmptyCommercialStatisticsAmounts();
+        }
+
+        return ReadCommercialStatisticsAmounts(reader, 0);
+    }
+
+    private static CommercialStatisticsAmounts ReadCommercialStatisticsAmounts(
+        NpgsqlDataReader reader,
+        int offset)
+    {
+        return new CommercialStatisticsAmounts(
+            reader.IsDBNull(offset) ? 0 : reader.GetInt32(offset),
+            reader.IsDBNull(offset + 1) ? 0 : reader.GetInt32(offset + 1),
+            reader.IsDBNull(offset + 2) ? 0 : reader.GetInt32(offset + 2),
+            reader.IsDBNull(offset + 3) ? 0m : reader.GetDecimal(offset + 3),
+            reader.IsDBNull(offset + 4) ? 0m : reader.GetDecimal(offset + 4),
+            reader.IsDBNull(offset + 5) ? 0m : reader.GetDecimal(offset + 5),
+            reader.IsDBNull(offset + 6) ? 0m : reader.GetDecimal(offset + 6),
+            reader.IsDBNull(offset + 7) ? 0m : reader.GetDecimal(offset + 7));
+    }
+
+    private CommercialStatisticsDataQuality ReadCommercialStatisticsDataQuality(
+        NpgsqlConnection connection,
+        string sql,
+        CommercialStatisticsQuery query)
+    {
+        using var command = CreateCommand(connection, sql);
+        AddCommercialStatisticsParameters(command, query);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return new CommercialStatisticsDataQuality(0, 0m, 0, 0m, 0, 0m, 0, 0m, 0, 0m);
+        }
+
+        return new CommercialStatisticsDataQuality(
+            reader.GetInt32(0),
+            reader.GetDecimal(1),
+            reader.GetInt32(2),
+            reader.GetDecimal(3),
+            reader.GetInt32(4),
+            reader.GetDecimal(5),
+            reader.GetInt32(6),
+            reader.GetDecimal(7),
+            reader.GetInt32(8),
+            reader.GetDecimal(9));
+    }
+
+    private IReadOnlyList<CommercialStatisticsMonth> ReadCommercialStatisticsMonths(
+        NpgsqlConnection connection,
+        string factsSql,
+        CommercialStatisticsQuery query)
+    {
+        using var command = CreateCommand(connection, $@"
+WITH facts AS (
+{factsSql}
+),
+calculated AS (
+    SELECT *,
+           SUBSTRING(fact_date, 1, 7) AS month,
+           ROUND(source_qty::numeric, 6) AS quantity,
+           CASE
+               WHEN is_linked AND NOT item_mismatch
+                    AND unit_price_gross IS NOT NULL AND vat_rate IS NOT NULL
+               THEN ROUND(ROUND(source_qty::numeric, 6) * unit_price_gross, 2)
+           END AS gross
+    FROM facts
+),
+financial AS (
+    SELECT *,
+           CASE
+               WHEN gross IS NOT NULL AND vat_rate = 0 THEN 0::numeric
+               WHEN gross IS NOT NULL THEN ROUND(gross * vat_rate / (100 + vat_rate), 2)
+           END AS vat
+    FROM calculated
+)
+SELECT month,
+       COUNT(DISTINCT order_id)::integer,
+       COUNT(DISTINCT doc_id)::integer,
+       COUNT(*)::integer,
+       COALESCE(SUM(quantity), 0),
+       COALESCE(SUM(quantity) FILTER (WHERE gross IS NOT NULL), 0),
+       COALESCE(SUM(gross), 0),
+       COALESCE(SUM(gross - vat), 0),
+       COALESCE(SUM(vat), 0)
+FROM financial
+GROUP BY month
+ORDER BY month;");
+        AddCommercialStatisticsParameters(command, query);
+        using var reader = command.ExecuteReader();
+        var rows = new List<CommercialStatisticsMonth>();
+        while (reader.Read())
+        {
+            rows.Add(new CommercialStatisticsMonth(
+                reader.GetString(0),
+                ReadCommercialStatisticsAmounts(reader, 1)));
+        }
+        return rows;
+    }
+
+    private IReadOnlyList<CommercialStatisticsRow> ReadCommercialStatisticsGroups(
+        NpgsqlConnection connection,
+        string factsSql,
+        CommercialStatisticsQuery query,
+        out int totalGroupCount)
+    {
+        var (keyExpression, labelExpression) = query.GroupBy switch
+        {
+            CommercialStatisticsGroupBy.Partner =>
+                ("COALESCE(partner_id::text, '')", "COALESCE(partner_label, 'Не указано')"),
+            CommercialStatisticsGroupBy.Item =>
+                ("item_id::text", "COALESCE(item_label, 'Не указано')"),
+            CommercialStatisticsGroupBy.Gtin =>
+                ("COALESCE(NULLIF(BTRIM(gtin), ''), '')", "COALESCE(NULLIF(BTRIM(gtin), ''), 'Не указано')"),
+            CommercialStatisticsGroupBy.Brand =>
+                ("COALESCE(NULLIF(BTRIM(brand), ''), '')", "COALESCE(NULLIF(BTRIM(brand), ''), 'Не указано')"),
+            CommercialStatisticsGroupBy.Volume =>
+                ("COALESCE(NULLIF(BTRIM(volume), ''), '')", "COALESCE(NULLIF(BTRIM(volume), ''), 'Не указано')"),
+            _ => ("item_id::text", "COALESCE(item_label, 'Не указано')")
+        };
+        var detailFilter = query.DetailMonth.HasValue
+            ? "WHERE fact_date >= @detail_from AND fact_date < @detail_to"
+            : string.Empty;
+        var orderBy = query.Sort switch
+        {
+            "name_asc" => "label ASC, group_key ASC",
+            "quantity_desc" => "quantity DESC, label ASC",
+            _ => "gross DESC, label ASC"
+        };
+        var aggregateSql = $@"
+WITH facts AS (
+{factsSql}
+),
+selected AS (
+    SELECT *
+    FROM facts
+    {detailFilter}
+),
+calculated AS (
+    SELECT *,
+           {keyExpression} AS group_key,
+           {labelExpression} AS label,
+           ROUND(source_qty::numeric, 6) AS quantity,
+           CASE
+               WHEN is_linked AND NOT item_mismatch
+                    AND unit_price_gross IS NOT NULL AND vat_rate IS NOT NULL
+               THEN ROUND(ROUND(source_qty::numeric, 6) * unit_price_gross, 2)
+           END AS gross
+    FROM selected
+),
+financial AS (
+    SELECT *,
+           CASE
+               WHEN gross IS NOT NULL AND vat_rate = 0 THEN 0::numeric
+               WHEN gross IS NOT NULL THEN ROUND(gross * vat_rate / (100 + vat_rate), 2)
+           END AS vat
+    FROM calculated
+),
+grouped AS (
+    SELECT group_key,
+           label,
+           COUNT(DISTINCT order_id)::integer AS order_count,
+           COUNT(DISTINCT doc_id)::integer AS document_count,
+           COUNT(*)::integer AS fact_count,
+           COALESCE(SUM(quantity), 0) AS quantity,
+           COALESCE(SUM(quantity) FILTER (WHERE gross IS NOT NULL), 0) AS known_financial_quantity,
+           COALESCE(SUM(gross), 0) AS gross,
+           COALESCE(SUM(gross - vat), 0) AS net,
+           COALESCE(SUM(vat), 0) AS vat
+    FROM financial
+    GROUP BY group_key, label
+)
+";
+        using (var countCommand = CreateCommand(connection, aggregateSql + "SELECT COUNT(*)::integer FROM grouped;"))
+        {
+            AddCommercialStatisticsParameters(countCommand, query, query.DetailMonth);
+            totalGroupCount = Convert.ToInt32(countCommand.ExecuteScalar() ?? 0);
+        }
+
+        using var command = CreateCommand(connection, aggregateSql + $@"
+SELECT group_key, label, order_count, document_count, fact_count,
+       quantity, known_financial_quantity, gross, net, vat
+FROM grouped
+ORDER BY {orderBy}
+LIMIT @limit OFFSET @offset;");
+        AddCommercialStatisticsParameters(command, query, query.DetailMonth);
+        command.Parameters.AddWithValue("@limit", query.Limit);
+        command.Parameters.AddWithValue("@offset", query.Offset);
+        using var reader = command.ExecuteReader();
+        var rows = new List<CommercialStatisticsRow>();
+        while (reader.Read())
+        {
+            rows.Add(new CommercialStatisticsRow(
+                reader.IsDBNull(0) ? null : reader.GetString(0),
+                reader.GetString(1),
+                ReadCommercialStatisticsAmounts(reader, 2)));
+        }
+        return rows;
+    }
+
+    private static void AddCommercialStatisticsParameters(
+        NpgsqlCommand command,
+        CommercialStatisticsQuery query,
+        DateTime? detailMonth = null)
+    {
+        command.Parameters.AddWithValue("@from_date", ToDbDate(query.From));
+        command.Parameters.AddWithValue("@to_date", ToDbDate(query.ToExclusive));
+        command.Parameters.AddWithValue(
+            "@statuses",
+            query.Statuses.Select(OrderStatusMapper.StatusToString).ToArray());
+        command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+        if (query.PartnerId.HasValue)
+        {
+            command.Parameters.AddWithValue("@partner_id", query.PartnerId.Value);
+        }
+        if (query.ItemId.HasValue)
+        {
+            command.Parameters.AddWithValue("@item_id", query.ItemId.Value);
+        }
+        if (!string.IsNullOrWhiteSpace(query.Gtin))
+        {
+            command.Parameters.AddWithValue("@gtin", query.Gtin.Trim());
+        }
+        if (!string.IsNullOrWhiteSpace(query.Brand))
+        {
+            command.Parameters.AddWithValue("@brand", query.Brand.Trim());
+        }
+        if (!string.IsNullOrWhiteSpace(query.Volume))
+        {
+            command.Parameters.AddWithValue("@volume", query.Volume.Trim());
+        }
+        if (detailMonth.HasValue)
+        {
+            var month = new DateTime(detailMonth.Value.Year, detailMonth.Value.Month, 1);
+            command.Parameters.AddWithValue("@detail_from", ToDbDate(month));
+            command.Parameters.AddWithValue("@detail_to", ToDbDate(month.AddMonths(1)));
+        }
+    }
+
+    private static CommercialStatisticsAmounts EmptyCommercialStatisticsAmounts() =>
+        new(0, 0, 0, 0m, 0m, 0m, 0m, 0m);
+
     public void AddLedgerEntry(LedgerEntry entry)
     {
         WithConnection(connection =>
@@ -12093,10 +13075,11 @@ ORDER BY COALESCE(hu_code, hu);
         return WithConnection(connection =>
         {
             var sql = @"
-SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, NULL::bigint, NULL::text, FALSE, FALSE, FALSE, NULL::double precision, i.storage_conditions
+SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, NULL::bigint, NULL::text, FALSE, FALSE, FALSE, NULL::double precision, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active
 FROM ledger l
 INNER JOIN items i ON i.id = l.item_id
 LEFT JOIN taras t ON t.id = i.tara_id
+LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id
 WHERE l.location_id = @location_id";
             if (string.IsNullOrWhiteSpace(huCode))
             {
@@ -12119,10 +13102,15 @@ GROUP BY
     i.volume,
     i.shelf_life_months,
     i.storage_conditions,
+    i.default_sale_price_gross,
+    i.default_sale_vat_rate_id,
     i.max_qty_per_hu,
     i.tara_id,
     i.is_marked,
-    t.name
+    t.name,
+    vr.name,
+    vr.rate,
+    vr.is_active
 HAVING COALESCE(SUM(l.qty_delta), 0) > 0
 ORDER BY i.name;";
 
@@ -13556,7 +14544,12 @@ RETURNING id;
             ItemTypeEnableMinStockControl = !reader.IsDBNull(17) && reader.GetBoolean(17),
             ItemTypeEnableMarking = !reader.IsDBNull(18) && reader.GetBoolean(18),
             MinStockQty = reader.IsDBNull(19) ? null : Convert.ToDouble(reader.GetValue(19), CultureInfo.InvariantCulture),
-            StorageConditions = reader.IsDBNull(20) ? null : reader.GetString(20)
+            StorageConditions = reader.IsDBNull(20) ? null : reader.GetString(20),
+            DefaultSalePriceGross = reader.IsDBNull(21) ? null : reader.GetDecimal(21),
+            DefaultSaleVatRateId = reader.IsDBNull(22) ? null : reader.GetInt64(22),
+            DefaultSaleVatRateName = reader.IsDBNull(23) ? null : reader.GetString(23),
+            DefaultSaleVatRate = reader.IsDBNull(24) ? null : reader.GetDecimal(24),
+            DefaultSaleVatRateIsActive = reader.IsDBNull(25) ? null : reader.GetBoolean(25)
         };
     }
 
@@ -13581,6 +14574,58 @@ RETURNING id;
             EnableHuDistribution = !reader.IsDBNull(9) && reader.GetBoolean(9),
             EnableMarking = reader.FieldCount > 10 && !reader.IsDBNull(10) && reader.GetBoolean(10)
         };
+    }
+
+    private static VatRate ReadVatRate(NpgsqlDataReader reader)
+    {
+        return new VatRate
+        {
+            Id = reader.GetInt64(0),
+            Name = reader.GetString(1),
+            Rate = reader.GetDecimal(2),
+            IsActive = reader.GetBoolean(3),
+            SortOrder = reader.GetInt32(4)
+        };
+    }
+
+    private static PartnerItemSalePrice ReadPartnerItemSalePrice(NpgsqlDataReader reader)
+    {
+        return new PartnerItemSalePrice
+        {
+            Id = reader.GetInt64(0),
+            PartnerId = reader.GetInt64(1),
+            PartnerName = reader.GetString(2),
+            PartnerCode = reader.IsDBNull(3) ? null : reader.GetString(3),
+            ItemId = reader.GetInt64(4),
+            ItemName = reader.GetString(5),
+            UnitPriceGross = reader.GetDecimal(6),
+            IsActive = reader.GetBoolean(7)
+        };
+    }
+
+    private static void AddPartnerItemSalePriceFilterParameters(
+        NpgsqlCommand command,
+        long? partnerId,
+        long? itemId,
+        bool? isActive,
+        string? search)
+    {
+        if (partnerId.HasValue)
+        {
+            command.Parameters.AddWithValue("@partner_id", partnerId.Value);
+        }
+        if (itemId.HasValue)
+        {
+            command.Parameters.AddWithValue("@item_id", itemId.Value);
+        }
+        if (isActive.HasValue)
+        {
+            command.Parameters.AddWithValue("@is_active", isActive.Value);
+        }
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            command.Parameters.AddWithValue("@search", $"%{search.Trim()}%");
+        }
     }
 
     private static ItemPackaging ReadItemPackaging(NpgsqlDataReader reader)
@@ -14052,7 +15097,9 @@ ORDER BY pll.production_pallet_id, pll.id;
             CancelledByActor = reader.FieldCount > 7 && !reader.IsDBNull(7) ? reader.GetString(7) : null,
             CancelledByDeviceId = reader.FieldCount > 8 && !reader.IsDBNull(8) ? reader.GetString(8) : null,
             CancelReason = reader.FieldCount > 9 && !reader.IsDBNull(9) ? reader.GetString(9) : null,
-            Revision = reader.FieldCount > 10 && !reader.IsDBNull(10) ? reader.GetInt64(10) : 0
+            Revision = reader.FieldCount > 10 && !reader.IsDBNull(10) ? reader.GetInt64(10) : 0,
+            UnitPriceGross = reader.FieldCount > 11 && !reader.IsDBNull(11) ? reader.GetDecimal(11) : null,
+            VatRate = reader.FieldCount > 12 && !reader.IsDBNull(12) ? reader.GetDecimal(12) : null
         };
     }
 
@@ -14084,13 +15131,8 @@ ORDER BY pll.production_pallet_id, pll.id;
 
     private static void EnsureColumn(NpgsqlConnection connection, string tableName, string columnName, string definition)
     {
-        if (ColumnExists(connection, tableName, columnName))
-        {
-            return;
-        }
-
         using var command = connection.CreateCommand();
-        command.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {definition};";
+        command.CommandText = $"ALTER TABLE {tableName} ADD COLUMN IF NOT EXISTS {columnName} {definition};";
         command.ExecuteNonQuery();
     }
 
@@ -14166,6 +15208,8 @@ LIMIT 1;";
         {
             "items",
             "item_types",
+            "vat_rates",
+            "partner_item_sale_prices",
             "write_off_reasons",
             "orders",
             "order_lines",
@@ -14234,6 +15278,8 @@ LIMIT 1;";
             || !ColumnExists(connection, "items", "item_type_id")
             || !ColumnExists(connection, "items", "min_stock_qty")
             || !ColumnExists(connection, "items", "storage_conditions")
+            || !ColumnExists(connection, "items", "default_sale_price_gross")
+            || !ColumnExists(connection, "items", "default_sale_vat_rate_id")
             || !ColumnExists(connection, "locations", "auto_hu_distribution_enabled")
             || !ColumnExists(connection, "item_types", "is_visible_in_product_catalog")
             || !ColumnExists(connection, "item_types", "enable_min_stock_control")
@@ -14249,6 +15295,8 @@ LIMIT 1;";
             || !ColumnExists(connection, "order_lines", "production_pallet_group")
             || !ColumnExists(connection, "order_lines", "cancelled_at")
             || !ColumnExists(connection, "order_lines", "revision")
+            || !ColumnExists(connection, "order_lines", "unit_price_gross")
+            || !ColumnExists(connection, "order_lines", "vat_rate")
             || !ColumnExists(connection, "doc_lines", "production_purpose")
             || !ColumnExists(connection, "marking_order", "order_line_id")
             || !ColumnExists(connection, "marking_order", "request_status")
@@ -14386,10 +15434,10 @@ WHERE COALESCE(i.is_marked, 0) = 0
     {
         if (string.IsNullOrWhiteSpace(search))
         {
-            return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id ORDER BY i.name";
+            return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id ORDER BY i.name";
         }
 
-        return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
+        return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
     }
 
     private static string BuildStockQuery(string? search)

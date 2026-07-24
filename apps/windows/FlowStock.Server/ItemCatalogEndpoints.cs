@@ -59,10 +59,16 @@ SELECT i.id,
        COALESCE(it.enable_min_stock_control, FALSE),
        COALESCE(it.enable_marking, FALSE),
        i.min_stock_qty,
-       i.storage_conditions
+       i.storage_conditions,
+       i.default_sale_price_gross,
+       i.default_sale_vat_rate_id,
+       vr.name,
+       vr.rate,
+       vr.is_active
 FROM items i
 LEFT JOIN taras t ON t.id = i.tara_id
 LEFT JOIN item_types it ON it.id = i.item_type_id
+LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id
 WHERE @search::text IS NULL
    OR i.name ILIKE @search::text
    OR i.barcode ILIKE @search::text
@@ -120,7 +126,12 @@ ORDER BY i.name;";
                     item_type_enable_min_stock_control = !reader.IsDBNull(18) && reader.GetBoolean(18),
                     item_type_enable_marking = !reader.IsDBNull(19) && reader.GetBoolean(19),
                     min_stock_qty = reader.IsDBNull(20) ? (double?)null : Convert.ToDouble(reader.GetValue(20), CultureInfo.InvariantCulture),
-                    storage_conditions = reader.IsDBNull(21) ? null : reader.GetString(21)
+                    storage_conditions = reader.IsDBNull(21) ? null : reader.GetString(21),
+                    default_sale_price_gross = reader.IsDBNull(22) ? (decimal?)null : reader.GetDecimal(22),
+                    default_sale_vat_rate_id = reader.IsDBNull(23) ? (long?)null : reader.GetInt64(23),
+                    default_sale_vat_rate_name = reader.IsDBNull(24) ? null : reader.GetString(24),
+                    default_sale_vat_rate = reader.IsDBNull(25) ? (decimal?)null : reader.GetDecimal(25),
+                    default_sale_vat_rate_is_active = reader.IsDBNull(26) ? (bool?)null : reader.GetBoolean(26)
                 });
             }
 
@@ -151,10 +162,16 @@ ORDER BY i.name;";
                     parsed.Value?.MaxQtyPerHu,
                     parsed.Value?.ItemTypeId,
                     parsed.Value?.MinStockQty,
-                    parsed.Value?.StorageConditions);
+                    parsed.Value?.StorageConditions,
+                    parsed.Value?.DefaultSalePriceGross,
+                    parsed.Value?.DefaultSaleVatRateId);
                 return Results.Ok(new { ok = true, item_id = itemId });
             }
             catch (ArgumentException ex)
+            {
+                return Results.BadRequest(new ApiResult(false, ex.Message));
+            }
+            catch (InvalidOperationException ex)
             {
                 return Results.BadRequest(new ApiResult(false, ex.Message));
             }
@@ -189,7 +206,9 @@ ORDER BY i.name;";
                     parsed.Value?.MaxQtyPerHu,
                     parsed.Value?.ItemTypeId,
                     parsed.Value?.MinStockQty,
-                    parsed.Value?.StorageConditions);
+                    parsed.Value?.StorageConditions,
+                    parsed.Value?.DefaultSalePriceGross,
+                    parsed.Value?.DefaultSaleVatRateId);
                 return Results.Ok(new ApiResult(true));
             }
             catch (ArgumentException ex)
@@ -261,7 +280,12 @@ ORDER BY i.name;";
             item_type_enable_min_stock_control = item.ItemTypeEnableMinStockControl,
             item_type_enable_marking = item.ItemTypeEnableMarking,
             cz_marking_required = item.IsChestnyZnakMarkingRequired,
-            min_stock_qty = item.MinStockQty
+            min_stock_qty = item.MinStockQty,
+            default_sale_price_gross = item.DefaultSalePriceGross,
+            default_sale_vat_rate_id = item.DefaultSaleVatRateId,
+            default_sale_vat_rate_name = item.DefaultSaleVatRateName,
+            default_sale_vat_rate = item.DefaultSaleVatRate,
+            default_sale_vat_rate_is_active = item.DefaultSaleVatRateIsActive
         };
     }
 

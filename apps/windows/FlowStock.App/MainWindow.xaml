@@ -13,6 +13,8 @@
             <Menu Grid.Column="0">
                 <MenuItem Header="Справочники">
                     <MenuItem Header="Типы номенклатуры..." Click="ItemTypesMenu_Click" />
+                    <MenuItem Header="Ставки НДС..." Click="VatRatesMenu_Click" />
+                    <MenuItem Header="Цены клиентов..." Click="PartnerItemPricesMenu_Click" />
                     <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
                     <MenuItem Header="Тара..." Click="TaraMenu_Click" />
                     <Separator />
@@ -705,6 +707,134 @@
                             HorizontalAlignment="Left"
                             Margin="0,8,0,0"
                             Visibility="Collapsed" />
+                </Grid>
+            </TabItem>
+            <TabItem Header="Статистика">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <StackPanel>
+                        <WrapPanel>
+                            <TextBlock Text="С" VerticalAlignment="Center" />
+                            <DatePicker x:Name="StatisticsFromDate" Width="125" Margin="6,0,12,0"
+                                        SelectedDateChanged="StatisticsCriteria_Changed" />
+                            <TextBlock Text="по" VerticalAlignment="Center" />
+                            <DatePicker x:Name="StatisticsToDate" Width="125" Margin="6,0,12,0"
+                                        SelectedDateChanged="StatisticsCriteria_Changed" />
+                            <TextBlock Text="Режим" VerticalAlignment="Center" />
+                            <ComboBox x:Name="StatisticsModeCombo" Width="120" Margin="6,0,12,0"
+                                      SelectionChanged="StatisticsCriteria_Changed">
+                                <ComboBoxItem Content="Заказы" Tag="orders" />
+                                <ComboBoxItem Content="Продажи" Tag="sales" />
+                            </ComboBox>
+                            <TextBlock Text="Группировка" VerticalAlignment="Center" />
+                            <ComboBox x:Name="StatisticsGroupCombo" Width="145" Margin="6,0,12,0"
+                                      SelectionChanged="StatisticsCriteria_Changed">
+                                <ComboBoxItem Content="Контрагент" Tag="partner" />
+                                <ComboBoxItem Content="Товар" Tag="item" />
+                                <ComboBoxItem Content="GTIN" Tag="gtin" />
+                                <ComboBoxItem Content="Бренд" Tag="brand" />
+                                <ComboBoxItem Content="Фасовка" Tag="volume" />
+                            </ComboBox>
+                            <Button x:Name="StatisticsRefreshButton"
+                                    Content="Обновить"
+                                    Padding="12,4"
+                                    Click="StatisticsRefresh_Click" />
+                        </WrapPanel>
+                        <WrapPanel Margin="0,8,0,0">
+                            <TextBlock Text="Контрагент ID" VerticalAlignment="Center" />
+                            <TextBox x:Name="StatisticsPartnerIdBox" Width="80" Margin="6,0,12,0"
+                                     TextChanged="StatisticsCriteria_Changed" />
+                            <TextBlock Text="Товар ID" VerticalAlignment="Center" />
+                            <TextBox x:Name="StatisticsItemIdBox" Width="80" Margin="6,0,12,0"
+                                     TextChanged="StatisticsCriteria_Changed" />
+                            <TextBlock Text="GTIN" VerticalAlignment="Center" />
+                            <TextBox x:Name="StatisticsGtinBox" Width="130" Margin="6,0,12,0"
+                                     TextChanged="StatisticsCriteria_Changed" />
+                            <TextBlock Text="Бренд" VerticalAlignment="Center" />
+                            <TextBox x:Name="StatisticsBrandBox" Width="130" Margin="6,0,12,0"
+                                     TextChanged="StatisticsCriteria_Changed" />
+                            <TextBlock Text="Фасовка" VerticalAlignment="Center" />
+                            <TextBox x:Name="StatisticsVolumeBox" Width="110" Margin="6,0,12,0"
+                                     TextChanged="StatisticsCriteria_Changed" />
+                            <TextBlock Text="Статусы" VerticalAlignment="Center" />
+                            <TextBox x:Name="StatisticsStatusesBox" Width="170" Margin="6,0,0,0"
+                                     TextChanged="StatisticsCriteria_Changed"
+                                     ToolTip="Через запятую: DRAFT, ACCEPTED, IN_PROGRESS, SHIPPED" />
+                        </WrapPanel>
+                    </StackPanel>
+                    <Border Grid.Row="1" Margin="0,10,0,10" Padding="10"
+                            Background="#F8F9FA" BorderBrush="#D0D5DD" BorderThickness="1" CornerRadius="4">
+                        <StackPanel>
+                            <TextBlock x:Name="StatisticsKpiText" FontWeight="SemiBold" Text="Данные не загружены" />
+                            <TextBlock x:Name="StatisticsQualityText" Margin="0,4,0,0" Foreground="#8A5A00" />
+                        </StackPanel>
+                    </Border>
+                    <Grid Grid.Row="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <GroupBox Header="Помесячная сводка всего периода" Margin="0,0,5,0">
+                            <DataGrid x:Name="StatisticsMonthlyGrid"
+                                      AutoGenerateColumns="False"
+                                      IsReadOnly="True"
+                                      SelectionMode="Single"
+                                      SelectionChanged="StatisticsMonthlyGrid_SelectionChanged">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Месяц" Binding="{Binding Month}" Width="*" />
+                                    <DataGridTextColumn Header="Количество" Binding="{Binding Amounts.Quantity, StringFormat={}{0:0.######}}" Width="110" />
+                                    <DataGridTextColumn Header="С НДС" Binding="{Binding Amounts.Gross, StringFormat={}{0:N2}}" Width="100" />
+                                    <DataGridTextColumn Header="Без НДС" Binding="{Binding Amounts.Net, StringFormat={}{0:N2}}" Width="100" />
+                                    <DataGridTextColumn Header="НДС" Binding="{Binding Amounts.Vat, StringFormat={}{0:N2}}" Width="90" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </GroupBox>
+                        <GroupBox x:Name="StatisticsGroupsBox"
+                                  Grid.Column="1"
+                                  Header="Детализация за весь период"
+                                  Margin="5,0,0,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <DataGrid x:Name="StatisticsGroupsGrid" AutoGenerateColumns="False" IsReadOnly="True">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Группа" Binding="{Binding Label}" Width="*" />
+                                        <DataGridTextColumn Header="Количество" Binding="{Binding Amounts.Quantity, StringFormat={}{0:0.######}}" Width="110" />
+                                        <DataGridTextColumn Header="С НДС" Binding="{Binding Amounts.Gross, StringFormat={}{0:N2}}" Width="100" />
+                                        <DataGridTextColumn Header="Без НДС" Binding="{Binding Amounts.Net, StringFormat={}{0:N2}}" Width="100" />
+                                        <DataGridTextColumn Header="НДС" Binding="{Binding Amounts.Vat, StringFormat={}{0:N2}}" Width="90" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                                <DockPanel Grid.Row="1" Margin="0,8,0,0">
+                                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                                        <Button x:Name="StatisticsPreviousPageButton"
+                                                Content="← Предыдущая"
+                                                Click="StatisticsPreviousPage_Click"
+                                                Padding="8,3" />
+                                        <Button x:Name="StatisticsNextPageButton"
+                                                Content="Следующая →"
+                                                Click="StatisticsNextPage_Click"
+                                                Margin="6,0,0,0"
+                                                Padding="8,3" />
+                                        <Button Content="Весь период"
+                                                Click="StatisticsAllPeriod_Click"
+                                                Margin="12,0,0,0"
+                                                Padding="8,3" />
+                                    </StackPanel>
+                                    <TextBlock x:Name="StatisticsPageText"
+                                               Text="0 из 0"
+                                               HorizontalAlignment="Right"
+                                               VerticalAlignment="Center" />
+                                </DockPanel>
+                            </Grid>
+                        </GroupBox>
+                    </Grid>
                 </Grid>
             </TabItem>
             <TabItem x:Name="WarehouseTasksTab" Header="Задания">

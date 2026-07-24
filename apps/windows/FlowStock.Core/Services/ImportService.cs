@@ -430,7 +430,9 @@ public sealed class ImportService
                     BaseUom = baseUom,
                     DefaultPackagingId = existing.DefaultPackagingId,
                     StorageConditions = existing.StorageConditions,
-                    IsMarked = existing.IsMarked
+                    IsMarked = existing.IsMarked,
+                    DefaultSalePriceGross = existing.DefaultSalePriceGross,
+                    DefaultSaleVatRateId = existing.DefaultSaleVatRateId
                 });
             }
 
@@ -1041,4 +1043,3 @@ public sealed class ImportService
         public string? BaseUom { get; init; }
     }
 }
-

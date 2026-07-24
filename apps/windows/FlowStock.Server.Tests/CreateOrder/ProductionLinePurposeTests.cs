@@ -49,8 +49,24 @@ public sealed class ProductionLinePurposeTests
     {
         var harness = new CloseDocumentHarness();
         harness.SeedPartner(new Partner { Id = 1, Name = "Клиент" });
-        harness.SeedItem(new Item { Id = 10, Name = "Товар 1" });
-        harness.SeedItem(new Item { Id = 11, Name = "Товар 2" });
+        harness.SeedItem(new Item
+        {
+            Id = 10,
+            Name = "Товар 1",
+            DefaultSalePriceGross = 100m,
+            DefaultSaleVatRateId = 1,
+            DefaultSaleVatRate = 22m,
+            DefaultSaleVatRateIsActive = true
+        });
+        harness.SeedItem(new Item
+        {
+            Id = 11,
+            Name = "Товар 2",
+            DefaultSalePriceGross = 200m,
+            DefaultSaleVatRateId = 1,
+            DefaultSaleVatRate = 22m,
+            DefaultSaleVatRateIsActive = true
+        });
         var service = new OrderService(harness.Store);
 
         var orderId = service.CreateOrder(

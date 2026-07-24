@@ -64,6 +64,12 @@ internal static class CreateOrderHttpApi
 
         [JsonPropertyName("production_purpose")]
         public string? ProductionPurpose { get; init; }
+
+        [JsonPropertyName("change_unit_price_gross")]
+        public bool? ChangeUnitPriceGross { get; init; }
+
+        [JsonPropertyName("unit_price_gross")]
+        public decimal? UnitPriceGross { get; init; }
     }
 
     internal sealed class CreateOrderEnvelope

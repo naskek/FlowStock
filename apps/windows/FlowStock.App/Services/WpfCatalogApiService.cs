@@ -106,6 +106,28 @@ public sealed class WpfCatalogApiService
             out itemTypes);
     }
 
+    public bool TryGetVatRates(bool includeInactive, out IReadOnlyList<VatRate> vatRates)
+    {
+        vatRates = Array.Empty<VatRate>();
+        var path = includeInactive ? "/api/vat-rates?include_inactive=true" : "/api/vat-rates";
+        return TryRead(
+            path,
+            root => root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray()
+                    .Select(element => new VatRate
+                    {
+                        Id = ReadInt64(element, "id"),
+                        Name = ReadString(element, "name") ?? string.Empty,
+                        Rate = ReadDecimal(element, "rate"),
+                        IsActive = ReadBool(element, "is_active"),
+                        SortOrder = ReadInt32(element, "sort_order")
+                    })
+                    .ToList()
+                : new List<VatRate>(),
+            "catalog-vat-rates",
+            out vatRates);
+    }
+
     public async Task<(bool IsSuccess, long? CreatedId, string? Error)> TryCreateItemAsync(Item item, CancellationToken cancellationToken = default)
     {
         return await TryPostForIdAsync(
@@ -124,7 +146,9 @@ public sealed class WpfCatalogApiService
                     tara_id = item.TaraId,
                     max_qty_per_hu = item.MaxQtyPerHu,
                     item_type_id = item.ItemTypeId,
-                    min_stock_qty = item.MinStockQty
+                    min_stock_qty = item.MinStockQty,
+                    default_sale_price_gross = item.DefaultSalePriceGross,
+                    default_sale_vat_rate_id = item.DefaultSaleVatRateId
                 },
                 "item_id",
                 "catalog-create-item",
@@ -150,7 +174,9 @@ public sealed class WpfCatalogApiService
                     tara_id = item.TaraId,
                     max_qty_per_hu = item.MaxQtyPerHu,
                     item_type_id = item.ItemTypeId,
-                    min_stock_qty = item.MinStockQty
+                    min_stock_qty = item.MinStockQty,
+                    default_sale_price_gross = item.DefaultSalePriceGross,
+                    default_sale_vat_rate_id = item.DefaultSaleVatRateId
                 },
                 "catalog-update-item",
                 cancellationToken)
@@ -310,6 +336,51 @@ public sealed class WpfCatalogApiService
     public async Task<(bool IsSuccess, string? Error)> TryDeleteItemTypeAsync(long id, CancellationToken cancellationToken = default)
     {
         return await TryDeleteAsync($"/api/item-types/{id}", "catalog-delete-item-type", cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<(bool IsSuccess, long? CreatedId, string? Error)> TryCreateVatRateAsync(
+        VatRate vatRate,
+        CancellationToken cancellationToken = default)
+    {
+        return await TryPostForIdAsync(
+                "/api/vat-rates",
+                new
+                {
+                    name = vatRate.Name,
+                    rate = vatRate.Rate,
+                    is_active = vatRate.IsActive,
+                    sort_order = vatRate.SortOrder
+                },
+                "vat_rate_id",
+                "catalog-create-vat-rate",
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<(bool IsSuccess, string? Error)> TryUpdateVatRateAsync(
+        VatRate vatRate,
+        CancellationToken cancellationToken = default)
+    {
+        return await TryPostAsync(
+                $"/api/vat-rates/{vatRate.Id}",
+                new
+                {
+                    name = vatRate.Name,
+                    rate = vatRate.Rate,
+                    is_active = vatRate.IsActive,
+                    sort_order = vatRate.SortOrder
+                },
+                "catalog-update-vat-rate",
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<(bool IsSuccess, string? Error)> TryDeleteVatRateAsync(
+        long id,
+        CancellationToken cancellationToken = default)
+    {
+        return await TryDeleteAsync($"/api/vat-rates/{id}", "catalog-delete-vat-rate", cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private bool TryRead<T>(string relativePath, Func<JsonElement, T> map, string operationName, out T value)
@@ -591,6 +662,23 @@ public sealed class WpfCatalogApiService
         return element.TryGetProperty(propertyName, out var value) && value.TryGetInt32(out var parsed)
             ? parsed
             : 0;
+    }
+
+    private static decimal ReadDecimal(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value))
+        {
+            return 0m;
+        }
+
+        if (value.TryGetDecimal(out var parsed))
+        {
+            return parsed;
+        }
+
+        return decimal.TryParse(value.ToString(), NumberStyles.Number, CultureInfo.InvariantCulture, out parsed)
+            ? parsed
+            : 0m;
     }
 
     private static bool ReadBool(JsonElement element, string propertyName)

@@ -57,6 +57,28 @@ public interface IDataStore
     void DeactivateItemType(long itemTypeId);
     bool IsItemTypeUsed(long itemTypeId);
 
+    IReadOnlyList<VatRate> GetVatRates(bool includeInactive);
+    VatRate? GetVatRate(long id);
+    long AddVatRate(VatRate vatRate);
+    void UpdateVatRate(VatRate vatRate);
+    void DeleteVatRate(long vatRateId);
+    bool IsVatRateUsedByItems(long vatRateId);
+
+    PartnerItemSalePrice? GetPartnerItemSalePrice(long id);
+    PartnerItemSalePrice? GetActivePartnerItemSalePrice(long partnerId, long itemId);
+    PartnerItemSalePricePage GetPartnerItemSalePrices(
+        long? partnerId,
+        long? itemId,
+        bool? isActive,
+        string? search,
+        int limit,
+        int offset);
+    long AddPartnerItemSalePrice(PartnerItemSalePrice price);
+    void UpdatePartnerItemSalePrice(PartnerItemSalePrice price);
+    void DeletePartnerItemSalePrice(long id);
+    bool HasPartnerItemSalePricesForPartner(long partnerId);
+    bool HasPartnerItemSalePricesForItem(long itemId);
+
     Partner? GetPartner(long id);
     Partner? FindPartnerByCode(string code);
     IReadOnlyList<Partner> GetPartners();
@@ -189,6 +211,9 @@ public interface IDataStore
     IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId);
     long AddOrderLine(OrderLine line);
     void UpdateOrderLineQty(long orderLineId, double qtyOrdered);
+    void UpdateOrderLineUnitPriceGross(long orderLineId, decimal? unitPriceGross);
+    bool HasCommercialShipmentForOrderLine(long orderLineId);
+    IReadOnlySet<long> GetCommerciallyLockedOrderLineIds(long orderId);
     void UpdateOrderLinePurpose(long orderLineId, ProductionLinePurpose purpose);
     void UpdateOrderLineProductionPalletGroup(long orderLineId, string? groupCode);
     void DeleteOrderLine(long orderLineId);
@@ -200,6 +225,8 @@ public interface IDataStore
     IReadOnlyDictionary<long, double> GetShippedTotalsByOrderLine(long orderId);
     DateTime? GetOrderShippedAt(long orderId);
     bool HasOutboundDocs(long orderId);
+
+    CommercialStatisticsResult GetCommercialStatistics(CommercialStatisticsQuery query);
 
     void AddLedgerEntry(LedgerEntry entry);
     IReadOnlyList<StockRow> GetStock(string? search);

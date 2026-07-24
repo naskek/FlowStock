@@ -23,6 +23,11 @@ public sealed class Item
     public bool ItemTypeEnableMinStockControl { get; init; }
     public bool ItemTypeEnableMarking { get; init; }
     public double? MinStockQty { get; init; }
+    public decimal? DefaultSalePriceGross { get; init; }
+    public long? DefaultSaleVatRateId { get; init; }
+    public string? DefaultSaleVatRateName { get; init; }
+    public decimal? DefaultSaleVatRate { get; init; }
+    public bool? DefaultSaleVatRateIsActive { get; init; }
 
     public bool IsChestnyZnakMarkingRequired =>
         ItemTypeEnableMarking && !string.IsNullOrWhiteSpace(Gtin);

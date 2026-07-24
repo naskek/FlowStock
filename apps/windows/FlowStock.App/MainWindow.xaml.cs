@@ -91,12 +91,14 @@ public partial class MainWindow : Window
     private const int TabProductionNeedIndex = 1;
     private const int TabDocsIndex = 2;
     private const int TabOrdersIndex = 3;
-    private const int TabTasksIndex = 4;
-    private const int TabItemsIndex = 5;
-    private const int TabLocationsIndex = 6;
-    private const int TabPartnersIndex = 7;
-    private const int TabKmIndex = 8;
+    private const int TabStatisticsIndex = 4;
+    private const int TabTasksIndex = 5;
+    private const int TabItemsIndex = 6;
+    private const int TabLocationsIndex = 7;
+    private const int TabPartnersIndex = 8;
+    private const int TabKmIndex = 9;
     private const int OrdersPageSize = 15;
+    private readonly CommercialStatisticsViewState _commercialStatisticsState = new(pageSize: 100);
     private int _ordersPagedDepth;
     private bool _ordersHasMore;
 
@@ -116,6 +118,11 @@ public partial class MainWindow : Window
         DocsGrid.ItemsSource = _docs;
         OrdersGrid.ItemsSource = _orders;
         WarehouseBundlesGrid.ItemsSource = _warehouseBundles;
+        StatisticsFromDate.SelectedDate = new DateTime(DateTime.Today.Year, 1, 1);
+        StatisticsToDate.SelectedDate = DateTime.Today;
+        StatisticsModeCombo.SelectedIndex = 0;
+        StatisticsGroupCombo.SelectedIndex = 0;
+        UpdateCommercialStatisticsNavigation();
         WarehouseBundleFilterCombo.ItemsSource = new[]
         {
             new WarehouseBundleFilterOption(null, "Все"),
@@ -511,6 +518,7 @@ public partial class MainWindow : Window
             TabProductionNeedIndex => WpfLiveRefreshGuard.IsDataGridEditing(ProductionNeedGrid),
             TabDocsIndex => WpfLiveRefreshGuard.IsDataGridEditing(DocsGrid),
             TabOrdersIndex => WpfLiveRefreshGuard.IsDataGridEditing(OrdersGrid),
+            TabStatisticsIndex => false,
             TabTasksIndex => WpfLiveRefreshGuard.IsDataGridEditing(WarehouseBundlesGrid),
             TabItemsIndex => WpfLiveRefreshGuard.IsDataGridEditing(ItemsGrid),
             TabLocationsIndex => WpfLiveRefreshGuard.IsDataGridEditing(LocationsGrid),
@@ -586,6 +594,9 @@ public partial class MainWindow : Window
                     break;
                 case TabOrdersIndex:
                     RefreshOrdersKeepingPagedDepth();
+                    break;
+                case TabStatisticsIndex:
+                    _ = LoadCommercialStatisticsAsync();
                     break;
                 case TabTasksIndex:
                     if (ExperimentalFeatureFlags.WarehouseTasksEnabled)
@@ -3260,6 +3271,16 @@ public partial class MainWindow : Window
         LoadLowStockView();
     }
 
+    private void VatRatesMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new VatRateWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+        LoadItems();
+    }
+
     private void TaraMenu_Click(object sender, RoutedEventArgs e)
     {
         var window = new TaraWindow(_services, LoadTaras)
@@ -3289,6 +3310,170 @@ public partial class MainWindow : Window
             Owner = this
         };
         window.ShowDialog();
+    }
+
+    private void PartnerItemPricesMenu_Click(object sender, RoutedEventArgs e)
+    {
+        new PartnerItemSalePriceWindow(_services)
+        {
+            Owner = this
+        }.ShowDialog();
+    }
+
+    private async void StatisticsRefresh_Click(object sender, RoutedEventArgs e)
+    {
+        await LoadCommercialStatisticsAsync().ConfigureAwait(true);
+    }
+
+    private void StatisticsCriteria_Changed(object sender, EventArgs e)
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        _commercialStatisticsState.ResetOffset();
+        UpdateCommercialStatisticsNavigation();
+    }
+
+    private async void StatisticsPreviousPage_Click(object sender, RoutedEventArgs e)
+    {
+        if (_commercialStatisticsState.MovePrevious())
+        {
+            await LoadCommercialStatisticsAsync().ConfigureAwait(true);
+        }
+    }
+
+    private async void StatisticsNextPage_Click(object sender, RoutedEventArgs e)
+    {
+        if (_commercialStatisticsState.MoveNext())
+        {
+            await LoadCommercialStatisticsAsync().ConfigureAwait(true);
+        }
+    }
+
+    private async void StatisticsMonthlyGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded
+            || StatisticsMonthlyGrid.SelectedItem is not WpfCommercialStatisticsMonth month)
+        {
+            return;
+        }
+
+        _commercialStatisticsState.SelectDetailMonth(month.Month);
+        UpdateCommercialStatisticsNavigation();
+        await LoadCommercialStatisticsAsync().ConfigureAwait(true);
+    }
+
+    private async void StatisticsAllPeriod_Click(object sender, RoutedEventArgs e)
+    {
+        StatisticsMonthlyGrid.SelectedItem = null;
+        _commercialStatisticsState.SelectDetailMonth(null);
+        UpdateCommercialStatisticsNavigation();
+        await LoadCommercialStatisticsAsync().ConfigureAwait(true);
+    }
+
+    private async Task LoadCommercialStatisticsAsync()
+    {
+        if (StatisticsFromDate.SelectedDate is not DateTime from
+            || StatisticsToDate.SelectedDate is not DateTime to)
+        {
+            MessageBox.Show("Укажите период статистики.", "Статистика", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        if (to < from)
+        {
+            MessageBox.Show("Дата окончания должна быть не раньше даты начала.", "Статистика", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        if (!TryReadOptionalLong(StatisticsPartnerIdBox.Text, "Контрагент ID", out var partnerId)
+            || !TryReadOptionalLong(StatisticsItemIdBox.Text, "Товар ID", out var itemId))
+        {
+            return;
+        }
+
+        var mode = (StatisticsModeCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "orders";
+        var groupBy = (StatisticsGroupCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "partner";
+        var load = _commercialStatisticsState.StartLoad(
+            new WpfCommercialStatisticsFilters(
+                mode,
+                groupBy,
+                from,
+                to,
+                partnerId,
+                itemId,
+                StatisticsGtinBox.Text,
+                StatisticsBrandBox.Text,
+                StatisticsVolumeBox.Text,
+                string.Equals(mode, "orders", StringComparison.OrdinalIgnoreCase)
+                    ? StatisticsStatusesBox.Text
+                    : null,
+                Sort: "gross_desc"));
+        UpdateCommercialStatisticsNavigation();
+        StatisticsKpiText.Text = "Загрузка...";
+        try
+        {
+            var result = await _services.WpfCommercialStatisticsApi.GetAsync(
+                load.Request).ConfigureAwait(true);
+            if (!_commercialStatisticsState.TryComplete(load.RequestId, result))
+            {
+                return;
+            }
+
+            StatisticsMonthlyGrid.ItemsSource = result.Monthly;
+            StatisticsGroupsGrid.ItemsSource = result.Groups.Items;
+            StatisticsKpiText.Text =
+                $"Количество: {result.Summary.Quantity:0.######}; с НДС: {result.Summary.Gross:N2}; без НДС: {result.Summary.Net:N2}; НДС: {result.Summary.Vat:N2}";
+            StatisticsQualityText.Text = result.DataQuality.IsFinanciallyComplete
+                ? "Финансовые snapshots заполнены для всех фактов."
+                : $"Неполные факты: {result.DataQuality.FinanciallyIncompleteFactCount}, количество: {result.DataQuality.FinanciallyIncompleteQuantity:0.######}; непривязанные продажи: {result.DataQuality.UnlinkedSalesFactCount}; несовпадения товара: {result.DataQuality.ItemMismatchSalesFactCount}.";
+        }
+        catch (Exception ex)
+        {
+            if (!_commercialStatisticsState.TryFail(load.RequestId))
+            {
+                return;
+            }
+
+            StatisticsMonthlyGrid.ItemsSource = null;
+            StatisticsGroupsGrid.ItemsSource = null;
+            StatisticsKpiText.Text = "Не удалось загрузить статистику.";
+            StatisticsQualityText.Text = ex.Message;
+        }
+        finally
+        {
+            UpdateCommercialStatisticsNavigation();
+        }
+    }
+
+    private void UpdateCommercialStatisticsNavigation()
+    {
+        if (StatisticsRefreshButton == null)
+        {
+            return;
+        }
+
+        StatisticsRefreshButton.IsEnabled = !_commercialStatisticsState.IsLoading;
+        StatisticsPreviousPageButton.IsEnabled = _commercialStatisticsState.CanMovePrevious;
+        StatisticsNextPageButton.IsEnabled = _commercialStatisticsState.CanMoveNext;
+        StatisticsPageText.Text = _commercialStatisticsState.RangeText;
+        StatisticsGroupsBox.Header = _commercialStatisticsState.DetailLabel;
+    }
+
+    private static bool TryReadOptionalLong(string? text, string field, out long? value)
+    {
+        value = null;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return true;
+        }
+        if (long.TryParse(text.Trim(), out var parsed) && parsed > 0)
+        {
+            value = parsed;
+            return true;
+        }
+        MessageBox.Show($"{field} должен быть положительным целым числом.", "Статистика", MessageBoxButton.OK, MessageBoxImage.Warning);
+        return false;
     }
 
     // Legacy: отдельное окно/очередь "Маркировка" больше не выводится в главное меню WPF.

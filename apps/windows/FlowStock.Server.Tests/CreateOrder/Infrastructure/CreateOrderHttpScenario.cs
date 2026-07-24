@@ -26,13 +26,21 @@ internal static class CreateOrderHttpScenario
         {
             Id = 1001,
             Name = "Горчица",
-            Barcode = "4660011933641"
+            Barcode = "4660011933641",
+            DefaultSalePriceGross = 100m,
+            DefaultSaleVatRateId = 1,
+            DefaultSaleVatRate = 22m,
+            DefaultSaleVatRateIsActive = true
         });
         harness.SeedItem(new Item
         {
             Id = 1002,
             Name = "Кетчуп",
-            Barcode = "4660011933642"
+            Barcode = "4660011933642",
+            DefaultSalePriceGross = 120m,
+            DefaultSaleVatRateId = 1,
+            DefaultSaleVatRate = 22m,
+            DefaultSaleVatRateIsActive = true
         });
 
         return (harness, new InMemoryApiDocStore());

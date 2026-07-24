@@ -12,6 +12,7 @@ public partial class ItemEditWindow : Window
     private readonly List<Uom> _uoms = new();
     private readonly List<TaraOption> _taras = new();
     private readonly List<ItemTypeOption> _itemTypes = new();
+    private readonly List<VatRateOption> _vatRates = new();
 
     public long? SavedItemId { get; private set; }
 
@@ -54,6 +55,20 @@ public partial class ItemEditWindow : Window
             _itemTypes.Add(new ItemTypeOption(itemType.Id, itemType.Name, itemType.EnableMinStockControl, itemType.EnableHuDistribution, itemType.EnableMarking));
         }
         ItemTypeCombo.ItemsSource = _itemTypes;
+
+        _vatRates.Clear();
+        _vatRates.Add(VatRateOption.Empty);
+        var vatRates = _services.WpfCatalogApi.TryGetVatRates(includeInactive: true, out var apiVatRates)
+            ? apiVatRates
+            : Array.Empty<VatRate>();
+        foreach (var vatRate in vatRates.Where(vatRate =>
+                     vatRate.IsActive || vatRate.Id == _item?.DefaultSaleVatRateId))
+        {
+            _vatRates.Add(new VatRateOption(
+                vatRate.Id,
+                vatRate.IsActive ? vatRate.Name : $"{vatRate.Name} (неактивна)"));
+        }
+        DefaultSaleVatRateCombo.ItemsSource = _vatRates;
     }
 
     private void FillData()
@@ -68,6 +83,8 @@ public partial class ItemEditWindow : Window
             TaraCombo.SelectedItem = TaraOption.Empty;
             ItemTypeCombo.SelectedItem = _itemTypes.FirstOrDefault(t => t.Id.HasValue) ?? _itemTypes.FirstOrDefault();
             MinStockQtyBox.Text = string.Empty;
+            DefaultSalePriceGrossBox.Text = string.Empty;
+            DefaultSaleVatRateCombo.SelectedItem = VatRateOption.Empty;
             IsActiveCheck.IsChecked = true;
             UpdateTypeDrivenControls();
             return;
@@ -93,6 +110,11 @@ public partial class ItemEditWindow : Window
         MinStockQtyBox.Text = _item.MinStockQty.HasValue
             ? _item.MinStockQty.Value.ToString("0.###", CultureInfo.InvariantCulture)
             : string.Empty;
+        DefaultSalePriceGrossBox.Text = _item.DefaultSalePriceGross.HasValue
+            ? _item.DefaultSalePriceGross.Value.ToString("0.####", CultureInfo.CurrentCulture)
+            : string.Empty;
+        DefaultSaleVatRateCombo.SelectedItem = _vatRates.FirstOrDefault(rate => rate.Id == _item.DefaultSaleVatRateId)
+                                                       ?? VatRateOption.Empty;
         IsActiveCheck.IsChecked = _item.IsActive;
         UpdateTypeDrivenControls();
     }
@@ -132,6 +154,11 @@ public partial class ItemEditWindow : Window
         var itemType = ItemTypeCombo.SelectedItem as ItemTypeOption;
         var itemTypeId = itemType?.Id;
         var isActive = IsActiveCheck.IsChecked != false;
+        if (!TryParseDefaultSalePrice(DefaultSalePriceGrossBox.Text, out var defaultSalePriceGross))
+        {
+            return;
+        }
+        var defaultSaleVatRateId = (DefaultSaleVatRateCombo.SelectedItem as VatRateOption)?.Id;
 
         double? minStockQty = null;
         if (itemType?.EnableMinStockControl == true
@@ -182,7 +209,9 @@ public partial class ItemEditWindow : Window
                 IsMarked = false,
                 IsActive = isActive,
                 ItemTypeId = itemTypeId,
-                MinStockQty = minStockQty
+                MinStockQty = minStockQty,
+                DefaultSalePriceGross = defaultSalePriceGross,
+                DefaultSaleVatRateId = defaultSaleVatRateId
             };
 
             if (_item == null)
@@ -220,7 +249,9 @@ public partial class ItemEditWindow : Window
                     IsMarked = _item.IsMarked,
                     IsActive = candidate.IsActive,
                     ItemTypeId = candidate.ItemTypeId,
-                    MinStockQty = candidate.MinStockQty
+                    MinStockQty = candidate.MinStockQty,
+                    DefaultSalePriceGross = candidate.DefaultSalePriceGross,
+                    DefaultSaleVatRateId = candidate.DefaultSaleVatRateId
                 };
                 var result = await _services.WpfCatalogApi.TryUpdateItemAsync(updateCandidate).ConfigureAwait(true);
                 if (!result.IsSuccess)
@@ -319,6 +350,36 @@ public partial class ItemEditWindow : Window
         }
 
         minStockQty = parsed;
+        return true;
+    }
+
+    private bool TryParseDefaultSalePrice(string? value, out decimal? price)
+    {
+        price = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        var raw = value.Trim();
+        if (!decimal.TryParse(raw, NumberStyles.Number, CultureInfo.CurrentCulture, out var parsed)
+            && !decimal.TryParse(raw, NumberStyles.Number, CultureInfo.InvariantCulture, out parsed))
+        {
+            MessageBox.Show("Цена продажи с НДС должна быть числом.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        if (parsed < 0 || decimal.Round(parsed, 4) != parsed)
+        {
+            MessageBox.Show(
+                "Цена продажи с НДС должна быть неотрицательной и содержать не более четырёх знаков после запятой.",
+                "Товары",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return false;
+        }
+
+        price = parsed;
         return true;
     }
 
@@ -455,5 +516,28 @@ public partial class ItemEditWindow : Window
     private sealed record ItemTypeOption(long? Id, string Name, bool EnableMinStockControl, bool EnableHuDistribution, bool EnableMarking)
     {
         public static ItemTypeOption Empty { get; } = new(null, "Не выбран", false, false, false);
+    }
+
+    private sealed record VatRateOption(long? Id, string DisplayName)
+    {
+        public static VatRateOption Empty { get; } = new(null, "Не выбрана");
+    }
+
+    private void CustomerPrices_Click(object sender, RoutedEventArgs e)
+    {
+        if (_item == null || _item.Id <= 0)
+        {
+            MessageBox.Show(
+                "Сначала сохраните товар, затем настройте индивидуальные цены.",
+                "Товары",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        new PartnerItemSalePriceWindow(_services, _item.Id)
+        {
+            Owner = this
+        }.ShowDialog();
     }
 }

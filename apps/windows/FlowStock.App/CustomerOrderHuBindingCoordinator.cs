@@ -815,6 +815,12 @@ public sealed class CustomerOrderLinePresentation : INotifyPropertyChanged
 
     public double QtyOrdered => State.Line.QtyOrdered;
 
+    public decimal? UnitPriceGross => State.Line.UnitPriceGross;
+
+    public decimal? VatRate => State.Line.VatRate;
+
+    public bool CommercialTermsLocked => State.Line.CommercialTermsLocked;
+
     public string ProductionHuCodes => State.Line.ProductionHuCodes;
 
     public double QtyShipped => State.Line.QtyShipped;
@@ -862,6 +868,9 @@ public sealed class CustomerOrderLinePresentation : INotifyPropertyChanged
         OnPropertyChanged(nameof(Barcode));
         OnPropertyChanged(nameof(Gtin));
         OnPropertyChanged(nameof(QtyOrdered));
+        OnPropertyChanged(nameof(UnitPriceGross));
+        OnPropertyChanged(nameof(VatRate));
+        OnPropertyChanged(nameof(CommercialTermsLocked));
         OnPropertyChanged(nameof(ProductionHuCodes));
         OnPropertyChanged(nameof(QtyShipped));
         OnPropertyChanged(nameof(QtyRemaining));

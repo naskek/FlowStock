@@ -32,7 +32,7 @@ public sealed class CatalogService
         return _data.GetPartners();
     }
 
-    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool isActive = true, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null, string? storageConditions = null)
+    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool isActive = true, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null, string? storageConditions = null, decimal? defaultSalePriceGross = null, long? defaultSaleVatRateId = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -42,6 +42,7 @@ public sealed class CatalogService
         var normalizedUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom.Trim();
         var normalizedMaxQtyPerHu = NormalizeMaxQtyPerHu(itemTypeId, maxQtyPerHu);
         var normalizedMinStock = NormalizeMinStock(itemTypeId, minStockQty);
+        ValidateSalePrice(defaultSalePriceGross);
         var item = new Item
         {
             Name = name.Trim(),
@@ -57,7 +58,9 @@ public sealed class CatalogService
             IsMarked = false,
             IsActive = isActive,
             ItemTypeId = itemTypeId,
-            MinStockQty = normalizedMinStock
+            MinStockQty = normalizedMinStock,
+            DefaultSalePriceGross = defaultSalePriceGross,
+            DefaultSaleVatRateId = defaultSaleVatRateId
         };
 
         return _data.AddItem(item);
@@ -178,7 +181,7 @@ public sealed class CatalogService
         _data.UpdateItemBarcode(itemId, barcode.Trim());
     }
 
-    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool? isActive = null, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null, string? storageConditions = null)
+    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool? isActive = null, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null, string? storageConditions = null, decimal? defaultSalePriceGross = null, long? defaultSaleVatRateId = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -194,6 +197,7 @@ public sealed class CatalogService
         var normalizedUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom.Trim();
         var normalizedMaxQtyPerHu = NormalizeMaxQtyPerHu(itemTypeId, maxQtyPerHu);
         var normalizedMinStock = NormalizeMinStock(itemTypeId, minStockQty);
+        ValidateSalePrice(defaultSalePriceGross);
         var item = new Item
         {
             Id = itemId,
@@ -211,7 +215,9 @@ public sealed class CatalogService
             IsMarked = existing.IsMarked,
             IsActive = isActive ?? existing.IsActive,
             ItemTypeId = itemTypeId,
-            MinStockQty = normalizedMinStock
+            MinStockQty = normalizedMinStock,
+            DefaultSalePriceGross = defaultSalePriceGross,
+            DefaultSaleVatRateId = defaultSaleVatRateId
         };
 
         _data.UpdateItem(item);
@@ -223,6 +229,12 @@ public sealed class CatalogService
         if (existing == null)
         {
             throw new InvalidOperationException("Товар не найден.");
+        }
+
+        if (_data.HasPartnerItemSalePricesForItem(itemId))
+        {
+            throw new InvalidOperationException(
+                "Нельзя удалить товар, для которого настроены цены клиентов. Сначала удалите связанные записи цен.");
         }
 
         if (_data.IsItemUsed(itemId))
@@ -405,6 +417,23 @@ public sealed class CatalogService
         _data.DeleteItemType(itemTypeId);
     }
 
+    private static void ValidateSalePrice(decimal? price)
+    {
+        if (price < 0)
+        {
+            throw new ArgumentException("Цена продажи с НДС не может быть отрицательной.", nameof(price));
+        }
+
+        if (price.HasValue
+            && (decimal.Round(price.Value, 4, MidpointRounding.AwayFromZero) != price.Value
+                || price.Value > 999_999_999_999_999.9999m))
+        {
+            throw new ArgumentException(
+                "Цена продажи с НДС должна соответствовать формату NUMERIC(19,4).",
+                nameof(price));
+        }
+    }
+
     public void UpdatePartner(long partnerId, string name, string? code)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -435,6 +464,12 @@ public sealed class CatalogService
         if (existing == null)
         {
             throw new InvalidOperationException("Контрагент не найден.");
+        }
+
+        if (_data.HasPartnerItemSalePricesForPartner(partnerId))
+        {
+            throw new InvalidOperationException(
+                "Нельзя удалить контрагента, для которого настроены цены клиентов. Сначала удалите связанные записи цен.");
         }
 
         if (_data.IsPartnerUsed(partnerId))
@@ -517,4 +552,3 @@ public sealed class CatalogService
         return maxQtyPerHu;
     }
 }
-

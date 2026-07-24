@@ -1,0 +1,83 @@
+<Window x:Class="FlowStock.App.PartnerItemSalePriceWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Цены клиентов"
+        Width="980" Height="620"
+        MinWidth="820" MinHeight="520"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Border BorderBrush="#D0D5DD" BorderThickness="1" CornerRadius="4" Padding="10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="110" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="100" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="Контрагент" VerticalAlignment="Center" />
+                <ComboBox x:Name="PartnerCombo" Grid.Column="1" Margin="8,0,12,8"
+                          DisplayMemberPath="DisplayName" IsTextSearchEnabled="True" />
+                <TextBlock Grid.Column="2" Text="Товар" VerticalAlignment="Center" />
+                <ComboBox x:Name="ItemCombo" Grid.Column="3" Margin="8,0,0,8"
+                          DisplayMemberPath="Name" IsTextSearchEnabled="True" />
+
+                <TextBlock Grid.Row="1" Text="Цена с НДС" VerticalAlignment="Center" />
+                <TextBox x:Name="PriceBox" Grid.Row="1" Grid.Column="1" Margin="8,0,12,8" />
+                <CheckBox x:Name="IsActiveCheck" Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="2"
+                          Content="Активна" IsChecked="True" VerticalAlignment="Center" />
+
+                <StackPanel Grid.Row="2" Grid.ColumnSpan="4" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="SaveButton" Content="Добавить" Width="95" Click="Save_Click" />
+                    <Button Content="Новая" Width="85" Margin="8,0,0,0" Click="New_Click" />
+                    <Button x:Name="DeleteButton" Content="Удалить" Width="85" Margin="8,0,0,0"
+                            IsEnabled="False" Click="Delete_Click" />
+                    <Button Content="Обновить" Width="90" Margin="8,0,0,0" Click="Refresh_Click" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,10,0,0">
+            <TextBlock Text="Фильтр:" VerticalAlignment="Center" />
+            <ComboBox x:Name="FilterPartnerCombo" Width="240" Margin="8,0,0,0"
+                      DisplayMemberPath="DisplayName" />
+            <ComboBox x:Name="FilterItemCombo" Width="240" Margin="8,0,0,0"
+                      DisplayMemberPath="Name" />
+            <Button Content="Применить" Margin="8,0,0,0" Padding="10,3" Click="ApplyFilter_Click" />
+            <Button Content="Сбросить" Margin="8,0,0,0" Padding="10,3" Click="ClearFilter_Click" />
+        </StackPanel>
+
+        <DataGrid x:Name="PricesGrid"
+                  Grid.Row="2"
+                  Margin="0,10,0,0"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  SelectionChanged="PricesGrid_SelectionChanged">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerName}" Width="2*" />
+                <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="2*" />
+                <DataGridTextColumn Header="Цена с НДС" Binding="{Binding UnitPriceGross, StringFormat={}{0:0.####}}" Width="130" />
+                <DataGridCheckBoxColumn Header="Активна" Binding="{Binding IsActive}" Width="90" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <DockPanel Grid.Row="3" Margin="0,10,0,0">
+            <TextBlock x:Name="PageStatusText" VerticalAlignment="Center" Foreground="Gray" />
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button x:Name="PreviousButton" Content="Назад" Width="85" Click="Previous_Click" />
+                <Button x:Name="NextButton" Content="Далее" Width="85" Margin="8,0,0,0" Click="Next_Click" />
+                <Button Content="Закрыть" Width="85" Margin="16,0,0,0" IsCancel="True" />
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>

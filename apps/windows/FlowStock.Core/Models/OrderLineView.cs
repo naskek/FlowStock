@@ -34,6 +34,10 @@ public sealed class OrderLineView : INotifyPropertyChanged
         get => _qtyOrdered;
         set => SetField(ref _qtyOrdered, value);
     }
+    public decimal? UnitPriceGross { get; set; }
+    public decimal? VatRate { get; set; }
+    public bool CommercialTermsLocked { get; set; }
+    public bool ChangeUnitPriceGross { get; set; }
     public ProductionLinePurpose ProductionPurpose { get; set; } = ProductionLinePurpose.InternalStock;
     public string? ProductionPalletGroup
     {

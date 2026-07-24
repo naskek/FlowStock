@@ -110,6 +110,11 @@ builder.Services.AddSingleton<TsdHuResolverService>();
 builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseActionBundleService>();
 builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseTaskExecutionService>();
 builder.Services.AddSingleton<CatalogService>();
+builder.Services.AddSingleton<VatRateService>();
+builder.Services.AddSingleton<PartnerItemSalePriceService>();
+builder.Services.AddSingleton<CommercialTermsResolver>();
+builder.Services.AddSingleton<CommercialStatisticsService>();
+builder.Services.AddSingleton<PartnerRoleResolver>();
 builder.Services.AddSingleton<ImportService>();
 builder.Services.AddSingleton<ItemPackagingService>();
 builder.Services.AddSingleton<MarkingExcelService>();
@@ -130,6 +135,9 @@ OrderAutoRedistributionEndpoint.Map(app);
 OrderMarkingExportEndpoint.Map(app);
 MarkingCutoverEndpoints.Map(app);
 OrderLinesEndpoint.Map(app);
+PartnerItemSalePriceEndpoints.Map(app);
+CommercialTermsPreviewEndpoint.Map(app);
+CommercialStatisticsEndpoint.Map(app);
 OrderHuReservationCandidatesEndpoint.Map(app);
 OrderHuReservationApplyEndpoint.Map(app);
 OrderHuBindingApplyFinalEndpoint.Map(app);
@@ -896,6 +904,7 @@ app.MapDelete("/api/locations/{locationId:long}", (long locationId, CatalogServi
 });
 
 ItemCatalogEndpoints.Map(app, postgresConnectionString);
+VatRateEndpoints.Map(app);
 
 app.MapGet("/api/packagings", (HttpRequest request, IDataStore store) =>
 {
@@ -1389,7 +1398,11 @@ app.MapPost("/api/partners", async (HttpRequest request, CatalogService catalog)
     }
 });
 
-app.MapPost("/api/partners/{partnerId:long}", async (long partnerId, HttpRequest request, CatalogService catalog) =>
+app.MapPost("/api/partners/{partnerId:long}", async (
+    long partnerId,
+    HttpRequest request,
+    CatalogService catalog,
+    IDataStore store) =>
 {
     var parsed = await ParseJsonBody<UpsertPartnerRequest>(request);
     if (!parsed.IsSuccess)
@@ -1401,6 +1414,15 @@ app.MapPost("/api/partners/{partnerId:long}", async (long partnerId, HttpRequest
     if (!status.HasValue)
     {
         return Results.BadRequest(new ApiResult(false, "INVALID_PARTNER_STATUS"));
+    }
+
+    if (status.Value == PartnerRole.Supplier
+        && store.HasPartnerItemSalePricesForPartner(partnerId))
+    {
+        return Results.BadRequest(new ApiErrorResult(
+            false,
+            "PARTNER_HAS_CUSTOMER_PRICES",
+            "Нельзя изменить роль клиента на поставщика, пока для него существуют индивидуальные цены."));
     }
 
     try

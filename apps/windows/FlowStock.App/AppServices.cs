@@ -25,6 +25,8 @@ public sealed class AppServices
     public PartnerStatusService PartnerStatuses { get; }
     public WpfAdminApiService WpfAdminApi { get; }
     public WpfCatalogApiService WpfCatalogApi { get; }
+    public WpfCommercialCatalogApiService WpfCommercialCatalogApi { get; }
+    public WpfCommercialStatisticsApiService WpfCommercialStatisticsApi { get; }
     public WpfPartnerApiService WpfPartnerApi { get; }
     public WpfHuApiService WpfHuApi { get; }
     public WpfImportApiService WpfImportApi { get; }
@@ -95,6 +97,8 @@ public sealed class AppServices
         PartnerStatuses = new PartnerStatusService(partnerStatusPath);
         WpfAdminApi = new WpfAdminApiService(Settings, appLogger);
         WpfCatalogApi = new WpfCatalogApiService(Settings, appLogger);
+        WpfCommercialCatalogApi = new WpfCommercialCatalogApiService(Settings, appLogger);
+        WpfCommercialStatisticsApi = new WpfCommercialStatisticsApiService(Settings, appLogger);
         WpfPartnerApi = new WpfPartnerApiService(Settings, appLogger);
         WpfHuApi = new WpfHuApiService(Settings, appLogger);
         WpfImportApi = new WpfImportApiService(Settings, appLogger);

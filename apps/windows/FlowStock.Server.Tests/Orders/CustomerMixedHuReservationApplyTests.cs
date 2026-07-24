@@ -25,7 +25,11 @@ public sealed class CustomerMixedHuReservationApplyTests
             Name = "Товар",
             BaseUom = "шт",
             ItemTypeId = itemTypeId,
-            MaxQtyPerHu = palletQty
+            MaxQtyPerHu = palletQty,
+            DefaultSalePriceGross = 100m,
+            DefaultSaleVatRateId = 1,
+            DefaultSaleVatRate = 22m,
+            DefaultSaleVatRateIsActive = true
         });
         harness.SeedPartner(new Partner { Id = partnerId, Code = "CUST", Name = "Покупатель" });
         harness.SeedBalance(itemId, locationId, palletQty, warehouseHu);

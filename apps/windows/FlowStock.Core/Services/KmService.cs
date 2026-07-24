@@ -420,7 +420,9 @@ public sealed class KmService
             ShelfLifeMonths = item.ShelfLifeMonths,
             StorageConditions = item.StorageConditions,
             TaraId = item.TaraId,
-            IsMarked = true
+            IsMarked = true,
+            DefaultSalePriceGross = item.DefaultSalePriceGross,
+            DefaultSaleVatRateId = item.DefaultSaleVatRateId
         });
     }
 

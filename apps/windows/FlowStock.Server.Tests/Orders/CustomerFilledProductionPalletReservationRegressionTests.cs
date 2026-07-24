@@ -166,7 +166,11 @@ public sealed class CustomerFilledProductionPalletReservationRegressionTests
             Name = "Горчица",
             ItemTypeId = 60,
             ItemTypeName = "Готовая продукция",
-            MaxQtyPerHu = OwnedHuQty
+            MaxQtyPerHu = OwnedHuQty,
+            DefaultSalePriceGross = 100m,
+            DefaultSaleVatRateId = 1,
+            DefaultSaleVatRate = 22m,
+            DefaultSaleVatRateIsActive = true
         });
         harness.SeedOrder(new Order
         {

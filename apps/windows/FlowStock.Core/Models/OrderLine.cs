@@ -13,4 +13,6 @@ public sealed class OrderLine
     public string? CancelledByDeviceId { get; init; }
     public string? CancelReason { get; init; }
     public long Revision { get; init; }
+    public decimal? UnitPriceGross { get; init; }
+    public decimal? VatRate { get; init; }
 }

@@ -1422,16 +1422,28 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
+        if (GetSelectedOrderType() == OrderType.Customer
+            && !TryGetSelectedCustomerPartner(out _))
+        {
+            MessageBox.Show(
+                "Сначала выберите контрагента клиентского заказа.",
+                "Заказы",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            PartnerCombo.Focus();
+            return;
+        }
+
         var picker = new ItemPickerWindow(_services)
         {
             Owner = this,
             KeepOpenOnSelect = true
         };
-        picker.ItemPicked += (_, item) => AddOrderLine(item, picker);
+        picker.ItemPicked += async (_, item) => await AddOrderLineAsync(item, picker).ConfigureAwait(true);
         picker.ShowDialog();
     }
 
-    private void AddOrderLine(Item item, Window owner)
+    private async Task AddOrderLineAsync(Item item, Window owner)
     {
         var orderType = GetSelectedOrderType();
         var purpose = orderType == OrderType.Internal
@@ -1453,7 +1465,54 @@ public partial class OrderDetailsWindow : Window
             ? apiPackagings
             : Array.Empty<ItemPackaging>();
         var defaultUomCode = ResolveDefaultUomCode(item, packagings);
-        var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, 1, defaultUomCode)
+        CommercialTermsPreview? preview = null;
+        if (orderType == OrderType.Customer)
+        {
+            if (!TryGetSelectedCustomerPartner(out var partner))
+            {
+                return;
+            }
+
+            try
+            {
+                preview = await _services.WpfCommercialCatalogApi
+                    .GetPreviewAsync(partner.Id, item.Id)
+                    .ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Не удалось получить коммерческие условия.{Environment.NewLine}{ex.Message}",
+                    "Заказы",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+        }
+
+        var previewDecision = CommercialLineEditPolicy.ForNewLine(preview);
+        if (previewDecision.BlockAddingLine)
+        {
+            MessageBox.Show(
+                previewDecision.IssueMessage
+                ?? "Для товара не настроена действующая ставка НДС продажи. Проверьте карточку товара.",
+                "Коммерческие условия",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var qtyDialog = new QuantityUomDialog(
+            item.BaseUom,
+            packagings,
+            1,
+            defaultUomCode,
+            showCommercialTerms: orderType == OrderType.Customer,
+            automaticUnitPriceGross: preview?.AutomaticUnitPriceGross,
+            priceSourceDisplay: GetPriceSourceDisplay(preview?.PriceSource),
+            vatRate: preview?.VatRate,
+            commercialIssue: preview?.IssueMessage,
+            requirePriceForSave: orderType == OrderType.Customer)
         {
             Owner = owner
         };
@@ -1470,7 +1529,9 @@ public partial class OrderDetailsWindow : Window
             Barcode = item.Barcode,
             Gtin = item.Gtin,
             QtyOrdered = qtyBase,
-            ProductionPurpose = purpose
+            ProductionPurpose = purpose,
+            ChangeUnitPriceGross = qtyDialog.ChangeUnitPriceGross,
+            UnitPriceGross = qtyDialog.ChangeUnitPriceGross ? qtyDialog.UnitPriceGross : null
         };
         _lines.Add(line);
 
@@ -1674,7 +1735,17 @@ public partial class OrderDetailsWindow : Window
                 : Array.Empty<ItemPackaging>();
             var defaultUomCode = ResolveDefaultUomCode(item, packagings);
             var oldQty = selectedLine.QtyOrdered;
-            var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, oldQty, defaultUomCode)
+            var orderType = GetSelectedOrderType();
+            var qtyDialog = new QuantityUomDialog(
+                item.BaseUom,
+                packagings,
+                oldQty,
+                defaultUomCode,
+                showCommercialTerms: orderType == OrderType.Customer,
+                vatRate: selectedLine.VatRate,
+                currentUnitPriceGross: selectedLine.UnitPriceGross,
+                commercialTermsLocked: selectedLine.CommercialTermsLocked,
+                requirePriceForSave: false)
             {
                 Owner = this
             };
@@ -1684,7 +1755,6 @@ public partial class OrderDetailsWindow : Window
             }
 
             var newQty = qtyDialog.QtyBase;
-            var orderType = GetSelectedOrderType();
             if (OrderLineEditPrevalidation.ShouldBlockLocalQtyApply(
                     TryValidateLineQtyChange(selectedLine, newQty, orderType, out var validationMessage)))
             {
@@ -1693,6 +1763,18 @@ public partial class OrderDetailsWindow : Window
                     "Заказы",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
+                return;
+            }
+
+            if (orderType == OrderType.Customer && qtyDialog.ChangeUnitPriceGross)
+            {
+                selectedLine.ChangeUnitPriceGross = true;
+                selectedLine.UnitPriceGross = qtyDialog.UnitPriceGross;
+                ApplyLocalLineQtyChange(selectedLine, newQty, orderType);
+                if (_orderId.HasValue)
+                {
+                    TrySaveOrder(showFeedback: false);
+                }
                 return;
             }
 
@@ -2896,7 +2978,7 @@ public partial class OrderDetailsWindow : Window
         var canEdit = _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged);
 
         TypeCombo.IsEnabled = canEdit;
-        PartnerCombo.IsEnabled = canEdit && type == OrderType.Customer;
+        PartnerCombo.IsEnabled = canEdit && type == OrderType.Customer && !_lines.Any();
 
         if (type == OrderType.Internal)
         {
@@ -2926,6 +3008,8 @@ public partial class OrderDetailsWindow : Window
         HuBoundColumn.Visibility = Visibility.Visible;
         HuRemainingColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
         HuPickerColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
+        UnitPriceGrossColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
+        VatRateColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
         if (isCustomer)
         {
             SyncHuBindingLines();
@@ -2938,6 +3022,22 @@ public partial class OrderDetailsWindow : Window
                ?? _order?.Type
                ?? OrderType.Customer;
     }
+
+    private bool TryGetSelectedCustomerPartner(out Partner partner)
+    {
+        partner = FindPartnerByQuery(PartnerCombo.Text)
+                  ?? PartnerCombo.SelectedItem as Partner
+                  ?? null!;
+        return partner != null && !IsSupplierPartner(partner.Id);
+    }
+
+    private static string? GetPriceSourceDisplay(SalePriceSource? source) =>
+        source switch
+        {
+            SalePriceSource.PartnerItem => "индивидуальная цена",
+            SalePriceSource.ItemDefault => "базовая цена товара",
+            _ => null
+        };
 
     private void OrderHeaderChanged(object? sender, RoutedEventArgs e)
     {

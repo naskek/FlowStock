@@ -25,6 +25,8 @@
 - `order_id` INTEGER NOT NULL (FK -> `orders.id`)
 - `item_id` INTEGER NOT NULL (FK -> `items.id`)
 - `qty_ordered` REAL NOT NULL
+- `unit_price_gross` NUMERIC(19,4) NULL // цена продажи с НДС за базовую единицу, snapshot
+- `vat_rate` NUMERIC(7,4) NULL // числовой snapshot исходящей ставки НДС, без FK на справочник
 - `production_pallet_group` TEXT NULL // группа микс-паллеты; строки с одинаковой группой планируются на общий HU
 - `cancelled_at` TEXT NULL
 - `cancelled_by_actor` TEXT NULL
@@ -33,6 +35,35 @@
 - `revision` BIGINT NOT NULL DEFAULT `0`
 
 Строка заказа может быть отменена логически, если у нее уже есть исторические или runtime-зависимости. Физическое удаление допустимо только когда таких зависимостей нет. Behavior PR, который включает отмену/уменьшение количества, должен исключать логически отмененные строки из marking requirement/export/import, order coverage/status, production need, pallet plan, TSD filling, outbound и отчетов.
+
+## Коммерческие условия CUSTOMER-строк
+
+Для `CUSTOMER` партнёр обязателен до добавления строки. При наличии активных строк смена партнёра запрещена (`ORDER_PARTNER_CHANGE_REQUIRES_EMPTY_ORDER`), существующие строки автоматически не переоцениваются. Смена типа `CUSTOMER`/`INTERNAL` также разрешена только для заказа без активных строк (`ORDER_TYPE_CHANGE_REQUIRES_EMPTY_ORDER`).
+
+При настоящем INSERT новой `CUSTOMER`-строки сервер в транзакции:
+
+1. проверяет партнёра роли `Client`/`Both` и товар;
+2. требует `items.default_sale_vat_rate_id`;
+3. проверяет существование и активность ставки;
+4. копирует `vat_rates.rate` в `order_lines.vat_rate`;
+5. разрешает цену в порядке: explicit manual override, активная `partner_item_sale_prices`, `items.default_sale_price_gross`;
+6. сохраняет `order_lines.unit_price_gross`.
+
+Стабильные ошибки: `ITEM_SALE_VAT_RATE_REQUIRED`, `VAT_RATE_INACTIVE_FOR_NEW_ORDER_LINE`, `ITEM_SALE_VAT_RATE_REFERENCE_INVALID`, `ITEM_SALE_PRICE_REQUIRED`. Fallback VAT, выбор первой активной ставки и перенос отображаемого preview в write-команду запрещены. Любая ошибка любой строки откатывает заказ, строки, существующие изменения, резервы, планы и производные записи.
+
+Write-контракт строки принимает `order_line_id`, `item_id`, `qty_ordered` и опциональные `change_unit_price_gross=true` + `unit_price_gross`. Числовой VAT и `vat_rate_id` write-контракт не принимает. Для `INTERNAL` коммерческие intent-поля запрещены, а snapshots равны `NULL`.
+
+Manual override является неотрицательным `decimal` с максимум четырьмя дробными знаками; значение `0` допустимо. Override не изменяет базовую или индивидуальную цену. При отсутствии intent переданное числовое значение отклоняется `UNIT_PRICE_OVERRIDE_INTENT_REQUIRED`.
+
+Update сначала сопоставляет строку по `order_line_id`; legacy fallback `(item_id, production_purpose)` предназначен только для старых клиентов. Matched-строка сохраняет цену и VAT, quantity-only не читает текущие master-данные. Только новый INSERT запускает resolver.
+
+Matched legacy `CUSTOMER`-строка с `unit_price_gross = NULL` может быть сохранена при quantity-only update: WPF не требует автоматическую цену и без отдельного checkbox не отправляет price intent, а сервер сохраняет `NULL`-цену и текущий `vat_rate`. Для настоящего INSERT новой строки цена по-прежнему обязательна через server resolver или явный manual override.
+
+VAT после создания строки не редактируется. Цена существующей строки изменяется только при явном intent. После первой активной положительной строки закрытого `OUTBOUND` изменение цены запрещено `COMMERCIAL_TERMS_LOCKED_AFTER_SHIPMENT`; повторная передача текущего значения — no-op. Канонический predicate учитывает `OUTBOUND + CLOSED + qty > tolerance + order_line_id` и исключает superseded `doc_lines` через `NOT EXISTS newer.replaces_line_id`.
+
+Read-контракт строки возвращает `unit_price_gross`, `vat_rate`, `commercial_terms_locked`. WPF показывает VAT read-only, разрешает ручную цену только явным checkbox и после сохранения перечитывает canonical строку с сервера. Preview передаёт `issue_code`: отсутствие автоматической цены допускает manual override, а required/inactive/invalid VAT блокирует добавление строки до локальной коллекции; серверный resolver повторяет проверку при сохранении.
+
+Существующие исторические `NULL` не backfill-ятся текущими данными товара или справочников. Денежные Orders/Sales используют исключительно snapshots строки заказа; `doc_lines` финансовых колонок не имеет.
 
 Таблица `order_receipt_plan_lines`:
 - `id` INTEGER PRIMARY KEY

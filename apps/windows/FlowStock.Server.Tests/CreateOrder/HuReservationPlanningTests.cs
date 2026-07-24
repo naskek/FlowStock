@@ -107,7 +107,18 @@ public sealed class HuReservationPlanningTests
         var store = new Mock<IDataStore>(MockBehavior.Strict);
         store.Setup(s => s.GetPartner(partner.Id)).Returns(partner);
         store.Setup(s => s.FindItemById(itemId))
-            .Returns(new Item { Id = itemId, Name = "Item 1", ItemTypeId = 1 });
+            .Returns(new Item
+            {
+                Id = itemId,
+                Name = "Item 1",
+                ItemTypeId = 1,
+                DefaultSalePriceGross = 100m,
+                DefaultSaleVatRateId = 1,
+                DefaultSaleVatRate = 22m,
+                DefaultSaleVatRateIsActive = true
+            });
+        store.Setup(s => s.GetActivePartnerItemSalePrice(partner.Id, itemId))
+            .Returns((PartnerItemSalePrice?)null);
         store.Setup(s => s.GetItemType(1))
             .Returns(new ItemType { Id = 1, Name = "Товар", EnableOrderReservation = true });
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))

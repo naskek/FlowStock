@@ -1573,6 +1573,9 @@ public sealed class WpfReadApiService
             Barcode = ReadString(element, "barcode"),
             Gtin = ReadString(element, "gtin"),
             QtyOrdered = ReadDouble(element, "qty_ordered"),
+            UnitPriceGross = ReadNullableDecimal(element, "unit_price_gross"),
+            VatRate = ReadNullableDecimal(element, "vat_rate"),
+            CommercialTermsLocked = ReadBool(element, "commercial_terms_locked"),
             ProductionPurpose = ProductionLinePurposeMapper.FromDbValue(ReadString(element, "production_purpose")),
             ProductionPalletGroup = ReadString(element, "production_pallet_group"),
             ProductionHuCodes = OrderLineCanonicalPresentation.ResolveProductionHuCodesDisplay(
@@ -1617,7 +1620,12 @@ public sealed class WpfReadApiService
             ItemTypeIsVisibleInProductCatalog = ReadBool(element, "item_type_is_visible_in_product_catalog"),
             ItemTypeEnableMinStockControl = ReadBool(element, "item_type_enable_min_stock_control"),
             ItemTypeEnableMarking = ReadBool(element, "item_type_enable_marking"),
-            MinStockQty = ReadNullableDouble(element, "min_stock_qty")
+            MinStockQty = ReadNullableDouble(element, "min_stock_qty"),
+            DefaultSalePriceGross = ReadNullableDecimal(element, "default_sale_price_gross"),
+            DefaultSaleVatRateId = ReadNullableInt64(element, "default_sale_vat_rate_id"),
+            DefaultSaleVatRateName = ReadString(element, "default_sale_vat_rate_name"),
+            DefaultSaleVatRate = ReadNullableDecimal(element, "default_sale_vat_rate"),
+            DefaultSaleVatRateIsActive = ReadNullableBool(element, "default_sale_vat_rate_is_active")
         };
     }
 
@@ -1996,6 +2004,38 @@ public sealed class WpfReadApiService
         return double.TryParse(property.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value)
             ? value
             : null;
+    }
+
+    private static decimal? ReadNullableDecimal(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (property.TryGetDecimal(out var value))
+        {
+            return value;
+        }
+
+        return decimal.TryParse(property.ToString(), NumberStyles.Number, CultureInfo.InvariantCulture, out value)
+            ? value
+            : null;
+    }
+
+    private static bool? ReadNullableBool(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (property.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            return property.GetBoolean();
+        }
+
+        return bool.TryParse(property.ToString(), out var value) ? value : null;
     }
 
     private static bool ReadBool(JsonElement element, string propertyName)
