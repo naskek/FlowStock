@@ -616,6 +616,15 @@ public sealed class OrderControlServiceTests
             Store.Setup(store => store.GetOrders()).Returns(() => _orders.Values.OrderBy(order => order.Id).ToArray());
             Store.Setup(store => store.GetOrderLines(It.IsAny<long>()))
                 .Returns<long>(orderId => _orderLines.TryGetValue(orderId, out var lines) ? lines : Array.Empty<OrderLine>());
+            Store.Setup(store => store.GetOrderIdsByOrderLineIds(It.IsAny<IReadOnlyCollection<long>>()))
+                .Returns<IReadOnlyCollection<long>>(ids =>
+                {
+                    var requested = ids.ToHashSet();
+                    return _orderLines
+                        .SelectMany(entry => entry.Value.Select(line => new { line.Id, OrderId = entry.Key }))
+                        .Where(entry => requested.Contains(entry.Id))
+                        .ToDictionary(entry => entry.Id, entry => entry.OrderId);
+                });
             Store.Setup(store => store.GetShippedTotalsByOrderLine(It.IsAny<long>()))
                 .Returns(new Dictionary<long, double>());
             Store.Setup(store => store.FindActiveOrderControlForOrder(It.IsAny<long>()))

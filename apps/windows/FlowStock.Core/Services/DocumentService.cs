@@ -387,35 +387,58 @@ public sealed class DocumentService
             IReadOnlyList<DocLine>? lines = null;
             if (doc.Type == DocType.Outbound)
             {
-                if (doc.OrderId.HasValue)
+                var initialLines = store.GetDocLines(docId);
+                var lockedOrderIds = CollectAffectedOrderIds(store, doc, initialLines)
+                    .OrderBy(orderId => orderId)
+                    .ToArray();
+                if (!store.LockOrdersForUpdate(lockedOrderIds))
                 {
-                    if (!store.LockOrdersForUpdate([doc.OrderId.Value]))
-                    {
-                        transactionErrors.Add("Заказ не найден.");
-                        return;
-                    }
-
-                    doc = store.GetDoc(docId);
-                    if (doc == null)
-                    {
-                        transactionErrors.Add("Документ не найден.");
-                        return;
-                    }
-
-                    if (doc.Status == DocStatus.Closed)
-                    {
-                        transactionErrors.Add("Документ уже закрыт.");
-                        return;
-                    }
+                    transactionErrors.Add("Заказ не найден.");
+                    return;
                 }
 
-                if (doc.OrderId.HasValue && store.HasActiveOrderControlForOrder(doc.OrderId.Value))
+                doc = store.GetDoc(docId);
+                if (doc == null)
                 {
-                    transactionErrors.Add("Заказ находится в активном контроле готовых заказов.");
+                    transactionErrors.Add("Документ не найден.");
+                    return;
+                }
+
+                if (doc.Status == DocStatus.Closed)
+                {
+                    transactionErrors.Add("Документ уже закрыт.");
                     return;
                 }
 
                 lines = EnsureOrderLineLinks(store, doc, store.GetDocLines(docId));
+                var refreshedOrderIds = CollectAffectedOrderIds(store, doc, lines);
+                if (refreshedOrderIds.Except(lockedOrderIds).Any())
+                {
+                    transactionErrors.Add("OUTBOUND_ORDER_LINKS_CHANGED_DURING_CLOSE");
+                    transactionErrors.Add(
+                        "Связи отгрузки с заказами изменились во время закрытия. Повторите операцию.");
+                    return;
+                }
+
+                transactionErrors.AddRange(
+                    BuildOutboundOrderLinkErrors(store, doc, lines));
+                if (transactionErrors.Count > 0)
+                {
+                    return;
+                }
+
+                foreach (var affectedOrderId in refreshedOrderIds.OrderBy(orderId => orderId))
+                {
+                    if (!store.HasActiveOrderControlForOrder(affectedOrderId))
+                    {
+                        continue;
+                    }
+
+                    transactionErrors.Add(
+                        "Заказ находится в активном контроле готовых заказов.");
+                    return;
+                }
+
                 transactionErrors.AddRange(BuildTransactionalOutboundErrors(store, doc, lines));
                 if (transactionErrors.Count > 0)
                 {
@@ -1761,6 +1784,10 @@ public sealed class DocumentService
 
         var docHu = NormalizeHuValue(doc.ShippingRef);
         var lines = EnsureOrderLineLinks(_data, doc, _data.GetDocLines(docId));
+        if (doc.Type == DocType.Outbound)
+        {
+            check.Errors.AddRange(BuildOutboundOrderLinkErrors(_data, doc, lines));
+        }
         var hasProductionPallets = doc.Type == DocType.ProductionReceipt && _data.HasProductionPallets(docId);
         if (lines.Count == 0)
         {
@@ -1945,11 +1972,7 @@ public sealed class DocumentService
 
             if (doc.Type == DocType.Outbound && line.OrderLineId.HasValue)
             {
-                if (!doc.OrderId.HasValue)
-                {
-                    check.Errors.Add($"{rowLabel}: не указан заказ документа.");
-                }
-                else
+                if (doc.OrderId.HasValue)
                 {
                     var orderLineId = line.OrderLineId.Value;
                     shipmentRequested[orderLineId] = shipmentRequested.TryGetValue(orderLineId, out var current)
@@ -2510,6 +2533,45 @@ public sealed class DocumentService
 
         errors.AddRange(BuildMixedOutboundHuErrors(store, doc, lines));
         return errors.Distinct(StringComparer.CurrentCulture).ToArray();
+    }
+
+    private static IReadOnlyList<string> BuildOutboundOrderLinkErrors(
+        IDataStore store,
+        Doc doc,
+        IReadOnlyList<DocLine> lines)
+    {
+        var linkedOrderLineIds = lines
+            .Where(line => line.OrderLineId.HasValue)
+            .Select(line => line.OrderLineId!.Value)
+            .Distinct()
+            .ToArray();
+        if (linkedOrderLineIds.Length == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        if (!doc.OrderId.HasValue)
+        {
+            return
+            [
+                "OUTBOUND_ORDER_HEADER_REQUIRED_FOR_LINE_LINK",
+                "Для строк отгрузки, связанных с заказом, требуется указать заказ в шапке документа."
+            ];
+        }
+
+        var orderIdsByLineId = store.GetOrderIdsByOrderLineIds(linkedOrderLineIds);
+        var hasMissingLine = linkedOrderLineIds.Any(id => !orderIdsByLineId.ContainsKey(id));
+        var hasOtherOrder = orderIdsByLineId.Values.Any(orderId => orderId != doc.OrderId.Value);
+        if (!hasMissingLine && !hasOtherOrder)
+        {
+            return Array.Empty<string>();
+        }
+
+        return
+        [
+            "OUTBOUND_ORDER_LINE_ORDER_MISMATCH",
+            "Строки отгрузки должны относиться к заказу, указанному в шапке документа."
+        ];
     }
 
     private static IReadOnlyList<string> BuildMixedOutboundHuErrors(

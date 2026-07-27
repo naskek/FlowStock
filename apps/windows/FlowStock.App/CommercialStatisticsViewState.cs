@@ -48,6 +48,7 @@ internal sealed class CommercialStatisticsViewState
 
     public CommercialStatisticsLoad StartLoad(WpfCommercialStatisticsFilters filters)
     {
+        DropDetailMonthOutsidePeriod(filters.From, filters.To);
         _activeRequestId = ++_nextRequestId;
         IsLoading = true;
         return new CommercialStatisticsLoad(
@@ -123,10 +124,50 @@ internal sealed class CommercialStatisticsViewState
         _offset = 0;
     }
 
+    public void CriteriaChanged(bool periodChanged)
+    {
+        InvalidateActiveRequest();
+        ResetOffset();
+        _currentItemCount = 0;
+        _totalCount = 0;
+        if (periodChanged)
+        {
+            DetailMonth = null;
+        }
+    }
+
     public void SelectDetailMonth(string? month)
     {
+        InvalidateActiveRequest();
         DetailMonth = string.IsNullOrWhiteSpace(month) ? null : month.Trim();
         ResetOffset();
+    }
+
+    private void InvalidateActiveRequest()
+    {
+        _activeRequestId = ++_nextRequestId;
+        IsLoading = false;
+    }
+
+    private void DropDetailMonthOutsidePeriod(DateTime from, DateTime to)
+    {
+        if (string.IsNullOrWhiteSpace(DetailMonth))
+        {
+            return;
+        }
+
+        if (!DateTime.TryParseExact(
+                DetailMonth,
+                "yyyy-MM",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var detail)
+            || detail.Date < new DateTime(from.Year, from.Month, 1)
+            || detail.Date > new DateTime(to.Year, to.Month, 1))
+        {
+            DetailMonth = null;
+            ResetOffset();
+        }
     }
 }
 

@@ -192,6 +192,7 @@ public sealed class WpfUpdateOrderService
             && (string.Equals(errorCode, "ORDER_LINE_QTY_BELOW_COVERAGE", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(errorCode, "ORDER_LINE_HAS_FILLED_PALLETS", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(errorCode, "ORDER_LINE_PALLET_PLAN_NOT_PLANNED", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(errorCode, "ORDER_LINE_PRICE_LOCKED_BY_SHIPMENT", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(errorCode, "ORDER_UPDATE_FAILED", StringComparison.OrdinalIgnoreCase)))
         {
             return WpfUpdateOrderResult.Failure(
@@ -233,6 +234,7 @@ public sealed class WpfUpdateOrderService
             "ORDER_LINE_QTY_BELOW_COVERAGE" => "Нельзя уменьшить количество ниже уже заполненного/отгруженного объема.",
             "ORDER_LINE_HAS_FILLED_PALLETS" => "Нельзя изменить строки заказа: по ним уже есть заполненные паллеты/HU.",
             "ORDER_LINE_PALLET_PLAN_NOT_PLANNED" => "Нельзя автоматически изменить паллетный план: есть не-PLANNED паллеты/HU.",
+            "ORDER_LINE_PRICE_LOCKED_BY_SHIPMENT" => "Цена строки заказа не может быть изменена после проведённой отгрузки.",
             _ => string.IsNullOrWhiteSpace(errorCode)
                 ? $"Сервер вернул ошибку {(int?)apiCall.StatusCode ?? 0}."
                 : $"Сервер вернул ошибку: {errorCode}"
@@ -261,6 +263,7 @@ public sealed class WpfUpdateOrderService
             "ORDER_LINE_QTY_BELOW_COVERAGE" => WpfUpdateOrderResultKind.ValidationFailed,
             "ORDER_LINE_HAS_FILLED_PALLETS" => WpfUpdateOrderResultKind.ValidationFailed,
             "ORDER_LINE_PALLET_PLAN_NOT_PLANNED" => WpfUpdateOrderResultKind.ValidationFailed,
+            "ORDER_LINE_PRICE_LOCKED_BY_SHIPMENT" => WpfUpdateOrderResultKind.ValidationFailed,
             _ => WpfUpdateOrderResultKind.ServerRejected
         };
 

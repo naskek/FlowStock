@@ -2899,9 +2899,14 @@ RETURNING id;");
 
     public void UpdatePartnerItemSalePrice(PartnerItemSalePrice price)
     {
-        WithConnection(connection =>
+        ExecuteAtomic(store =>
         {
-            using var command = CreateCommand(connection, @"
+            _ = store.LockPartnerItemSalePriceState(price.Id)
+                ?? throw new CommercialTermsException(
+                    "PARTNER_ITEM_SALE_PRICE_NOT_FOUND",
+                    "Цена клиента не найдена.");
+
+            using var command = store.CreateCommand(store._connection!, @"
 UPDATE partner_item_sale_prices
 SET partner_id = @partner_id,
     item_id = @item_id,
@@ -2913,9 +2918,19 @@ WHERE id = @id;");
             command.Parameters.AddWithValue("@unit_price_gross", price.UnitPriceGross);
             command.Parameters.AddWithValue("@is_active", price.IsActive);
             command.Parameters.AddWithValue("@id", price.Id);
-            command.ExecuteNonQuery();
+            if (command.ExecuteNonQuery() != 1)
+            {
+                throw new CommercialTermsException(
+                    "PARTNER_ITEM_SALE_PRICE_NOT_FOUND",
+                    "Цена клиента не найдена.");
+            }
             return 0;
         });
+    }
+
+    public bool LockPartnerItemSalePriceForUpdate(long id)
+    {
+        return LockPartnerItemSalePriceState(id).HasValue;
     }
 
     public void DeletePartnerItemSalePrice(long id)

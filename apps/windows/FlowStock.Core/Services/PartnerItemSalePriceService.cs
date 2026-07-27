@@ -33,7 +33,7 @@ public sealed class PartnerItemSalePriceService
 
     public long Create(long partnerId, long itemId, decimal unitPriceGross, bool isActive)
     {
-        ValidateReferences(partnerId, itemId);
+        ValidateReferences(_data, partnerId, itemId);
         var price = CommercialTermsResolver.ValidateManualPrice(unitPriceGross);
         return _data.AddPartnerItemSalePrice(new PartnerItemSalePrice
         {
@@ -46,22 +46,25 @@ public sealed class PartnerItemSalePriceService
 
     public void Update(long id, long partnerId, long itemId, decimal unitPriceGross, bool isActive)
     {
-        if (_data.GetPartnerItemSalePrice(id) == null)
+        _data.ExecuteInTransaction(store =>
         {
-            throw new CommercialTermsException(
-                "PARTNER_ITEM_SALE_PRICE_NOT_FOUND",
-                "Цена клиента не найдена.");
-        }
+            if (!store.LockPartnerItemSalePriceForUpdate(id))
+            {
+                throw new CommercialTermsException(
+                    "PARTNER_ITEM_SALE_PRICE_NOT_FOUND",
+                    "Цена клиента не найдена.");
+            }
 
-        ValidateReferences(partnerId, itemId);
-        var price = CommercialTermsResolver.ValidateManualPrice(unitPriceGross);
-        _data.UpdatePartnerItemSalePrice(new PartnerItemSalePrice
-        {
-            Id = id,
-            PartnerId = partnerId,
-            ItemId = itemId,
-            UnitPriceGross = price,
-            IsActive = isActive
+            ValidateReferences(store, partnerId, itemId);
+            var price = CommercialTermsResolver.ValidateManualPrice(unitPriceGross);
+            store.UpdatePartnerItemSalePrice(new PartnerItemSalePrice
+            {
+                Id = id,
+                PartnerId = partnerId,
+                ItemId = itemId,
+                UnitPriceGross = price,
+                IsActive = isActive
+            });
         });
     }
 
@@ -70,14 +73,14 @@ public sealed class PartnerItemSalePriceService
         _data.DeletePartnerItemSalePrice(id);
     }
 
-    private void ValidateReferences(long partnerId, long itemId)
+    private static void ValidateReferences(IDataStore store, long partnerId, long itemId)
     {
-        if (_data.GetPartner(partnerId) == null)
+        if (store.GetPartner(partnerId) == null)
         {
             throw new CommercialTermsException("PARTNER_NOT_FOUND", "Контрагент не найден.");
         }
 
-        if (_data.FindItemById(itemId) == null)
+        if (store.FindItemById(itemId) == null)
         {
             throw new CommercialTermsException("ITEM_NOT_FOUND", "Товар не найден.");
         }

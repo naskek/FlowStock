@@ -3332,7 +3332,19 @@ public partial class MainWindow : Window
             return;
         }
 
-        _commercialStatisticsState.ResetOffset();
+        _commercialStatisticsState.CriteriaChanged(periodChanged: false);
+        UpdateCommercialStatisticsNavigation();
+    }
+
+    private void StatisticsPeriod_Changed(object sender, EventArgs e)
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        StatisticsMonthlyGrid.SelectedItem = null;
+        _commercialStatisticsState.CriteriaChanged(periodChanged: true);
         UpdateCommercialStatisticsNavigation();
     }
 
@@ -3424,9 +3436,8 @@ public partial class MainWindow : Window
             StatisticsGroupsGrid.ItemsSource = result.Groups.Items;
             StatisticsKpiText.Text =
                 $"Количество: {result.Summary.Quantity:0.######}; с НДС: {result.Summary.Gross:N2}; без НДС: {result.Summary.Net:N2}; НДС: {result.Summary.Vat:N2}";
-            StatisticsQualityText.Text = result.DataQuality.IsFinanciallyComplete
-                ? "Финансовые snapshots заполнены для всех фактов."
-                : $"Неполные факты: {result.DataQuality.FinanciallyIncompleteFactCount}, количество: {result.DataQuality.FinanciallyIncompleteQuantity:0.######}; непривязанные продажи: {result.DataQuality.UnlinkedSalesFactCount}; несовпадения товара: {result.DataQuality.ItemMismatchSalesFactCount}.";
+            StatisticsQualityText.Text =
+                CommercialStatisticsDataQualityPresentation.Format(result.DataQuality);
         }
         catch (Exception ex)
         {

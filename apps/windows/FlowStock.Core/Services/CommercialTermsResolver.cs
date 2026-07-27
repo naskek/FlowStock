@@ -13,7 +13,7 @@ public sealed class CommercialTermsResolver
     public const string UnitPriceRequired = "UNIT_PRICE_GROSS_REQUIRED";
     public const string UnitPriceIntentRequired = "UNIT_PRICE_OVERRIDE_INTENT_REQUIRED";
     public const string CommercialTermsNotAllowedForInternal = "COMMERCIAL_TERMS_NOT_ALLOWED_FOR_INTERNAL";
-    public const string CommercialTermsLocked = "COMMERCIAL_TERMS_LOCKED_AFTER_SHIPMENT";
+    public const string OrderLinePriceLockedByShipment = "ORDER_LINE_PRICE_LOCKED_BY_SHIPMENT";
 
     private readonly IDataStore _data;
 

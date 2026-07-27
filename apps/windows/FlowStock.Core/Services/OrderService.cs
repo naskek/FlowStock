@@ -457,92 +457,106 @@ public sealed class OrderService
         bool? bindReservedStockForCustomer = null,
         IReadOnlyDictionary<long, IReadOnlyList<string>>? customerReservedHuSelectionsByOrderLineId = null)
     {
-        var existing = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
-        if (existing.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
-        {
-            throw new InvalidOperationException($"{OrderStatusMapper.StatusToDisplayName(existing.Status, existing.Type)} заказ нельзя редактировать.");
-        }
-
-        if (existing.Type != type)
-        {
-            if ((existing.Type == OrderType.Customer && type == OrderType.Internal))
-            {
-                if (_data.HasOutboundDocs(orderId))
-                {
-                    throw new InvalidOperationException("Нельзя сменить тип заказа: есть отгрузки или связанные документы.");
-                }
-
-                var shippedTotals = _data.GetShippedTotalsByOrderLine(orderId);
-                if (shippedTotals.Values.Any(qty => qty > QtyTolerance))
-                {
-                    throw new InvalidOperationException("Нельзя сменить тип заказа: по заказу уже есть отгрузки.");
-                }
-            }
-            else if (existing.Type == OrderType.Internal && type == OrderType.Customer)
-            {
-                var hasProductionReceipts = _data.GetDocsByOrder(orderId)
-                    .Any(doc => doc.Type == DocType.ProductionReceipt);
-                if (hasProductionReceipts)
-                {
-                    throw new InvalidOperationException("Нельзя сменить тип заказа: по внутреннему заказу уже есть выпуски продукции.");
-                }
-
-                var receiptRemaining = OrderReceiptRemainingCalculator.GetRemaining(_data, existing);
-                if (receiptRemaining.Any(line => line.QtyReceived > QtyTolerance))
-                {
-                    throw new InvalidOperationException("Нельзя сменить тип заказа: по внутреннему заказу уже есть выпуски продукции.");
-                }
-            }
-            else
-            {
-                throw new InvalidOperationException("Смена типа заказа разрешена только между клиентским и внутренним заказом.");
-            }
-        }
-
-        if (type == OrderType.Customer)
-        {
-            if (!partnerId.HasValue)
-            {
-                throw new ArgumentException("Контрагент обязателен.", nameof(partnerId));
-            }
-
-            if (_data.GetPartner(partnerId.Value) == null)
-            {
-                throw new ArgumentException("Контрагент не найден.", nameof(partnerId));
-            }
-        }
-
         if (string.IsNullOrWhiteSpace(orderRef))
         {
             throw new ArgumentException("Номер заказа обязателен.", nameof(orderRef));
         }
-
-        var useReservedStock = type == OrderType.Customer
-            ? bindReservedStockForCustomer ?? (existing.Type == OrderType.Customer ? existing.UseReservedStock : false)
-            : false;
-        var updated = new Order
-        {
-            Id = orderId,
-            OrderRef = orderRef.Trim(),
-            Type = type,
-            PartnerId = type == OrderType.Customer ? partnerId : null,
-            DueDate = dueDate?.Date,
-            Status = existing.Status == OrderStatus.Shipped
-                ? OrderStatus.Shipped
-                : existing.Status == OrderStatus.Draft
-                    ? OrderStatus.Draft
-                    : OrderStatus.InProgress,
-            Comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim(),
-            CreatedAt = existing.CreatedAt,
-            UseReservedStock = useReservedStock
-        };
 
         ValidateIncomingLineQuantities(lines, type);
         var normalized = NormalizeLines(lines, type);
 
         _data.ExecuteInTransaction(store =>
         {
+            if (!store.LockOrdersForUpdate([orderId]))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
+
+            var existing = store.GetOrder(orderId)
+                ?? throw new InvalidOperationException("Заказ не найден.");
             var existingLines = store.GetOrderLines(orderId);
+
+            if (existing.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+            {
+                throw new InvalidOperationException(
+                    $"{OrderStatusMapper.StatusToDisplayName(existing.Status, existing.Type)} заказ нельзя редактировать.");
+            }
+
+            if (existing.Type != type)
+            {
+                if (existing.Type == OrderType.Customer && type == OrderType.Internal)
+                {
+                    if (store.HasOutboundDocs(orderId))
+                    {
+                        throw new InvalidOperationException(
+                            "Нельзя сменить тип заказа: есть отгрузки или связанные документы.");
+                    }
+
+                    var shippedTotals = store.GetShippedTotalsByOrderLine(orderId);
+                    if (shippedTotals.Values.Any(qty => qty > QtyTolerance))
+                    {
+                        throw new InvalidOperationException(
+                            "Нельзя сменить тип заказа: по заказу уже есть отгрузки.");
+                    }
+                }
+                else if (existing.Type == OrderType.Internal && type == OrderType.Customer)
+                {
+                    var hasProductionReceipts = store.GetDocsByOrder(orderId)
+                        .Any(doc => doc.Type == DocType.ProductionReceipt);
+                    if (hasProductionReceipts)
+                    {
+                        throw new InvalidOperationException(
+                            "Нельзя сменить тип заказа: по внутреннему заказу уже есть выпуски продукции.");
+                    }
+
+                    var receiptRemaining = OrderReceiptRemainingCalculator.GetRemaining(store, existing);
+                    if (receiptRemaining.Any(line => line.QtyReceived > QtyTolerance))
+                    {
+                        throw new InvalidOperationException(
+                            "Нельзя сменить тип заказа: по внутреннему заказу уже есть выпуски продукции.");
+                    }
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        "Смена типа заказа разрешена только между клиентским и внутренним заказом.");
+                }
+            }
+
+            if (type == OrderType.Customer)
+            {
+                if (!partnerId.HasValue)
+                {
+                    throw new ArgumentException("Контрагент обязателен.", nameof(partnerId));
+                }
+
+                if (store.GetPartner(partnerId.Value) == null)
+                {
+                    throw new ArgumentException("Контрагент не найден.", nameof(partnerId));
+                }
+            }
+
+            var useReservedStock = type == OrderType.Customer
+                ? bindReservedStockForCustomer
+                  ?? (existing.Type == OrderType.Customer && existing.UseReservedStock)
+                : false;
+            var updated = new Order
+            {
+                Id = orderId,
+                OrderRef = orderRef.Trim(),
+                Type = type,
+                PartnerId = type == OrderType.Customer ? partnerId : null,
+                DueDate = dueDate?.Date,
+                Status = existing.Status == OrderStatus.Shipped
+                    ? OrderStatus.Shipped
+                    : existing.Status == OrderStatus.Draft
+                        ? OrderStatus.Draft
+                        : OrderStatus.InProgress,
+                Comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim(),
+                CreatedAt = existing.CreatedAt,
+                UseReservedStock = useReservedStock
+            };
+
             var activeExistingLines = existingLines
                 .Where(line => !line.CancelledAt.HasValue)
                 .ToList();
@@ -622,7 +636,7 @@ public sealed class OrderService
                     if (store.HasCommercialShipmentForOrderLine(primary.Id))
                     {
                         throw new CommercialTermsException(
-                            CommercialTermsResolver.CommercialTermsLocked,
+                            CommercialTermsResolver.OrderLinePriceLockedByShipment,
                             "Цена строки заказа не может быть изменена после проведённой отгрузки.");
                     }
 

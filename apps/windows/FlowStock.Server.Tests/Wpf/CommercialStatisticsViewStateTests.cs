@@ -62,6 +62,72 @@ public sealed class CommercialStatisticsViewStateTests
         Assert.Equal(0, state.StartLoad(CreateFilters()).Request.Offset);
     }
 
+    [Fact]
+    public void Criteria_change_invalidates_running_request_even_without_starting_another()
+    {
+        var state = new CommercialStatisticsViewState(pageSize: 100);
+        var first = state.StartLoad(CreateFilters());
+
+        state.CriteriaChanged(periodChanged: false);
+
+        Assert.False(state.TryComplete(
+            first.RequestId,
+            Result(totalCount: 10, offset: 0, count: 10)));
+        Assert.False(state.IsLoading);
+    }
+
+    [Fact]
+    public void Older_request_cannot_overwrite_result_started_after_criteria_change()
+    {
+        var state = new CommercialStatisticsViewState(pageSize: 100);
+        var first = state.StartLoad(CreateFilters());
+        state.CriteriaChanged(periodChanged: false);
+        var second = state.StartLoad(CreateFilters() with { Brand = "Новый бренд" });
+
+        Assert.True(state.TryComplete(
+            second.RequestId,
+            Result(totalCount: 25, offset: 0, count: 25)));
+        Assert.False(state.TryComplete(
+            first.RequestId,
+            Result(totalCount: 900, offset: 0, count: 100)));
+        Assert.Equal("1–25 из 25", state.RangeText);
+    }
+
+    [Fact]
+    public void Period_change_clears_detail_month_and_new_request_cannot_send_out_of_period_month()
+    {
+        var state = new CommercialStatisticsViewState(pageSize: 100);
+        state.SelectDetailMonth("2026-02");
+
+        state.CriteriaChanged(periodChanged: true);
+        var load = state.StartLoad(CreateFilters() with
+        {
+            From = new DateTime(2026, 4, 1),
+            To = new DateTime(2026, 6, 30)
+        });
+
+        Assert.Null(state.DetailMonth);
+        Assert.Null(load.Request.DetailMonth);
+        Assert.Equal(0, load.Request.Offset);
+        Assert.Equal("Детализация за весь период", state.DetailLabel);
+    }
+
+    [Fact]
+    public void Start_load_drops_detail_month_outside_requested_period()
+    {
+        var state = new CommercialStatisticsViewState(pageSize: 100);
+        state.SelectDetailMonth("2026-02");
+
+        var load = state.StartLoad(CreateFilters() with
+        {
+            From = new DateTime(2026, 4, 1),
+            To = new DateTime(2026, 6, 30)
+        });
+
+        Assert.Null(load.Request.DetailMonth);
+        Assert.Null(state.DetailMonth);
+    }
+
     private static WpfCommercialStatisticsFilters CreateFilters() =>
         new(
             Mode: "orders",

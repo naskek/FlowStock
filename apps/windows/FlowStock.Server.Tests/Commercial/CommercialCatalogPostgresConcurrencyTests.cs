@@ -67,6 +67,22 @@ public sealed class CommercialCatalogPostgresConcurrencyTests
     }
 
     [Fact]
+    public void Missing_customer_price_update_wins_over_invalid_references()
+    {
+        var store = new PostgresDataStore(ResolveRequiredPostgresTestConnectionString());
+
+        var error = Assert.Throws<CommercialTermsException>(
+            () => new PartnerItemSalePriceService(store).Update(
+                long.MaxValue,
+                long.MaxValue,
+                long.MaxValue,
+                100m,
+                isActive: true));
+
+        Assert.Equal("PARTNER_ITEM_SALE_PRICE_NOT_FOUND", error.ErrorCode);
+    }
+
+    [Fact]
     public async Task Deleting_customer_price_serializes_with_reactivation()
     {
         var connectionString = ResolveRequiredPostgresTestConnectionString();
@@ -127,6 +143,65 @@ public sealed class CommercialCatalogPostgresConcurrencyTests
             "PARTNER_ITEM_PRICE_MUST_BE_INACTIVE_BEFORE_DELETE",
             deletionError.ErrorCode);
         Assert.True(setupStore.GetPartnerItemSalePrice(priceId)?.IsActive);
+    }
+
+    [Fact]
+    public async Task Updating_customer_price_reports_not_found_when_delete_commits_first()
+    {
+        var connectionString = ResolveRequiredPostgresTestConnectionString();
+        var suffix = Guid.NewGuid().ToString("N");
+        var setupStore = new PostgresDataStore(connectionString);
+        var catalog = new CatalogService(setupStore);
+        var partnerId = catalog.CreatePartner($"Клиент {suffix}", $"PRICE-DELETE-FIRST-{suffix}");
+        var itemId = catalog.CreateItem(
+            name: $"Товар {suffix}",
+            barcode: $"PRICE-DELETE-FIRST-{suffix}",
+            gtin: null,
+            baseUom: "шт",
+            brand: null,
+            volume: null,
+            shelfLifeMonths: null,
+            taraId: null,
+            isMarked: false);
+        var priceId = new PartnerItemSalePriceService(setupStore).Create(
+            partnerId,
+            itemId,
+            123.45m,
+            isActive: false);
+
+        using var deleteWritten = new ManualResetEventSlim();
+        using var allowDeleteCommit = new ManualResetEventSlim();
+        var deletionStore = new PostgresDataStore(
+            WithApplicationName(connectionString, $"price-delete-first-{suffix}"));
+        var deletionTask = Task.Run(() => Record.Exception(() =>
+            deletionStore.ExecuteInTransaction(scopedStore =>
+            {
+                new PartnerItemSalePriceService(scopedStore).Delete(priceId);
+                deleteWritten.Set();
+                Assert.True(allowDeleteCommit.Wait(TimeSpan.FromSeconds(10)));
+            })));
+
+        Assert.True(deleteWritten.Wait(TimeSpan.FromSeconds(10)));
+
+        var updateApplicationName = $"price-update-after-delete-{suffix}";
+        var updateStore = new PostgresDataStore(
+            WithApplicationName(connectionString, updateApplicationName));
+        var updateTask = Task.Run(() => Record.Exception(() =>
+            new PartnerItemSalePriceService(updateStore).Update(
+                priceId,
+                partnerId,
+                itemId,
+                150m,
+                isActive: true)));
+
+        await WaitUntilSessionWaitsForLock(connectionString, updateApplicationName);
+        allowDeleteCommit.Set();
+
+        Assert.Null(await deletionTask.WaitAsync(TimeSpan.FromSeconds(10)));
+        var updateError = Assert.IsType<CommercialTermsException>(
+            await updateTask.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Equal("PARTNER_ITEM_SALE_PRICE_NOT_FOUND", updateError.ErrorCode);
+        Assert.Null(setupStore.GetPartnerItemSalePrice(priceId));
     }
 
     [Fact]

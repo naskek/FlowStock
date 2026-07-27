@@ -134,6 +134,42 @@ public sealed class WpfCompatibilityTests
         Assert.Equal("IN_PROGRESS", result.Response.Status);
     }
 
+    [Fact]
+    public async Task WpfUpdateOrder_MapsShipmentPriceLockToStableValidationError()
+    {
+        await using var host = await ShipmentPriceLockResponseHost.StartAsync();
+        using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerUpdateOrder: true);
+        var service = new WpfUpdateOrderService(
+            new SettingsService(temp.SettingsPath),
+            new FileLogger(temp.LogPath));
+
+        var result = await service.UpdateOrderAsync(
+            new WpfUpdateOrderContext(
+                93,
+                "093",
+                OrderType.Customer,
+                200,
+                null,
+                OrderStatus.InProgress,
+                null,
+                [
+                    new OrderLineView
+                    {
+                        Id = 1001,
+                        ItemId = 1001,
+                        ItemName = "Горчица",
+                        QtyOrdered = 10,
+                        ChangeUnitPriceGross = true,
+                        UnitPriceGross = 150m
+                    }
+                ]));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WpfUpdateOrderResultKind.ValidationFailed, result.Kind);
+        Assert.Equal("ORDER_LINE_PRICE_LOCKED_BY_SHIPMENT", result.ErrorCode);
+        Assert.Contains("проведённой отгрузки", result.Message);
+    }
+
     private sealed class TempSettingsScope : IDisposable
     {
         private readonly string _dir;
@@ -215,6 +251,59 @@ public sealed class WpfCompatibilityTests
             var address = addresses?.Addresses.Single();
 
             return new EmptyUpdateOrderResponseHost(
+                app,
+                new HttpClient
+                {
+                    BaseAddress = new Uri(address!)
+                });
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            Client.Dispose();
+            await _app.StopAsync();
+            await _app.DisposeAsync();
+        }
+    }
+
+    private sealed class ShipmentPriceLockResponseHost : IAsyncDisposable
+    {
+        private readonly WebApplication _app;
+
+        private ShipmentPriceLockResponseHost(WebApplication app, HttpClient client)
+        {
+            _app = app;
+            Client = client;
+        }
+
+        public HttpClient Client { get; }
+
+        public static async Task<ShipmentPriceLockResponseHost> StartAsync()
+        {
+            var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+            {
+                EnvironmentName = Environments.Production
+            });
+
+            builder.WebHost.UseUrls("http://127.0.0.1:0");
+            var app = builder.Build();
+            app.MapPut("/api/orders/{orderId:long}", () => Results.Json(
+                new
+                {
+                    ok = false,
+                    error = "ORDER_LINE_PRICE_LOCKED_BY_SHIPMENT",
+                    message = "Цена строки заказа не может быть изменена после проведённой отгрузки."
+                },
+                statusCode: StatusCodes.Status400BadRequest));
+            await app.StartAsync();
+
+            var addresses = app.Services
+                .GetRequiredService<IServer>()
+                .Features
+                .Get<IServerAddressesFeature>();
+            var address = addresses?.Addresses.Single();
+
+            return new ShipmentPriceLockResponseHost(
                 app,
                 new HttpClient
                 {

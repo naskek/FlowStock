@@ -216,7 +216,7 @@ public sealed class CanonicalUpdateIntegrationTests
             $"/api/orders/{orderId}",
             BuildPriceUpdate(101m));
         var error = await UpdateOrderHttpApi.ReadApiErrorResultAsync(rejected, HttpStatusCode.BadRequest);
-        Assert.Equal("COMMERCIAL_TERMS_LOCKED_AFTER_SHIPMENT", error.Error);
+        Assert.Equal("ORDER_LINE_PRICE_LOCKED_BY_SHIPMENT", error.Error);
 
         var accepted = await UpdateOrderHttpApi.UpdateAsync(
             host.Client,

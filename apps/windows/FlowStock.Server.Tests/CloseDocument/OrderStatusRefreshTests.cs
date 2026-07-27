@@ -28,7 +28,7 @@ public sealed class OrderStatusRefreshTests
         var result = Assert.IsType<HashSet<long>>(method!.Invoke(null, new object[]
         {
             store.Object,
-            new Doc { Id = 1 },
+            new Doc { Id = 1, OrderId = 30 },
             new[]
             {
                 new DocLine { Id = 1, OrderLineId = 101, ItemId = 1001, Qty = 1 },
@@ -37,7 +37,7 @@ public sealed class OrderStatusRefreshTests
             }
         })!);
 
-        Assert.Equal([10, 20], result.OrderBy(id => id).ToArray());
+        Assert.Equal([10, 20, 30], result.OrderBy(id => id).ToArray());
         store.Verify(s => s.GetOrderIdsByOrderLineIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Once);
         store.Verify(s => s.GetOrders(), Times.Never);
         store.Verify(s => s.GetOrderLines(It.IsAny<long>()), Times.Never);

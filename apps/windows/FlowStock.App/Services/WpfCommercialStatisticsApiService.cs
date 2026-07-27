@@ -199,14 +199,56 @@ public sealed class WpfCommercialStatisticsGroup
 
 public sealed class WpfCommercialStatisticsDataQuality
 {
+    [JsonPropertyName("missing_price_fact_count")]
+    public int MissingPriceFactCount { get; set; }
+    [JsonPropertyName("missing_price_quantity")]
+    public decimal MissingPriceQuantity { get; set; }
+    [JsonPropertyName("missing_vat_fact_count")]
+    public int MissingVatFactCount { get; set; }
+    [JsonPropertyName("missing_vat_quantity")]
+    public decimal MissingVatQuantity { get; set; }
     [JsonPropertyName("financially_incomplete_fact_count")]
     public int FinanciallyIncompleteFactCount { get; set; }
     [JsonPropertyName("financially_incomplete_quantity")]
     public decimal FinanciallyIncompleteQuantity { get; set; }
     [JsonPropertyName("unlinked_sales_fact_count")]
     public int UnlinkedSalesFactCount { get; set; }
+    [JsonPropertyName("unlinked_sales_quantity")]
+    public decimal UnlinkedSalesQuantity { get; set; }
     [JsonPropertyName("item_mismatch_sales_fact_count")]
     public int ItemMismatchSalesFactCount { get; set; }
+    [JsonPropertyName("item_mismatch_sales_quantity")]
+    public decimal ItemMismatchSalesQuantity { get; set; }
     [JsonPropertyName("is_financially_complete")]
     public bool IsFinanciallyComplete { get; set; }
+}
+
+internal static class CommercialStatisticsDataQualityPresentation
+{
+    private static readonly CultureInfo RussianCulture = CultureInfo.GetCultureInfo("ru-RU");
+
+    public static string Format(WpfCommercialStatisticsDataQuality quality)
+    {
+        if (quality.IsFinanciallyComplete)
+        {
+            return "Финансовые snapshots заполнены для всех фактов.";
+        }
+
+        return string.Format(
+            RussianCulture,
+            "Без цены: {0}, количество: {1:0.######}; без НДС: {2}, количество: {3:0.######}; "
+            + "непривязанные продажи: {4}, количество: {5:0.######}; "
+            + "несовпадения товара: {6}, количество: {7:0.######}; "
+            + "всего неполных: {8}, количество: {9:0.######}.",
+            quality.MissingPriceFactCount,
+            quality.MissingPriceQuantity,
+            quality.MissingVatFactCount,
+            quality.MissingVatQuantity,
+            quality.UnlinkedSalesFactCount,
+            quality.UnlinkedSalesQuantity,
+            quality.ItemMismatchSalesFactCount,
+            quality.ItemMismatchSalesQuantity,
+            quality.FinanciallyIncompleteFactCount,
+            quality.FinanciallyIncompleteQuantity);
+    }
 }

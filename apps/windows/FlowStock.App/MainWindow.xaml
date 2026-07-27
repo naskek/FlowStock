@@ -720,10 +720,10 @@
                         <WrapPanel>
                             <TextBlock Text="С" VerticalAlignment="Center" />
                             <DatePicker x:Name="StatisticsFromDate" Width="125" Margin="6,0,12,0"
-                                        SelectedDateChanged="StatisticsCriteria_Changed" />
+                                        SelectedDateChanged="StatisticsPeriod_Changed" />
                             <TextBlock Text="по" VerticalAlignment="Center" />
                             <DatePicker x:Name="StatisticsToDate" Width="125" Margin="6,0,12,0"
-                                        SelectedDateChanged="StatisticsCriteria_Changed" />
+                                        SelectedDateChanged="StatisticsPeriod_Changed" />
                             <TextBlock Text="Режим" VerticalAlignment="Center" />
                             <ComboBox x:Name="StatisticsModeCombo" Width="120" Margin="6,0,12,0"
                                       SelectionChanged="StatisticsCriteria_Changed">

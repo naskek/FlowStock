@@ -74,6 +74,7 @@ public interface IDataStore
         int limit,
         int offset);
     long AddPartnerItemSalePrice(PartnerItemSalePrice price);
+    bool LockPartnerItemSalePriceForUpdate(long id);
     void UpdatePartnerItemSalePrice(PartnerItemSalePrice price);
     void DeletePartnerItemSalePrice(long id);
     bool HasPartnerItemSalePricesForPartner(long partnerId);
