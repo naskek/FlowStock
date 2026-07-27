@@ -16360,9 +16360,53 @@ WHERE id = @id;");
 
         WithConnection(connection =>
         {
-            foreach (var code in codes)
+            var ids = codes.Select(code => code.Id).ToArray();
+            var codeValues = codes.Select(code => code.Code).ToArray();
+            var codeHashes = codes.Select(code => code.CodeHash).ToArray();
+            var gtins = codes
+                .Select(code => string.IsNullOrWhiteSpace(code.Gtin) ? null : code.Gtin.Trim())
+                .ToArray();
+            var markingOrderIds = codes.Select(code => code.MarkingOrderId).ToArray();
+            var importIds = codes.Select(code => code.ImportId).ToArray();
+            var statuses = codes.Select(code => code.Status).ToArray();
+            var origins = codes
+                .Select(code => string.IsNullOrWhiteSpace(code.Origin)
+                    ? MarkingCodeOrigin.HistoricalUnknown
+                    : code.Origin.Trim())
+                .ToArray();
+            var sourceRowNumbers = codes.Select(code => code.SourceRowNumber).ToArray();
+            var printedAt = codes.Select(code => code.PrintedAt.HasValue ? ToDbDate(code.PrintedAt.Value) : null).ToArray();
+            var appliedAt = codes.Select(code => code.AppliedAt.HasValue ? ToDbDate(code.AppliedAt.Value) : null).ToArray();
+            var reportedAt = codes.Select(code => code.ReportedAt.HasValue ? ToDbDate(code.ReportedAt.Value) : null).ToArray();
+            var introducedAt = codes.Select(code => code.IntroducedAt.HasValue ? ToDbDate(code.IntroducedAt.Value) : null).ToArray();
+            var createdAt = codes.Select(code => ToDbDate(code.CreatedAt)).ToArray();
+            var updatedAt = codes.Select(code => ToDbDate(code.UpdatedAt)).ToArray();
+
+            var expectedLength = codes.Count;
+            var lengths = new[]
             {
-                using var command = CreateCommand(connection, @"
+                ids.Length,
+                codeValues.Length,
+                codeHashes.Length,
+                gtins.Length,
+                markingOrderIds.Length,
+                importIds.Length,
+                statuses.Length,
+                origins.Length,
+                sourceRowNumbers.Length,
+                printedAt.Length,
+                appliedAt.Length,
+                reportedAt.Length,
+                introducedAt.Length,
+                createdAt.Length,
+                updatedAt.Length
+            };
+            if (lengths.Any(length => length != expectedLength))
+            {
+                throw new InvalidOperationException("Bulk marking code arrays must have the same length.");
+            }
+
+            using var command = CreateCommand(connection, @"
 INSERT INTO marking_code(
     id,
     code,
@@ -16379,39 +16423,39 @@ INSERT INTO marking_code(
     introduced_at,
     created_at,
     updated_at)
-VALUES(
-    @id,
-    @code,
-    @code_hash,
-    @gtin,
-    @marking_order_id,
-    @import_id,
-    @status,
-    @origin,
-    @source_row_number,
+SELECT *
+FROM unnest(
+    @ids,
+    @codes,
+    @code_hashes,
+    @gtins,
+    @marking_order_ids,
+    @import_ids,
+    @statuses,
+    @origins,
+    @source_row_numbers,
     @printed_at,
     @applied_at,
     @reported_at,
     @introduced_at,
     @created_at,
     @updated_at);");
-                command.Parameters.AddWithValue("@id", code.Id);
-                command.Parameters.AddWithValue("@code", code.Code);
-                command.Parameters.AddWithValue("@code_hash", code.CodeHash);
-                command.Parameters.AddWithValue("@gtin", string.IsNullOrWhiteSpace(code.Gtin) ? DBNull.Value : code.Gtin.Trim());
-                command.Parameters.AddWithValue("@marking_order_id", code.MarkingOrderId);
-                command.Parameters.AddWithValue("@import_id", code.ImportId);
-                command.Parameters.AddWithValue("@status", code.Status);
-                command.Parameters.AddWithValue("@origin", string.IsNullOrWhiteSpace(code.Origin) ? MarkingCodeOrigin.HistoricalUnknown : code.Origin.Trim());
-                command.Parameters.AddWithValue("@source_row_number", code.SourceRowNumber.HasValue ? code.SourceRowNumber.Value : DBNull.Value);
-                command.Parameters.AddWithValue("@printed_at", code.PrintedAt.HasValue ? ToDbDate(code.PrintedAt.Value) : DBNull.Value);
-                command.Parameters.AddWithValue("@applied_at", code.AppliedAt.HasValue ? ToDbDate(code.AppliedAt.Value) : DBNull.Value);
-                command.Parameters.AddWithValue("@reported_at", code.ReportedAt.HasValue ? ToDbDate(code.ReportedAt.Value) : DBNull.Value);
-                command.Parameters.AddWithValue("@introduced_at", code.IntroducedAt.HasValue ? ToDbDate(code.IntroducedAt.Value) : DBNull.Value);
-                command.Parameters.AddWithValue("@created_at", ToDbDate(code.CreatedAt));
-                command.Parameters.AddWithValue("@updated_at", ToDbDate(code.UpdatedAt));
-                command.ExecuteNonQuery();
-            }
+            command.Parameters.Add("@ids", NpgsqlDbType.Array | NpgsqlDbType.Uuid).Value = ids;
+            command.Parameters.Add("@codes", NpgsqlDbType.Array | NpgsqlDbType.Text).Value = codeValues;
+            command.Parameters.Add("@code_hashes", NpgsqlDbType.Array | NpgsqlDbType.Text).Value = codeHashes;
+            command.Parameters.Add("@gtins", NpgsqlDbType.Array | NpgsqlDbType.Text).Value = gtins;
+            command.Parameters.Add("@marking_order_ids", NpgsqlDbType.Array | NpgsqlDbType.Uuid).Value = markingOrderIds;
+            command.Parameters.Add("@import_ids", NpgsqlDbType.Array | NpgsqlDbType.Uuid).Value = importIds;
+            command.Parameters.Add("@statuses", NpgsqlDbType.Array | NpgsqlDbType.Text).Value = statuses;
+            command.Parameters.Add("@origins", NpgsqlDbType.Array | NpgsqlDbType.Text).Value = origins;
+            command.Parameters.Add("@source_row_numbers", NpgsqlDbType.Array | NpgsqlDbType.Integer).Value = sourceRowNumbers;
+            command.Parameters.Add("@printed_at", NpgsqlDbType.Array | NpgsqlDbType.Text).Value = printedAt;
+            command.Parameters.Add("@applied_at", NpgsqlDbType.Array | NpgsqlDbType.Text).Value = appliedAt;
+            command.Parameters.Add("@reported_at", NpgsqlDbType.Array | NpgsqlDbType.Text).Value = reportedAt;
+            command.Parameters.Add("@introduced_at", NpgsqlDbType.Array | NpgsqlDbType.Text).Value = introducedAt;
+            command.Parameters.Add("@created_at", NpgsqlDbType.Array | NpgsqlDbType.Text).Value = createdAt;
+            command.Parameters.Add("@updated_at", NpgsqlDbType.Array | NpgsqlDbType.Text).Value = updatedAt;
+            command.ExecuteNonQuery();
 
             return 0;
         });

@@ -10,6 +10,46 @@ namespace FlowStock.Server.Tests.Marking;
 public sealed class OrderMarkingExportTests
 {
     [Fact]
+    public async Task FirstInternalOrderExport_With6000Codes_CreatesSingleTaskAndWorkbook()
+    {
+        var harness = CreateOrderHarness(OrderType.Internal, qty: 6000);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
+        var workbook = await response.Content.ReadAsByteArrayAsync();
+
+        Assert.True(response.IsSuccessStatusCode);
+        Assert.Equal(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            response.Content.Headers.ContentType?.MediaType);
+        Assert.NotEmpty(workbook);
+        var markingOrder = Assert.Single(harness.MarkingOrders);
+        Assert.Equal(6000, markingOrder.RequestedQuantity);
+        Assert.Equal(6000, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
+        Assert.Single(harness.MarkingCodes.Select(code => code.ImportId).Distinct());
+    }
+
+    [Fact]
+    public void Export_RecalculatesOnlyAfterOrderLock()
+    {
+        var harness = CreateOrderHarness(OrderType.Internal, qty: 5);
+        harness.RunAfterNextLockOrdersForUpdate(() => harness.SeedOrderLine(new OrderLine
+        {
+            Id = 100,
+            OrderId = 10,
+            ItemId = 1,
+            QtyOrdered = 7
+        }));
+
+        var result = new OrderMarkingExportService(harness.Store)
+            .Export(10, new DateTime(2026, 5, 8, 13, 0, 0, DateTimeKind.Utc));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(12, Assert.Single(harness.MarkingOrders).RequestedQuantity);
+        Assert.Equal(12, harness.MarkingCodes.Count);
+    }
+
+    [Fact]
     public async Task InternalOrderExport_CreatesProductionOrderSyntheticCodes()
     {
         var harness = CreateOrderHarness(OrderType.Internal, qty: 3600);
@@ -368,7 +408,7 @@ public sealed class OrderMarkingExportTests
             ToLocationId = 1
         });
 
-        var result = new OrderMarkingExportService(harness.Store, new MarkingExcelService(harness.Store))
+        var result = new OrderMarkingExportService(harness.Store)
             .Export(10, new DateTime(2026, 5, 8, 13, 0, 0, DateTimeKind.Utc));
 
         Assert.True(result.IsSuccess);
@@ -565,6 +605,25 @@ public sealed class OrderMarkingExportTests
         Assert.DoesNotContain("COALESCE(rff.reserved_filled_hu_qty, 0)", source);
     }
 
+    [Fact]
+    public void PostgresAddMarkingCodes_UsesOneBulkCommandWithoutConflictSuppression()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.Data", "PostgresDataStore.cs");
+        var start = source.IndexOf(
+            "public void AddMarkingCodes(IReadOnlyList<MarkingCode> codes)",
+            StringComparison.Ordinal);
+        var end = source.IndexOf(
+            "public int CountMarkingCodesByMarkingOrder",
+            start,
+            StringComparison.Ordinal);
+        var method = source[start..end];
+
+        Assert.Contains("FROM unnest(", method);
+        Assert.DoesNotContain("ON CONFLICT", method, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("foreach (var code in codes)", method);
+        Assert.Equal(1, CountOccurrences(method, "ExecuteNonQuery()"));
+    }
+
     private static void SeedFilledHuReservation(
         CloseDocumentHarness harness,
         long orderId,
@@ -666,6 +725,19 @@ public sealed class OrderMarkingExportTests
         }
 
         throw new FileNotFoundException(string.Join(Path.DirectorySeparatorChar, parts));
+    }
+
+    private static int CountOccurrences(string value, string needle)
+    {
+        var count = 0;
+        var offset = 0;
+        while ((offset = value.IndexOf(needle, offset, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            offset += needle.Length;
+        }
+
+        return count;
     }
 
     private sealed class OrderMarkingExportPayload

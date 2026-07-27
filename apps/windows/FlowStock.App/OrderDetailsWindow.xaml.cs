@@ -436,6 +436,18 @@ public partial class OrderDetailsWindow : Window
                 {
                     File.WriteAllBytes(dialog.FileName, result.FileBytes);
                 }
+                else
+                {
+                    MessageBox.Show(
+                        "Формирование Excel ЧЗ на сервере завершено, но локальный файл не сохранён. "
+                        + "Повторное формирование безопасно и не создаст новые коды.",
+                        "Маркировка",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                    LoadOrder();
+                    OrderStateChanged?.Invoke(this, EventArgs.Empty);
+                    return;
+                }
             }
 
             MessageBox.Show(result.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);

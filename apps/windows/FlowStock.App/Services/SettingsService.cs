@@ -358,6 +358,9 @@ public sealed class ServerSettings
     [JsonPropertyName("close_timeout_seconds")]
     public int CloseTimeoutSeconds { get; set; } = 15;
 
+    [JsonPropertyName("marking_timeout_seconds")]
+    public int MarkingTimeoutSeconds { get; set; } = 120;
+
     [JsonPropertyName("allow_invalid_tls")]
     public bool AllowInvalidTls { get; set; }
 
@@ -386,6 +389,8 @@ public sealed class ServerSettings
         {
             CloseTimeoutSeconds = 120;
         }
+
+        MarkingTimeoutSeconds = Math.Clamp(MarkingTimeoutSeconds, 1, 600);
 
         return this;
     }
@@ -459,4 +464,3 @@ public sealed class PostgresConnectionProfile
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 }
-

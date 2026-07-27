@@ -17,11 +17,16 @@ public sealed class WpfMarkingApiService
 
     private readonly SettingsService _settings;
     private readonly FileLogger _logger;
+    private readonly Func<WpfMarkingApiConfiguration, HttpMessageHandler> _handlerFactory;
 
-    public WpfMarkingApiService(SettingsService settings, FileLogger logger)
+    public WpfMarkingApiService(
+        SettingsService settings,
+        FileLogger logger,
+        Func<WpfMarkingApiConfiguration, HttpMessageHandler>? handlerFactory = null)
     {
         _settings = settings;
         _logger = logger;
+        _handlerFactory = handlerFactory ?? CreateHandler;
     }
 
     public bool TryGetOrders(bool includeCompleted, out IReadOnlyList<MarkingOrderQueueRow> orders)
@@ -51,7 +56,7 @@ public sealed class WpfMarkingApiService
                 return (false, null, null, "FlowStock Server API не настроен.");
             }
 
-            using var handler = CreateHandler(configuration);
+            using var handler = _handlerFactory(configuration);
             using var client = new HttpClient(handler)
             {
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
@@ -79,7 +84,7 @@ public sealed class WpfMarkingApiService
         catch (Exception ex)
         {
             _logger.Error("Marking export failed", ex);
-            return (false, null, null, ex.Message);
+            return (false, null, null, "Не удалось сформировать Excel ЧЗ.");
         }
     }
 
@@ -96,7 +101,7 @@ public sealed class WpfMarkingApiService
                 return OrderMarkingExportPreviewApiResult.Failure("FlowStock Server API не настроен.");
             }
 
-            using var handler = CreateHandler(configuration);
+            using var handler = _handlerFactory(configuration);
             using var client = new HttpClient(handler)
             {
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
@@ -127,10 +132,33 @@ public sealed class WpfMarkingApiService
                 payload.TotalQty,
                 payload.Lines?.Select(MapPreviewLine).ToArray() ?? Array.Empty<OrderMarkingExportPreviewLineApiResult>());
         }
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+        {
+            _logger.Error("Order marking preview cancelled", ex);
+            return OrderMarkingExportPreviewApiResult.Failure("Предпросмотр Excel ЧЗ отменён.");
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.Error("Order marking preview timed out", ex);
+            return OrderMarkingExportPreviewApiResult.Failure(
+                "Предпросмотр Excel ЧЗ не выполнен из-за превышения времени ожидания. Это операция только для чтения — её можно безопасно повторить.");
+        }
+        catch (TimeoutException ex)
+        {
+            _logger.Error("Order marking preview timed out", ex);
+            return OrderMarkingExportPreviewApiResult.Failure(
+                "Предпросмотр Excel ЧЗ не выполнен из-за превышения времени ожидания. Это операция только для чтения — её можно безопасно повторить.");
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.Error("Order marking preview network request failed", ex);
+            return OrderMarkingExportPreviewApiResult.Failure(
+                "Не удалось связаться с сервером для предпросмотра Excel ЧЗ. Предпросмотр не изменяет данные, поэтому запрос можно повторить.");
+        }
         catch (Exception ex)
         {
             _logger.Error("Order marking preview failed", ex);
-            return OrderMarkingExportPreviewApiResult.Failure(ex.Message);
+            return OrderMarkingExportPreviewApiResult.Failure("Не удалось выполнить предпросмотр Excel ЧЗ.");
         }
     }
 
@@ -138,6 +166,12 @@ public sealed class WpfMarkingApiService
         long orderId,
         CancellationToken cancellationToken = default)
     {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return OrderMarkingExportApiResult.Cancelled("Формирование Excel ЧЗ отменено до отправки запроса.");
+        }
+
+        var postStarted = false;
         try
         {
             var configuration = LoadConfiguration();
@@ -147,7 +181,9 @@ public sealed class WpfMarkingApiService
                 return OrderMarkingExportApiResult.Failure("FlowStock Server API не настроен.");
             }
 
-            using var handler = CreateHandler(configuration);
+            using var handler = new RequestTrackingHandler(
+                _handlerFactory(configuration),
+                () => postStarted = true);
             using var client = new HttpClient(handler)
             {
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
@@ -190,10 +226,32 @@ public sealed class WpfMarkingApiService
                 payload?.CreatedCodeQty ?? 0,
                 payload?.ReusedCodeQty ?? 0);
         }
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+        {
+            _logger.Error("Order marking export cancelled", ex);
+            return postStarted
+                ? OrderMarkingExportApiResult.CancelledOutcomeUnknown(BuildCancelledOutcomeUnknownMessage())
+                : OrderMarkingExportApiResult.Cancelled("Формирование Excel ЧЗ отменено до отправки запроса.");
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.Error("Order marking export timed out", ex);
+            return OrderMarkingExportApiResult.OutcomeUnknown(BuildOutcomeUnknownMessage());
+        }
+        catch (TimeoutException ex)
+        {
+            _logger.Error("Order marking export timed out", ex);
+            return OrderMarkingExportApiResult.OutcomeUnknown(BuildOutcomeUnknownMessage());
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.Error("Order marking export network request failed", ex);
+            return OrderMarkingExportApiResult.OutcomeUnknown(BuildOutcomeUnknownMessage());
+        }
         catch (Exception ex)
         {
             _logger.Error("Order marking export failed", ex);
-            return OrderMarkingExportApiResult.Failure(ex.Message);
+            return OrderMarkingExportApiResult.Failure("Не удалось сформировать Excel ЧЗ.");
         }
     }
 
@@ -209,7 +267,7 @@ public sealed class WpfMarkingApiService
                 return (false, "FlowStock Server API не настроен.", 0, 0);
             }
 
-            using var handler = CreateHandler(configuration);
+            using var handler = _handlerFactory(configuration);
             using var client = new HttpClient(handler)
             {
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
@@ -233,7 +291,7 @@ public sealed class WpfMarkingApiService
         catch (Exception ex)
         {
             _logger.Error("Marking creation failed", ex);
-            return (false, ex.Message, 0, 0);
+            return (false, "Не удалось создать задачи маркировки.", 0, 0);
         }
     }
 
@@ -249,7 +307,7 @@ public sealed class WpfMarkingApiService
                 return false;
             }
 
-            using var handler = CreateHandler(configuration);
+            using var handler = _handlerFactory(configuration);
             using var client = new HttpClient(handler)
             {
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
@@ -280,15 +338,19 @@ public sealed class WpfMarkingApiService
         }
     }
 
+    public WpfMarkingApiConfiguration GetEffectiveConfiguration()
+    {
+        return LoadConfiguration();
+    }
+
     private WpfMarkingApiConfiguration LoadConfiguration()
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
         var baseUrl = ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl);
-        var timeoutSeconds = ReadEnvInt("FLOWSTOCK_SERVER_CLOSE_TIMEOUT_SECONDS") ?? settings.CloseTimeoutSeconds;
-        if (timeoutSeconds < 1)
-        {
-            timeoutSeconds = WpfCloseDocumentService.DefaultCloseTimeoutSeconds;
-        }
+        var timeoutSeconds = Math.Clamp(
+            ReadEnvInt("FLOWSTOCK_SERVER_MARKING_TIMEOUT_SECONDS") ?? settings.MarkingTimeoutSeconds,
+            1,
+            600);
 
         return new WpfMarkingApiConfiguration(
             NormalizeBaseUrl(baseUrl),
@@ -341,7 +403,22 @@ public sealed class WpfMarkingApiService
         {
         }
 
-        return $"Server returned {(int)response.StatusCode} {response.ReasonPhrase}.";
+        return $"Сервер вернул ошибку HTTP {(int)response.StatusCode}.";
+    }
+
+    private static string BuildOutcomeUnknownMessage()
+    {
+        return "Ответ сервера не получен. Сервер мог уже завершить или всё ещё выполнять формирование Excel ЧЗ. "
+               + "Автоматический повтор не выполнен. Подождите и обновите либо переоткройте заказ. "
+               + "После завершения операции ручной повтор безопасен благодаря серверной идемпотентности.";
+    }
+
+    private static string BuildCancelledOutcomeUnknownMessage()
+    {
+        return "Запрос формирования Excel ЧЗ был отменён после отправки, поэтому результат неизвестен. "
+               + "Сервер мог уже завершить или всё ещё выполнять формирование. Автоматический повтор не выполнен. "
+               + "Подождите и обновите либо переоткройте заказ. После завершения операции ручной повтор безопасен "
+               + "благодаря серверной идемпотентности.";
     }
 
     private static HttpMessageHandler CreateHandler(WpfMarkingApiConfiguration configuration)
@@ -353,6 +430,25 @@ public sealed class WpfMarkingApiService
         }
 
         return handler;
+    }
+
+    private sealed class RequestTrackingHandler : DelegatingHandler
+    {
+        private readonly Action _onRequestStarted;
+
+        public RequestTrackingHandler(HttpMessageHandler innerHandler, Action onRequestStarted)
+            : base(innerHandler)
+        {
+            _onRequestStarted = onRequestStarted;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            _onRequestStarted();
+            return base.SendAsync(request, cancellationToken);
+        }
     }
 
     private static string? NormalizeBaseUrl(string? value)
@@ -632,10 +728,39 @@ public sealed record OrderMarkingExportApiResult(
     int LineCount,
     int ExportLineCount,
     double CreatedCodeQty,
-    double ReusedCodeQty)
+    double ReusedCodeQty,
+    OrderMarkingExportOutcome Outcome = OrderMarkingExportOutcome.Success)
 {
     public static OrderMarkingExportApiResult Failure(string message)
     {
-        return new OrderMarkingExportApiResult(false, message, null, null, 0, 0, 0, 0);
+        return new OrderMarkingExportApiResult(
+            false, message, null, null, 0, 0, 0, 0, OrderMarkingExportOutcome.Failure);
     }
+
+    public static OrderMarkingExportApiResult Cancelled(string message)
+    {
+        return new OrderMarkingExportApiResult(
+            false, message, null, null, 0, 0, 0, 0, OrderMarkingExportOutcome.Cancelled);
+    }
+
+    public static OrderMarkingExportApiResult OutcomeUnknown(string message)
+    {
+        return new OrderMarkingExportApiResult(
+            false, message, null, null, 0, 0, 0, 0, OrderMarkingExportOutcome.OutcomeUnknown);
+    }
+
+    public static OrderMarkingExportApiResult CancelledOutcomeUnknown(string message)
+    {
+        return new OrderMarkingExportApiResult(
+            false, message, null, null, 0, 0, 0, 0, OrderMarkingExportOutcome.CancelledOutcomeUnknown);
+    }
+}
+
+public enum OrderMarkingExportOutcome
+{
+    Success,
+    Failure,
+    Cancelled,
+    OutcomeUnknown,
+    CancelledOutcomeUnknown
 }

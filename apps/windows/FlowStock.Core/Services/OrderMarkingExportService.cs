@@ -10,12 +10,10 @@ public sealed class OrderMarkingExportService
 {
     private const double QtyTolerance = 0.000001;
     private readonly IDataStore _data;
-    private readonly MarkingExcelService _markingExcel;
 
-    public OrderMarkingExportService(IDataStore data, MarkingExcelService markingExcel)
+    public OrderMarkingExportService(IDataStore data)
     {
         _data = data;
-        _markingExcel = markingExcel;
     }
 
     public OrderMarkingExportPreviewResult Preview(long orderId)
@@ -65,6 +63,30 @@ public sealed class OrderMarkingExportService
     }
 
     public OrderMarkingExportResult Export(long orderId, DateTime generatedAt)
+    {
+        OrderMarkingExportResult? result = null;
+        try
+        {
+            _data.ExecuteInTransaction(scopedStore =>
+            {
+                if (!scopedStore.LockOrdersForUpdate(new[] { orderId }))
+                {
+                    result = OrderMarkingExportResult.Failure("Заказ не найден.");
+                    return;
+                }
+
+                result = new OrderMarkingExportService(scopedStore).ExportLocked(orderId, generatedAt);
+            });
+        }
+        catch (OrderMarkingExportRollbackException ex)
+        {
+            return OrderMarkingExportResult.Failure(ex.Message);
+        }
+
+        return result ?? OrderMarkingExportResult.Failure("Не удалось сформировать Excel ЧЗ.");
+    }
+
+    private OrderMarkingExportResult ExportLocked(long orderId, DateTime generatedAt)
     {
         var order = _data.GetOrder(orderId);
         if (order == null)
@@ -162,10 +184,11 @@ public sealed class OrderMarkingExportService
         MarkingExcelExportResult? excelResult = null;
         if (taskIdsToExport.Count > 0)
         {
-            excelResult = _markingExcel.Export(taskIdsToExport, Array.Empty<long>(), generatedAt);
+            excelResult = new MarkingExcelService(_data).Export(taskIdsToExport, Array.Empty<long>(), generatedAt);
             if (!excelResult.IsSuccess || excelResult.FileBytes == null)
             {
-                return OrderMarkingExportResult.Failure(excelResult.Error ?? "Нет строк для формирования файла ЧЗ.");
+                throw new OrderMarkingExportRollbackException(
+                    excelResult.Error ?? "Нет строк для формирования файла ЧЗ.");
             }
 
             exportLineCount = excelResult.Rows.Count;
@@ -418,5 +441,13 @@ public sealed class OrderMarkingExportService
 
         var result = builder.ToString().Trim('_');
         return string.IsNullOrWhiteSpace(result) ? "order" : result;
+    }
+
+    private sealed class OrderMarkingExportRollbackException : Exception
+    {
+        public OrderMarkingExportRollbackException(string message)
+            : base(message)
+        {
+        }
     }
 }

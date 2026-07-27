@@ -30,6 +30,7 @@ public partial class DbConnectionWindow : Window
         "FLOWSTOCK_SERVER_BASE_URL",
         "FLOWSTOCK_SERVER_DEVICE_ID",
         "FLOWSTOCK_SERVER_CLOSE_TIMEOUT_SECONDS",
+        "FLOWSTOCK_SERVER_MARKING_TIMEOUT_SECONDS",
         "FLOWSTOCK_SERVER_ALLOW_INVALID_TLS"
     };
     private static readonly string[] PostgresEnvironmentKeys =
@@ -377,6 +378,7 @@ public partial class DbConnectionWindow : Window
             CloseTimeoutSeconds = server.CloseTimeoutSeconds < 1
                 ? WpfCloseDocumentService.DefaultCloseTimeoutSeconds
                 : server.CloseTimeoutSeconds,
+            MarkingTimeoutSeconds = server.MarkingTimeoutSeconds,
             AllowInvalidTls = server.AllowInvalidTls
         });
         RefreshServerStatus();
@@ -483,6 +485,7 @@ public partial class DbConnectionWindow : Window
             TsdClientUrl = $"https://{host}:7154/tsd",
             DeviceId = deviceId,
             CloseTimeoutSeconds = timeoutSeconds,
+            MarkingTimeoutSeconds = existing.MarkingTimeoutSeconds,
             AllowInvalidTls = AllowInvalidTlsCheckBox.IsChecked == true
         }.Normalize();
 
@@ -1051,9 +1054,11 @@ LIMIT 1;";
             requested.DeviceId ?? string.Empty,
             StringComparison.OrdinalIgnoreCase);
         var sameTimeout = effective.CloseTimeoutSeconds == requested.CloseTimeoutSeconds;
+        var sameMarkingTimeout = _services.WpfMarkingApi.GetEffectiveConfiguration().TimeoutSeconds
+                                 == requested.MarkingTimeoutSeconds;
         var sameTls = effective.AllowInvalidTls == requested.AllowInvalidTls;
 
-        if (sameBaseUrl && sameDeviceId && sameTimeout && sameTls)
+        if (sameBaseUrl && sameDeviceId && sameTimeout && sameMarkingTimeout && sameTls)
         {
             return false;
         }
@@ -1115,6 +1120,7 @@ LIMIT 1;";
             TsdClientUrl = ReplaceHost(serverSettings.GetTsdClientUrlOrDefault(), syncedHost),
             DeviceId = serverSettings.DeviceId,
             CloseTimeoutSeconds = serverSettings.CloseTimeoutSeconds,
+            MarkingTimeoutSeconds = serverSettings.MarkingTimeoutSeconds,
             AllowInvalidTls = serverSettings.AllowInvalidTls
         };
 

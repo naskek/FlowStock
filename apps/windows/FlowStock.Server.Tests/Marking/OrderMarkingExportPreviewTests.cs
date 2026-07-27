@@ -220,7 +220,7 @@ public sealed class OrderMarkingExportPreviewTests
         });
         harness.SeedMarkingCodes(markingOrderId, count: 1890, gtin: "04601234567890");
 
-        var service = new OrderMarkingExportService(harness.Store, new MarkingExcelService(harness.Store));
+        var service = new OrderMarkingExportService(harness.Store);
         var summary = Assert.Single(service.Export(10, new DateTime(2026, 5, 8, 13, 0, 0, DateTimeKind.Utc)).Lines);
         Assert.Equal(0, summary.ExportQty);
         Assert.Equal(1890, summary.ExistingCodeQty);
@@ -314,7 +314,7 @@ public sealed class OrderMarkingExportPreviewTests
             });
         }
 
-        var result = new OrderMarkingExportService(harness.Store, new MarkingExcelService(harness.Store)).Preview(10);
+        var result = new OrderMarkingExportService(harness.Store).Preview(10);
 
         Assert.True(result.IsSuccess);
         var line = Assert.Single(result.Lines);

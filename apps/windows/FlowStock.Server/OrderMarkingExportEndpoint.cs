@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.Globalization;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 
 namespace FlowStock.Server;
 
@@ -15,38 +17,120 @@ public static class OrderMarkingExportEndpoint
         app.MapPost("/api/orders/{orderId:long}/marking/export", HandleExport);
     }
 
-    private static IResult HandlePreview(long orderId, IDataStore store)
+    private static IResult HandlePreview(long orderId, IDataStore store, ILoggerFactory loggerFactory)
     {
-        var result = new OrderMarkingExportService(store, new MarkingExcelService(store)).Preview(orderId);
-        if (!result.IsSuccess)
+        var stopwatch = Stopwatch.StartNew();
+        var logger = loggerFactory.CreateLogger("FlowStock.Server.OrderMarkingExportEndpoint");
+        try
         {
-            return Results.BadRequest(new ApiResult(false, result.Message));
-        }
+            var result = new OrderMarkingExportService(store).Preview(orderId);
+            LogOperation(
+                logger,
+                "preview",
+                result.IsSuccess ? "success" : "failure",
+                stopwatch.ElapsedMilliseconds,
+                orderId,
+                result.LineCount,
+                0,
+                0);
+            if (!result.IsSuccess)
+            {
+                return Results.BadRequest(new ApiResult(false, result.Message));
+            }
 
-        return Results.Ok(MapPreviewResponse(result));
+            return Results.Ok(MapPreviewResponse(result));
+        }
+        catch (Exception ex)
+        {
+            LogOperation(logger, "preview", "exception", stopwatch.ElapsedMilliseconds, orderId, 0, 0, 0, ex);
+            throw;
+        }
     }
 
-    private static IResult HandleExport(long orderId, HttpResponse response, IDataStore store, MarkingExcelService markingExcel)
+    private static IResult HandleExport(
+        long orderId,
+        HttpResponse response,
+        IDataStore store,
+        ILoggerFactory loggerFactory)
     {
-        var result = new OrderMarkingExportService(store, markingExcel).Export(orderId, DateTime.Now);
-        if (!result.IsSuccess)
+        var stopwatch = Stopwatch.StartNew();
+        var logger = loggerFactory.CreateLogger("FlowStock.Server.OrderMarkingExportEndpoint");
+        try
         {
-            return Results.BadRequest(new ApiResult(false, result.Message));
+            var result = new OrderMarkingExportService(store).Export(orderId, DateTime.Now);
+            LogOperation(
+                logger,
+                "export",
+                result.IsSuccess ? "success" : "failure",
+                stopwatch.ElapsedMilliseconds,
+                orderId,
+                result.LineCount,
+                result.CreatedCodeQty,
+                result.ReusedCodeQty);
+            if (!result.IsSuccess)
+            {
+                return Results.BadRequest(new ApiResult(false, result.Message));
+            }
+
+            if (result.FileBytes == null)
+            {
+                return Results.Ok(MapResponse(result));
+            }
+
+            response.Headers["X-FlowStock-Marking-Line-Count"] = result.LineCount.ToString(CultureInfo.InvariantCulture);
+            response.Headers["X-FlowStock-Marking-Export-Line-Count"] = result.ExportLineCount.ToString(CultureInfo.InvariantCulture);
+            response.Headers["X-FlowStock-Marking-Created-Qty"] = result.CreatedCodeQty.ToString("0.###", CultureInfo.InvariantCulture);
+            response.Headers["X-FlowStock-Marking-Reused-Qty"] = result.ReusedCodeQty.ToString("0.###", CultureInfo.InvariantCulture);
+            return Results.File(
+                result.FileBytes,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                result.FileName);
+        }
+        catch (Exception ex)
+        {
+            LogOperation(logger, "export", "exception", stopwatch.ElapsedMilliseconds, orderId, 0, 0, 0, ex);
+            throw;
+        }
+    }
+
+    private static void LogOperation(
+        ILogger logger,
+        string operation,
+        string outcome,
+        long elapsedMs,
+        long orderId,
+        int lineCount,
+        double createdCodeQty,
+        double reusedCodeQty,
+        Exception? exception = null)
+    {
+        const string template =
+            "Marking operation completed: operation={Operation}, outcome={Outcome}, elapsed_ms={ElapsedMs}, "
+            + "order_id={OrderId}, line_count={LineCount}, created_code_qty={CreatedCodeQty}, reused_code_qty={ReusedCodeQty}";
+        if (exception == null)
+        {
+            logger.LogInformation(
+                template,
+                operation,
+                outcome,
+                elapsedMs,
+                orderId,
+                lineCount,
+                createdCodeQty,
+                reusedCodeQty);
+            return;
         }
 
-        if (result.FileBytes == null)
-        {
-            return Results.Ok(MapResponse(result));
-        }
-
-        response.Headers["X-FlowStock-Marking-Line-Count"] = result.LineCount.ToString(CultureInfo.InvariantCulture);
-        response.Headers["X-FlowStock-Marking-Export-Line-Count"] = result.ExportLineCount.ToString(CultureInfo.InvariantCulture);
-        response.Headers["X-FlowStock-Marking-Created-Qty"] = result.CreatedCodeQty.ToString("0.###", CultureInfo.InvariantCulture);
-        response.Headers["X-FlowStock-Marking-Reused-Qty"] = result.ReusedCodeQty.ToString("0.###", CultureInfo.InvariantCulture);
-        return Results.File(
-            result.FileBytes,
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            result.FileName);
+        logger.LogError(
+            exception,
+            template,
+            operation,
+            outcome,
+            elapsedMs,
+            orderId,
+            lineCount,
+            createdCodeQty,
+            reusedCodeQty);
     }
 
     private static object MapPreviewResponse(OrderMarkingExportPreviewResult result)
