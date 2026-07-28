@@ -110,7 +110,9 @@ public sealed class BarTenderPalletLabelPrintService : IPalletLabelPrintService
 
         return new PalletLabelPrinterConfiguration(
             templatePath,
-            ReadEnvOrSettings("FLOWSTOCK_PALLET_LABEL_PRINTER_NAME", labels.PrinterName),
+            PalletLabelPrinterNameResolver.ResolvePrinterName(
+                Environment.GetEnvironmentVariable(PalletLabelPrinterNameResolver.EnvironmentVariableName),
+                labels.PrinterName),
             copies);
     }
 

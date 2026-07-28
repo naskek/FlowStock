@@ -49,6 +49,7 @@ public sealed class AppServices
     public WpfDeleteDocLineService WpfDeleteDocLines { get; }
     public WpfLiveRefreshCoordinator LiveRefresh { get; }
     public IPalletLabelPrintService PalletLabelPrinter { get; }
+    public WindowsPrinterCatalog WindowsPrinters { get; }
     public FileLogger AppLogger { get; }
     public FileLogger AdminLogger { get; }
     public string DatabasePath { get; }
@@ -119,6 +120,7 @@ public sealed class AppServices
         WpfDeleteDocLines = new WpfDeleteDocLineService(connectionString, Settings, appLogger);
         LiveRefresh = new WpfLiveRefreshCoordinator(new WpfLiveUpdateClient(Settings, appLogger), appLogger);
         PalletLabelPrinter = new BarTenderPalletLabelPrintService(Settings, appLogger, baseDir);
+        WindowsPrinters = new WindowsPrinterCatalog();
         DatabasePath = databaseTarget;
         ConnectionString = connectionString;
         BaseDir = baseDir;
