@@ -2,11 +2,12 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Администрирование"
-        Height="560" Width="820"
+        Height="720" Width="820"
         WindowStartupLocation="CenterOwner">
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <Grid Margin="12">
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -90,7 +91,63 @@
                 </Grid>
             </GroupBox>
 
-            <GroupBox Header="Очистка перед стартом" Grid.Row="3" Margin="0,12,0,0">
+            <GroupBox Header="Печать паллетных этикеток" Grid.Row="3" Margin="0,12,0,0">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Row="0"
+                               Grid.Column="0"
+                               Text="Принтер"
+                               VerticalAlignment="Center"
+                               Margin="0,0,12,0" />
+                    <ComboBox x:Name="PalletLabelPrinterComboBox"
+                              Grid.Row="0"
+                              Grid.Column="1"
+                              MinWidth="360"
+                              IsEditable="True"
+                              IsTextSearchEnabled="True"
+                              StaysOpenOnEdit="True" />
+                    <Button Grid.Row="0"
+                            Grid.Column="2"
+                            Content="Обновить список"
+                            Width="150"
+                            Margin="12,0,0,0"
+                            Click="RefreshPalletLabelPrinters_Click" />
+
+                    <TextBlock Grid.Row="1"
+                               Grid.ColumnSpan="3"
+                               Margin="0,8,0,0"
+                               Text="Оставьте поле пустым, чтобы использовать принтер шаблона BarTender или системный принтер по умолчанию. Можно ввести точное имя вручную."
+                               TextWrapping="Wrap" />
+
+                    <TextBlock x:Name="PalletLabelPrinterStatusText"
+                               Grid.Row="2"
+                               Grid.ColumnSpan="3"
+                               Margin="0,8,0,0"
+                               TextWrapping="Wrap" />
+
+                    <Button x:Name="SavePalletLabelPrinterButton"
+                            Grid.Row="3"
+                            Grid.ColumnSpan="3"
+                            Content="Сохранить"
+                            Width="140"
+                            Margin="0,10,0,0"
+                            HorizontalAlignment="Left"
+                            Click="SavePalletLabelPrinter_Click" />
+                </Grid>
+            </GroupBox>
+
+            <GroupBox Header="Очистка перед стартом" Grid.Row="4" Margin="0,12,0,0">
                 <StackPanel Margin="8">
                     <TextBlock Text="Удаляет тестовые операции: документы, строки, ledger, заказы, imported events/errors."
                                TextWrapping="Wrap" />
@@ -101,7 +158,7 @@
                 </StackPanel>
             </GroupBox>
 
-            <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
                 <Button Content="Обслуживание..."
                         Width="150"
                         Margin="0,0,12,0"

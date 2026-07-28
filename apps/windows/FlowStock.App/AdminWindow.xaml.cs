@@ -13,6 +13,7 @@ public partial class AdminWindow : Window
     private readonly AppServices _services;
     private readonly Action? _onOperationsCleared;
     private readonly Dictionary<string, WpfCheckBox> _clientBlockBoxes = new(StringComparer.OrdinalIgnoreCase);
+    private string? _palletLabelPrinterEnvironmentOverride;
 
     public AdminWindow(AppServices services, Action? onOperationsCleared = null)
     {
@@ -21,6 +22,7 @@ public partial class AdminWindow : Window
 
         InitializeComponent();
         LoadClientBlocksUi();
+        LoadPalletLabelPrinterUi();
     }
 
     private void OpenDbConnection_Click(object sender, RoutedEventArgs e)
@@ -172,6 +174,136 @@ public partial class AdminWindow : Window
             ClientBlocksStatusText.Text = "Не удалось загрузить доступ к веб-блокам.";
             SaveClientBlocksButton.IsEnabled = false;
         }
+    }
+
+    private void LoadPalletLabelPrinterUi()
+    {
+        var settings = _services.Settings.Load();
+        var savedPrinterName = PalletLabelPrinterNameResolver.NormalizePrinterName(
+            settings.PalletLabels?.PrinterName);
+        _palletLabelPrinterEnvironmentOverride = PalletLabelPrinterNameResolver.ResolveEnvironmentOverride(
+            Environment.GetEnvironmentVariable(PalletLabelPrinterNameResolver.EnvironmentVariableName));
+
+        var localSettingEnabled = _palletLabelPrinterEnvironmentOverride == null;
+        PalletLabelPrinterComboBox.IsEnabled = localSettingEnabled;
+        SavePalletLabelPrinterButton.IsEnabled = localSettingEnabled;
+        RefreshPalletLabelPrinters(savedPrinterName, statusPrefix: null);
+    }
+
+    private void RefreshPalletLabelPrinters_Click(object sender, RoutedEventArgs e)
+    {
+        RefreshPalletLabelPrinters(PalletLabelPrinterComboBox.Text, statusPrefix: null);
+    }
+
+    private void SavePalletLabelPrinter_Click(object sender, RoutedEventArgs e)
+    {
+        _palletLabelPrinterEnvironmentOverride = PalletLabelPrinterNameResolver.ResolveEnvironmentOverride(
+            Environment.GetEnvironmentVariable(PalletLabelPrinterNameResolver.EnvironmentVariableName));
+        if (_palletLabelPrinterEnvironmentOverride != null)
+        {
+            PalletLabelPrinterComboBox.IsEnabled = false;
+            SavePalletLabelPrinterButton.IsEnabled = false;
+            RefreshPalletLabelPrinters(PalletLabelPrinterComboBox.Text, statusPrefix: null);
+            return;
+        }
+
+        try
+        {
+            var settings = _services.Settings.Load();
+            settings.PalletLabels ??= new PalletLabelSettings();
+            var printerName = PalletLabelPrinterNameResolver.NormalizePrinterName(
+                PalletLabelPrinterComboBox.Text);
+            settings.PalletLabels.PrinterName = printerName;
+            _services.Settings.Save(settings);
+
+            _services.AdminLogger.Info("admin_pallet_label_printer saved");
+            RefreshPalletLabelPrinters(
+                printerName,
+                "Настройка сохранена и будет использована при следующей печати.");
+        }
+        catch (Exception ex)
+        {
+            _services.AdminLogger.Error("admin_pallet_label_printer save failed", ex);
+            PalletLabelPrinterStatusText.Text =
+                $"Не удалось сохранить настройку принтера. Предыдущее значение не изменено. {ex.Message}";
+        }
+    }
+
+    private void RefreshPalletLabelPrinters(string? currentPrinterName, string? statusPrefix)
+    {
+        PalletLabelPrinterSelectionState state;
+        string? enumerationError = null;
+        try
+        {
+            state = PalletLabelPrinterSelectionState.Build(
+                _services.WindowsPrinters.GetInstalledPrinterNames(),
+                currentPrinterName);
+        }
+        catch (Exception ex)
+        {
+            _services.AdminLogger.Error("admin_pallet_label_printers enumerate failed", ex);
+            enumerationError = ex.Message;
+            state = PalletLabelPrinterSelectionState.Build(
+                Array.Empty<string>(),
+                currentPrinterName);
+        }
+
+        PalletLabelPrinterComboBox.ItemsSource = new[] { string.Empty }
+            .Concat(state.InstalledPrinterNames)
+            .ToArray();
+        PalletLabelPrinterComboBox.Text = state.PrinterName;
+        PalletLabelPrinterStatusText.Text = BuildPalletLabelPrinterStatus(
+            state,
+            enumerationError,
+            statusPrefix);
+    }
+
+    private string BuildPalletLabelPrinterStatus(
+        PalletLabelPrinterSelectionState state,
+        string? enumerationError,
+        string? statusPrefix)
+    {
+        var messages = new List<string>();
+        if (!string.IsNullOrWhiteSpace(statusPrefix))
+        {
+            messages.Add(statusPrefix);
+        }
+
+        if (_palletLabelPrinterEnvironmentOverride != null)
+        {
+            messages.Add(
+                $"Активный принтер задан переменной {PalletLabelPrinterNameResolver.EnvironmentVariableName}: " +
+                $"«{_palletLabelPrinterEnvironmentOverride}». Локальный выбор и сохранение отключены.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(enumerationError))
+        {
+            var manualInputHint = _palletLabelPrinterEnvironmentOverride == null
+                ? " Можно ввести точное имя вручную."
+                : string.Empty;
+            messages.Add(
+                $"Не удалось получить список принтеров Windows.{manualInputHint} {enumerationError}");
+        }
+        else if (state.InstalledPrinterNames.Count == 0)
+        {
+            messages.Add(_palletLabelPrinterEnvironmentOverride == null
+                ? "Установленные принтеры не найдены. Можно ввести точное имя вручную."
+                : "Установленные принтеры не найдены.");
+        }
+
+        if (state.IsPrinterMissing)
+        {
+            messages.Add(
+                $"Принтер «{state.PrinterName}» сейчас не найден в Windows. " +
+                "Имя в поле оставлено без изменений.");
+        }
+
+        if (messages.Count == 0)
+        {
+            messages.Add("Выберите установленный принтер или оставьте поле пустым.");
+        }
+
+        return string.Join(" ", messages);
     }
 
     private void PopulateClientBlockPanel(
