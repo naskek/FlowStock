@@ -5,6 +5,17 @@ namespace FlowStock.Server.Tests.Wpf;
 public sealed class CommercialStatisticsViewStateTests
 {
     [Fact]
+    public void Initial_state_is_whole_period_and_return_button_is_disabled()
+    {
+        var state = new CommercialStatisticsViewState(pageSize: 100);
+
+        Assert.Null(state.DetailMonth);
+        Assert.Equal("Детализация за весь период", state.DetailLabel);
+        Assert.False(state.CanReturnToWholePeriod);
+        Assert.False(state.ReturnToWholePeriod());
+    }
+
+    [Fact]
     public void Pagination_and_detail_month_are_reflected_in_requests()
     {
         var state = new CommercialStatisticsViewState(pageSize: 100);
@@ -21,13 +32,22 @@ public sealed class CommercialStatisticsViewStateTests
         Assert.Equal(100, second.Request.Offset);
 
         state.SelectDetailMonth("2026-02");
+        Assert.True(state.CanReturnToWholePeriod);
         var detail = state.StartLoad(filters);
         Assert.Equal(0, detail.Request.Offset);
         Assert.Equal("2026-02", detail.Request.DetailMonth);
         Assert.Equal("Детализация за февраль 2026", state.DetailLabel);
+        Assert.False(state.CanReturnToWholePeriod);
+        Assert.False(state.ReturnToWholePeriod());
+        Assert.True(state.TryComplete(
+            detail.RequestId,
+            Result(totalCount: 1, offset: 0, count: 1)));
+        Assert.True(state.CanReturnToWholePeriod);
 
-        state.SelectDetailMonth(null);
+        Assert.True(state.ReturnToWholePeriod());
+        Assert.Equal(0, state.StartLoad(filters).Request.Offset);
         Assert.Equal("Детализация за весь период", state.DetailLabel);
+        Assert.False(state.CanReturnToWholePeriod);
     }
 
     [Fact]
@@ -45,6 +65,26 @@ public sealed class CommercialStatisticsViewStateTests
             Result(totalCount: 25, offset: 0, count: 25)));
         Assert.Equal("1–25 из 25", state.RangeText);
         Assert.False(state.IsLoading);
+    }
+
+    [Fact]
+    public void Return_to_whole_period_clears_month_and_resets_offset()
+    {
+        var state = new CommercialStatisticsViewState(pageSize: 100);
+        state.SelectDetailMonth("2026-02");
+        var detail = state.StartLoad(CreateFilters());
+        Assert.True(state.TryComplete(
+            detail.RequestId,
+            Result(totalCount: 250, offset: 0, count: 100)));
+        Assert.True(state.MoveNext());
+
+        Assert.True(state.ReturnToWholePeriod());
+        var wholePeriod = state.StartLoad(CreateFilters());
+
+        Assert.Null(state.DetailMonth);
+        Assert.Null(wholePeriod.Request.DetailMonth);
+        Assert.Equal(0, wholePeriod.Request.Offset);
+        Assert.Equal("Детализация за весь период", state.DetailLabel);
     }
 
     [Fact]

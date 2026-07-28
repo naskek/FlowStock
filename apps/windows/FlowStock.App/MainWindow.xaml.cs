@@ -53,6 +53,8 @@ public partial class MainWindow : Window
     private static readonly TimeSpan StockGridScrollIdleDelay = TimeSpan.FromSeconds(1.5);
     private static readonly TimeSpan StockRefreshDeferWhileScrolling = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan ItemRequestsBadgeRefreshInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan CommercialStatisticsRefreshDebounceInterval =
+        TimeSpan.FromMilliseconds(300);
     private DispatcherTimer? _stockRefreshDebounceTimer;
     private bool _stockRefreshDebounceTickAttached;
     private DispatcherTimer? _stockGridScrollIdleTimer;
@@ -99,6 +101,23 @@ public partial class MainWindow : Window
     private const int TabKmIndex = 9;
     private const int OrdersPageSize = 15;
     private readonly CommercialStatisticsViewState _commercialStatisticsState = new(pageSize: 100);
+    private readonly CommercialStatisticsAutoRefreshCoordinator _commercialStatisticsAutoRefresh = new();
+    private readonly ObservableCollection<CommercialStatisticsStatusFilterOption> _statisticsStatusOptions =
+        new(CommercialStatisticsFilterOptions.BuildStatuses());
+    private IReadOnlyList<CommercialStatisticsEntityFilterOption> _statisticsPartnerOptions = [];
+    private IReadOnlyList<CommercialStatisticsEntityFilterOption> _statisticsItemOptions = [];
+    private IReadOnlyList<CommercialStatisticsTextFilterOption> _statisticsGtinOptions = [];
+    private IReadOnlyList<CommercialStatisticsTextFilterOption> _statisticsBrandOptions = [];
+    private IReadOnlyList<CommercialStatisticsTextFilterOption> _statisticsVolumeOptions = [];
+    private long? _statisticsPartnerId;
+    private long? _statisticsItemId;
+    private string? _statisticsGtin;
+    private string? _statisticsBrand;
+    private string? _statisticsVolume;
+    private DispatcherTimer? _commercialStatisticsRefreshTimer;
+    private bool _commercialStatisticsInitialLoadStarted;
+    private bool _commercialStatisticsSearchHandlersAttached;
+    private bool _suppressCommercialStatisticsFilterEvents;
     private int _ordersPagedDepth;
     private bool _ordersHasMore;
 
@@ -118,11 +137,7 @@ public partial class MainWindow : Window
         DocsGrid.ItemsSource = _docs;
         OrdersGrid.ItemsSource = _orders;
         WarehouseBundlesGrid.ItemsSource = _warehouseBundles;
-        StatisticsFromDate.SelectedDate = new DateTime(DateTime.Today.Year, 1, 1);
-        StatisticsToDate.SelectedDate = DateTime.Today;
-        StatisticsModeCombo.SelectedIndex = 0;
-        StatisticsGroupCombo.SelectedIndex = 0;
-        UpdateCommercialStatisticsNavigation();
+        InitializeCommercialStatisticsFilters();
         WarehouseBundleFilterCombo.ItemsSource = new[]
         {
             new WarehouseBundleFilterOption(null, "Все"),
@@ -491,6 +506,7 @@ public partial class MainWindow : Window
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
         _itemRequestsBadgeRefreshTimer?.Stop();
+        _commercialStatisticsRefreshTimer?.Stop();
         _liveRefreshSubscription.Dispose();
     }
 
@@ -562,6 +578,12 @@ public partial class MainWindow : Window
         }
 
         RefreshPendingActiveTab();
+        if (MainTabs.SelectedIndex == TabStatisticsIndex
+            && !_commercialStatisticsInitialLoadStarted
+            && !_serverApiUnavailableAtStartup)
+        {
+            _ = LoadCommercialStatisticsImmediatelyAsync();
+        }
     }
 
     private void RefreshActiveTab()
@@ -596,7 +618,7 @@ public partial class MainWindow : Window
                     RefreshOrdersKeepingPagedDepth();
                     break;
                 case TabStatisticsIndex:
-                    _ = LoadCommercialStatisticsAsync();
+                    _ = LoadCommercialStatisticsImmediatelyAsync();
                     break;
                 case TabTasksIndex:
                     if (ExperimentalFeatureFlags.WarehouseTasksEnabled)
@@ -678,6 +700,7 @@ public partial class MainWindow : Window
             ItemsSearchBox.Text = search;
         }
         RebuildItemFilters();
+        RebuildCommercialStatisticsCatalogFilters();
         ApplyItemFilters();
         RestoreItemSelection(selectedId);
     }
@@ -894,6 +917,7 @@ public partial class MainWindow : Window
                 _partners.Add(new PartnerRow(partner, string.Empty));
             }
         }
+        RebuildCommercialStatisticsCatalogFilters();
         RestorePartnerSelection(selectedId);
     }
 
@@ -3320,20 +3344,423 @@ public partial class MainWindow : Window
         }.ShowDialog();
     }
 
-    private async void StatisticsRefresh_Click(object sender, RoutedEventArgs e)
+    private void InitializeCommercialStatisticsFilters()
     {
-        await LoadCommercialStatisticsAsync().ConfigureAwait(true);
+        _suppressCommercialStatisticsFilterEvents = true;
+        try
+        {
+            StatisticsStatusesCombo.ItemsSource = _statisticsStatusOptions;
+            AttachCommercialStatisticsSearchHandlers();
+            RebuildCommercialStatisticsCatalogFilters();
+            StatisticsFromDate.SelectedDate = new DateTime(DateTime.Today.Year, 1, 1);
+            StatisticsToDate.SelectedDate = DateTime.Today;
+            StatisticsModeCombo.SelectedIndex = 0;
+            StatisticsGroupCombo.SelectedIndex = 0;
+        }
+        finally
+        {
+            _suppressCommercialStatisticsFilterEvents = false;
+        }
+
+        UpdateCommercialStatisticsStatusFilter();
+        UpdateCommercialStatisticsNavigation();
     }
 
-    private void StatisticsCriteria_Changed(object sender, EventArgs e)
+    private void AttachCommercialStatisticsSearchHandlers()
     {
-        if (!IsLoaded)
+        if (_commercialStatisticsSearchHandlersAttached)
         {
             return;
         }
 
+        foreach (var comboBox in GetCommercialStatisticsSearchComboBoxes())
+        {
+            comboBox.AddHandler(
+                System.Windows.Controls.Primitives.TextBoxBase.TextChangedEvent,
+                new TextChangedEventHandler(StatisticsSearchCombo_TextChanged));
+            comboBox.DropDownClosed += StatisticsSearchCombo_DropDownClosed;
+        }
+
+        _commercialStatisticsSearchHandlersAttached = true;
+    }
+
+    private System.Windows.Controls.ComboBox[] GetCommercialStatisticsSearchComboBoxes() =>
+    [
+        StatisticsPartnerCombo,
+        StatisticsItemCombo,
+        StatisticsGtinCombo,
+        StatisticsBrandCombo,
+        StatisticsVolumeCombo
+    ];
+
+    private void RebuildCommercialStatisticsCatalogFilters()
+    {
+        if (StatisticsPartnerCombo == null)
+        {
+            return;
+        }
+
+        var previousSuppression = _suppressCommercialStatisticsFilterEvents;
+        _suppressCommercialStatisticsFilterEvents = true;
+        try
+        {
+            _statisticsPartnerOptions = CommercialStatisticsFilterOptions.BuildPartners(
+                _partners.Select(row => row.Partner));
+            var partnerSelection = CommercialStatisticsFilterOptions.RestoreEntitySelection(
+                _statisticsPartnerOptions,
+                _statisticsPartnerId);
+            _statisticsPartnerId = partnerSelection.Id;
+            StatisticsPartnerCombo.ItemsSource = _statisticsPartnerOptions;
+            StatisticsPartnerCombo.SelectedItem = partnerSelection;
+
+            _statisticsItemOptions = CommercialStatisticsFilterOptions.BuildItems(_items);
+            var itemSelection = CommercialStatisticsFilterOptions.RestoreEntitySelection(
+                _statisticsItemOptions,
+                _statisticsItemId);
+            _statisticsItemId = itemSelection.Id;
+            StatisticsItemCombo.ItemsSource = _statisticsItemOptions;
+            StatisticsItemCombo.SelectedItem = itemSelection;
+
+            _statisticsGtinOptions = CommercialStatisticsFilterOptions.BuildGtins(_items);
+            var gtinSelection = CommercialStatisticsFilterOptions.RestoreTextSelection(
+                _statisticsGtinOptions,
+                _statisticsGtin);
+            _statisticsGtin = gtinSelection.Value;
+            StatisticsGtinCombo.ItemsSource = _statisticsGtinOptions;
+            StatisticsGtinCombo.SelectedItem = gtinSelection;
+
+            _statisticsBrandOptions = CommercialStatisticsFilterOptions.BuildBrands(_items);
+            var brandSelection = CommercialStatisticsFilterOptions.RestoreTextSelection(
+                _statisticsBrandOptions,
+                _statisticsBrand);
+            _statisticsBrand = brandSelection.Value;
+            StatisticsBrandCombo.ItemsSource = _statisticsBrandOptions;
+            StatisticsBrandCombo.SelectedItem = brandSelection;
+
+            _statisticsVolumeOptions = CommercialStatisticsFilterOptions.BuildVolumes(_items);
+            var volumeSelection = CommercialStatisticsFilterOptions.RestoreTextSelection(
+                _statisticsVolumeOptions,
+                _statisticsVolume);
+            _statisticsVolume = volumeSelection.Value;
+            StatisticsVolumeCombo.ItemsSource = _statisticsVolumeOptions;
+            StatisticsVolumeCombo.SelectedItem = volumeSelection;
+        }
+        finally
+        {
+            _suppressCommercialStatisticsFilterEvents = previousSuppression;
+        }
+    }
+
+    private void StatisticsSearchCombo_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressCommercialStatisticsFilterEvents
+            || sender is not System.Windows.Controls.ComboBox comboBox
+            || !comboBox.IsKeyboardFocusWithin)
+        {
+            return;
+        }
+
+        var query = comboBox.Text ?? string.Empty;
+        if (string.Equals(
+                GetCommercialStatisticsOptionLabel(comboBox.SelectedItem),
+                query,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var previousSuppression = _suppressCommercialStatisticsFilterEvents;
+        _suppressCommercialStatisticsFilterEvents = true;
+        try
+        {
+            if (ReferenceEquals(comboBox, StatisticsPartnerCombo))
+            {
+                comboBox.ItemsSource = CommercialStatisticsFilterOptions.SearchEntities(
+                    _statisticsPartnerOptions,
+                    query);
+            }
+            else if (ReferenceEquals(comboBox, StatisticsItemCombo))
+            {
+                comboBox.ItemsSource = CommercialStatisticsFilterOptions.SearchEntities(
+                    _statisticsItemOptions,
+                    query);
+            }
+            else if (ReferenceEquals(comboBox, StatisticsGtinCombo))
+            {
+                comboBox.ItemsSource = CommercialStatisticsFilterOptions.SearchText(
+                    _statisticsGtinOptions,
+                    query);
+            }
+            else if (ReferenceEquals(comboBox, StatisticsBrandCombo))
+            {
+                comboBox.ItemsSource = CommercialStatisticsFilterOptions.SearchText(
+                    _statisticsBrandOptions,
+                    query);
+            }
+            else if (ReferenceEquals(comboBox, StatisticsVolumeCombo))
+            {
+                comboBox.ItemsSource = CommercialStatisticsFilterOptions.SearchText(
+                    _statisticsVolumeOptions,
+                    query);
+            }
+            else
+            {
+                return;
+            }
+
+            comboBox.SelectedItem = null;
+        }
+        finally
+        {
+            _suppressCommercialStatisticsFilterEvents = previousSuppression;
+        }
+
+        comboBox.IsDropDownOpen = comboBox.Items.Count > 0;
+        RestoreCommercialStatisticsComboText(comboBox, query);
+    }
+
+    private void StatisticsSearchCombo_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.ComboBox comboBox)
+        {
+            return;
+        }
+
+        if (e.Key == Key.Escape)
+        {
+            e.Handled = true;
+            RestoreCommercialStatisticsSearchSelection(comboBox);
+            return;
+        }
+
+        if (e.Key != Key.Enter)
+        {
+            return;
+        }
+
+        var candidate = comboBox.SelectedItem ?? comboBox.Items.Cast<object>().FirstOrDefault();
+        if (candidate is null)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        if (!ReferenceEquals(comboBox.SelectedItem, candidate))
+        {
+            comboBox.SelectedItem = candidate;
+        }
+        RestoreCommercialStatisticsSearchSelection(comboBox);
+    }
+
+    private void StatisticsSearchCombo_LostKeyboardFocus(
+        object sender,
+        KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.ComboBox comboBox)
+        {
+            return;
+        }
+
+        comboBox.Dispatcher.BeginInvoke(() =>
+        {
+            if (!comboBox.IsKeyboardFocusWithin)
+            {
+                RestoreCommercialStatisticsSearchSelection(comboBox);
+            }
+        });
+    }
+
+    private void StatisticsSearchCombo_DropDownClosed(object? sender, EventArgs e)
+    {
+        if (!_suppressCommercialStatisticsFilterEvents
+            && sender is System.Windows.Controls.ComboBox comboBox)
+        {
+            RestoreCommercialStatisticsSearchSelection(comboBox);
+        }
+    }
+
+    private bool CommitCommercialStatisticsSearchSelection(
+        System.Windows.Controls.ComboBox comboBox)
+    {
+        if (ReferenceEquals(comboBox, StatisticsPartnerCombo)
+            && comboBox.SelectedItem is CommercialStatisticsEntityFilterOption partner)
+        {
+            var changed = _statisticsPartnerId != partner.Id;
+            _statisticsPartnerId = partner.Id;
+            return changed;
+        }
+        if (ReferenceEquals(comboBox, StatisticsItemCombo)
+            && comboBox.SelectedItem is CommercialStatisticsEntityFilterOption item)
+        {
+            var changed = _statisticsItemId != item.Id;
+            _statisticsItemId = item.Id;
+            return changed;
+        }
+        if (ReferenceEquals(comboBox, StatisticsGtinCombo)
+            && comboBox.SelectedItem is CommercialStatisticsTextFilterOption gtin)
+        {
+            var changed = !string.Equals(
+                _statisticsGtin,
+                gtin.Value,
+                StringComparison.OrdinalIgnoreCase);
+            _statisticsGtin = gtin.Value;
+            return changed;
+        }
+        if (ReferenceEquals(comboBox, StatisticsBrandCombo)
+            && comboBox.SelectedItem is CommercialStatisticsTextFilterOption brand)
+        {
+            var changed = !string.Equals(
+                _statisticsBrand,
+                brand.Value,
+                StringComparison.OrdinalIgnoreCase);
+            _statisticsBrand = brand.Value;
+            return changed;
+        }
+        if (ReferenceEquals(comboBox, StatisticsVolumeCombo)
+            && comboBox.SelectedItem is CommercialStatisticsTextFilterOption volume)
+        {
+            var changed = !string.Equals(
+                _statisticsVolume,
+                volume.Value,
+                StringComparison.OrdinalIgnoreCase);
+            _statisticsVolume = volume.Value;
+            return changed;
+        }
+
+        return false;
+    }
+
+    private void RestoreCommercialStatisticsSearchSelection(
+        System.Windows.Controls.ComboBox comboBox)
+    {
+        var previousSuppression = _suppressCommercialStatisticsFilterEvents;
+        _suppressCommercialStatisticsFilterEvents = true;
+        try
+        {
+            if (ReferenceEquals(comboBox, StatisticsPartnerCombo))
+            {
+                comboBox.ItemsSource = _statisticsPartnerOptions;
+                comboBox.SelectedItem = CommercialStatisticsFilterOptions.RestoreEntitySelection(
+                    _statisticsPartnerOptions,
+                    _statisticsPartnerId);
+            }
+            else if (ReferenceEquals(comboBox, StatisticsItemCombo))
+            {
+                comboBox.ItemsSource = _statisticsItemOptions;
+                comboBox.SelectedItem = CommercialStatisticsFilterOptions.RestoreEntitySelection(
+                    _statisticsItemOptions,
+                    _statisticsItemId);
+            }
+            else if (ReferenceEquals(comboBox, StatisticsGtinCombo))
+            {
+                comboBox.ItemsSource = _statisticsGtinOptions;
+                comboBox.SelectedItem = CommercialStatisticsFilterOptions.RestoreTextSelection(
+                    _statisticsGtinOptions,
+                    _statisticsGtin);
+            }
+            else if (ReferenceEquals(comboBox, StatisticsBrandCombo))
+            {
+                comboBox.ItemsSource = _statisticsBrandOptions;
+                comboBox.SelectedItem = CommercialStatisticsFilterOptions.RestoreTextSelection(
+                    _statisticsBrandOptions,
+                    _statisticsBrand);
+            }
+            else if (ReferenceEquals(comboBox, StatisticsVolumeCombo))
+            {
+                comboBox.ItemsSource = _statisticsVolumeOptions;
+                comboBox.SelectedItem = CommercialStatisticsFilterOptions.RestoreTextSelection(
+                    _statisticsVolumeOptions,
+                    _statisticsVolume);
+            }
+
+            comboBox.Text = GetCommercialStatisticsOptionLabel(comboBox.SelectedItem) ?? string.Empty;
+            comboBox.IsDropDownOpen = false;
+        }
+        finally
+        {
+            _suppressCommercialStatisticsFilterEvents = previousSuppression;
+        }
+    }
+
+    private static string? GetCommercialStatisticsOptionLabel(object? option) =>
+        option switch
+        {
+            CommercialStatisticsEntityFilterOption entity => entity.Label,
+            CommercialStatisticsTextFilterOption text => text.Label,
+            _ => null
+        };
+
+    private static void RestoreCommercialStatisticsComboText(
+        System.Windows.Controls.ComboBox comboBox,
+        string text)
+    {
+        comboBox.Dispatcher.BeginInvoke(() =>
+        {
+            if (comboBox.Template.FindName(
+                    "PART_EditableTextBox",
+                    comboBox) is System.Windows.Controls.TextBox textBox)
+            {
+                if (!string.Equals(textBox.Text, text, StringComparison.Ordinal))
+                {
+                    textBox.Text = text;
+                }
+
+                textBox.CaretIndex = textBox.Text.Length;
+            }
+        });
+    }
+
+    private void UpdateCommercialStatisticsStatusFilter()
+    {
+        if (StatisticsStatusesCombo == null)
+        {
+            return;
+        }
+
+        var mode = (StatisticsModeCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "orders";
+        StatisticsStatusesCombo.IsEnabled =
+            string.Equals(mode, "orders", StringComparison.OrdinalIgnoreCase);
+        StatisticsStatusesCombo.Text =
+            CommercialStatisticsFilterOptions.BuildStatusesLabel(_statisticsStatusOptions);
+    }
+
+    private void StatisticsCriteria_Changed(object sender, EventArgs e)
+    {
+        if (_suppressCommercialStatisticsFilterEvents || !IsLoaded)
+        {
+            return;
+        }
+
+        if (sender is System.Windows.Controls.ComboBox comboBox
+            && IsCommercialStatisticsSearchComboBox(comboBox)
+            && !CommitCommercialStatisticsSearchSelection(comboBox))
+        {
+            return;
+        }
+
+        UpdateCommercialStatisticsStatusFilter();
         _commercialStatisticsState.CriteriaChanged(periodChanged: false);
         UpdateCommercialStatisticsNavigation();
+        ScheduleCommercialStatisticsRefresh();
+    }
+
+    private void StatisticsStatusOption_Click(object sender, RoutedEventArgs e)
+    {
+        if (_suppressCommercialStatisticsFilterEvents)
+        {
+            return;
+        }
+
+        if (_statisticsStatusOptions.All(option => !option.IsChecked))
+        {
+            foreach (var option in _statisticsStatusOptions)
+            {
+                option.IsChecked = true;
+            }
+        }
+
+        UpdateCommercialStatisticsStatusFilter();
+        StatisticsCriteria_Changed(sender, e);
     }
 
     private void StatisticsPeriod_Changed(object sender, EventArgs e)
@@ -3346,13 +3773,14 @@ public partial class MainWindow : Window
         StatisticsMonthlyGrid.SelectedItem = null;
         _commercialStatisticsState.CriteriaChanged(periodChanged: true);
         UpdateCommercialStatisticsNavigation();
+        ScheduleCommercialStatisticsRefresh();
     }
 
     private async void StatisticsPreviousPage_Click(object sender, RoutedEventArgs e)
     {
         if (_commercialStatisticsState.MovePrevious())
         {
-            await LoadCommercialStatisticsAsync().ConfigureAwait(true);
+            await LoadCommercialStatisticsImmediatelyAsync().ConfigureAwait(true);
         }
     }
 
@@ -3360,7 +3788,7 @@ public partial class MainWindow : Window
     {
         if (_commercialStatisticsState.MoveNext())
         {
-            await LoadCommercialStatisticsAsync().ConfigureAwait(true);
+            await LoadCommercialStatisticsImmediatelyAsync().ConfigureAwait(true);
         }
     }
 
@@ -3372,16 +3800,79 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (string.Equals(
+                _commercialStatisticsState.DetailMonth,
+                month.Month,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
         _commercialStatisticsState.SelectDetailMonth(month.Month);
         UpdateCommercialStatisticsNavigation();
-        await LoadCommercialStatisticsAsync().ConfigureAwait(true);
+        await LoadCommercialStatisticsImmediatelyAsync().ConfigureAwait(true);
     }
 
     private async void StatisticsAllPeriod_Click(object sender, RoutedEventArgs e)
     {
+        if (!_commercialStatisticsState.ReturnToWholePeriod())
+        {
+            return;
+        }
+
         StatisticsMonthlyGrid.SelectedItem = null;
-        _commercialStatisticsState.SelectDetailMonth(null);
         UpdateCommercialStatisticsNavigation();
+        await LoadCommercialStatisticsImmediatelyAsync().ConfigureAwait(true);
+    }
+
+    private bool IsCommercialStatisticsSearchComboBox(
+        System.Windows.Controls.ComboBox comboBox) =>
+        ReferenceEquals(comboBox, StatisticsPartnerCombo)
+        || ReferenceEquals(comboBox, StatisticsItemCombo)
+        || ReferenceEquals(comboBox, StatisticsGtinCombo)
+        || ReferenceEquals(comboBox, StatisticsBrandCombo)
+        || ReferenceEquals(comboBox, StatisticsVolumeCombo);
+
+    private void ScheduleCommercialStatisticsRefresh()
+    {
+        if (!IsLoaded || MainTabs.SelectedIndex != TabStatisticsIndex)
+        {
+            return;
+        }
+
+        _commercialStatisticsAutoRefresh.Schedule();
+        _commercialStatisticsRefreshTimer ??= new DispatcherTimer
+        {
+            Interval = CommercialStatisticsRefreshDebounceInterval
+        };
+        _commercialStatisticsRefreshTimer.Tick -= CommercialStatisticsRefreshTimer_Tick;
+        _commercialStatisticsRefreshTimer.Tick += CommercialStatisticsRefreshTimer_Tick;
+        _commercialStatisticsRefreshTimer.Stop();
+        _commercialStatisticsRefreshTimer.Start();
+    }
+
+    private async void CommercialStatisticsRefreshTimer_Tick(object? sender, EventArgs e)
+    {
+        _commercialStatisticsRefreshTimer?.Stop();
+        if (!_commercialStatisticsAutoRefresh.TryConsume(out _))
+        {
+            return;
+        }
+
+        _commercialStatisticsInitialLoadStarted = true;
+        await LoadCommercialStatisticsAsync().ConfigureAwait(true);
+    }
+
+    private void CancelScheduledCommercialStatisticsRefresh()
+    {
+        _commercialStatisticsRefreshTimer?.Stop();
+        _commercialStatisticsAutoRefresh.Cancel();
+    }
+
+    private async Task LoadCommercialStatisticsImmediatelyAsync()
+    {
+        CancelScheduledCommercialStatisticsRefresh();
+        _commercialStatisticsInitialLoadStarted = true;
         await LoadCommercialStatisticsAsync().ConfigureAwait(true);
     }
 
@@ -3390,20 +3881,16 @@ public partial class MainWindow : Window
         if (StatisticsFromDate.SelectedDate is not DateTime from
             || StatisticsToDate.SelectedDate is not DateTime to)
         {
-            MessageBox.Show("Укажите период статистики.", "Статистика", MessageBoxButton.OK, MessageBoxImage.Warning);
+            StatisticsKpiText.Text = "Укажите корректный период статистики.";
+            StatisticsQualityText.Text = string.Empty;
             return;
         }
         if (to < from)
         {
-            MessageBox.Show("Дата окончания должна быть не раньше даты начала.", "Статистика", MessageBoxButton.OK, MessageBoxImage.Warning);
+            StatisticsKpiText.Text = "Дата окончания должна быть не раньше даты начала.";
+            StatisticsQualityText.Text = string.Empty;
             return;
         }
-        if (!TryReadOptionalLong(StatisticsPartnerIdBox.Text, "Контрагент ID", out var partnerId)
-            || !TryReadOptionalLong(StatisticsItemIdBox.Text, "Товар ID", out var itemId))
-        {
-            return;
-        }
-
         var mode = (StatisticsModeCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "orders";
         var groupBy = (StatisticsGroupCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "partner";
         var load = _commercialStatisticsState.StartLoad(
@@ -3412,14 +3899,14 @@ public partial class MainWindow : Window
                 groupBy,
                 from,
                 to,
-                partnerId,
-                itemId,
-                StatisticsGtinBox.Text,
-                StatisticsBrandBox.Text,
-                StatisticsVolumeBox.Text,
-                string.Equals(mode, "orders", StringComparison.OrdinalIgnoreCase)
-                    ? StatisticsStatusesBox.Text
-                    : null,
+                _statisticsPartnerId,
+                _statisticsItemId,
+                _statisticsGtin,
+                _statisticsBrand,
+                _statisticsVolume,
+                CommercialStatisticsFilterOptions.BuildStatusesCsv(
+                    mode,
+                    _statisticsStatusOptions),
                 Sort: "gross_desc"));
         UpdateCommercialStatisticsNavigation();
         StatisticsKpiText.Text = "Загрузка...";
@@ -3459,32 +3946,17 @@ public partial class MainWindow : Window
 
     private void UpdateCommercialStatisticsNavigation()
     {
-        if (StatisticsRefreshButton == null)
+        if (StatisticsPreviousPageButton == null)
         {
             return;
         }
 
-        StatisticsRefreshButton.IsEnabled = !_commercialStatisticsState.IsLoading;
         StatisticsPreviousPageButton.IsEnabled = _commercialStatisticsState.CanMovePrevious;
         StatisticsNextPageButton.IsEnabled = _commercialStatisticsState.CanMoveNext;
+        StatisticsAllPeriodButton.IsEnabled = _commercialStatisticsState.CanReturnToWholePeriod;
         StatisticsPageText.Text = _commercialStatisticsState.RangeText;
         StatisticsGroupsBox.Header = _commercialStatisticsState.DetailLabel;
-    }
-
-    private static bool TryReadOptionalLong(string? text, string field, out long? value)
-    {
-        value = null;
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return true;
-        }
-        if (long.TryParse(text.Trim(), out var parsed) && parsed > 0)
-        {
-            value = parsed;
-            return true;
-        }
-        MessageBox.Show($"{field} должен быть положительным целым числом.", "Статистика", MessageBoxButton.OK, MessageBoxImage.Warning);
-        return false;
+        UpdateCommercialStatisticsStatusFilter();
     }
 
     // Legacy: отдельное окно/очередь "Маркировка" больше не выводится в главное меню WPF.

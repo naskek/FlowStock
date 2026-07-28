@@ -20,6 +20,8 @@ internal sealed class CommercialStatisticsViewState
 
     public bool IsLoading { get; private set; }
     public string? DetailMonth { get; private set; }
+    public bool CanReturnToWholePeriod =>
+        !IsLoading && !string.IsNullOrWhiteSpace(DetailMonth);
     public bool CanMovePrevious => !IsLoading && _offset > 0;
     public bool CanMoveNext => !IsLoading && _offset + _currentItemCount < _totalCount;
 
@@ -138,9 +140,26 @@ internal sealed class CommercialStatisticsViewState
 
     public void SelectDetailMonth(string? month)
     {
+        var normalized = string.IsNullOrWhiteSpace(month) ? null : month.Trim();
+        if (string.Equals(DetailMonth, normalized, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         InvalidateActiveRequest();
-        DetailMonth = string.IsNullOrWhiteSpace(month) ? null : month.Trim();
+        DetailMonth = normalized;
         ResetOffset();
+    }
+
+    public bool ReturnToWholePeriod()
+    {
+        if (!CanReturnToWholePeriod)
+        {
+            return false;
+        }
+
+        SelectDetailMonth(null);
+        return true;
     }
 
     private void InvalidateActiveRequest()

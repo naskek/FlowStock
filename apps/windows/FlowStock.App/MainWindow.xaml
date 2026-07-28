@@ -739,31 +739,80 @@
                                 <ComboBoxItem Content="Бренд" Tag="brand" />
                                 <ComboBoxItem Content="Фасовка" Tag="volume" />
                             </ComboBox>
-                            <Button x:Name="StatisticsRefreshButton"
-                                    Content="Обновить"
-                                    Padding="12,4"
-                                    Click="StatisticsRefresh_Click" />
                         </WrapPanel>
                         <WrapPanel Margin="0,8,0,0">
-                            <TextBlock Text="Контрагент ID" VerticalAlignment="Center" />
-                            <TextBox x:Name="StatisticsPartnerIdBox" Width="80" Margin="6,0,12,0"
-                                     TextChanged="StatisticsCriteria_Changed" />
-                            <TextBlock Text="Товар ID" VerticalAlignment="Center" />
-                            <TextBox x:Name="StatisticsItemIdBox" Width="80" Margin="6,0,12,0"
-                                     TextChanged="StatisticsCriteria_Changed" />
+                            <TextBlock Text="Контрагент" VerticalAlignment="Center" />
+                            <ComboBox x:Name="StatisticsPartnerCombo"
+                                      Width="230"
+                                      Margin="6,0,12,0"
+                                      DisplayMemberPath="Label"
+                                      IsEditable="True"
+                                      IsTextSearchEnabled="False"
+                                      StaysOpenOnEdit="True"
+                                      PreviewKeyDown="StatisticsSearchCombo_PreviewKeyDown"
+                                      LostKeyboardFocus="StatisticsSearchCombo_LostKeyboardFocus"
+                                      SelectionChanged="StatisticsCriteria_Changed" />
+                            <TextBlock Text="Товар" VerticalAlignment="Center" />
+                            <ComboBox x:Name="StatisticsItemCombo"
+                                      Width="250"
+                                      Margin="6,0,12,0"
+                                      DisplayMemberPath="Label"
+                                      IsEditable="True"
+                                      IsTextSearchEnabled="False"
+                                      StaysOpenOnEdit="True"
+                                      PreviewKeyDown="StatisticsSearchCombo_PreviewKeyDown"
+                                      LostKeyboardFocus="StatisticsSearchCombo_LostKeyboardFocus"
+                                      SelectionChanged="StatisticsCriteria_Changed" />
                             <TextBlock Text="GTIN" VerticalAlignment="Center" />
-                            <TextBox x:Name="StatisticsGtinBox" Width="130" Margin="6,0,12,0"
-                                     TextChanged="StatisticsCriteria_Changed" />
+                            <ComboBox x:Name="StatisticsGtinCombo"
+                                      Width="150"
+                                      Margin="6,0,12,0"
+                                      DisplayMemberPath="Label"
+                                      IsEditable="True"
+                                      IsTextSearchEnabled="False"
+                                      StaysOpenOnEdit="True"
+                                      PreviewKeyDown="StatisticsSearchCombo_PreviewKeyDown"
+                                      LostKeyboardFocus="StatisticsSearchCombo_LostKeyboardFocus"
+                                      SelectionChanged="StatisticsCriteria_Changed" />
                             <TextBlock Text="Бренд" VerticalAlignment="Center" />
-                            <TextBox x:Name="StatisticsBrandBox" Width="130" Margin="6,0,12,0"
-                                     TextChanged="StatisticsCriteria_Changed" />
+                            <ComboBox x:Name="StatisticsBrandCombo"
+                                      Width="150"
+                                      Margin="6,0,12,0"
+                                      DisplayMemberPath="Label"
+                                      IsEditable="True"
+                                      IsTextSearchEnabled="False"
+                                      StaysOpenOnEdit="True"
+                                      PreviewKeyDown="StatisticsSearchCombo_PreviewKeyDown"
+                                      LostKeyboardFocus="StatisticsSearchCombo_LostKeyboardFocus"
+                                      SelectionChanged="StatisticsCriteria_Changed" />
                             <TextBlock Text="Фасовка" VerticalAlignment="Center" />
-                            <TextBox x:Name="StatisticsVolumeBox" Width="110" Margin="6,0,12,0"
-                                     TextChanged="StatisticsCriteria_Changed" />
+                            <ComboBox x:Name="StatisticsVolumeCombo"
+                                      Width="130"
+                                      Margin="6,0,12,0"
+                                      DisplayMemberPath="Label"
+                                      IsEditable="True"
+                                      IsTextSearchEnabled="False"
+                                      StaysOpenOnEdit="True"
+                                      PreviewKeyDown="StatisticsSearchCombo_PreviewKeyDown"
+                                      LostKeyboardFocus="StatisticsSearchCombo_LostKeyboardFocus"
+                                      SelectionChanged="StatisticsCriteria_Changed" />
                             <TextBlock Text="Статусы" VerticalAlignment="Center" />
-                            <TextBox x:Name="StatisticsStatusesBox" Width="170" Margin="6,0,0,0"
-                                     TextChanged="StatisticsCriteria_Changed"
-                                     ToolTip="Через запятую: DRAFT, ACCEPTED, IN_PROGRESS, SHIPPED" />
+                            <ComboBox x:Name="StatisticsStatusesCombo"
+                                      Width="220"
+                                      Margin="6,0,0,0"
+                                      IsEditable="True"
+                                      IsReadOnly="True"
+                                      IsTextSearchEnabled="False"
+                                      StaysOpenOnEdit="True"
+                                      ToolTip="Выберите один или несколько статусов заказов">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <CheckBox Content="{Binding Label}"
+                                                  IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                  Click="StatisticsStatusOption_Click" />
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
                         </WrapPanel>
                     </StackPanel>
                     <Border Grid.Row="1" Margin="0,10,0,10" Padding="10"
@@ -822,10 +871,12 @@
                                                 Click="StatisticsNextPage_Click"
                                                 Margin="6,0,0,0"
                                                 Padding="8,3" />
-                                        <Button Content="Весь период"
+                                        <Button x:Name="StatisticsAllPeriodButton"
+                                                Content="Весь выбранный период"
                                                 Click="StatisticsAllPeriod_Click"
                                                 Margin="12,0,0,0"
-                                                Padding="8,3" />
+                                                Padding="8,3"
+                                                ToolTip="Снять выбор месяца и показать детализацию за весь выбранный период" />
                                     </StackPanel>
                                     <TextBlock x:Name="StatisticsPageText"
                                                Text="0 из 0"
