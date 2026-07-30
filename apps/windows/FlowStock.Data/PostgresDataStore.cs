@@ -13282,7 +13282,7 @@ HAVING ABS(COALESCE(SUM(qty_delta), 0)) > @qty_tolerance;
         });
     }
 
-    public TsdHuFacts GetTsdHuFacts(string huCode)
+    public TsdHuResolverStoreResult GetTsdHuFacts(string huCode)
     {
         var normalizedHu = (huCode ?? string.Empty).Trim().ToUpperInvariant();
         return WithConnection(connection =>
@@ -13392,9 +13392,160 @@ INNER JOIN locations loc ON loc.id = l.location_id
 WHERE UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) = @hu_code
 ORDER BY l.id DESC
 LIMIT 1;
+
+WITH target_pallets AS (
+    SELECT pp.id AS pallet_id,
+           pp.status AS persisted_status,
+           pp.order_id AS owner_order_id,
+           o.order_ref AS owner_order_ref,
+           o.order_type AS owner_order_type,
+           o.status AS owner_order_status,
+           pp.order_line_id AS fallback_order_line_id,
+           pp.item_id AS fallback_item_id,
+           pp.planned_qty AS fallback_planned_qty,
+           UPPER(BTRIM(pp.hu_code)) AS normalized_hu
+    FROM production_pallets pp
+    LEFT JOIN orders o ON o.id = pp.order_id
+    WHERE UPPER(BTRIM(pp.hu_code)) = @hu_code
+),
+components AS (
+    SELECT target.pallet_id,
+           target.persisted_status,
+           target.owner_order_id,
+           target.owner_order_ref,
+           target.owner_order_type,
+           target.owner_order_status,
+           line.order_line_id,
+           line.item_id,
+           line.planned_qty,
+           line.filled_qty,
+           target.normalized_hu
+    FROM target_pallets target
+    INNER JOIN production_pallet_lines line ON line.production_pallet_id = target.pallet_id
+
+    UNION ALL
+
+    SELECT target.pallet_id,
+           target.persisted_status,
+           target.owner_order_id,
+           target.owner_order_ref,
+           target.owner_order_type,
+           target.owner_order_status,
+           target.fallback_order_line_id,
+           target.fallback_item_id,
+           target.fallback_planned_qty,
+           CASE
+               WHEN UPPER(BTRIM(target.persisted_status)) = 'FILLED'
+                   THEN target.fallback_planned_qty
+               ELSE 0
+           END,
+           target.normalized_hu
+    FROM target_pallets target
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM production_pallet_lines line
+        WHERE line.production_pallet_id = target.pallet_id
+    )
+),
+component_keys AS (
+    SELECT DISTINCT pallet_id,
+           item_id,
+           normalized_hu
+    FROM components
+    WHERE item_id IS NOT NULL
+),
+ledger_balances AS (
+    SELECT component_key.pallet_id,
+           component_key.item_id,
+           component_key.normalized_hu,
+           COALESCE(SUM(ledger_row.qty_delta), 0)::double precision AS ledger_balance
+    FROM component_keys component_key
+    LEFT JOIN ledger ledger_row ON ledger_row.item_id = component_key.item_id
+                                  AND UPPER(BTRIM(COALESCE(ledger_row.hu_code, ledger_row.hu)))
+                                      = component_key.normalized_hu
+    GROUP BY component_key.pallet_id,
+             component_key.item_id,
+             component_key.normalized_hu
+),
+reservation_blockers AS (
+    SELECT DISTINCT component_key.pallet_id,
+           component_key.item_id,
+           component_key.normalized_hu
+    FROM component_keys component_key
+    INNER JOIN order_receipt_plan_lines plan_line
+        ON plan_line.item_id = component_key.item_id
+       AND UPPER(BTRIM(plan_line.to_hu)) = component_key.normalized_hu
+    INNER JOIN orders reservation_order ON reservation_order.id = plan_line.order_id
+    WHERE reservation_order.order_type = @customer_order_type
+      AND reservation_order.status NOT IN (
+          @cancelled_order_status,
+          @shipped_order_status,
+          @merged_order_status)
+      AND plan_line.order_line_id > 0
+      AND plan_line.qty_planned > @qty_tolerance
+),
+shipment_blockers AS (
+    SELECT DISTINCT component_key.pallet_id,
+           component_key.item_id,
+           component_key.normalized_hu
+    FROM component_keys component_key
+    INNER JOIN doc_lines shipment_line
+        ON shipment_line.item_id = component_key.item_id
+       AND UPPER(BTRIM(shipment_line.from_hu)) = component_key.normalized_hu
+    INNER JOIN docs shipment_doc ON shipment_doc.id = shipment_line.doc_id
+    INNER JOIN orders shipment_order ON shipment_order.id = shipment_doc.order_id
+    WHERE shipment_doc.type = @outbound_doc_type
+      AND shipment_doc.status = @closed_doc_status
+      AND shipment_order.order_type = @customer_order_type
+      AND shipment_line.order_line_id IS NOT NULL
+      AND shipment_line.qty > @qty_tolerance
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = shipment_line.id
+      )
+)
+SELECT component.pallet_id,
+       component.persisted_status,
+       component.owner_order_id,
+       component.owner_order_ref,
+       component.owner_order_type,
+       component.owner_order_status,
+       component.order_line_id,
+       order_line.order_id AS order_line_order_id,
+       component.item_id,
+       component.normalized_hu,
+       component.planned_qty::double precision,
+       component.filled_qty::double precision,
+       COALESCE(ledger_balance.ledger_balance, 0)::double precision,
+       reservation_blocker.pallet_id IS NOT NULL AS has_active_reservation,
+       shipment_blocker.pallet_id IS NOT NULL AS has_active_shipment
+FROM components component
+LEFT JOIN order_lines order_line ON order_line.id = component.order_line_id
+LEFT JOIN ledger_balances ledger_balance
+       ON ledger_balance.pallet_id = component.pallet_id
+      AND ledger_balance.item_id = component.item_id
+      AND ledger_balance.normalized_hu = component.normalized_hu
+LEFT JOIN reservation_blockers reservation_blocker
+       ON reservation_blocker.pallet_id = component.pallet_id
+      AND reservation_blocker.item_id = component.item_id
+      AND reservation_blocker.normalized_hu = component.normalized_hu
+LEFT JOIN shipment_blockers shipment_blocker
+       ON shipment_blocker.pallet_id = component.pallet_id
+      AND shipment_blocker.item_id = component.item_id
+      AND shipment_blocker.normalized_hu = component.normalized_hu
+ORDER BY component.pallet_id,
+         component.order_line_id NULLS FIRST,
+         component.item_id;
 ");
             command.Parameters.AddWithValue("@hu_code", normalizedHu);
             command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+            command.Parameters.AddWithValue("@cancelled_order_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@shipped_order_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@merged_order_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+            command.Parameters.AddWithValue("@outbound_doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@closed_doc_status", DocTypeMapper.StatusToString(DocStatus.Closed));
 
             using var reader = command.ExecuteReader();
             TsdHuRegistryFact? registry = null;
@@ -13537,15 +13688,102 @@ LIMIT 1;
                 };
             }
 
-            return new TsdHuFacts
+            reader.NextResult();
+            var eligibilityHeaders = new Dictionary<long, (
+                string PersistedStatus,
+                long? OwnerOrderId,
+                string? OwnerOrderRef,
+                string? OwnerOrderType,
+                string? OwnerOrderStatus)>();
+            var eligibilityComponents =
+                new Dictionary<long, List<ProductionHuAwaitingShipmentComponentFact>>();
+            var eligibilityKeys =
+                new Dictionary<long, Dictionary<(long ItemId, string HuCode), ProductionHuAwaitingShipmentComponentKeyFact>>();
+            while (reader.Read())
             {
-                HuCode = normalizedHu,
-                Registry = registry,
-                Stock = stock,
-                ProductionPallets = pallets,
-                Reservations = reservations,
-                Documents = documents,
-                LatestMovement = latestMovement
+                var palletId = reader.GetInt64(0);
+                long? ownerOrderId = reader.IsDBNull(2) ? null : reader.GetInt64(2);
+                eligibilityHeaders[palletId] = (
+                    reader.GetString(1),
+                    ownerOrderId,
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5));
+
+                if (!eligibilityComponents.TryGetValue(palletId, out var componentRows))
+                {
+                    componentRows = new List<ProductionHuAwaitingShipmentComponentFact>();
+                    eligibilityComponents[palletId] = componentRows;
+                }
+
+                var itemId = reader.IsDBNull(8) ? 0 : reader.GetInt64(8);
+                var componentHu = reader.IsDBNull(9) ? string.Empty : reader.GetString(9);
+                componentRows.Add(new ProductionHuAwaitingShipmentComponentFact
+                {
+                    OrderLineId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                    OrderLineOrderId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+                    ItemId = itemId,
+                    HuCode = componentHu,
+                    PlannedQty = reader.IsDBNull(10) ? 0 : reader.GetDouble(10),
+                    FilledQty = reader.IsDBNull(11) ? 0 : reader.GetDouble(11)
+                });
+
+                if (!eligibilityKeys.TryGetValue(palletId, out var keyRows))
+                {
+                    keyRows = new Dictionary<(long ItemId, string HuCode), ProductionHuAwaitingShipmentComponentKeyFact>();
+                    eligibilityKeys[palletId] = keyRows;
+                }
+
+                if (itemId > 0 && componentHu.Length > 0)
+                {
+                    keyRows[(itemId, componentHu)] = new ProductionHuAwaitingShipmentComponentKeyFact
+                    {
+                        ItemId = itemId,
+                        HuCode = componentHu,
+                        LedgerBalance = reader.GetDouble(12),
+                        HasActiveReservation = reader.GetBoolean(13),
+                        HasActiveShipment = reader.GetBoolean(14)
+                    };
+                }
+            }
+
+            var awaitingShipmentCandidates = eligibilityHeaders
+                .Select(pair =>
+                {
+                    var header = pair.Value;
+                    return new ProductionHuAwaitingShipmentEligibilityFacts
+                    {
+                        PalletId = pair.Key,
+                        PersistedPalletStatus = header.PersistedStatus,
+                        OwnerOrderId = header.OwnerOrderId,
+                        OwnerOrderRef = header.OwnerOrderRef,
+                        OwnerOrderType = header.OwnerOrderType,
+                        OwnerOrderStatus = header.OwnerOrderStatus,
+                        EvaluatedOrderId = header.OwnerOrderId,
+                        Components = eligibilityComponents.TryGetValue(pair.Key, out var componentRows)
+                            ? componentRows
+                            : (IReadOnlyList<ProductionHuAwaitingShipmentComponentFact>)
+                            Array.Empty<ProductionHuAwaitingShipmentComponentFact>(),
+                        ComponentKeys = eligibilityKeys.TryGetValue(pair.Key, out var keyRows)
+                            ? keyRows.Values.ToArray()
+                            : Array.Empty<ProductionHuAwaitingShipmentComponentKeyFact>()
+                    };
+                })
+                .ToArray();
+
+            return new TsdHuResolverStoreResult
+            {
+                PresentationFacts = new TsdHuFacts
+                {
+                    HuCode = normalizedHu,
+                    Registry = registry,
+                    Stock = stock,
+                    ProductionPallets = pallets,
+                    Reservations = reservations,
+                    Documents = documents,
+                    LatestMovement = latestMovement
+                },
+                AwaitingShipmentCandidates = awaitingShipmentCandidates
             };
         });
     }

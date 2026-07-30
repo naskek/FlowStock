@@ -34,8 +34,9 @@ public sealed class TsdHuResolverService
         return match.Success ? $"HU-{match.Groups[1].Value}" : string.Empty;
     }
 
-    private static TsdHuView BuildView(TsdHuFacts facts)
+    private static TsdHuView BuildView(TsdHuResolverStoreResult storeResult)
     {
+        var facts = storeResult.PresentationFacts;
         var known = facts.Registry != null
                     || facts.Stock.Count > 0
                     || facts.ProductionPallets.Count > 0
@@ -60,8 +61,9 @@ public sealed class TsdHuResolverService
             .Select(action => $"{action.Type}:{action.OrderId}")
             .Distinct(StringComparer.Ordinal)
             .Count();
-        var state = ResolveState(facts, activeOperationCount);
-        var (title, description) = Describe(state, facts);
+        var awaitingShipmentCandidate = ResolveAwaitingShipmentCandidate(storeResult.AwaitingShipmentCandidates);
+        var state = ResolveState(facts, activeOperationCount, awaitingShipmentCandidate != null);
+        var (title, description) = Describe(state, facts, awaitingShipmentCandidate);
 
         return new TsdHuView
         {
@@ -85,7 +87,10 @@ public sealed class TsdHuResolverService
         };
     }
 
-    private static string ResolveState(TsdHuFacts facts, int activeOperationCount)
+    private static string ResolveState(
+        TsdHuFacts facts,
+        int activeOperationCount,
+        bool awaitingShipmentEligible)
     {
         if (activeOperationCount > 1)
         {
@@ -114,6 +119,11 @@ public sealed class TsdHuResolverService
             && facts.Documents.Any(doc => Is(doc.DocType, "OUTBOUND") && Is(doc.DocStatus, "CLOSED")))
         {
             return TsdHuState.Shipped;
+        }
+
+        if (awaitingShipmentEligible)
+        {
+            return TsdHuState.AwaitingShipment;
         }
 
         if (facts.ProductionPallets.Any(pallet => Is(pallet.Status, ProductionPalletStatus.Filled)))
@@ -229,7 +239,10 @@ public sealed class TsdHuResolverService
             _ => $"{action.Type}:{action.OrderId}:{action.DocId}:{action.Label}"
         };
 
-    private static (string Title, string Description) Describe(string state, TsdHuFacts facts)
+    private static (string Title, string Description) Describe(
+        string state,
+        TsdHuFacts facts,
+        ProductionHuAwaitingShipmentEligibilityFacts? awaitingShipmentCandidate)
     {
         var orderRef = facts.Reservations.Select(row => row.OrderRef)
             .Concat(facts.ProductionPallets.Select(row => row.OrderRef))
@@ -242,12 +255,37 @@ public sealed class TsdHuResolverService
             TsdHuState.OutboundPicked => ("HU в отгрузке", $"HU уже подобрана в открытый OUT.{suffix}"),
             TsdHuState.OutboundExpected => ("HU ожидается к отгрузке", $"HU зарезервирована под клиентский заказ.{suffix}"),
             TsdHuState.PlannedProduction => ("HU запланирована к наполнению", $"Откройте связанное наполнение.{suffix}"),
+            TsdHuState.AwaitingShipment => (
+                "Ожидает отгрузки",
+                $"HU наполнена и ожидает отгрузки по клиентскому заказу. Заказ {OrderRef(awaitingShipmentCandidate)}."),
             TsdHuState.FilledProductionPallet => ("Производственная паллета наполнена", $"HU выпущена и доступна в read-only карточке.{suffix}"),
             TsdHuState.WarehouseReserved => ("HU на складе / зарезервирована", $"HU имеет положительный складской остаток и привязана к заказу.{suffix}"),
             TsdHuState.WarehouseFree => ("HU на складе", "Свободная HU. Не привязана к активному заказу."),
             TsdHuState.Shipped => ("HU отгружена", $"HU найдена в закрытом OUT.{suffix}"),
             _ => ("История HU", "HU найдена только в исторических данных.")
         };
+    }
+
+    private static ProductionHuAwaitingShipmentEligibilityFacts? ResolveAwaitingShipmentCandidate(
+        IReadOnlyList<ProductionHuAwaitingShipmentEligibilityFacts> candidates)
+    {
+        var filledCandidates = candidates
+            .Where(candidate => Is(candidate.PersistedPalletStatus, ProductionPalletStatus.Filled))
+            .ToArray();
+        return filledCandidates.Length == 1
+               && ProductionHuAwaitingShipmentEligibility.IsEligible(filledCandidates[0])
+            ? filledCandidates[0]
+            : null;
+    }
+
+    private static string OrderRef(ProductionHuAwaitingShipmentEligibilityFacts? candidate)
+    {
+        if (!string.IsNullOrWhiteSpace(candidate?.OwnerOrderRef))
+        {
+            return candidate.OwnerOrderRef.Trim();
+        }
+
+        return candidate?.OwnerOrderId?.ToString() ?? "—";
     }
 
     private static bool IsActiveCustomerOrder(TsdHuReservationFact reservation)

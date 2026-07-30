@@ -7,6 +7,7 @@ public static class TsdHuState
     public const string WarehouseReserved = "WAREHOUSE_RESERVED";
     public const string PlannedProduction = "PLANNED_PRODUCTION";
     public const string FilledProductionPallet = "FILLED_PRODUCTION_PALLET";
+    public const string AwaitingShipment = "AWAITING_SHIPMENT";
     public const string OutboundExpected = "OUTBOUND_EXPECTED";
     public const string OutboundPicked = "OUTBOUND_PICKED";
     public const string Shipped = "SHIPPED";
@@ -33,6 +34,47 @@ public sealed class TsdHuFacts
     public IReadOnlyList<TsdHuReservationFact> Reservations { get; init; } = Array.Empty<TsdHuReservationFact>();
     public IReadOnlyList<TsdHuDocumentFact> Documents { get; init; } = Array.Empty<TsdHuDocumentFact>();
     public TsdHuMovementFact? LatestMovement { get; init; }
+}
+
+public sealed class TsdHuResolverStoreResult
+{
+    public TsdHuFacts PresentationFacts { get; init; } = new();
+    public IReadOnlyList<ProductionHuAwaitingShipmentEligibilityFacts> AwaitingShipmentCandidates { get; init; } =
+        Array.Empty<ProductionHuAwaitingShipmentEligibilityFacts>();
+}
+
+public sealed class ProductionHuAwaitingShipmentEligibilityFacts
+{
+    public long PalletId { get; init; }
+    public string PersistedPalletStatus { get; init; } = string.Empty;
+    public long? OwnerOrderId { get; init; }
+    public string? OwnerOrderRef { get; init; }
+    public string? OwnerOrderType { get; init; }
+    public string? OwnerOrderStatus { get; init; }
+    public long? EvaluatedOrderId { get; init; }
+    public IReadOnlyList<ProductionHuAwaitingShipmentComponentFact> Components { get; init; } =
+        Array.Empty<ProductionHuAwaitingShipmentComponentFact>();
+    public IReadOnlyList<ProductionHuAwaitingShipmentComponentKeyFact> ComponentKeys { get; init; } =
+        Array.Empty<ProductionHuAwaitingShipmentComponentKeyFact>();
+}
+
+public sealed class ProductionHuAwaitingShipmentComponentFact
+{
+    public long? OrderLineId { get; init; }
+    public long? OrderLineOrderId { get; init; }
+    public long ItemId { get; init; }
+    public string HuCode { get; init; } = string.Empty;
+    public double PlannedQty { get; init; }
+    public double FilledQty { get; init; }
+}
+
+public sealed class ProductionHuAwaitingShipmentComponentKeyFact
+{
+    public long ItemId { get; init; }
+    public string HuCode { get; init; } = string.Empty;
+    public double LedgerBalance { get; init; }
+    public bool HasActiveReservation { get; init; }
+    public bool HasActiveShipment { get; init; }
 }
 
 public sealed class TsdHuRegistryFact

@@ -478,7 +478,7 @@ async function main() {
 
   assert(storageJs.includes("/api/tsd/hu/resolve?code="));
   assert(storageJs.includes("/api/tsd/hu/card?code="));
-  assert(appVersionJs.includes('var version = "71"'));
+  assert(appVersionJs.includes('var version = "72"'));
   assert(serviceWorkerJs.includes('importScripts("./app-version.js")'));
   assert(serviceWorkerJs.includes('"./app.js"'));
   assert(serviceWorkerJs.includes('"./img/home/hu-search.png"'));
@@ -841,6 +841,29 @@ async function main() {
     "production document ref should be in technical block"
   );
 
+  const awaitingShipmentCardHtml = hooks.renderTsdHuCard({
+    known: true,
+    huCode: "HU-0001303",
+    state: "AWAITING_SHIPMENT",
+    title: "Ожидает отгрузки",
+    description: "HU наполнена и ожидает отгрузки по клиентскому заказу. Заказ 217.",
+    stock: [{ item_name: "Товар", location_code: "MAIN", qty: 600, uom: "шт" }],
+    productionPallets: [
+      {
+        order_ref: "217",
+        order_type: "CUSTOMER",
+        components: [{ item_name: "Товар", filled_qty: 600, planned_qty: 600, uom: "шт" }],
+      },
+    ],
+    reservations: [],
+    documents: [],
+    documentActions: [{ type: "OPEN_ORDER", orderId: 217, label: "Открыть заказ 217" }],
+  });
+  assert.match(awaitingShipmentCardHtml, /hu-status-panel--waiting/);
+  assert.match(awaitingShipmentCardHtml, /Ожидает отгрузки/);
+  assert.match(awaitingShipmentCardHtml, /Открыть заказ 217/);
+  assert.doesNotMatch(awaitingShipmentCardHtml, /Открыть отгрузку/);
+
   const plannedCardHtml = hooks.renderTsdHuCard({
     known: true,
     huCode: "HU-000556",
@@ -896,6 +919,7 @@ async function main() {
     ["WAREHOUSE_FREE", "stock"],
     ["WAREHOUSE_RESERVED", "reserved"],
     ["FILLED_PRODUCTION_PALLET", "filled"],
+    ["AWAITING_SHIPMENT", "waiting"],
     ["PLANNED_PRODUCTION", "waiting"],
     ["OUTBOUND_PICKED", "partial"],
     ["SHIPPED", "shipped"],

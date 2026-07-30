@@ -6456,6 +6456,9 @@
     if (normalized === "PLANNED") {
       return "Запланирована к наполнению";
     }
+    if (normalized === "AWAITING_SHIPMENT") {
+      return "Ожидает отгрузки";
+    }
     if (normalized === "FILLED_PRODUCTION_PALLET") {
       return "Наполнена";
     }
@@ -6491,6 +6494,9 @@
 
   function getTsdHuStatusTone(state) {
     var normalized = normalizeTsdHuCodeValue(state);
+    if (normalized === "AWAITING_SHIPMENT") {
+      return "waiting";
+    }
     if (normalized === "FILLED_PRODUCTION_PALLET" || normalized === "FILLED") {
       return "filled";
     }

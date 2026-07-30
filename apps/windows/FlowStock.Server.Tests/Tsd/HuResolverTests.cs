@@ -45,6 +45,95 @@ public sealed class HuResolverTests
     }
 
     [Fact]
+    public void CustomerOwnedFilledProductionHuWithLedgerStock_ReturnsAwaitingShipment()
+    {
+        var facts = new TsdHuFacts
+        {
+            HuCode = "HU-0001303",
+            Stock =
+            [
+                new TsdHuStockFact
+                {
+                    ItemId = 10,
+                    ItemName = "Товар",
+                    LocationId = 20,
+                    LocationCode = "MAIN",
+                    Qty = 600
+                }
+            ],
+            ProductionPallets =
+            [
+                new TsdHuProductionPalletFact
+                {
+                    PalletId = 30,
+                    Status = ProductionPalletStatus.Filled,
+                    PrdDocId = 40,
+                    PrdDocRef = "PRD-040",
+                    OrderId = 217,
+                    OrderRef = "217",
+                    OrderType = "CUSTOMER",
+                    OrderStatus = "IN_PROGRESS",
+                    Components =
+                    [
+                        new TsdHuComponentFact
+                        {
+                            ItemId = 10,
+                            ItemName = "Товар",
+                            PlannedQty = 600,
+                            FilledQty = 600
+                        }
+                    ]
+                }
+            ]
+        };
+        var result = Resolve(
+            facts,
+            new ProductionHuAwaitingShipmentEligibilityFacts
+            {
+                PalletId = 30,
+                PersistedPalletStatus = ProductionPalletStatus.Filled,
+                OwnerOrderId = 217,
+                OwnerOrderRef = "217",
+                OwnerOrderType = "CUSTOMER",
+                OwnerOrderStatus = "IN_PROGRESS",
+                EvaluatedOrderId = 217,
+                Components =
+                [
+                    new ProductionHuAwaitingShipmentComponentFact
+                    {
+                        OrderLineId = 50,
+                        OrderLineOrderId = 217,
+                        ItemId = 10,
+                        HuCode = "HU-0001303",
+                        PlannedQty = 600,
+                        FilledQty = 600
+                    }
+                ],
+                ComponentKeys =
+                [
+                    new ProductionHuAwaitingShipmentComponentKeyFact
+                    {
+                        ItemId = 10,
+                        HuCode = "HU-0001303",
+                        LedgerBalance = 600
+                    }
+                ]
+            });
+
+        Assert.Equal("AWAITING_SHIPMENT", result.State);
+        Assert.Equal("Ожидает отгрузки", result.Title);
+        Assert.Equal(
+            "HU наполнена и ожидает отгрузки по клиентскому заказу. Заказ 217.",
+            result.Description);
+        Assert.Contains(
+            result.DocumentActions,
+            action => action.Type == TsdHuActionType.OpenOrder && action.OrderId == 217);
+        Assert.DoesNotContain(
+            result.DocumentActions,
+            action => action.Type == TsdHuActionType.OpenOutbound);
+    }
+
+    [Fact]
     public void PlannedPallet_ReturnsOpenFilling()
     {
         var result = Resolve(new TsdHuFacts
@@ -66,6 +155,114 @@ public sealed class HuResolverTests
 
         Assert.Equal(TsdHuState.PlannedProduction, result.State);
         Assert.Contains(result.DocumentActions, action => action.Type == TsdHuActionType.OpenFilling && action.OrderId == 20);
+    }
+
+    [Fact]
+    public void CompleteMixedProductionHuWithoutBlockers_ReturnsAwaitingShipment()
+    {
+        var facts = MixedFilledFacts(includeStock: true);
+
+        var result = Resolve(facts, MixedAwaitingCandidate());
+
+        Assert.Equal(TsdHuState.AwaitingShipment, result.State);
+    }
+
+    [Fact]
+    public void MixedProductionHuReservationOnOneComponent_ReturnsOutboundExpected()
+    {
+        var facts = MixedFilledFacts(includeStock: true);
+        facts = CopyFacts(
+            facts,
+            reservations:
+            [
+                new TsdHuReservationFact
+                {
+                    OrderId = 218,
+                    OrderRef = "218",
+                    OrderType = "CUSTOMER",
+                    OrderStatus = "ACCEPTED",
+                    ItemId = 10,
+                    ItemName = "Товар 1",
+                    Qty = 300
+                }
+            ]);
+
+        var result = Resolve(facts, MixedAwaitingCandidate(reservationItemId: 10));
+
+        Assert.Equal(TsdHuState.OutboundExpected, result.State);
+        Assert.NotEqual(TsdHuState.AwaitingShipment, result.State);
+    }
+
+    [Fact]
+    public void MixedProductionHuDraftOutboundOnOneComponent_ReturnsOutboundPicked()
+    {
+        var facts = MixedFilledFacts(includeStock: true);
+        facts = CopyFacts(
+            facts,
+            documents:
+            [
+                OutboundDocument(itemId: 10, status: "DRAFT")
+            ]);
+
+        var result = Resolve(facts, MixedAwaitingCandidate());
+
+        Assert.Equal(TsdHuState.OutboundPicked, result.State);
+        Assert.NotEqual(TsdHuState.AwaitingShipment, result.State);
+    }
+
+    [Fact]
+    public void MixedProductionHuPartialClosedShipmentWithRemainingStock_UsesFilledFallback()
+    {
+        var facts = MixedFilledFacts(includeStock: true);
+        facts = CopyFacts(
+            facts,
+            documents:
+            [
+                OutboundDocument(itemId: 10, status: "CLOSED")
+            ]);
+
+        var result = Resolve(facts, MixedAwaitingCandidate(shipmentItemId: 10));
+
+        Assert.Equal(TsdHuState.FilledProductionPallet, result.State);
+        Assert.NotEqual(TsdHuState.AwaitingShipment, result.State);
+        Assert.NotEqual(TsdHuState.Shipped, result.State);
+    }
+
+    [Fact]
+    public void MixedProductionHuClosedShipmentWithoutAnyStock_ReturnsShipped()
+    {
+        var facts = MixedFilledFacts(includeStock: false);
+        facts = CopyFacts(
+            facts,
+            documents:
+            [
+                OutboundDocument(itemId: 10, status: "CLOSED")
+            ]);
+
+        var result = Resolve(facts, MixedAwaitingCandidate(shipmentItemId: 10, ledgerBalance: 0));
+
+        Assert.Equal(TsdHuState.Shipped, result.State);
+    }
+
+    [Fact]
+    public void MixedProductionHuShipmentBlockerOnOneComponentSuppressesAwaitingForWholeHu()
+    {
+        var result = Resolve(
+            MixedFilledFacts(includeStock: true),
+            MixedAwaitingCandidate(shipmentItemId: 11));
+
+        Assert.Equal(TsdHuState.FilledProductionPallet, result.State);
+    }
+
+    [Fact]
+    public void SeveralCurrentFilledPalletCandidatesFailClosed()
+    {
+        var first = MixedAwaitingCandidate();
+        var second = MixedAwaitingCandidate(palletId: 31);
+
+        var result = Resolve(MixedFilledFacts(includeStock: true), first, second);
+
+        Assert.Equal(TsdHuState.FilledProductionPallet, result.State);
     }
 
     [Fact]
@@ -212,10 +409,45 @@ public sealed class HuResolverTests
     }
 
     [Fact]
+    public async Task AwaitingShipmentResolveAndCardEndpoints_ReturnSameSummaryAndOnlyOrderAction()
+    {
+        var facts = MixedFilledFacts(includeStock: true);
+        var store = new FakeStore(new TsdHuResolverStoreResult
+        {
+            PresentationFacts = facts,
+            AwaitingShipmentCandidates = [MixedAwaitingCandidate()]
+        });
+        await using var host = await HuResolverHost.StartAsync(store);
+
+        using var resolveResponse = await host.Client.GetAsync("/api/tsd/hu/resolve?code=HU-0001303");
+        using var cardResponse = await host.Client.GetAsync("/api/tsd/hu/card?code=HU-0001303");
+        using var resolveJson = JsonDocument.Parse(await resolveResponse.Content.ReadAsStringAsync());
+        using var cardJson = JsonDocument.Parse(await cardResponse.Content.ReadAsStringAsync());
+
+        Assert.Equal("AWAITING_SHIPMENT", resolveJson.RootElement.GetProperty("state").GetString());
+        Assert.Equal("Ожидает отгрузки", resolveJson.RootElement.GetProperty("title").GetString());
+        Assert.Equal(
+            "HU наполнена и ожидает отгрузки по клиентскому заказу. Заказ 217.",
+            resolveJson.RootElement.GetProperty("description").GetString());
+        Assert.Equal(
+            resolveJson.RootElement.GetProperty("state").GetString(),
+            cardJson.RootElement.GetProperty("state").GetString());
+        Assert.Equal(
+            resolveJson.RootElement.GetProperty("title").GetString(),
+            cardJson.RootElement.GetProperty("title").GetString());
+        Assert.False(resolveJson.RootElement.TryGetProperty("awaiting_shipment_candidates", out _));
+        Assert.False(cardJson.RootElement.TryGetProperty("awaiting_shipment_candidates", out _));
+        var actions = resolveJson.RootElement.GetProperty("document_actions").EnumerateArray().ToArray();
+        Assert.Contains(actions, action => action.GetProperty("type").GetString() == "OPEN_ORDER");
+        Assert.DoesNotContain(actions, action => action.GetProperty("type").GetString() == "OPEN_OUTBOUND");
+        Assert.Equal(2, store.Calls.Count);
+    }
+
+    [Fact]
     public void PostgresResolver_UsesSingleScopedCommandWithoutGlobalStoreWalks()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.Data", "PostgresDataStore.cs");
-        var start = source.IndexOf("public TsdHuFacts GetTsdHuFacts", StringComparison.Ordinal);
+        var start = source.IndexOf("public TsdHuResolverStoreResult GetTsdHuFacts", StringComparison.Ordinal);
         var end = source.IndexOf("public IReadOnlyList<ScopedOrderLineHuFateCandidate>", start, StringComparison.Ordinal);
         var method = source[start..end];
 
@@ -223,13 +455,165 @@ public sealed class HuResolverTests
         Assert.Contains("WHERE UPPER(BTRIM(COALESCE(l.hu_code, l.hu))) = @hu_code", method);
         Assert.Contains("WHERE UPPER(BTRIM(pp.hu_code)) = @hu_code", method);
         Assert.Contains("WHERE UPPER(BTRIM(p.to_hu)) = @hu_code", method);
+        Assert.Contains("WITH target_pallets AS", method);
+        Assert.Contains("FROM production_pallet_lines line", method);
+        Assert.Contains("COALESCE(SUM(ledger_row.qty_delta), 0)", method);
+        Assert.Contains("newer.replaces_line_id = shipment_line.id", method);
+        Assert.DoesNotContain("EffectiveStatus", method, StringComparison.Ordinal);
         Assert.DoesNotContain("GetDocs(", method, StringComparison.Ordinal);
         Assert.DoesNotContain("GetOrders(", method, StringComparison.Ordinal);
         Assert.Equal(1, CountOccurrences(method, "CreateCommand(connection"));
     }
 
-    private static TsdHuView Resolve(TsdHuFacts facts)
-        => new TsdHuResolverService(new FakeStore(facts)).Resolve(facts.HuCode);
+    private static TsdHuView Resolve(
+        TsdHuFacts facts,
+        params ProductionHuAwaitingShipmentEligibilityFacts[] awaitingShipmentCandidates)
+        => new TsdHuResolverService(new FakeStore(new TsdHuResolverStoreResult
+        {
+            PresentationFacts = facts,
+            AwaitingShipmentCandidates = awaitingShipmentCandidates
+        })).Resolve(facts.HuCode);
+
+    private static TsdHuFacts MixedFilledFacts(bool includeStock)
+    {
+        return new TsdHuFacts
+        {
+            HuCode = "HU-0001303",
+            Stock = includeStock
+                ?
+                [
+                    new TsdHuStockFact
+                    {
+                        ItemId = 10,
+                        ItemName = "Товар 1",
+                        LocationId = 20,
+                        LocationCode = "MAIN",
+                        Qty = 300
+                    },
+                    new TsdHuStockFact
+                    {
+                        ItemId = 11,
+                        ItemName = "Товар 2",
+                        LocationId = 20,
+                        LocationCode = "MAIN",
+                        Qty = 300
+                    }
+                ]
+                : Array.Empty<TsdHuStockFact>(),
+            ProductionPallets =
+            [
+                new TsdHuProductionPalletFact
+                {
+                    PalletId = 30,
+                    Status = ProductionPalletStatus.Filled,
+                    PrdDocId = 40,
+                    PrdDocRef = "PRD-040",
+                    OrderId = 217,
+                    OrderRef = "217",
+                    OrderType = "CUSTOMER",
+                    OrderStatus = "IN_PROGRESS",
+                    Components =
+                    [
+                        new TsdHuComponentFact
+                        {
+                            ItemId = 10,
+                            ItemName = "Товар 1",
+                            PlannedQty = 300,
+                            FilledQty = 300
+                        },
+                        new TsdHuComponentFact
+                        {
+                            ItemId = 11,
+                            ItemName = "Товар 2",
+                            PlannedQty = 300,
+                            FilledQty = 300
+                        }
+                    ]
+                }
+            ]
+        };
+    }
+
+    private static ProductionHuAwaitingShipmentEligibilityFacts MixedAwaitingCandidate(
+        long palletId = 30,
+        long? reservationItemId = null,
+        long? shipmentItemId = null,
+        double ledgerBalance = 300)
+    {
+        return new ProductionHuAwaitingShipmentEligibilityFacts
+        {
+            PalletId = palletId,
+            PersistedPalletStatus = ProductionPalletStatus.Filled,
+            OwnerOrderId = 217,
+            OwnerOrderRef = "217",
+            OwnerOrderType = "CUSTOMER",
+            OwnerOrderStatus = "IN_PROGRESS",
+            EvaluatedOrderId = 217,
+            Components =
+            [
+                new ProductionHuAwaitingShipmentComponentFact
+                {
+                    OrderLineId = 50,
+                    OrderLineOrderId = 217,
+                    ItemId = 10,
+                    HuCode = "HU-0001303",
+                    PlannedQty = 300,
+                    FilledQty = 300
+                },
+                new ProductionHuAwaitingShipmentComponentFact
+                {
+                    OrderLineId = 51,
+                    OrderLineOrderId = 217,
+                    ItemId = 11,
+                    HuCode = "HU-0001303",
+                    PlannedQty = 300,
+                    FilledQty = 300
+                }
+            ],
+            ComponentKeys = new[] { 10L, 11L }
+                .Select(itemId => new ProductionHuAwaitingShipmentComponentKeyFact
+                {
+                    ItemId = itemId,
+                    HuCode = "HU-0001303",
+                    LedgerBalance = ledgerBalance,
+                    HasActiveReservation = reservationItemId == itemId,
+                    HasActiveShipment = shipmentItemId == itemId
+                })
+                .ToArray()
+        };
+    }
+
+    private static TsdHuDocumentFact OutboundDocument(long itemId, string status) =>
+        new()
+        {
+            DocId = 60,
+            DocRef = "OUT-060",
+            DocType = "OUTBOUND",
+            DocStatus = status,
+            OrderId = 217,
+            OrderRef = "217",
+            OrderType = "CUSTOMER",
+            OrderStatus = "IN_PROGRESS",
+            Direction = "FROM",
+            ItemId = itemId,
+            ItemName = "Товар",
+            Qty = 300
+        };
+
+    private static TsdHuFacts CopyFacts(
+        TsdHuFacts facts,
+        IReadOnlyList<TsdHuReservationFact>? reservations = null,
+        IReadOnlyList<TsdHuDocumentFact>? documents = null) =>
+        new()
+        {
+            HuCode = facts.HuCode,
+            Registry = facts.Registry,
+            Stock = facts.Stock,
+            ProductionPallets = facts.ProductionPallets,
+            Reservations = reservations ?? facts.Reservations,
+            Documents = documents ?? facts.Documents,
+            LatestMovement = facts.LatestMovement
+        };
 
     private static int CountOccurrences(string value, string pattern)
     {
@@ -260,19 +644,24 @@ public sealed class HuResolverTests
 
     private sealed class FakeStore : ITsdHuResolverStore
     {
-        private readonly TsdHuFacts _facts;
+        private readonly TsdHuResolverStoreResult _result;
 
         public FakeStore(TsdHuFacts facts)
+            : this(new TsdHuResolverStoreResult { PresentationFacts = facts })
         {
-            _facts = facts;
+        }
+
+        public FakeStore(TsdHuResolverStoreResult result)
+        {
+            _result = result;
         }
 
         public List<string> Calls { get; } = new();
 
-        public TsdHuFacts GetTsdHuFacts(string huCode)
+        public TsdHuResolverStoreResult GetTsdHuFacts(string huCode)
         {
             Calls.Add(huCode);
-            return _facts;
+            return _result;
         }
     }
 
