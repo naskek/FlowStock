@@ -64,6 +64,25 @@ public sealed class OrderControlService
                 return;
             }
 
+            if (store is IHuTransactionLockStore lockStore)
+            {
+                lockStore.LockNormalizedHus(
+                    snapshot.Hus
+                        .Select(hu => NormalizeHu(hu.HuCode))
+                        .Where(hu => !string.IsNullOrWhiteSpace(hu))
+                        .Select(hu => hu!)
+                        .OrderBy(hu => hu, StringComparer.Ordinal)
+                        .ToArray());
+                snapshot = BuildSnapshot(store, normalizedOrderIds, currentTaskId: null);
+                if (!snapshot.CanCreate)
+                {
+                    result = OrderControlCreateResult.Failure(
+                        snapshot.ErrorCode ?? OrderControlErrorCodes.OrderNotEligible,
+                        snapshot.Message ?? "Контроль нельзя создать.");
+                    return;
+                }
+            }
+
             var now = DateTime.Now;
             var year = now.Year;
             var sequence = store.GetMaxOrderControlTaskRefSequenceByYear(year) + 1;

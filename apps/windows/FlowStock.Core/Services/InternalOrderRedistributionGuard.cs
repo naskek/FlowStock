@@ -39,7 +39,7 @@ public static class InternalOrderRedistributionGuard
             }
 
             foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id)
-                         .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)))
+                         .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status)))
             {
                 if (!string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))

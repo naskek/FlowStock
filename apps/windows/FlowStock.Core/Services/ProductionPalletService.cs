@@ -1120,7 +1120,7 @@ public sealed class ProductionPalletService
             }
 
             var hasActivePalletReference = store.GetProductionPalletsByDoc(doc.Id)
-                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
                 .Any(pallet => PalletAppliesToOrderLine(pallet, sourceOrderLineId));
             if (hasActivePalletReference)
             {
@@ -2032,7 +2032,7 @@ public sealed class ProductionPalletService
         var rows = docs
             .SelectMany(doc => _data.GetProductionPalletsByDoc(doc.Id))
             .Where(pallet => pallet.OrderId == orderId)
-            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
             .Where(HasOrderLineOwnership)
             .Select(pallet =>
             {
@@ -2123,7 +2123,7 @@ public sealed class ProductionPalletService
             }
 
             var sourcePallets = store.GetProductionPalletsByDoc(sourceDoc.Id)
-                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
                 .ToList();
             if (sourcePallets.Count == 0)
             {
@@ -2859,6 +2859,17 @@ public sealed class ProductionPalletService
         {
             _data.ExecuteInTransaction(store =>
             {
+                var initialPallet = store.GetProductionPalletByHu(normalizedHu);
+                if (store is IHuTransactionLockStore lockStore && initialPallet?.OrderId is long lockOrderId)
+                {
+                    if (!store.LockOrdersForUpdate(new[] { lockOrderId }))
+                    {
+                        result = ProductionPalletFillResult.Failure(
+                            ProductionFillingErrorCodes.PalletNotFound, "Заказ паллеты не найден.");
+                        return;
+                    }
+                    lockStore.LockNormalizedHus(new[] { normalizedHu });
+                }
                 var pallet = store.GetProductionPalletByHuForUpdate(normalizedHu);
                 if (pallet == null)
                 {
@@ -3055,6 +3066,17 @@ public sealed class ProductionPalletService
         {
             _data.ExecuteInTransaction(store =>
             {
+                var initialPallet = store.GetProductionPalletByHu(normalizedHu);
+                if (store is IHuTransactionLockStore lockStore && initialPallet?.OrderId is long lockOrderId)
+                {
+                    if (!store.LockOrdersForUpdate(new[] { lockOrderId }))
+                    {
+                        result = ProductionPalletFillResult.Failure(
+                            ProductionFillingErrorCodes.PalletNotFound, "Заказ паллеты не найден.");
+                        return;
+                    }
+                    lockStore.LockNormalizedHus(new[] { normalizedHu });
+                }
                 var pallet = store.GetProductionPalletByHuForUpdate(normalizedHu);
                 if (pallet == null)
                 {
@@ -3547,7 +3569,7 @@ public sealed class ProductionPalletService
         _ = orderId;
         _ = completions;
         _ = store;
-        var required = pallets.Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)).ToList();
+        var required = pallets.Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status)).ToList();
         var scanned = required.Count(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase));
         var fingerprint = BuildOperationFingerprint(required);
         var canClose = required.Count > 0 && scanned == required.Count;
@@ -3644,7 +3666,7 @@ public sealed class ProductionPalletService
     private static bool HasCompletedPalletizedProduction(IReadOnlyList<ProductionPallet> pallets)
     {
         var activePallets = pallets
-            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
             .ToArray();
         return activePallets.Length > 0
                && activePallets.All(pallet =>
@@ -4059,7 +4081,7 @@ public sealed class ProductionPalletService
         return store.GetDocsByOrder(orderId)
             .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Draft)
             .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
-            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
             .Where(pallet =>
                 string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)

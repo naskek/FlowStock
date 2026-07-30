@@ -1,5 +1,18 @@
 # FlowStock: Заказы
 
+## Безопасная корректировка производственного HU
+
+Корректировка наполнения не меняет строки заказа и не перестраивает CUSTOMER reservation:
+
+- любая актуальная `order_receipt_plan_lines` с корректируемым HU блокирует `CORRECT_FILLED` и `RESET_PARTIAL`;
+- принадлежность production pallet собственному CUSTOMER-заказу без reservation-row блокером не является;
+- replacement в `PLANNED`/`PRINTED` не создаёт reservation, поскольку физический stock существует только в `ledger`;
+- persisted status затронутого заказа пересчитывается через `OrderService.RefreshPersistedStatus` внутри correction transaction; этот путь не вызывает `RefreshCustomerReceiptPlansCore`;
+- source и replacement образуют revision edge в `production_pallet_filling_adjustments`; predecessor находится строго по `previous.replacement_pallet_id = current.source_pallet_id`, а не по совпадению HU. Повторно наполненный replacement может быть source следующей коррекции, независимые исторические цепочки с тем же HU не объединяются;
+- один COR и одна replacement pallet могут принадлежать только одному committed/provisional adjustment; один target DRAFT PRD может содержать несколько replacement pallets и поэтому не является уникальным;
+- `RESET_PARTIAL` replacement после предыдущей COR допустим, если текущий DRAFT PRD не имеет ledger, а исторические source/COR movements дают нулевой физический balance по component item/location;
+- `CORRECTED` означает историческую, более не operational ревизию паллеты. Она подтверждает существование palletized history, но не считается открытым планом, новым выпуском или shipment-ready stock.
+
 ## Модель данных
 
 Таблица `orders`:

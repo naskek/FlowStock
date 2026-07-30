@@ -354,7 +354,7 @@ internal static class CustomerProtectedCoverageCalculator
                          .Where(doc => doc.Type == DocType.ProductionReceipt))
             {
                 foreach (var pallet in (store.GetProductionPalletsByDoc(doc.Id) ?? Array.Empty<ProductionPallet>())
-                             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
+                             .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status)
                                               && !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
                 {
                     var huCode = NormalizeHu(pallet.HuCode);

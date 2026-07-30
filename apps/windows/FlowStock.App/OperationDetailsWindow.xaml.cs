@@ -3074,7 +3074,12 @@ public partial class OperationDetailsWindow : Window
                 pallet.EffectiveStatus,
                 ProductionPalletStatus.Filled,
                 StringComparison.OrdinalIgnoreCase);
-            line.ProductionPalletStatusDisplay = pallet.IsMixedPallet
+            line.ProductionPalletStatusDisplay = string.Equals(
+                    pallet.Status,
+                    ProductionPalletStatus.Corrected,
+                    StringComparison.OrdinalIgnoreCase)
+                ? "Скорректирована"
+                : pallet.IsMixedPallet
                 ? component == null
                     ? "Ожидает"
                     : $"{ResolveApiComponentProgressLabel(component)} · {FormatQty(component.FilledQty)} / {FormatQty(component.PlannedQty)}"

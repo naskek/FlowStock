@@ -82,7 +82,7 @@ public sealed class ProductionPlanConsistencyDiagnosticsService(IDataStore dataS
                     .Cast<string>()
                     .ToHashSet(StringComparer.OrdinalIgnoreCase));
         var palletLines = _dataStore.GetProductionPalletsByDoc(prdDocId)
-            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
             .Where(pallet => !supersededDocLineIds.Contains(pallet.DocLineId))
             .Where(pallet => !IsReservedForCustomer(pallet, reservedHuByItem))
             .SelectMany(pallet => pallet.Lines.Count > 0

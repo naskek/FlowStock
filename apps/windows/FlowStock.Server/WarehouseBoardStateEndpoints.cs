@@ -73,7 +73,7 @@ public static class WarehouseBoardStateEndpoints
                 }
 
                 var pallets = store.GetProductionPalletsByDoc(prdDoc.Id)
-                    .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                    .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
                     .Select(pallet => new
                     {
                         hu_code = pallet.HuCode,

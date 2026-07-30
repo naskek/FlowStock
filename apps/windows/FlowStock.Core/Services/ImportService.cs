@@ -341,16 +341,14 @@ public sealed class ImportService
             }
 
             var (fromHu, toHu) = ResolveLineHu(importEvent, huCode);
-            store.AddDocLine(new DocLine
-            {
-                DocId = doc.Id,
-                ItemId = item.Id,
-                Qty = importEvent.Qty,
-                FromLocationId = fromLocation?.Id,
-                ToLocationId = toLocation?.Id,
-                FromHu = fromHu,
-                ToHu = toHu
-            });
+            new DocumentService(store).AddDocLine(
+                doc.Id,
+                item.Id,
+                importEvent.Qty,
+                fromLocation?.Id,
+                toLocation?.Id,
+                fromHu: fromHu,
+                toHu: toHu);
 
             store.AddImportedEvent(new ImportedEvent
             {

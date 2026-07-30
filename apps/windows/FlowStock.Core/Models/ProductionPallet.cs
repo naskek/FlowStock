@@ -7,6 +7,12 @@ public static class ProductionPalletStatus
     public const string PartiallyFilled = "PARTIALLY_FILLED";
     public const string Filled = "FILLED";
     public const string Cancelled = "CANCELLED";
+    public const string Corrected = "CORRECTED";
+
+    public static bool IsOperational(string? status) =>
+        string.Equals(status, Planned, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(status, Printed, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(status, Filled, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>

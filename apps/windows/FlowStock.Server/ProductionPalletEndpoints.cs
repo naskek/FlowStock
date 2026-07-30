@@ -34,6 +34,179 @@ public static class ProductionPalletEndpoints
         app.MapPost("/api/production-pallets/backfill-filled-stock", HandleBackfillFilledStock);
         app.MapGet("/api/production-pallets/filled-stock-reverse-candidates", HandleFilledStockReverseCandidates);
         app.MapPost("/api/production-pallets/reverse-filled-stock-backfill-draft", HandleReverseFilledStockBackfillDraft);
+        app.MapGet("/api/production-pallets/filling-corrections/preview", HandleFillingCorrectionPreview);
+        app.MapPost("/api/production-pallets/filling-corrections/confirm", HandleFillingCorrectionConfirm);
+        app.MapGet("/api/production-pallets/filling-corrections/history", HandleFillingCorrectionHistory);
+    }
+
+    private static IResult HandleFillingCorrectionPreview(string? hu_code, IDataStore store)
+    {
+        var preview = new ProductionPalletFillingCorrectionService(store).Preview(hu_code);
+        return Results.Ok(MapCorrectionPreview(preview));
+    }
+
+    private static async Task<IResult> HandleFillingCorrectionConfirm(HttpRequest request, IDataStore store)
+    {
+        FillingCorrectionConfirmBody? body;
+        try
+        {
+            body = await request.ReadFromJsonAsync<FillingCorrectionConfirmBody>();
+        }
+        catch (JsonException)
+        {
+            return Results.BadRequest(new
+            {
+                ok = false,
+                error = "INVALID_JSON",
+                message = "Некорректное JSON-тело запроса."
+            });
+        }
+
+        if (body == null)
+        {
+            return Results.BadRequest(new { ok = false, error = "INVALID_JSON", message = "Тело запроса обязательно." });
+        }
+
+        var result = new ProductionPalletFillingCorrectionService(store).Confirm(new ProductionPalletFillingCorrectionConfirmRequest
+        {
+            RequestId = body.RequestId ?? string.Empty,
+            HuCode = body.HuCode ?? string.Empty,
+            ExpectedAction = body.ExpectedAction ?? string.Empty,
+            ReasonText = body.ReasonText ?? string.Empty,
+            ActorName = body.ActorName,
+            DeviceName = body.DeviceName,
+            ClientName = body.ClientName,
+            ClientVersion = body.ClientVersion
+        });
+        var payload = MapCorrectionResult(result);
+        if (result.Success)
+        {
+            return Results.Ok(payload);
+        }
+
+        return ResolveFillingCorrectionErrorStatus(result.ErrorCode) switch
+        {
+            StatusCodes.Status400BadRequest => Results.BadRequest(payload),
+            StatusCodes.Status403Forbidden => Results.Json(payload, statusCode: StatusCodes.Status403Forbidden),
+            _ => Results.Conflict(payload)
+        };
+    }
+
+    public static int ResolveFillingCorrectionErrorStatus(string? errorCode) =>
+        errorCode switch
+        {
+            ProductionPalletFillingCorrectionErrorCodes.BlockDisabled => StatusCodes.Status403Forbidden,
+            ProductionPalletFillingCorrectionErrorCodes.InvalidRequestId
+                or ProductionPalletFillingCorrectionErrorCodes.HuRequired
+                or ProductionPalletFillingCorrectionErrorCodes.InvalidAction
+                or ProductionPalletFillingCorrectionErrorCodes.ReasonRequired
+                or ProductionPalletFillingCorrectionErrorCodes.ReasonTooLong
+                => StatusCodes.Status400BadRequest,
+            _ => StatusCodes.Status409Conflict
+        };
+
+    private static IResult HandleFillingCorrectionHistory(string? hu_code, IDataStore store)
+    {
+        var entries = new ProductionPalletFillingCorrectionService(store).History(hu_code);
+        return Results.Ok(new
+        {
+            ok = true,
+            hu_code = string.IsNullOrWhiteSpace(hu_code) ? string.Empty : hu_code.Trim().ToUpperInvariant(),
+            items = entries.Select(entry => new
+            {
+                adjustment_id = entry.AdjustmentId,
+                action = entry.Action,
+                hu_code = entry.HuCode,
+                source_pallet_id = entry.SourcePalletId,
+                source_prd_doc_id = entry.SourcePrdDocId,
+                cor_doc_id = entry.CorDocId,
+                replacement_pallet_id = entry.ReplacementPalletId,
+                replacement_prd_doc_id = entry.ReplacementPrdDocId,
+                reason_text = entry.ReasonText,
+                created_at = entry.CreatedAt
+            })
+        });
+    }
+
+    private static object MapCorrectionPreview(ProductionPalletFillingCorrectionPreview preview) => new
+    {
+        ok = true,
+        hu_code = preview.HuCode,
+        action = preview.Action,
+        can_confirm = preview.CanConfirm,
+        source_pallet_id = preview.SourcePalletId,
+        source_prd_doc_id = preview.SourcePrdDocId,
+        source_prd_ref = preview.SourcePrdRef,
+        marking_code_count = preview.MarkingCodeCount,
+        components = preview.Components.Select(component => new
+        {
+            component_id = component.ComponentId,
+            doc_line_id = component.DocLineId,
+            order_line_id = component.OrderLineId,
+            item_id = component.ItemId,
+            item_name = component.ItemName,
+            planned_qty = component.PlannedQty,
+            filled_qty = component.FilledQty
+        }),
+        ledger_inversion = preview.LedgerInversion.Select(line => new
+        {
+            source_ledger_entry_id = line.SourceLedgerEntryId,
+            source_doc_line_id = line.SourceDocLineId,
+            item_id = line.ItemId,
+            location_id = line.LocationId,
+            hu_code = line.HuCode,
+            source_qty = line.SourceQty,
+            correction_qty = line.CorrectionQty
+        }),
+        blockers = preview.Blockers.Select(blocker => new
+        {
+            code = blocker.Code,
+            message = blocker.Message
+        })
+    };
+
+    private static object MapCorrectionResult(ProductionPalletFillingCorrectionResult result) => new
+    {
+        ok = result.Success,
+        replay = result.Replay,
+        error = result.ErrorCode,
+        message = result.Message,
+        adjustment_id = result.AdjustmentId,
+        action = result.Action,
+        hu_code = result.HuCode,
+        source_pallet_id = result.SourcePalletId,
+        source_prd_doc_id = result.SourcePrdDocId,
+        cor_doc_id = result.CorDocId,
+        cor_doc_ref = result.CorDocRef,
+        replacement_pallet_id = result.ReplacementPalletId,
+        replacement_prd_doc_id = result.ReplacementPrdDocId
+    };
+
+    private sealed class FillingCorrectionConfirmBody
+    {
+        [JsonPropertyName("request_id")]
+        public string? RequestId { get; init; }
+
+        [JsonPropertyName("hu_code")]
+        public string? HuCode { get; init; }
+
+        [JsonPropertyName("expected_action")]
+        public string? ExpectedAction { get; init; }
+
+        [JsonPropertyName("reason_text")]
+        public string? ReasonText { get; init; }
+
+        [JsonPropertyName("actor_name")]
+        public string? ActorName { get; init; }
+
+        [JsonPropertyName("device_name")]
+        public string? DeviceName { get; init; }
+
+        [JsonPropertyName("client_name")]
+        public string? ClientName { get; init; }
+
+        [JsonPropertyName("client_version")]
+        public string? ClientVersion { get; init; }
     }
 
     private static IResult HandleFilledWithoutStock(IDataStore store)

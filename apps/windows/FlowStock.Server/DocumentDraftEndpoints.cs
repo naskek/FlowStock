@@ -2436,7 +2436,19 @@ public static class DocumentDraftEndpoints
         long newLineId;
         try
         {
-            newLineId = store.AddDocLine(tombstone);
+            newLineId = new DocumentService(store).AddDocLine(
+                tombstone.DocId,
+                tombstone.ItemId,
+                tombstone.Qty,
+                tombstone.FromLocationId,
+                tombstone.ToLocationId,
+                tombstone.QtyInput,
+                tombstone.UomCode,
+                tombstone.FromHu,
+                tombstone.ToHu,
+                tombstone.OrderLineId,
+                tombstone.ReplacesLineId,
+                tombstone.ProductionPurpose);
         }
         catch (Exception ex)
         {

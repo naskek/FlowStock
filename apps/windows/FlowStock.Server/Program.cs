@@ -3043,6 +3043,7 @@ static IResult? TryCreateClientBlockRejection(HttpContext context)
 static bool IsClientBlockBypassPath(PathString path)
 {
     if (path.StartsWithSegments("/api/client-blocks")
+        || path.StartsWithSegments("/api/production-pallets/filling-corrections")
         || path.StartsWithSegments("/api/tsd/login")
         || path.StartsWithSegments("/api/discovery")
         || path.StartsWithSegments("/api/ping")
@@ -3656,7 +3657,7 @@ static bool HasProductionPalletPlan(IDataStore store, Doc doc)
     }
 
     return store.GetProductionPalletsByDoc(doc.Id)
-        .Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase));
+        .Any(pallet => ProductionPalletStatus.IsOperational(pallet.Status));
 }
 
 static ProductionPalletSummary BuildProductionPalletSummary(IDataStore store, Doc doc)

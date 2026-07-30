@@ -264,7 +264,7 @@ internal static class HuBindingApplyShared
         return store.GetDocsByOrder(orderId)
             .Where(doc => doc.Type == DocType.ProductionReceipt)
             .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
-            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.Ordinal))
+            .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
             .Where(pallet => PalletAppliesToOrderLine(pallet, orderLineId))
             .OrderBy(pallet => pallet.Id)
             .ToArray();

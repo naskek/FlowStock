@@ -161,10 +161,12 @@ internal static class OrderReceiptRemainingCalculator
             foreach (var doc in (dataStore.GetDocsByOrder(orderId) ?? Array.Empty<Doc>())
                          .Where(doc => doc.Type == DocType.ProductionReceipt))
             {
-                var pallets = (dataStore.GetProductionPalletsByDoc(doc.Id) ?? Array.Empty<ProductionPallet>())
-                    .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                var palletHistory = dataStore.GetProductionPalletsByDoc(doc.Id)
+                                    ?? Array.Empty<ProductionPallet>();
+                var pallets = palletHistory
+                    .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
                     .ToArray();
-                if (pallets.Length > 0)
+                if (palletHistory.Count > 0)
                 {
                     foreach (var pallet in pallets.Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
                     {

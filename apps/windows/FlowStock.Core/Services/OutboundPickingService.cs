@@ -458,18 +458,16 @@ public sealed class OutboundPickingService
                 draftDocId = draft?.Id ?? CreateDraftOutbound(store, lockedOrder, deviceId);
                 foreach (var line in lockedExpectedHu.Lines)
                 {
-                    store.AddDocLine(new DocLine
-                    {
-                        DocId = draftDocId,
-                        OrderLineId = line.OrderLineId,
-                        ProductionPurpose = ProductionLinePurpose.CustomerOrder,
-                        ItemId = line.ItemId,
-                        Qty = line.Qty,
-                        FromLocationId = line.LocationId,
-                        ToLocationId = null,
-                        FromHu = normalizedHu,
-                        ToHu = null
-                    });
+                    new DocumentService(store).AddDocLine(
+                        draftDocId,
+                        line.ItemId,
+                        line.Qty,
+                        line.LocationId,
+                        toLocationId: null,
+                        fromHu: normalizedHu,
+                        toHu: null,
+                        orderLineId: line.OrderLineId,
+                        productionPurpose: ProductionLinePurpose.CustomerOrder);
                 }
             });
 

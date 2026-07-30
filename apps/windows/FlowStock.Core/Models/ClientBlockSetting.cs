@@ -2,13 +2,19 @@ namespace FlowStock.Core.Models;
 
 public sealed record ClientBlockSetting(string Key, bool IsEnabled);
 
-public sealed record ClientBlockDefinition(string Key, string Client, string Section, string Label);
+public sealed record ClientBlockDefinition(
+    string Key,
+    string Client,
+    string Section,
+    string Label,
+    bool DefaultEnabled = true);
 
 public static class ClientBlockCatalog
 {
     public const string PcStock = "pc_stock";
     public const string PcCatalog = "pc_catalog";
     public const string PcOrders = "pc_orders";
+    public const string PcHuCorrection = "pc_hu_correction";
 
     public const string TsdOperations = "tsd_operations";
     public const string TsdStock = "tsd_stock";
@@ -28,6 +34,7 @@ public static class ClientBlockCatalog
         new ClientBlockDefinition(PcStock, "PC", "Основные", "Остатки"),
         new ClientBlockDefinition(PcCatalog, "PC", "Основные", "Каталог"),
         new ClientBlockDefinition(PcOrders, "PC", "Основные", "Заказы"),
+        new ClientBlockDefinition(PcHuCorrection, "PC", "Операции", "Корректировка наполнения HU", DefaultEnabled: false),
         new ClientBlockDefinition(TsdOperations, "TSD", "Основные", "Операции"),
         new ClientBlockDefinition(TsdStock, "TSD", "Основные", "Остатки"),
         new ClientBlockDefinition(TsdCatalog, "TSD", "Основные", "Каталог"),
@@ -44,7 +51,10 @@ public static class ClientBlockCatalog
 
     public static IReadOnlyDictionary<string, bool> MergeWithDefaults(IEnumerable<ClientBlockSetting>? settings)
     {
-        var result = All.ToDictionary(definition => definition.Key, _ => true, StringComparer.OrdinalIgnoreCase);
+        var result = All.ToDictionary(
+            definition => definition.Key,
+            definition => definition.DefaultEnabled,
+            StringComparer.OrdinalIgnoreCase);
         if (settings == null)
         {
             return result;

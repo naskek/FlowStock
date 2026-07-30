@@ -109,122 +109,129 @@ public sealed class DocumentService
             return CreateOrderBoundOutboundDoc(doc, orderId.Value, hydrateOrderLines);
         }
 
-        if (!orderId.HasValue || !hydrateOrderLines)
+        if (!orderId.HasValue)
         {
             return _data.AddDoc(doc);
+        }
+
+        if (!hydrateOrderLines)
+        {
+            if (_data is not IHuTransactionLockStore)
+            {
+                return _data.AddDoc(doc);
+            }
+
+            long orderBoundDocId = 0;
+            _data.ExecuteInTransaction(store =>
+            {
+                if (!store.LockOrdersForUpdate(new[] { orderId.Value }))
+                {
+                    throw new InvalidOperationException("Заказ не найден.");
+                }
+                orderBoundDocId = store.AddDoc(doc);
+            });
+            return orderBoundDocId;
         }
 
         long docId = 0;
         _data.ExecuteInTransaction(store =>
         {
+            var lockStore = store as IHuTransactionLockStore;
+            if (lockStore != null && !store.LockOrdersForUpdate(new[] { orderId.Value }))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
+            var hydratedLines = BuildHydratedOrderDocLines(store, doc, orderId.Value);
+            lockStore?.LockNormalizedHus(CollectLineHus(hydratedLines));
+
             docId = store.AddDoc(doc);
-            var (fromHu, toHu) = ResolveHeaderHu(doc.Type, doc.ShippingRef);
-            if (doc.Type == DocType.Outbound)
+            lockStore?.LockDocumentsForUpdate(new[] { docId });
+            foreach (var line in hydratedLines)
             {
-                var orderForOutbound = store.GetOrder(orderId.Value);
-                if (orderForOutbound?.Type == OrderType.Customer)
-                {
-                    foreach (var boundLine in CustomerOutboundBoundHuService.GetUnshippedBoundHuLines(store, orderId.Value))
-                    {
-                        store.AddDocLine(new DocLine
-                        {
-                            DocId = docId,
-                            OrderLineId = boundLine.OrderLineId,
-                            ProductionPurpose = ProductionLinePurpose.CustomerOrder,
-                            ItemId = boundLine.ItemId,
-                            Qty = boundLine.Qty,
-                            QtyInput = null,
-                            UomCode = null,
-                            FromLocationId = boundLine.FromLocationId,
-                            ToLocationId = null,
-                            FromHu = boundLine.HuCode,
-                            ToHu = toHu
-                        });
-                    }
-
-                    return;
-                }
-
-                foreach (var line in store.GetOrderShipmentRemaining(orderId.Value))
-                {
-                    if (line.QtyRemaining <= 0)
-                    {
-                        continue;
-                    }
-
-                    store.AddDocLine(new DocLine
-                    {
-                        DocId = docId,
-                        OrderLineId = line.OrderLineId,
-                        ProductionPurpose = ProductionLinePurpose.CustomerOrder,
-                        ItemId = line.ItemId,
-                        Qty = line.QtyRemaining,
-                        QtyInput = null,
-                        UomCode = null,
-                        FromLocationId = null,
-                        ToLocationId = null,
-                        FromHu = fromHu,
-                        ToHu = toHu
-                    });
-                }
-                return;
-            }
-
-            if (doc.Type == DocType.ProductionReceipt)
-            {
-                var order = store.GetOrder(orderId.Value) ?? throw new InvalidOperationException("Заказ не найден.");
-                var receiptLines = OrderReceiptRemainingCalculator.GetRemaining(store, order)
-                    .Where(line => line.QtyRemaining > QtyTolerance)
-                    .ToList();
-                if (receiptLines.Count == 0)
-                {
-                    throw new InvalidOperationException("Нет позиций для приемки по выбранному заказу.");
-                }
-
-                foreach (var line in receiptLines)
-                {
-                    store.AddDocLine(new DocLine
-                    {
-                        DocId = docId,
-                        OrderLineId = line.OrderLineId,
-                        ProductionPurpose = line.ProductionPurpose,
-                        ItemId = line.ItemId,
-                        Qty = line.QtyRemaining,
-                        QtyInput = null,
-                        UomCode = null,
-                        FromLocationId = null,
-                        ToLocationId = null,
-                        FromHu = fromHu,
-                        ToHu = toHu
-                    });
-                }
-                return;
-            }
-
-            foreach (var line in store.GetOrderLines(orderId.Value))
-            {
-                if (line.QtyOrdered <= 0)
-                {
-                    continue;
-                }
-
-                store.AddDocLine(new DocLine
-                {
-                    DocId = docId,
-                    ProductionPurpose = line.ProductionPurpose,
-                    ItemId = line.ItemId,
-                    Qty = line.QtyOrdered,
-                    QtyInput = null,
-                    UomCode = null,
-                    FromLocationId = null,
-                    ToLocationId = null,
-                    FromHu = fromHu,
-                    ToHu = toHu
-                });
+                PersistDocLineAfterHuLocks(store, CopyDocLineToDocument(line, docId));
             }
         });
 
         return docId;
+    }
+
+    private static IReadOnlyList<DocLine> BuildHydratedOrderDocLines(
+        IDataStore store,
+        Doc doc,
+        long orderId)
+    {
+        var (fromHu, toHu) = ResolveHeaderHu(doc.Type, doc.ShippingRef);
+        if (doc.Type == DocType.ProductionReceipt)
+        {
+            var order = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+            var receiptLines = OrderReceiptRemainingCalculator.GetRemaining(store, order)
+                .Where(line => line.QtyRemaining > QtyTolerance)
+                .Select(line => new DocLine
+                {
+                    OrderLineId = line.OrderLineId,
+                    ProductionPurpose = line.ProductionPurpose,
+                    ItemId = line.ItemId,
+                    Qty = line.QtyRemaining,
+                    FromHu = fromHu,
+                    ToHu = toHu
+                })
+                .ToArray();
+            if (receiptLines.Length == 0)
+            {
+                throw new InvalidOperationException("Нет позиций для приемки по выбранному заказу.");
+            }
+            return receiptLines;
+        }
+
+        return store.GetOrderLines(orderId)
+            .Where(line => line.QtyOrdered > QtyTolerance)
+            .Select(line => new DocLine
+            {
+                ProductionPurpose = line.ProductionPurpose,
+                ItemId = line.ItemId,
+                Qty = line.QtyOrdered,
+                FromHu = fromHu,
+                ToHu = toHu
+            })
+            .ToArray();
+    }
+
+    private static IReadOnlyList<string> CollectLineHus(IEnumerable<DocLine> lines) =>
+        lines
+            .SelectMany(line => new[] { line.FromHu, line.ToHu })
+            .Select(NormalizeHuValue)
+            .Where(hu => !string.IsNullOrWhiteSpace(hu))
+            .Select(hu => hu!)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(hu => hu, StringComparer.Ordinal)
+            .ToArray();
+
+    private static DocLine CopyDocLineToDocument(DocLine source, long docId) =>
+        new()
+        {
+            DocId = docId,
+            ReplacesLineId = source.ReplacesLineId,
+            OrderLineId = source.OrderLineId,
+            ProductionPurpose = source.ProductionPurpose,
+            ItemId = source.ItemId,
+            Qty = source.Qty,
+            QtyInput = source.QtyInput,
+            UomCode = source.UomCode,
+            FromLocationId = source.FromLocationId,
+            ToLocationId = source.ToLocationId,
+            FromHu = NormalizeHuValue(source.FromHu),
+            ToHu = NormalizeHuValue(source.ToHu),
+            PackSingleHu = source.PackSingleHu
+        };
+
+    private static long PersistDocLineAfterHuLocks(IDataStore store, DocLine line)
+    {
+        var doc = store.GetDoc(line.DocId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+        return store.AddDocLine(line);
     }
 
     private long CreateOrderBoundOutboundDoc(Doc doc, long orderId, bool hydrateOrderLines)
@@ -273,29 +280,34 @@ public sealed class DocumentService
                 Comment = doc.Comment
             };
 
-            docId = store.AddDoc(outboundDoc);
             if (!hydrateOrderLines)
             {
+                docId = store.AddDoc(outboundDoc);
                 return;
             }
 
             var (_, toHu) = ResolveHeaderHu(outboundDoc.Type, outboundDoc.ShippingRef);
-            foreach (var boundLine in CustomerOutboundBoundHuService.GetUnshippedBoundHuLines(store, order.Id))
-            {
-                store.AddDocLine(new DocLine
+            var hydratedLines = CustomerOutboundBoundHuService
+                .GetUnshippedBoundHuLines(store, order.Id)
+                .Select(boundLine => new DocLine
                 {
-                    DocId = docId,
                     OrderLineId = boundLine.OrderLineId,
                     ProductionPurpose = ProductionLinePurpose.CustomerOrder,
                     ItemId = boundLine.ItemId,
                     Qty = boundLine.Qty,
-                    QtyInput = null,
-                    UomCode = null,
                     FromLocationId = boundLine.FromLocationId,
-                    ToLocationId = null,
                     FromHu = boundLine.HuCode,
                     ToHu = toHu
-                });
+                })
+                .ToArray();
+            var lockStore = store as IHuTransactionLockStore;
+            lockStore?.LockNormalizedHus(CollectLineHus(hydratedLines));
+
+            docId = store.AddDoc(outboundDoc);
+            lockStore?.LockDocumentsForUpdate(new[] { docId });
+            foreach (var line in hydratedLines)
+            {
+                PersistDocLineAfterHuLocks(store, CopyDocLineToDocument(line, docId));
             }
         });
 
@@ -367,6 +379,7 @@ public sealed class DocumentService
 
         var closedAt = DateTime.Now;
         var transactionErrors = new List<string>();
+        var generatedLedgerEntries = new List<GeneratedLedgerEntry>();
 
         var transactionStopwatch = Stopwatch.StartNew();
         _data.ExecuteInTransaction(store =>
@@ -385,6 +398,46 @@ public sealed class DocumentService
             }
 
             IReadOnlyList<DocLine>? lines = null;
+            if (store is IHuTransactionLockStore lockStore)
+            {
+                var initialLines = store.GetDocLines(docId);
+                var initialOrderIds = CollectAffectedOrderIds(store, doc, initialLines)
+                    .OrderBy(orderId => orderId)
+                    .ToArray();
+                if (!store.LockOrdersForUpdate(initialOrderIds))
+                {
+                    transactionErrors.Add("Заказ не найден.");
+                    return;
+                }
+
+                var initialHus = CollectDocumentHus(doc, initialLines);
+                lockStore.LockNormalizedHus(initialHus);
+                lockStore.LockDocumentsForUpdate(new[] { docId });
+
+                doc = store.GetDoc(docId);
+                if (doc == null || doc.Status == DocStatus.Closed)
+                {
+                    transactionErrors.Add(doc == null ? "Документ не найден." : "Документ уже закрыт.");
+                    return;
+                }
+
+                var refreshedLines = store.GetDocLines(docId);
+                var refreshedOrderIds = CollectAffectedOrderIds(store, doc, refreshedLines);
+                if (refreshedOrderIds.Except(initialOrderIds).Any())
+                {
+                    transactionErrors.Add("DOC_ORDER_LINKS_CHANGED_DURING_CLOSE");
+                    return;
+                }
+
+                var refreshedHus = CollectDocumentHus(doc, refreshedLines);
+                if (refreshedHus.Except(initialHus, StringComparer.Ordinal).Any())
+                {
+                    transactionErrors.Add("DOC_HU_LINKS_CHANGED_DURING_CLOSE");
+                    transactionErrors.Add("HU-связи документа изменились во время закрытия. Повторите операцию.");
+                    return;
+                }
+            }
+
             if (doc.Type == DocType.Outbound)
             {
                 var initialLines = store.GetDocLines(docId);
@@ -487,7 +540,7 @@ public sealed class DocumentService
                     case DocType.ProductionReceipt:
                         if (!hasProductionPallets && line.ToLocationId.HasValue)
                         {
-                            store.AddLedgerEntry(new LedgerEntry
+                            var entry = new LedgerEntry
                             {
                                 Timestamp = closedAt,
                                 DocId = docId,
@@ -495,7 +548,20 @@ public sealed class DocumentService
                                 LocationId = line.ToLocationId.Value,
                                 QtyDelta = line.Qty,
                                 HuCode = toHu
-                            });
+                            };
+                            var ledgerEntryId = AddLedgerEntry(store, entry);
+                            if (doc.Type == DocType.InventoryCorrection)
+                            {
+                                generatedLedgerEntries.Add(new GeneratedLedgerEntry
+                                {
+                                    DocLineId = line.Id,
+                                    LedgerEntryId = ledgerEntryId,
+                                    ItemId = entry.ItemId,
+                                    LocationId = entry.LocationId,
+                                    QtyDelta = entry.QtyDelta,
+                                    HuCode = entry.HuCode
+                                });
+                            }
                         }
                         break;
                     case DocType.WriteOff:
@@ -732,7 +798,36 @@ public sealed class DocumentService
             };
         }
 
-        return new CloseDocResult { Success = true, Timing = timing };
+        return new CloseDocResult
+        {
+            Success = true,
+            GeneratedLedgerEntries = generatedLedgerEntries,
+            Timing = timing
+        };
+    }
+
+    private static IReadOnlyList<string> CollectDocumentHus(Doc doc, IReadOnlyList<DocLine> lines)
+    {
+        return lines
+            .SelectMany(line => new[] { line.FromHu, line.ToHu })
+            .Append(doc.ShippingRef)
+            .Select(NormalizeHuValue)
+            .Where(hu => !string.IsNullOrWhiteSpace(hu))
+            .Select(hu => hu!)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(hu => hu, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static long AddLedgerEntry(IDataStore store, LedgerEntry entry)
+    {
+        if (store is ILedgerEntryIdStore idStore)
+        {
+            return idStore.AddLedgerEntryReturningId(entry);
+        }
+
+        store.AddLedgerEntry(entry);
+        return 0;
     }
 
     public void UpdateDocHeader(long docId, long? partnerId, string? orderRef, string? shippingRef)
@@ -964,14 +1059,16 @@ public sealed class DocumentService
             throw new InvalidOperationException("Документ уже закрыт.");
         }
 
+        var isTombstone = replacesLineId.HasValue
+                          && StockQuantityRules.IsEffectivelyZero(qty);
         if (doc.Type == DocType.InventoryCorrection)
         {
-            if (StockQuantityRules.IsEffectivelyZero(qty))
+            if (StockQuantityRules.IsEffectivelyZero(qty) && !isTombstone)
             {
                 throw new ArgumentException("Количество не может быть 0.", nameof(qty));
             }
         }
-        else if (qty <= 0)
+        else if (qty <= 0 && !isTombstone)
         {
             throw new ArgumentException("Количество должно быть больше 0.", nameof(qty));
         }
@@ -989,7 +1086,7 @@ public sealed class DocumentService
 
         ValidateLineLocations(doc.Type, fromLocationId, toLocationId, NormalizeHuValue(fromHu), NormalizeHuValue(toHu));
 
-        return _data.AddDocLine(new DocLine
+        var newLine = new DocLine
         {
             DocId = docId,
             ReplacesLineId = replacesLineId,
@@ -1003,7 +1100,47 @@ public sealed class DocumentService
             ToLocationId = toLocationId,
             FromHu = NormalizeHuValue(fromHu),
             ToHu = NormalizeHuValue(toHu)
+        };
+
+        if (_data is not IHuTransactionLockStore)
+        {
+            return PersistDocLineAfterHuLocks(_data, newLine);
+        }
+
+        long lineId = 0;
+        _data.ExecuteInTransaction(store =>
+        {
+            var transactionalDoc = store.GetDoc(docId)
+                                   ?? throw new InvalidOperationException("Документ не найден.");
+            var orderIds = transactionalDoc.OrderId.HasValue
+                ? new[] { transactionalDoc.OrderId.Value }
+                : Array.Empty<long>();
+            if (!store.LockOrdersForUpdate(orderIds))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
+
+            var lockStore = (IHuTransactionLockStore)store;
+            var replacedLine = newLine.ReplacesLineId.HasValue
+                ? GetCurrentReplacementTarget(store, docId, newLine.ReplacesLineId.Value)
+                : null;
+            lockStore.LockNormalizedHus(CollectLineHus(
+                replacedLine == null ? new[] { newLine } : new[] { replacedLine, newLine }));
+            lockStore.LockDocumentsForUpdate(new[] { docId });
+            transactionalDoc = store.GetDoc(docId)
+                               ?? throw new InvalidOperationException("Документ не найден.");
+            if (transactionalDoc.Status != DocStatus.Draft)
+            {
+                throw new InvalidOperationException("Документ уже закрыт.");
+            }
+            if (replacedLine != null)
+            {
+                _ = GetCurrentReplacementTarget(store, docId, replacedLine.Id);
+                _ = GetUnchangedDraftLine(store, docId, replacedLine);
+            }
+            lineId = PersistDocLineAfterHuLocks(store, newLine);
         });
+        return lineId;
     }
 
     public void UpdateDocLineQty(long docId, long docLineId, double qty, double? qtyInput = null, string? uomCode = null)
@@ -1143,7 +1280,16 @@ public sealed class DocumentService
 
         if (Math.Abs(qty - line.Qty) <= 0.000001)
         {
-            _data.UpdateDocLineHu(docLineId, normalizedFromHu, normalizedToHu);
+            _data.ExecuteInTransaction(store =>
+            {
+                LockDocLineHuMutation(
+                    store,
+                    doc,
+                    docId,
+                    new[] { line.FromHu, line.ToHu, normalizedFromHu, normalizedToHu });
+                var currentLine = GetUnchangedDraftLine(store, docId, line);
+                store.UpdateDocLineHu(currentLine.Id, normalizedFromHu, normalizedToHu);
+            });
             return;
         }
 
@@ -1156,7 +1302,13 @@ public sealed class DocumentService
 
         _data.ExecuteInTransaction(store =>
         {
-            store.UpdateDocLineQty(docLineId, remainingQty, remainingInput, line.UomCode);
+            LockDocLineHuMutation(
+                store,
+                doc,
+                docId,
+                new[] { line.FromHu, line.ToHu, normalizedFromHu, normalizedToHu });
+            var currentLine = GetUnchangedDraftLine(store, docId, line);
+            store.UpdateDocLineQty(currentLine.Id, remainingQty, remainingInput, line.UomCode);
             store.AddDocLine(new DocLine
             {
                 DocId = docId,
@@ -1274,7 +1426,13 @@ public sealed class DocumentService
 
         _data.ExecuteInTransaction(store =>
         {
-            store.DeleteDocLine(docLineId);
+            LockDocLineHuMutation(
+                store,
+                doc,
+                docId,
+                new[] { line.FromHu, line.ToHu }.Concat(chunks.Select(chunk => chunk.toHu)));
+            var currentLine = GetUnchangedDraftLine(store, docId, line);
+            store.DeleteDocLine(currentLine.Id);
 
             var remainingInput = line.QtyInput;
             for (var i = 0; i < chunks.Count; i++)
@@ -1308,6 +1466,74 @@ public sealed class DocumentService
                 });
             }
         });
+    }
+
+    private static void LockDocLineHuMutation(
+        IDataStore store,
+        Doc initialDoc,
+        long docId,
+        IEnumerable<string?> huCodes)
+    {
+        if (store is IHuTransactionLockStore lockStore)
+        {
+            var orderIds = initialDoc.OrderId.HasValue
+                ? new[] { initialDoc.OrderId.Value }
+                : Array.Empty<long>();
+            if (!store.LockOrdersForUpdate(orderIds))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
+
+            lockStore.LockNormalizedHus(
+                huCodes
+                    .Select(NormalizeHuValue)
+                    .Where(hu => !string.IsNullOrWhiteSpace(hu))
+                    .Select(hu => hu!)
+                    .ToArray());
+            lockStore.LockDocumentsForUpdate(new[] { docId });
+        }
+
+        var currentDoc = store.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (currentDoc.Status != DocStatus.Draft || currentDoc.OrderId != initialDoc.OrderId)
+        {
+            throw new InvalidOperationException("DOC_HU_LINKS_CHANGED_DURING_MUTATION");
+        }
+    }
+
+    private static DocLine GetUnchangedDraftLine(IDataStore store, long docId, DocLine initialLine)
+    {
+        var currentLine = store.GetDocLines(docId).FirstOrDefault(line => line.Id == initialLine.Id)
+                          ?? throw new InvalidOperationException("DOC_HU_LINKS_CHANGED_DURING_MUTATION");
+        if (Math.Abs(currentLine.Qty - initialLine.Qty) > StockQuantityRules.QtyTolerance
+            || !string.Equals(
+                NormalizeHuValue(currentLine.FromHu),
+                NormalizeHuValue(initialLine.FromHu),
+                StringComparison.Ordinal)
+            || !string.Equals(
+                NormalizeHuValue(currentLine.ToHu),
+                NormalizeHuValue(initialLine.ToHu),
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("DOC_HU_LINKS_CHANGED_DURING_MUTATION");
+        }
+
+        return currentLine;
+    }
+
+    private static DocLine GetCurrentReplacementTarget(
+        IDataStore store,
+        long docId,
+        long replacedLineId)
+    {
+        var lines = store.GetDocLines(docId);
+        var replacedLine = lines.FirstOrDefault(line => line.Id == replacedLineId)
+                           ?? throw new InvalidOperationException(
+                               "DOC_LINE_REPLACEMENT_TARGET_NOT_CURRENT");
+        if (lines.Any(line => line.ReplacesLineId == replacedLineId))
+        {
+            throw new InvalidOperationException("DOC_LINE_REPLACEMENT_TARGET_NOT_CURRENT");
+        }
+        return replacedLine;
     }
 
     public int AutoDistributeProductionReceiptHus(long docId, IReadOnlyCollection<long>? docLineIds = null)
@@ -2169,7 +2395,7 @@ public sealed class DocumentService
         if (doc.Type == DocType.ProductionReceipt && hasProductionPallets)
         {
             var pallets = _data.GetProductionPalletsByDoc(docId)
-                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
                 .ToList();
             if (pallets.Any(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
             {
@@ -3267,11 +3493,18 @@ public sealed class DocumentService
                 continue;
             }
 
-            var ids = store.GetAvailableProductionMarkingCodeIdsForReceipt(
-                doc.OrderId,
-                line.ItemId,
-                item.Gtin,
-                missing);
+            var ids = store is ILineScopedMarkingCodeStore scopedStore
+                ? scopedStore.GetAvailableProductionMarkingCodeIdsForReceipt(
+                    doc.OrderId,
+                    line.ItemId,
+                    item.Gtin,
+                    missing,
+                    line.OrderLineId)
+                : store.GetAvailableProductionMarkingCodeIdsForReceipt(
+                    doc.OrderId,
+                    line.ItemId,
+                    item.Gtin,
+                    missing);
             if (ids.Count == 0)
             {
                 continue;

@@ -97,7 +97,7 @@ public sealed class ProductionFillCloseService
     private static long ResolveDedicatedPrdDocId(IDataStore store, ProductionPallet pallet, Doc sourceDoc)
     {
         var activePallets = store.GetProductionPalletsByDoc(sourceDoc.Id)
-            .Where(p => !string.Equals(p.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(p => ProductionPalletStatus.IsOperational(p.Status))
             .ToList();
         if (activePallets.Count <= 1)
         {

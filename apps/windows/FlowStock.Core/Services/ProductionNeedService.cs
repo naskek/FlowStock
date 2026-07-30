@@ -192,7 +192,7 @@ public sealed class ProductionNeedService(IDataStore dataStore)
             }
 
             foreach (var pallet in _dataStore.GetProductionPalletsByDoc(workItem.PrdDocId)
-                         .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)))
+                         .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status)))
             {
                 if (pallet.Lines.Count > 0)
                 {

@@ -370,7 +370,7 @@ public sealed class OrderRedistributionService
                      .Where(doc => doc.Type == DocType.ProductionReceipt))
         {
             foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id)
-                         .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                         .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
                          .Where(pallet => pallet.ItemId == itemId || pallet.Lines.Any(line => line.ItemId == itemId))
                          .Where(pallet => pallet.OrderLineId == sourceOrderLineId || pallet.Lines.Any(line => line.OrderLineId == sourceOrderLineId)))
             {

@@ -271,20 +271,16 @@ public static class CustomerOutboundBoundHuService
                 continue;
             }
 
-            store.AddDocLine(new DocLine
-            {
-                DocId = docId,
-                OrderLineId = boundLine.OrderLineId,
-                ProductionPurpose = ProductionLinePurpose.CustomerOrder,
-                ItemId = boundLine.ItemId,
-                Qty = boundLine.Qty,
-                QtyInput = null,
-                UomCode = null,
-                FromLocationId = boundLine.FromLocationId,
-                ToLocationId = null,
-                FromHu = boundLine.HuCode,
-                ToHu = null
-            });
+            new DocumentService(store).AddDocLine(
+                docId,
+                boundLine.ItemId,
+                boundLine.Qty,
+                boundLine.FromLocationId,
+                toLocationId: null,
+                fromHu: boundLine.HuCode,
+                toHu: null,
+                orderLineId: boundLine.OrderLineId,
+                productionPurpose: ProductionLinePurpose.CustomerOrder);
             existingKeys.Add(key);
             addedLines++;
         }

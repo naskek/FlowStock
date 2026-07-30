@@ -7,7 +7,7 @@ public static class ProductionOrderLineHuCodes
 {
     public static bool IsActivePalletStatus(string? status)
     {
-        return !string.Equals(status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase);
+        return ProductionPalletStatus.IsOperational(status);
     }
 
     public static bool ShouldShowPalletHuOnOrderLine(IDataStore store, ProductionPallet pallet, ProductionPalletComponentLine line)

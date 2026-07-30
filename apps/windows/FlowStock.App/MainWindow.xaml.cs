@@ -77,7 +77,8 @@ public partial class MainWindow : Window
         new DocTypeFilterOption(DocType.Outbound, "Отгрузка"),
         new DocTypeFilterOption(DocType.Move, "Перемещение"),
         new DocTypeFilterOption(DocType.WriteOff, "Списание"),
-        new DocTypeFilterOption(DocType.Inventory, "Инвентаризация")
+        new DocTypeFilterOption(DocType.Inventory, "Инвентаризация"),
+        new DocTypeFilterOption(DocType.InventoryCorrection, "Корректировка остатков")
     };
     private readonly List<DocStatusFilterOption> _docStatusFilters = new()
     {
@@ -350,6 +351,7 @@ public partial class MainWindow : Window
         AttachWarehouseProductionStateGridScrollTracking();
         ScheduleItemRequestsBadgeUpdate();
         StartItemRequestsBadgeRefreshTimer();
+        RefreshHuCorrectionAvailability();
 
         if (_serverApiUnavailableAtStartup)
         {
@@ -2051,6 +2053,25 @@ public partial class MainWindow : Window
         OpenSelectedDoc();
     }
 
+    private void HuFillingCorrection_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new ProductionPalletFillingCorrectionWindow(_services) { Owner = this };
+        window.ShowDialog();
+        LoadDocs();
+        LoadOrders();
+        LoadStock(StatusSearchBox.Text);
+    }
+
+    private void RefreshHuCorrectionAvailability()
+    {
+        HuFillingCorrectionButton.IsEnabled =
+            _services.WpfAdminApi.TryGetClientBlocks(out var settings)
+            && ClientBlockCatalog.MergeWithDefaults(settings)[ClientBlockCatalog.PcHuCorrection];
+        HuFillingCorrectionButton.ToolTip = HuFillingCorrectionButton.IsEnabled
+            ? null
+            : "Функция pc_hu_correction выключена на сервере.";
+    }
+
     private void DocsGrid_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter)
@@ -3244,6 +3265,7 @@ public partial class MainWindow : Window
                 LoadStock(StatusSearchBox.Text);
                 LoadKmBatches();
                 ScheduleItemRequestsBadgeUpdate();
+                RefreshHuCorrectionAvailability();
             });
         window.Owner = this;
         window.ShowDialog();
@@ -4145,6 +4167,7 @@ public partial class MainWindow : Window
             "PRINTED" => "Этикетка напечатана",
             "FILLED" => "Наполнена",
             "CANCELLED" => "Отменена",
+            "CORRECTED" => "Скорректирована",
             _ => string.IsNullOrWhiteSpace(status) ? "—" : status.Trim()
         };
     }

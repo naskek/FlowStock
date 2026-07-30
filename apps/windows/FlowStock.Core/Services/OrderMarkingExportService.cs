@@ -350,7 +350,7 @@ public sealed class OrderMarkingExportService
         foreach (var doc in _data.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
         {
             foreach (var pallet in _data.GetProductionPalletsByDoc(doc.Id)
-                         .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase)))
+                         .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status)))
             {
                 yield return pallet;
             }

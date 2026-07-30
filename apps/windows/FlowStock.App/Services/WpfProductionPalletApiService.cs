@@ -827,7 +827,284 @@ public sealed class WpfProductionPalletApiService
         }
     }
 
-    private bool TryLoadConfiguration(out WpfProductionPalletApiConfiguration configuration)
+    private bool TryLoadConfiguration(out WpfProductionPalletApiConfiguration configuration) =>
+        TryLoadConfigurationCore(out configuration);
+
+    public async Task<WpfHuCorrectionPreviewResult> TryGetFillingCorrectionPreviewAsync(
+        string huCode,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                return WpfHuCorrectionPreviewResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = CreateClient(handler, configuration);
+            using var response = await client.GetAsync(
+                    $"/api/production-pallets/filling-corrections/preview?hu_code={Uri.EscapeDataString(huCode)}",
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return WpfHuCorrectionPreviewResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            var payload = await response.Content
+                .ReadFromJsonAsync<HuCorrectionPreviewResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            return payload == null
+                ? WpfHuCorrectionPreviewResult.Failure("Сервер вернул пустой ответ.")
+                : new WpfHuCorrectionPreviewResult(
+                    true,
+                    string.Empty,
+                    payload.HuCode ?? string.Empty,
+                    payload.Action,
+                    payload.CanConfirm,
+                    payload.SourcePalletId,
+                    payload.SourcePrdDocId,
+                    payload.SourcePrdRef,
+                    payload.MarkingCodeCount,
+                    (payload.Components ?? new()).Select(component => new WpfHuCorrectionComponent(
+                        component.ItemName ?? string.Empty,
+                        component.PlannedQty,
+                        component.FilledQty)).ToArray(),
+                    (payload.LedgerInversion ?? new()).Select(line => new WpfHuCorrectionLedgerLine(
+                        line.ItemId,
+                        line.LocationId,
+                        line.HuCode ?? string.Empty,
+                        line.SourceQty,
+                        line.CorrectionQty)).ToArray(),
+                    (payload.Blockers ?? new()).Select(blocker => new WpfHuCorrectionBlocker(
+                        blocker.Code ?? string.Empty,
+                        blocker.Message ?? string.Empty)).ToArray());
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("HU correction preview failed", ex);
+            return WpfHuCorrectionPreviewResult.Failure(ex.Message);
+        }
+    }
+
+    public async Task<WpfHuCorrectionConfirmResult> TryConfirmFillingCorrectionAsync(
+        Guid requestId,
+        string huCode,
+        string expectedAction,
+        string reasonText,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                return WpfHuCorrectionConfirmResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = CreateClient(handler, configuration);
+            using var response = await client.PostAsJsonAsync(
+                    "/api/production-pallets/filling-corrections/confirm",
+                    new HuCorrectionConfirmBody
+                    {
+                        RequestId = requestId.ToString(),
+                        HuCode = huCode,
+                        ExpectedAction = expectedAction,
+                        ReasonText = reasonText,
+                        ActorName = Environment.UserName,
+                        DeviceName = Environment.MachineName,
+                        ClientName = "WPF",
+                        ClientVersion = typeof(WpfProductionPalletApiService).Assembly.GetName().Version?.ToString()
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var payload = await response.Content
+                .ReadFromJsonAsync<HuCorrectionConfirmResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode || payload == null)
+            {
+                return WpfHuCorrectionConfirmResult.Failure(
+                    payload?.Message ?? await ReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            return new WpfHuCorrectionConfirmResult(
+                true,
+                payload.Message ?? "Операция выполнена.",
+                payload.Replay,
+                payload.AdjustmentId,
+                payload.Action,
+                payload.SourcePrdDocId,
+                payload.CorDocId,
+                payload.ReplacementPrdDocId);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("HU correction confirm failed", ex);
+            return WpfHuCorrectionConfirmResult.Failure(ex.Message);
+        }
+    }
+
+    public async Task<IReadOnlyList<WpfHuCorrectionHistoryEntry>> TryGetFillingCorrectionHistoryAsync(
+        string huCode,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                return Array.Empty<WpfHuCorrectionHistoryEntry>();
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = CreateClient(handler, configuration);
+            using var response = await client.GetAsync(
+                    $"/api/production-pallets/filling-corrections/history?hu_code={Uri.EscapeDataString(huCode)}",
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return Array.Empty<WpfHuCorrectionHistoryEntry>();
+            }
+
+            var payload = await response.Content
+                .ReadFromJsonAsync<HuCorrectionHistoryResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            return (payload?.Items ?? new()).Select(item => new WpfHuCorrectionHistoryEntry(
+                item.AdjustmentId,
+                item.Action ?? string.Empty,
+                item.SourcePrdDocId,
+                item.CorDocId,
+                item.ReplacementPrdDocId,
+                item.ReasonText ?? string.Empty,
+                item.CreatedAt)).ToArray();
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("HU correction history failed", ex);
+            return Array.Empty<WpfHuCorrectionHistoryEntry>();
+        }
+    }
+
+    private sealed class HuCorrectionConfirmBody
+    {
+        [JsonPropertyName("request_id")]
+        public string RequestId { get; init; } = string.Empty;
+        [JsonPropertyName("hu_code")]
+        public string HuCode { get; init; } = string.Empty;
+        [JsonPropertyName("expected_action")]
+        public string ExpectedAction { get; init; } = string.Empty;
+        [JsonPropertyName("reason_text")]
+        public string ReasonText { get; init; } = string.Empty;
+        [JsonPropertyName("actor_name")]
+        public string? ActorName { get; init; }
+        [JsonPropertyName("device_name")]
+        public string? DeviceName { get; init; }
+        [JsonPropertyName("client_name")]
+        public string? ClientName { get; init; }
+        [JsonPropertyName("client_version")]
+        public string? ClientVersion { get; init; }
+    }
+
+    private sealed class HuCorrectionPreviewResponse
+    {
+        [JsonPropertyName("hu_code")]
+        public string? HuCode { get; init; }
+        [JsonPropertyName("action")]
+        public string? Action { get; init; }
+        [JsonPropertyName("can_confirm")]
+        public bool CanConfirm { get; init; }
+        [JsonPropertyName("source_pallet_id")]
+        public long? SourcePalletId { get; init; }
+        [JsonPropertyName("source_prd_doc_id")]
+        public long? SourcePrdDocId { get; init; }
+        [JsonPropertyName("source_prd_ref")]
+        public string? SourcePrdRef { get; init; }
+        [JsonPropertyName("marking_code_count")]
+        public int MarkingCodeCount { get; init; }
+        [JsonPropertyName("components")]
+        public List<HuCorrectionComponentResponse>? Components { get; init; }
+        [JsonPropertyName("ledger_inversion")]
+        public List<HuCorrectionLedgerLineResponse>? LedgerInversion { get; init; }
+        [JsonPropertyName("blockers")]
+        public List<HuCorrectionBlockerResponse>? Blockers { get; init; }
+    }
+
+    private sealed class HuCorrectionComponentResponse
+    {
+        [JsonPropertyName("item_name")]
+        public string? ItemName { get; init; }
+        [JsonPropertyName("planned_qty")]
+        public double PlannedQty { get; init; }
+        [JsonPropertyName("filled_qty")]
+        public double FilledQty { get; init; }
+    }
+
+    private sealed class HuCorrectionLedgerLineResponse
+    {
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+        [JsonPropertyName("location_id")]
+        public long LocationId { get; init; }
+        [JsonPropertyName("hu_code")]
+        public string? HuCode { get; init; }
+        [JsonPropertyName("source_qty")]
+        public double SourceQty { get; init; }
+        [JsonPropertyName("correction_qty")]
+        public double CorrectionQty { get; init; }
+    }
+
+    private sealed class HuCorrectionBlockerResponse
+    {
+        [JsonPropertyName("code")]
+        public string? Code { get; init; }
+        [JsonPropertyName("message")]
+        public string? Message { get; init; }
+    }
+
+    private sealed class HuCorrectionConfirmResponse
+    {
+        [JsonPropertyName("replay")]
+        public bool Replay { get; init; }
+        [JsonPropertyName("message")]
+        public string? Message { get; init; }
+        [JsonPropertyName("adjustment_id")]
+        public long? AdjustmentId { get; init; }
+        [JsonPropertyName("action")]
+        public string? Action { get; init; }
+        [JsonPropertyName("source_prd_doc_id")]
+        public long? SourcePrdDocId { get; init; }
+        [JsonPropertyName("cor_doc_id")]
+        public long? CorDocId { get; init; }
+        [JsonPropertyName("replacement_prd_doc_id")]
+        public long? ReplacementPrdDocId { get; init; }
+    }
+
+    private sealed class HuCorrectionHistoryResponse
+    {
+        [JsonPropertyName("items")]
+        public List<HuCorrectionHistoryItemResponse>? Items { get; init; }
+    }
+
+    private sealed class HuCorrectionHistoryItemResponse
+    {
+        [JsonPropertyName("adjustment_id")]
+        public long AdjustmentId { get; init; }
+        [JsonPropertyName("action")]
+        public string? Action { get; init; }
+        [JsonPropertyName("source_prd_doc_id")]
+        public long? SourcePrdDocId { get; init; }
+        [JsonPropertyName("cor_doc_id")]
+        public long? CorDocId { get; init; }
+        [JsonPropertyName("replacement_prd_doc_id")]
+        public long? ReplacementPrdDocId { get; init; }
+        [JsonPropertyName("reason_text")]
+        public string? ReasonText { get; init; }
+        [JsonPropertyName("created_at")]
+        public DateTime CreatedAt { get; init; }
+    }
+
+    private bool TryLoadConfigurationCore(out WpfProductionPalletApiConfiguration configuration)
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
         var baseUrl = ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl);
@@ -2071,3 +2348,58 @@ public sealed record WpfProducedStockReleaseApiResult(
         return new WpfProducedStockReleaseApiResult(false, message, 0, 0, 0, Array.Empty<string>(), 0);
     }
 }
+
+public sealed record WpfHuCorrectionBlocker(string Code, string Message);
+
+public sealed record WpfHuCorrectionComponent(string ItemName, double PlannedQty, double FilledQty);
+
+public sealed record WpfHuCorrectionLedgerLine(
+    long ItemId,
+    long LocationId,
+    string HuCode,
+    double SourceQty,
+    double CorrectionQty);
+
+public sealed record WpfHuCorrectionPreviewResult(
+    bool IsSuccess,
+    string Message,
+    string HuCode,
+    string? Action,
+    bool CanConfirm,
+    long? SourcePalletId,
+    long? SourcePrdDocId,
+    string? SourcePrdRef,
+    int MarkingCodeCount,
+    IReadOnlyList<WpfHuCorrectionComponent> Components,
+    IReadOnlyList<WpfHuCorrectionLedgerLine> LedgerInversion,
+    IReadOnlyList<WpfHuCorrectionBlocker> Blockers)
+{
+    public static WpfHuCorrectionPreviewResult Failure(string message) =>
+        new(false, message, string.Empty, null, false, null, null, null, 0,
+            Array.Empty<WpfHuCorrectionComponent>(),
+            Array.Empty<WpfHuCorrectionLedgerLine>(),
+            Array.Empty<WpfHuCorrectionBlocker>());
+}
+
+public sealed record WpfHuCorrectionConfirmResult(
+    bool IsSuccess,
+    string Message,
+    bool Replay,
+    long? AdjustmentId,
+    string? Action,
+    long? SourcePrdDocId,
+    long? CorDocId,
+    long? ReplacementPrdDocId)
+{
+    public static WpfHuCorrectionConfirmResult Failure(string message) =>
+        new(false, message, false, null, null, null, null, null);
+}
+
+public sealed record WpfHuCorrectionHistoryEntry(
+    long AdjustmentId,
+    string Action,
+    long? SourcePrdDocId,
+    long? CorDocId,
+    long? ReplacementPrdDocId,
+    string ReasonText,
+    DateTime CreatedAt);

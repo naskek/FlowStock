@@ -13,7 +13,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
+public sealed class PostgresDataStore : IDataStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -279,7 +279,6 @@ legacy_receipt_totals AS (
           SELECT 1
           FROM production_pallets pp
           WHERE pp.prd_doc_id = d.id
-            AND pp.status <> @pallet_cancelled_status
       )
     GROUP BY dl.order_line_id
 ),
@@ -625,7 +624,6 @@ confirmed_line_hu_sources AS (
           SELECT 1
           FROM production_pallets pp
           WHERE pp.prd_doc_id = d.id
-            AND pp.status <> 'CANCELLED'
       )
       AND NOT EXISTS (
           SELECT 1
@@ -893,9 +891,9 @@ pallet_source AS (
 ),
 pallet_summary AS (
     SELECT ps.order_id,
-           COUNT(*) FILTER (WHERE ps.status <> 'CANCELLED')::int AS planned_pallet_count,
+           COUNT(*) FILTER (WHERE ps.status IN ('PLANNED', 'PRINTED', 'FILLED'))::int AS planned_pallet_count,
            COUNT(*) FILTER (WHERE ps.status IN ('PLANNED', 'PRINTED', 'FILLED'))::int AS active_pallet_count,
-           COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status <> 'CANCELLED'), 0)::double precision AS planned_qty,
+           COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status IN ('PLANNED', 'PRINTED', 'FILLED')), 0)::double precision AS planned_qty,
            COUNT(*) FILTER (WHERE ps.status = 'FILLED')::int AS filled_pallet_count,
            COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status = 'FILLED'), 0)::double precision AS filled_qty
     FROM pallet_source ps
@@ -3706,7 +3704,7 @@ WHERE rn = 1
       SELECT 1
       FROM production_pallets existing
       WHERE existing.prd_doc_id = al.prd_doc_id
-        AND existing.status <> @cancelled_status
+        AND existing.status IN ('PLANNED', 'PRINTED', 'FILLED')
         AND (
             (al.pack_single_hu AND UPPER(BTRIM(existing.hu_code)) = UPPER(BTRIM(al.hu_code)))
             OR (NOT al.pack_single_hu AND existing.doc_line_id = al.doc_line_id)
@@ -3746,7 +3744,7 @@ INNER JOIN doc_lines dl ON dl.doc_id = p.prd_doc_id
                            OR (NOT dl.pack_single_hu AND dl.id = p.doc_line_id)
                        )
 WHERE p.prd_doc_id = @doc_id
-  AND p.status <> @cancelled_status
+  AND p.status IN ('PLANNED', 'PRINTED', 'FILLED')
   AND dl.qty > 0
   AND NOT EXISTS (
       SELECT 1
@@ -3841,8 +3839,8 @@ pallet_source AS (
     WHERE pp.prd_doc_id = ANY(@doc_ids)
 )
 SELECT ps.prd_doc_id,
-       COUNT(*) FILTER (WHERE ps.status <> @cancelled_status)::int AS planned_pallet_count,
-       COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status <> @cancelled_status), 0)::double precision AS planned_qty,
+       COUNT(*) FILTER (WHERE ps.status IN ('PLANNED', 'PRINTED', 'FILLED'))::int AS planned_pallet_count,
+       COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status IN ('PLANNED', 'PRINTED', 'FILLED')), 0)::double precision AS planned_qty,
        COUNT(*) FILTER (WHERE ps.status = @filled_status)::int AS filled_pallet_count,
        COALESCE(SUM(ps.planned_qty) FILTER (WHERE ps.status = @filled_status), 0)::double precision AS filled_qty,
        COUNT(*) FILTER (
@@ -3889,12 +3887,14 @@ GROUP BY ps.prd_doc_id;
             using var command = CreateCommand(connection, $@"
 {ProductionPalletSelectSql}
 WHERE UPPER(BTRIM(p.hu_code)) = UPPER(BTRIM(@hu_code))
-ORDER BY CASE WHEN p.status = @cancelled_status THEN 1 ELSE 0 END,
-         p.id
+  AND p.status IN (@planned_status, @printed_status, @filled_status)
+ORDER BY p.id DESC
 LIMIT 1;
 ");
             command.Parameters.AddWithValue("@hu_code", huCode);
-            command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            command.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+            command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
             using var reader = command.ExecuteReader();
             var pallet = reader.Read() ? ReadProductionPallet(reader) : null;
             reader.Close();
@@ -3916,13 +3916,15 @@ LIMIT 1;
             using var command = CreateCommand(connection, $@"
 {ProductionPalletSelectSql}
 WHERE UPPER(BTRIM(p.hu_code)) = UPPER(BTRIM(@hu_code))
-ORDER BY CASE WHEN p.status = @cancelled_status THEN 1 ELSE 0 END,
-         p.id
+  AND p.status IN (@planned_status, @printed_status, @filled_status)
+ORDER BY p.id DESC
 LIMIT 1
 FOR UPDATE OF p;
 ");
             command.Parameters.AddWithValue("@hu_code", huCode);
-            command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            command.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+            command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
             using var reader = command.ExecuteReader();
             var pallet = reader.Read() ? ReadProductionPallet(reader) : null;
             reader.Close();
@@ -3956,7 +3958,7 @@ INNER JOIN docs d ON d.id = pp.prd_doc_id
 LEFT JOIN orders o ON o.id = d.order_id
 WHERE d.type = @doc_type
   AND d.status <> @closed_status
-  AND pp.status <> @cancelled_status
+  AND pp.status IN ('PLANNED', 'PRINTED', 'FILLED')
   AND (o.id IS NULL OR o.status NOT IN (@shipped_order_status, @cancelled_order_status, @merged_order_status))
 GROUP BY d.id,
          d.doc_ref,
@@ -4013,11 +4015,9 @@ ORDER BY d.created_at DESC,
 SELECT 1
 FROM production_pallets
 WHERE prd_doc_id = @doc_id
-  AND status <> @cancelled_status
 LIMIT 1;
 ");
             command.Parameters.AddWithValue("@doc_id", docId);
-            command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
             return command.ExecuteScalar() != null;
         });
     }
@@ -4046,7 +4046,7 @@ LIMIT 1;
 SELECT 1
 FROM production_pallets
 WHERE prd_doc_id = @doc_id
-  AND status <> @cancelled_status
+  AND status IN ('PLANNED', 'PRINTED', 'FILLED')
   AND (
       status <> @planned_status
       OR EXISTS (
@@ -4497,7 +4497,7 @@ deleted_hus AS (
           FROM production_pallets pp
           WHERE pp.id NOT IN (SELECT id FROM target_pallets)
             AND UPPER(BTRIM(pp.hu_code)) = UPPER(BTRIM(h.hu_code))
-            AND pp.status <> @cancelled_status
+            AND pp.status IN ('PLANNED', 'PRINTED', 'FILLED')
       )
     RETURNING h.hu_code
 ),
@@ -4566,7 +4566,7 @@ FROM production_pallets pp
 INNER JOIN doc_lines dl ON dl.id = pp.doc_line_id
 INNER JOIN target_lines tl ON tl.item_id = pp.item_id
 WHERE pp.prd_doc_id = @source_prd_doc_id
-  AND pp.status <> @cancelled_status
+  AND pp.status IN ('PLANNED', 'PRINTED', 'FILLED')
   AND dl.doc_id = @source_prd_doc_id;
 "))
             {
@@ -4590,7 +4590,7 @@ WHERE pp.prd_doc_id = @source_prd_doc_id
 SELECT DISTINCT pp.hu_code
 FROM production_pallets pp
 WHERE pp.prd_doc_id = @source_prd_doc_id
-  AND pp.status <> @cancelled_status
+  AND pp.status IN ('PLANNED', 'PRINTED', 'FILLED')
 ORDER BY pp.hu_code;
 "))
             {
@@ -4924,7 +4924,7 @@ SELECT
 SELECT COUNT(*)
 FROM production_pallets
 WHERE prd_doc_id = @doc_id
-  AND status <> @cancelled_status;
+  AND status IN ('PLANNED', 'PRINTED', 'FILLED');
 "))
         {
             countPallets.Parameters.AddWithValue("@doc_id", docId);
@@ -4968,7 +4968,7 @@ WHERE COALESCE(h.created_by, '') = @plan_created_by
       FROM production_pallets pp
       WHERE pp.prd_doc_id <> @doc_id
         AND UPPER(BTRIM(pp.hu_code)) = UPPER(BTRIM(h.hu_code))
-        AND pp.status <> @cancelled_status
+        AND pp.status IN ('PLANNED', 'PRINTED', 'FILLED')
   );
 ");
             deleteHus.Parameters.AddWithValue("@doc_id", docId);
@@ -5208,8 +5208,7 @@ SET status = @filled_status,
     filled_at = @filled_at,
     filled_by_device_id = @device_id
 WHERE id = @id
-  AND status <> @filled_status
-  AND status <> @cancelled_status;
+  AND status IN (@planned_status, @printed_status);
 
 UPDATE production_pallet_lines
 SET filled_qty = planned_qty,
@@ -5218,7 +5217,8 @@ WHERE production_pallet_id = @id;
 ");
             command.Parameters.AddWithValue("@id", palletId);
             command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
-            command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            command.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
             command.Parameters.AddWithValue("@filled_at", ToDbDate(filledAt));
             command.Parameters.AddWithValue("@device_id", string.IsNullOrWhiteSpace(deviceId) ? DBNull.Value : deviceId.Trim());
             command.ExecuteNonQuery();
@@ -5267,8 +5267,7 @@ WHERE production_pallet_id = @pallet_id
 UPDATE production_pallets
 SET status = @cancelled_status
 WHERE id = ANY(@pallet_ids)
-  AND status <> @cancelled_status
-  AND status <> @filled_status
+  AND status IN (@planned_status, @printed_status)
   AND NOT EXISTS (
       SELECT 1 FROM production_pallet_lines progress
       WHERE progress.production_pallet_id = production_pallets.id
@@ -5277,7 +5276,8 @@ WHERE id = ANY(@pallet_ids)
 ");
             command.Parameters.AddWithValue("@pallet_ids", palletIds.ToArray());
             command.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
-            command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
+            command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            command.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
             command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
             return command.ExecuteNonQuery();
         });
@@ -6144,7 +6144,6 @@ confirmed_line_hu_sources AS (
           SELECT 1
           FROM production_pallets pp
           WHERE pp.prd_doc_id = d.id
-            AND pp.status <> @pallet_cancelled_status
       )
       AND NOT EXISTS (
           SELECT 1
@@ -6259,7 +6258,6 @@ legacy_receipt_totals AS (
           SELECT 1
           FROM production_pallets pp
           WHERE pp.prd_doc_id = d.id
-            AND pp.status <> @pallet_cancelled_status
       )
       AND NOT EXISTS (
           SELECT 1
@@ -6306,7 +6304,6 @@ unlinked_receipt_totals AS (
           SELECT 1
           FROM production_pallets pp
           WHERE pp.prd_doc_id = d.id
-            AND pp.status <> @pallet_cancelled_status
       )
       AND NOT EXISTS (
           SELECT 1
@@ -7856,7 +7853,7 @@ filling_progress AS (
     INNER JOIN docs d ON d.id = pp.prd_doc_id
     LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
     LEFT JOIN order_lines ol ON ol.id = COALESCE(pll.order_line_id, pp.order_line_id)
-    WHERE pp.status <> 'CANCELLED'
+    WHERE pp.status IN ('PLANNED', 'PRINTED', 'FILLED')
       AND (
           pp.status = 'FILLED'
           OR pp.filled_at IS NOT NULL
@@ -8765,7 +8762,6 @@ legacy_receipt_totals AS (
           SELECT 1
           FROM production_pallets pp
           WHERE pp.prd_doc_id = d.id
-            AND pp.status <> @pallet_cancelled_status
       )
       AND NOT EXISTS (
           SELECT 1
@@ -8873,7 +8869,6 @@ confirmed_by_line_hu_sources AS (
           SELECT 1
           FROM production_pallets pp
           WHERE pp.prd_doc_id = d.id
-            AND pp.status <> @pallet_cancelled_status
       )
       AND NOT EXISTS (
           SELECT 1
@@ -9280,7 +9275,6 @@ legacy_receipt_totals AS (
           SELECT 1
           FROM production_pallets pp
           WHERE pp.prd_doc_id = d.id
-            AND pp.status <> @pallet_cancelled_status
       )
       AND NOT EXISTS (
           SELECT 1
@@ -9582,7 +9576,6 @@ customer_legacy_receipt_by_line AS (
           SELECT 1
           FROM production_pallets pp
           WHERE pp.prd_doc_id = d.id
-            AND pp.status <> @cancelled_pallet_status
       )
     GROUP BY dl.order_line_id
 ),
@@ -9650,7 +9643,6 @@ internal_direct_by_line AS (
           SELECT 1
           FROM production_pallets pp
           WHERE pp.prd_doc_id = d.id
-            AND pp.status <> @cancelled_pallet_status
       )
     GROUP BY dl.order_line_id
 ),
@@ -9697,7 +9689,6 @@ internal_unlinked_by_item AS (
           SELECT 1
           FROM production_pallets pp
           WHERE pp.prd_doc_id = d.id
-            AND pp.status <> @cancelled_pallet_status
       )
     GROUP BY d.order_id,
              dl.item_id
@@ -10011,7 +10002,6 @@ linked_receipt_by_line AS (
           SELECT 1
           FROM production_pallets pp
           WHERE pp.prd_doc_id = d.id
-            AND pp.status <> @cancelled_pallet_status
       )
     GROUP BY dl.order_line_id
 ),
@@ -10053,7 +10043,6 @@ unlinked_by_item AS (
           SELECT 1
           FROM production_pallets pp
           WHERE pp.prd_doc_id = d.id
-            AND pp.status <> @cancelled_pallet_status
       )
     GROUP BY d.order_id,
              dl.item_id
@@ -11084,7 +11073,6 @@ produced_by_line AS (
               SELECT 1
               FROM production_pallets pp
               WHERE pp.prd_doc_id = d.id
-                AND pp.status <> @cancelled_pallet_status
           )
     ) source
     WHERE source.qty > @qty_tolerance
@@ -11131,6 +11119,16 @@ SELECT EXISTS (
 
     public void ReplaceOrderReceiptPlanLines(long orderId, IReadOnlyList<OrderReceiptPlanLine> lines)
     {
+        if (_transaction == null)
+        {
+            ExecuteAtomic(store =>
+            {
+                store.ReplaceOrderReceiptPlanLines(orderId, lines);
+                return 0;
+            });
+            return;
+        }
+
         WithConnection(connection =>
         {
             var normalizedHuCodes = (lines ?? Array.Empty<OrderReceiptPlanLine>())
@@ -11138,6 +11136,14 @@ SELECT EXISTS (
                 .Select(line => line.ToHu!.Trim().ToUpperInvariant())
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
+            if (!LockOrdersForUpdate(new[] { orderId }))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
+            LockNormalizedHus(
+                GetReservationHus(connection, new[] { orderId }, orderLineIds: null)
+                    .Concat(normalizedHuCodes)
+                    .ToArray());
 
             if (normalizedHuCodes.Length > 0)
             {
@@ -11227,6 +11233,16 @@ VALUES(@order_id, @order_line_id, @item_id, @qty_planned, @to_location_id, @to_h
             .ToArray();
         var lines = replacementLines ?? Array.Empty<OrderReceiptPlanLine>();
 
+        if (_transaction == null)
+        {
+            ExecuteAtomic(store =>
+            {
+                store.ReplaceOrderReceiptPlanLinesForOrderLines(orderId, affectedLineIds, lines);
+                return 0;
+            });
+            return;
+        }
+
         WithConnection(connection =>
         {
             var ownsTransaction = _transaction == null;
@@ -11244,6 +11260,14 @@ VALUES(@order_id, @order_line_id, @item_id, @qty_planned, @to_location_id, @to_h
                     .Select(line => line.ToHu!.Trim().ToUpperInvariant())
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray();
+                if (!LockOrdersForUpdate(new[] { orderId }))
+                {
+                    throw new InvalidOperationException("Заказ не найден.");
+                }
+                LockNormalizedHus(
+                    GetReservationHus(connection, new[] { orderId }, affectedLineIds)
+                        .Concat(normalizedHuCodes)
+                        .ToArray());
 
                 if (normalizedHuCodes.Length > 0)
                 {
@@ -11368,6 +11392,16 @@ VALUES(@order_id, @order_line_id, @item_id, @qty_planned, @to_location_id, @to_h
         var scopeOrderIds = scopeKeys.Select(scope => scope.OrderId).ToArray();
         var scopeLineIds = scopeKeys.Select(scope => scope.OrderLineId).ToArray();
 
+        if (_transaction == null)
+        {
+            ExecuteAtomic(store =>
+            {
+                store.ReplaceOrderReceiptPlanLinesBatch(scopeKeys, lines);
+                return 0;
+            });
+            return;
+        }
+
         WithConnection(connection =>
         {
             var ownsTransaction = _transaction == null;
@@ -11385,6 +11419,14 @@ VALUES(@order_id, @order_line_id, @item_id, @qty_planned, @to_location_id, @to_h
                     .Select(line => line.ToHu!.Trim().ToUpperInvariant())
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray();
+                if (!LockOrdersForUpdate(scopeOrderIds))
+                {
+                    throw new InvalidOperationException("Заказ не найден.");
+                }
+                LockNormalizedHus(
+                    GetReservationHus(connection, scopeOrderIds, scopeLineIds)
+                        .Concat(normalizedHuCodes)
+                        .ToArray());
 
                 if (normalizedHuCodes.Length > 0)
                 {
@@ -11665,6 +11707,16 @@ WHERE ol.order_id = @order_id
 
     public void DeleteOrderLine(long orderLineId)
     {
+        if (_transaction == null)
+        {
+            ExecuteAtomic(store =>
+            {
+                store.DeleteOrderLine(orderLineId);
+                return 0;
+            });
+            return;
+        }
+
         WithConnection(connection =>
         {
             var orderId = GetOrderIdByOrderLineId(connection, orderLineId);
@@ -11678,6 +11730,16 @@ WHERE ol.order_id = @order_id
 
     public void DeleteOrderLines(long orderId)
     {
+        if (_transaction == null)
+        {
+            ExecuteAtomic(store =>
+            {
+                store.DeleteOrderLines(orderId);
+                return 0;
+            });
+            return;
+        }
+
         WithConnection(connection =>
         {
             DeleteOrderLinesCore(connection, orderId, GetOrderLineIds(connection, orderId));
@@ -11687,6 +11749,16 @@ WHERE ol.order_id = @order_id
 
     public void DeleteOrder(long orderId)
     {
+        if (_transaction == null)
+        {
+            ExecuteAtomic(store =>
+            {
+                store.DeleteOrder(orderId);
+                return 0;
+            });
+            return;
+        }
+
         WithConnection(connection =>
         {
             DeleteOrderLinesCore(connection, orderId, GetOrderLineIds(connection, orderId));
@@ -11710,6 +11782,12 @@ WHERE ol.order_id = @order_id
         {
             return;
         }
+
+        if (!LockOrdersForUpdate(new[] { orderId }))
+        {
+            throw new InvalidOperationException("Заказ не найден.");
+        }
+        LockNormalizedHus(GetReservationHus(connection, new[] { orderId }, ids));
 
         EnsureOrderLinesCanBeDeleted(connection, orderId, ids);
         ClearRemovableProductionPalletPlanForOrderLines(connection, orderId, ids);
@@ -12011,6 +12089,8 @@ FOR UPDATE;
             }
         }
 
+        LockNormalizedHus(GetReservationHus(connection, new[] { orderId }, new[] { orderLineId }));
+
         using (var lineCommand = CreateCommand(connection, @"
 SELECT COUNT(*) FILTER (WHERE id = @order_line_id) AS target_count,
        COUNT(*) AS line_count
@@ -12073,7 +12153,8 @@ WITH target_pallets AS (
     FROM production_pallets pp
     LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
     WHERE pp.order_id = @order_id
-      AND COALESCE(NULLIF(BTRIM(pp.status), ''), @planned_status) <> @cancelled_status
+      AND COALESCE(NULLIF(BTRIM(pp.status), ''), @planned_status)
+          IN (@planned_status, @printed_status, @filled_status)
       AND (pp.order_line_id = @order_line_id OR pll.order_line_id = @order_line_id)
 ),
 qty_by_pallet AS (
@@ -12105,7 +12186,8 @@ ORDER BY pp.id;
             palletCommand.Parameters.AddWithValue("@order_id", orderId);
             palletCommand.Parameters.AddWithValue("@order_line_id", orderLineId);
             palletCommand.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
-            palletCommand.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
+            palletCommand.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+            palletCommand.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
             palletCommand.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
             using var reader = palletCommand.ExecuteReader();
             while (reader.Read())
@@ -12884,11 +12966,17 @@ LIMIT @limit OFFSET @offset;");
 
     public void AddLedgerEntry(LedgerEntry entry)
     {
-        WithConnection(connection =>
+        AddLedgerEntryReturningId(entry);
+    }
+
+    public long AddLedgerEntryReturningId(LedgerEntry entry)
+    {
+        return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
 INSERT INTO ledger(ts, doc_id, item_id, location_id, qty_delta, hu_code, hu)
-VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu_code, @hu);
+VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu_code, @hu)
+RETURNING id;
 ");
             command.Parameters.AddWithValue("@ts", ToDbDate(entry.Timestamp));
             command.Parameters.AddWithValue("@doc_id", entry.DocId);
@@ -12897,8 +12985,7 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta, @hu_code, @hu);
             command.Parameters.AddWithValue("@qty_delta", entry.QtyDelta);
             command.Parameters.AddWithValue("@hu_code", string.IsNullOrWhiteSpace(entry.HuCode) ? DBNull.Value : entry.HuCode);
             command.Parameters.AddWithValue("@hu", string.IsNullOrWhiteSpace(entry.HuCode) ? DBNull.Value : entry.HuCode);
-            command.ExecuteNonQuery();
-            return 0;
+            return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
         });
     }
 
@@ -15115,6 +15202,694 @@ RETURNING id;
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source ?? string.Empty))).ToLowerInvariant();
     }
 
+    public void LockNormalizedHus(IReadOnlyCollection<string> normalizedHus)
+    {
+        if (_transaction == null)
+        {
+            throw new InvalidOperationException("HU lock разрешён только внутри транзакции.");
+        }
+
+        WithConnection(connection =>
+        {
+            foreach (var hu in normalizedHus
+                         .Where(value => !string.IsNullOrWhiteSpace(value))
+                         .Select(value => value.Trim().ToUpperInvariant())
+                         .Distinct(StringComparer.Ordinal)
+                         .OrderBy(value => value, StringComparer.Ordinal))
+            {
+                using var command = CreateCommand(
+                    connection,
+                    "SELECT pg_advisory_xact_lock(73421, hashtext(@hu_code));");
+                command.Parameters.AddWithValue("@hu_code", hu);
+                command.ExecuteNonQuery();
+            }
+            return 0;
+        });
+    }
+
+    public void LockDocumentsForUpdate(IReadOnlyCollection<long> documentIds)
+    {
+        if (_transaction == null)
+        {
+            throw new InvalidOperationException("Document lock разрешён только внутри транзакции.");
+        }
+
+        var ids = documentIds.Distinct().OrderBy(id => id).ToArray();
+        if (ids.Length == 0)
+        {
+            return;
+        }
+
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id FROM docs WHERE id = ANY(@ids) ORDER BY id FOR UPDATE;
+");
+            command.Parameters.Add("@ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    private IReadOnlyList<string> GetReservationHus(
+        NpgsqlConnection connection,
+        IReadOnlyCollection<long> orderIds,
+        IReadOnlyCollection<long>? orderLineIds)
+    {
+        var normalizedOrderIds = orderIds.Where(id => id > 0).Distinct().ToArray();
+        if (normalizedOrderIds.Length == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        using var command = CreateCommand(connection, @"
+SELECT DISTINCT UPPER(BTRIM(to_hu))
+FROM order_receipt_plan_lines
+WHERE order_id = ANY(@order_ids)
+  AND (@all_lines OR order_line_id = ANY(@order_line_ids))
+  AND to_hu IS NOT NULL
+  AND BTRIM(to_hu) <> ''
+ORDER BY UPPER(BTRIM(to_hu));
+");
+        command.Parameters.Add("@order_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = normalizedOrderIds;
+        var normalizedLineIds = orderLineIds?.Where(id => id > 0).Distinct().ToArray() ?? Array.Empty<long>();
+        command.Parameters.AddWithValue("@all_lines", orderLineIds == null);
+        command.Parameters.Add("@order_line_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = normalizedLineIds;
+        using var reader = command.ExecuteReader();
+        var result = new List<string>();
+        while (reader.Read())
+        {
+            result.Add(reader.GetString(0));
+        }
+        return result;
+    }
+
+    public ProductionPalletFillingAdjustment? GetFillingAdjustment(Guid requestId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, request_id, payload_hash, action_type, source_pallet_id,
+       root_pallet_id, replacement_pallet_id, result_json
+FROM production_pallet_filling_adjustments
+WHERE request_id = @request_id;
+");
+            command.Parameters.AddWithValue("@request_id", requestId);
+            using var reader = command.ExecuteReader();
+            return reader.Read()
+                ? new ProductionPalletFillingAdjustment
+                {
+                    Id = reader.GetInt64(0),
+                    RequestId = reader.GetGuid(1),
+                    PayloadHash = reader.GetString(2),
+                    Action = reader.GetString(3),
+                    SourcePalletId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                    RootPalletId = reader.IsDBNull(5) ? null : reader.GetInt64(5),
+                    ReplacementPalletId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                    ResultJson = reader.IsDBNull(7) ? null : reader.GetString(7)
+                }
+                : null;
+        });
+    }
+
+    public ProductionPalletFillingAdjustment? GetPredecessorFillingAdjustment(long sourcePalletId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, request_id, payload_hash, action_type, source_pallet_id,
+       root_pallet_id, replacement_pallet_id, result_json
+FROM production_pallet_filling_adjustments
+WHERE replacement_pallet_id = @source_pallet_id
+  AND action_type = 'CORRECT_FILLED'
+  AND result_json IS NOT NULL
+ORDER BY id DESC
+LIMIT 1;
+");
+            command.Parameters.AddWithValue("@source_pallet_id", sourcePalletId);
+            using var reader = command.ExecuteReader();
+            return reader.Read()
+                ? new ProductionPalletFillingAdjustment
+                {
+                    Id = reader.GetInt64(0),
+                    RequestId = reader.GetGuid(1),
+                    PayloadHash = reader.GetString(2),
+                    Action = reader.GetString(3),
+                    SourcePalletId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                    RootPalletId = reader.IsDBNull(5) ? null : reader.GetInt64(5),
+                    ReplacementPalletId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                    ResultJson = reader.IsDBNull(7) ? null : reader.GetString(7)
+                }
+                : null;
+        });
+    }
+
+    public bool TryClaimFillingAdjustment(
+        Guid requestId,
+        string payloadHash,
+        string action,
+        string reasonCode,
+        string reasonText,
+        string? actorName,
+        string? deviceName,
+        string? clientName,
+        string? clientVersion,
+        DateTime createdAt,
+        out long adjustmentId)
+    {
+        var claimedId = WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO production_pallet_filling_adjustments(
+    action_type, request_id, payload_hash, reason_code, reason_text,
+    actor_name, device_name, client_name, client_version, created_at)
+VALUES(
+    @action_type, @request_id, @payload_hash, @reason_code, @reason_text,
+    @actor_name, @device_name, @client_name, @client_version, @created_at)
+ON CONFLICT (request_id) DO NOTHING
+RETURNING id;
+");
+            command.Parameters.AddWithValue("@action_type", action);
+            command.Parameters.AddWithValue("@request_id", requestId);
+            command.Parameters.AddWithValue("@payload_hash", payloadHash);
+            command.Parameters.AddWithValue("@reason_code", reasonCode);
+            command.Parameters.AddWithValue("@reason_text", reasonText);
+            command.Parameters.AddWithValue("@actor_name", DbValue(actorName));
+            command.Parameters.AddWithValue("@device_name", DbValue(deviceName));
+            command.Parameters.AddWithValue("@client_name", DbValue(clientName));
+            command.Parameters.AddWithValue("@client_version", DbValue(clientVersion));
+            command.Parameters.AddWithValue("@created_at", ToDbDate(createdAt));
+            var result = command.ExecuteScalar();
+            return result == null || result == DBNull.Value
+                ? (long?)null
+                : Convert.ToInt64(result, CultureInfo.InvariantCulture);
+        });
+
+        adjustmentId = claimedId ?? 0;
+        return claimedId.HasValue;
+    }
+
+    public void CompleteFillingAdjustment(
+        long adjustmentId,
+        long sourcePalletId,
+        long rootPalletId,
+        long sourcePrdDocId,
+        long? corDocId,
+        long? replacementPalletId,
+        long? replacementPrdDocId,
+        long? predecessorAdjustmentId,
+        string resultJson)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE production_pallet_filling_adjustments
+SET source_pallet_id = @source_pallet_id,
+    root_pallet_id = @root_pallet_id,
+    source_prd_doc_id = @source_prd_doc_id,
+    cor_doc_id = @cor_doc_id,
+    replacement_pallet_id = @replacement_pallet_id,
+    replacement_prd_doc_id = @replacement_prd_doc_id,
+    predecessor_adjustment_id = @predecessor_adjustment_id,
+    result_json = @result_json
+WHERE id = @id AND result_json IS NULL;
+");
+            command.Parameters.AddWithValue("@id", adjustmentId);
+            command.Parameters.AddWithValue("@source_pallet_id", sourcePalletId);
+            command.Parameters.AddWithValue("@root_pallet_id", rootPalletId);
+            command.Parameters.AddWithValue("@source_prd_doc_id", sourcePrdDocId);
+            command.Parameters.AddWithValue("@cor_doc_id", DbValue(corDocId));
+            command.Parameters.AddWithValue("@replacement_pallet_id", DbValue(replacementPalletId));
+            command.Parameters.AddWithValue("@replacement_prd_doc_id", DbValue(replacementPrdDocId));
+            command.Parameters.AddWithValue("@predecessor_adjustment_id", DbValue(predecessorAdjustmentId));
+            command.Parameters.AddWithValue("@result_json", resultJson);
+            if (command.ExecuteNonQuery() != 1)
+            {
+                throw new InvalidOperationException("Adjustment уже завершён или не найден.");
+            }
+            return 0;
+        });
+    }
+
+    public IReadOnlyList<ProductionPalletFillingCorrectionHistoryEntry> GetFillingCorrectionHistory(string normalizedHu)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT a.id, a.action_type, COALESCE(sp.hu_code, rp.hu_code, ''), a.source_pallet_id,
+       a.source_prd_doc_id, a.cor_doc_id, a.replacement_pallet_id,
+       a.replacement_prd_doc_id, a.reason_text, a.created_at
+FROM production_pallet_filling_adjustments a
+LEFT JOIN production_pallets sp ON sp.id = a.source_pallet_id
+LEFT JOIN production_pallets rp ON rp.id = a.replacement_pallet_id
+WHERE a.result_json IS NOT NULL
+  AND UPPER(BTRIM(COALESCE(sp.hu_code, rp.hu_code, ''))) = @hu_code
+ORDER BY a.id;
+");
+            command.Parameters.AddWithValue("@hu_code", normalizedHu);
+            using var reader = command.ExecuteReader();
+            var result = new List<ProductionPalletFillingCorrectionHistoryEntry>();
+            while (reader.Read())
+            {
+                result.Add(new ProductionPalletFillingCorrectionHistoryEntry
+                {
+                    AdjustmentId = reader.GetInt64(0),
+                    Action = reader.GetString(1),
+                    HuCode = reader.GetString(2),
+                    SourcePalletId = reader.IsDBNull(3) ? null : reader.GetInt64(3),
+                    SourcePrdDocId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                    CorDocId = reader.IsDBNull(5) ? null : reader.GetInt64(5),
+                    ReplacementPalletId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                    ReplacementPrdDocId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+                    ReasonText = reader.GetString(8),
+                    CreatedAt = FromDbDate(reader.GetString(9)) ?? DateTime.MinValue
+                });
+            }
+            return result;
+        });
+    }
+
+    public IReadOnlyList<LedgerEntry> GetLedgerEntriesForHu(string normalizedHu)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, ts, doc_id, item_id, location_id, qty_delta, COALESCE(hu_code, hu)
+FROM ledger
+WHERE UPPER(BTRIM(COALESCE(hu_code, hu, ''))) = @hu_code
+ORDER BY id;
+");
+            command.Parameters.AddWithValue("@hu_code", normalizedHu);
+            using var reader = command.ExecuteReader();
+            var result = new List<LedgerEntry>();
+            while (reader.Read())
+            {
+                result.Add(new LedgerEntry
+                {
+                    Id = reader.GetInt64(0),
+                    Timestamp = FromDbDate(reader.GetString(1)) ?? DateTime.MinValue,
+                    DocId = reader.GetInt64(2),
+                    ItemId = reader.GetInt64(3),
+                    LocationId = reader.GetInt64(4),
+                    QtyDelta = reader.GetDouble(5),
+                    HuCode = reader.IsDBNull(6) ? null : reader.GetString(6)
+                });
+            }
+            return result;
+        });
+    }
+
+    public bool HasActiveReservationForHu(string normalizedHu)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT EXISTS(
+    SELECT 1
+    FROM order_receipt_plan_lines p
+    INNER JOIN orders o ON o.id = p.order_id
+    WHERE UPPER(BTRIM(COALESCE(p.to_hu, ''))) = @hu_code
+      AND p.qty_planned > @qty_tolerance
+      AND o.status NOT IN ('SHIPPED', 'CANCELLED', 'MERGED')
+);
+");
+            command.Parameters.AddWithValue("@hu_code", normalizedHu);
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            return Convert.ToBoolean(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+        });
+    }
+
+    public bool HasActiveDraftReference(string normalizedHu, long? excludedDocId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT EXISTS(
+    SELECT 1
+    FROM docs d
+    INNER JOIN doc_lines dl ON dl.doc_id = d.id
+    WHERE d.status = 'DRAFT'
+      AND (@excluded_doc_id::bigint IS NULL OR d.id <> @excluded_doc_id::bigint)
+      AND dl.qty > @qty_tolerance
+      AND NOT EXISTS (
+          SELECT 1 FROM doc_lines newer WHERE newer.replaces_line_id = dl.id
+      )
+      AND (
+          UPPER(BTRIM(COALESCE(dl.from_hu, ''))) = @hu_code
+          OR UPPER(BTRIM(COALESCE(dl.to_hu, ''))) = @hu_code
+      )
+);
+");
+            command.Parameters.AddWithValue("@hu_code", normalizedHu);
+            command.Parameters.AddWithValue("@excluded_doc_id", DbValue(excludedDocId));
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+            return Convert.ToBoolean(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+        });
+    }
+
+    public IReadOnlyList<ProductionPalletCorrectionMarkingCode> LockReceiptMarkingCodes(long sourcePrdDocId)
+    {
+        return WithConnection(connection =>
+        {
+            var lockClause = _transaction == null ? string.Empty : "FOR UPDATE OF c";
+            using var command = CreateCommand(connection, $@"
+SELECT c.id, c.marking_order_id, c.import_id, c.origin, mo.order_line_id, c.status,
+       c.receipt_doc_id, c.receipt_line_id, c.applied_at, c.reported_at, c.introduced_at
+FROM marking_code c
+INNER JOIN marking_order mo ON mo.id = c.marking_order_id
+WHERE c.receipt_doc_id = @doc_id
+ORDER BY c.id
+{lockClause};
+");
+            command.Parameters.AddWithValue("@doc_id", sourcePrdDocId);
+            using var reader = command.ExecuteReader();
+            var result = new List<ProductionPalletCorrectionMarkingCode>();
+            while (reader.Read())
+            {
+                result.Add(new ProductionPalletCorrectionMarkingCode
+                {
+                    Id = reader.GetGuid(0),
+                    MarkingOrderId = reader.GetGuid(1),
+                    ImportId = reader.GetGuid(2),
+                    Origin = reader.GetString(3),
+                    MarkingOrderLineId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                    Status = reader.GetString(5),
+                    ReceiptDocId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                    ReceiptLineId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+                    AppliedAtRaw = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    AppliedAt = FromDbDate(reader.IsDBNull(8) ? null : reader.GetString(8)),
+                    ReportedAt = FromDbDate(reader.IsDBNull(9) ? null : reader.GetString(9)),
+                    IntroducedAt = FromDbDate(reader.IsDBNull(10) ? null : reader.GetString(10))
+                });
+            }
+            return result;
+        });
+    }
+
+    public int RollbackReceiptMarkingCodes(
+        long adjustmentId,
+        long sourcePrdDocId,
+        long corDocId,
+        IReadOnlyList<ProductionPalletCorrectionMarkingCode> codes,
+        string reasonText,
+        string? actorName,
+        string? deviceName,
+        DateTime changedAt)
+    {
+        return WithConnection(connection =>
+        {
+            var updated = 0;
+            foreach (var code in codes.OrderBy(value => value.Id))
+            {
+                using (var audit = CreateCommand(connection, @"
+INSERT INTO production_marking_transition_audit(
+    adjustment_id, marking_code_id, marking_order_id, import_id, origin,
+    source_prd_doc_id, cor_doc_id, old_receipt_doc_id, old_receipt_line_id,
+    old_applied_at, old_status, new_status, reason_text,
+    actor_name, device_name, changed_at)
+VALUES(
+    @adjustment_id, @marking_code_id, @marking_order_id, @import_id, @origin,
+    @source_prd_doc_id, @cor_doc_id, @old_receipt_doc_id, @old_receipt_line_id,
+    @old_applied_at, @old_status, @new_status, @reason_text,
+    @actor_name, @device_name, @changed_at);
+"))
+                {
+                    audit.Parameters.AddWithValue("@adjustment_id", adjustmentId);
+                    audit.Parameters.AddWithValue("@marking_code_id", code.Id);
+                    audit.Parameters.AddWithValue("@marking_order_id", code.MarkingOrderId);
+                    audit.Parameters.AddWithValue("@import_id", code.ImportId);
+                    audit.Parameters.AddWithValue("@origin", code.Origin);
+                    audit.Parameters.AddWithValue("@source_prd_doc_id", sourcePrdDocId);
+                    audit.Parameters.AddWithValue("@cor_doc_id", corDocId);
+                    audit.Parameters.AddWithValue("@old_receipt_doc_id", DbValue(code.ReceiptDocId));
+                    audit.Parameters.AddWithValue("@old_receipt_line_id", DbValue(code.ReceiptLineId));
+                    audit.Parameters.AddWithValue(
+                        "@old_applied_at",
+                        DbValue(code.AppliedAtRaw));
+                    audit.Parameters.AddWithValue("@old_status", code.Status);
+                    audit.Parameters.AddWithValue("@new_status", MarkingCodeStatus.Reserved);
+                    audit.Parameters.AddWithValue("@reason_text", reasonText);
+                    audit.Parameters.AddWithValue("@actor_name", DbValue(actorName));
+                    audit.Parameters.AddWithValue("@device_name", DbValue(deviceName));
+                    audit.Parameters.AddWithValue("@changed_at", ToDbDate(changedAt));
+                    audit.ExecuteNonQuery();
+                }
+
+                using var update = CreateCommand(connection, @"
+UPDATE marking_code
+SET status = @new_status, receipt_doc_id = NULL, receipt_line_id = NULL,
+    applied_at = NULL, updated_at = @changed_at
+WHERE id = @id
+  AND status = @old_status
+  AND receipt_doc_id = @source_prd_doc_id
+  AND receipt_line_id = @old_receipt_line_id
+  AND marking_order_id = @marking_order_id
+  AND import_id = @import_id
+  AND origin = @origin
+  AND applied_at IS NOT DISTINCT FROM @old_applied_at
+  AND reported_at IS NULL
+  AND introduced_at IS NULL;
+");
+                update.Parameters.AddWithValue("@new_status", MarkingCodeStatus.Reserved);
+                update.Parameters.AddWithValue("@old_status", MarkingCodeStatus.Applied);
+                update.Parameters.AddWithValue("@changed_at", ToDbDate(changedAt));
+                update.Parameters.AddWithValue("@id", code.Id);
+                update.Parameters.AddWithValue("@source_prd_doc_id", sourcePrdDocId);
+                update.Parameters.AddWithValue("@old_receipt_line_id", DbValue(code.ReceiptLineId));
+                update.Parameters.AddWithValue("@marking_order_id", code.MarkingOrderId);
+                update.Parameters.AddWithValue("@import_id", code.ImportId);
+                update.Parameters.AddWithValue("@origin", code.Origin);
+                update.Parameters.AddWithValue(
+                    "@old_applied_at",
+                    DbValue(code.AppliedAtRaw));
+                if (update.ExecuteNonQuery() != 1)
+                {
+                    throw new InvalidOperationException("MARKING_CODES_CHANGED_DURING_CORRECTION");
+                }
+                updated++;
+            }
+            return updated;
+        });
+    }
+
+    public void MarkProductionPalletCorrected(long palletId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE production_pallets
+SET status = @corrected_status
+WHERE id = @id AND status = @filled_status;
+");
+            command.Parameters.AddWithValue("@id", palletId);
+            command.Parameters.AddWithValue("@corrected_status", ProductionPalletStatus.Corrected);
+            command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
+            if (command.ExecuteNonQuery() != 1)
+            {
+                throw new InvalidOperationException("CORRECTION_STATE_CHANGED");
+            }
+            return 0;
+        });
+    }
+
+    public void ResetPartialProductionPallet(long palletId)
+    {
+        WithConnection(connection =>
+        {
+            using (var lines = CreateCommand(connection, @"
+UPDATE production_pallet_lines
+SET filled_qty = 0, filled_at = NULL
+WHERE production_pallet_id = @pallet_id;
+"))
+            {
+                lines.Parameters.AddWithValue("@pallet_id", palletId);
+                lines.ExecuteNonQuery();
+            }
+
+            using var pallet = CreateCommand(connection, @"
+UPDATE production_pallets
+SET status = CASE WHEN printed_at IS NULL THEN @planned_status ELSE @printed_status END,
+    filled_at = NULL, filled_by_device_id = NULL
+WHERE id = @pallet_id
+  AND status IN (@planned_status, @printed_status);
+");
+            pallet.Parameters.AddWithValue("@pallet_id", palletId);
+            pallet.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            pallet.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+            if (pallet.ExecuteNonQuery() != 1)
+            {
+                throw new InvalidOperationException("CORRECTION_STATE_CHANGED");
+            }
+            return 0;
+        });
+    }
+
+    public ProductionPalletReplacementResult CreateReplacementProductionPallet(
+        long sourcePalletId,
+        long targetPrdDocId,
+        IReadOnlyDictionary<long, long> replacementDocLineIdBySourceComponentId,
+        DateTime createdAt)
+    {
+        return WithConnection(connection =>
+        {
+            if (replacementDocLineIdBySourceComponentId.Count == 0)
+            {
+                throw new InvalidOperationException("Replacement не содержит компонентов.");
+            }
+
+            var firstDocLineId = replacementDocLineIdBySourceComponentId.OrderBy(pair => pair.Key).First().Value;
+            long palletId;
+            using (var command = CreateCommand(connection, @"
+INSERT INTO production_pallets(
+    prd_doc_id, doc_line_id, order_id, order_line_id, item_id, hu_code,
+    planned_qty, to_location_id, status, pallet_no, pallet_count,
+    printed_at, filled_at, filled_by_device_id, created_at)
+SELECT @target_prd_doc_id, @doc_line_id, order_id, order_line_id, item_id, hu_code,
+       planned_qty, to_location_id,
+       CASE WHEN printed_at IS NULL THEN @planned_status ELSE @printed_status END,
+       0, 0, printed_at, NULL, NULL, @created_at
+FROM production_pallets
+WHERE id = @source_pallet_id
+RETURNING id;
+"))
+            {
+                command.Parameters.AddWithValue("@target_prd_doc_id", targetPrdDocId);
+                command.Parameters.AddWithValue("@doc_line_id", firstDocLineId);
+                command.Parameters.AddWithValue("@source_pallet_id", sourcePalletId);
+                command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+                command.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+                command.Parameters.AddWithValue("@created_at", ToDbDate(createdAt));
+                palletId = Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+            }
+
+            var componentMapping = new Dictionary<long, (long DocLineId, long ComponentId)>();
+            foreach (var pair in replacementDocLineIdBySourceComponentId.OrderBy(value => value.Key))
+            {
+                using var line = CreateCommand(connection, @"
+INSERT INTO production_pallet_lines(
+    production_pallet_id, doc_line_id, order_line_id, item_id,
+    planned_qty, filled_qty, filled_at, created_at)
+SELECT @pallet_id, @replacement_doc_line_id, order_line_id, item_id,
+       planned_qty, 0, NULL, @created_at
+FROM production_pallet_lines
+WHERE id = @source_component_id
+RETURNING id;
+");
+                line.Parameters.AddWithValue("@pallet_id", palletId);
+                line.Parameters.AddWithValue("@replacement_doc_line_id", pair.Value);
+                line.Parameters.AddWithValue("@source_component_id", pair.Key);
+                line.Parameters.AddWithValue("@created_at", ToDbDate(createdAt));
+                var componentId = line.ExecuteScalar();
+                if (componentId == null)
+                {
+                    throw new InvalidOperationException("Исходный компонент паллеты не найден.");
+                }
+                componentMapping[pair.Key] = (
+                    pair.Value,
+                    Convert.ToInt64(componentId, CultureInfo.InvariantCulture));
+            }
+            return new ProductionPalletReplacementResult
+            {
+                PalletId = palletId,
+                BySourceComponentId = componentMapping
+            };
+        });
+    }
+
+    public void RecalculateProductionPalletNumbers(long prdDocId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH numbered AS (
+    SELECT id, ROW_NUMBER() OVER (ORDER BY id)::integer AS pallet_no,
+           COUNT(*) OVER ()::integer AS pallet_count
+    FROM production_pallets
+    WHERE prd_doc_id = @doc_id
+      AND status IN (@planned_status, @printed_status, @filled_status)
+)
+UPDATE production_pallets target
+SET pallet_no = numbered.pallet_no, pallet_count = numbered.pallet_count
+FROM numbered
+WHERE target.id = numbered.id;
+");
+            command.Parameters.AddWithValue("@doc_id", prdDocId);
+            command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            command.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+            command.Parameters.AddWithValue("@filled_status", ProductionPalletStatus.Filled);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void AddFillingAdjustmentLedgerLine(
+        long adjustmentId,
+        ProductionPalletFillingCorrectionLedgerLine source,
+        long corDocLineId,
+        long generatedLedgerEntryId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO production_pallet_filling_adjustment_lines(
+    adjustment_id, line_kind, source_ledger_entry_id, source_doc_line_id,
+    cor_doc_line_id, generated_cor_ledger_entry_id, item_id, location_id,
+    hu_code, source_qty, correction_qty)
+VALUES(
+    @adjustment_id, 'LEDGER_INVERSION', @source_ledger_entry_id, @source_doc_line_id,
+    @cor_doc_line_id, @generated_cor_ledger_entry_id, @item_id, @location_id,
+    @hu_code, @source_qty, @correction_qty);
+");
+            command.Parameters.AddWithValue("@adjustment_id", adjustmentId);
+            command.Parameters.AddWithValue("@source_ledger_entry_id", source.SourceLedgerEntryId);
+            command.Parameters.AddWithValue("@source_doc_line_id", source.SourceDocLineId);
+            command.Parameters.AddWithValue("@cor_doc_line_id", corDocLineId);
+            command.Parameters.AddWithValue("@generated_cor_ledger_entry_id", generatedLedgerEntryId);
+            command.Parameters.AddWithValue("@item_id", source.ItemId);
+            command.Parameters.AddWithValue("@location_id", source.LocationId);
+            command.Parameters.AddWithValue("@hu_code", source.HuCode);
+            command.Parameters.AddWithValue("@source_qty", source.SourceQty);
+            command.Parameters.AddWithValue("@correction_qty", source.CorrectionQty);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void AddFillingAdjustmentComponentLine(
+        long adjustmentId,
+        string lineKind,
+        ProductionPalletComponentLine source,
+        long? replacementDocLineId,
+        long? replacementComponentId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO production_pallet_filling_adjustment_lines(
+    adjustment_id, line_kind, source_doc_line_id, source_component_id,
+    replacement_doc_line_id, replacement_component_id, item_id, order_line_id,
+    planned_qty, old_filled_qty, old_filled_at)
+VALUES(
+    @adjustment_id, @line_kind, @source_doc_line_id, @source_component_id,
+    @replacement_doc_line_id, @replacement_component_id, @item_id, @order_line_id,
+    @planned_qty, @old_filled_qty, @old_filled_at);
+");
+            command.Parameters.AddWithValue("@adjustment_id", adjustmentId);
+            command.Parameters.AddWithValue("@line_kind", lineKind);
+            command.Parameters.AddWithValue("@source_doc_line_id", source.DocLineId);
+            command.Parameters.AddWithValue("@source_component_id", source.Id);
+            command.Parameters.AddWithValue("@replacement_doc_line_id", DbValue(replacementDocLineId));
+            command.Parameters.AddWithValue("@replacement_component_id", DbValue(replacementComponentId));
+            command.Parameters.AddWithValue("@item_id", source.ItemId);
+            command.Parameters.AddWithValue("@order_line_id", DbValue(source.OrderLineId));
+            command.Parameters.AddWithValue("@planned_qty", source.PlannedQty);
+            command.Parameters.AddWithValue("@old_filled_qty", source.FilledQty);
+            command.Parameters.AddWithValue("@old_filled_at", DbValue(source.FilledAt.HasValue ? ToDbDate(source.FilledAt.Value) : null));
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     private static string BuildOrderSelectSql(string orderScopeSql)
     {
         return OrderSelectBase.Replace("{ORDER_SCOPE}", orderScopeSql, StringComparison.Ordinal);
@@ -16074,17 +16849,23 @@ WHERE receipt_line_id = @line_id
         });
     }
 
-    public int CountAvailableProductionMarkingCodesForReceipt(long? sourceOrderId, long itemId, string? gtin)
+    public int CountAvailableProductionMarkingCodesForReceipt(long? sourceOrderId, long itemId, string? gtin) =>
+        CountAvailableProductionMarkingCodesForReceipt(sourceOrderId, itemId, gtin, orderLineId: null);
+
+    public int CountAvailableProductionMarkingCodesForReceipt(long? sourceOrderId, long itemId, string? gtin, long? orderLineId)
     {
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, BuildAvailableProductionMarkingCodeSql("COUNT(*)", null));
-            AddAvailableProductionMarkingCodeParameters(command, sourceOrderId, itemId, gtin, null);
+            AddAvailableProductionMarkingCodeParameters(command, sourceOrderId, itemId, gtin, orderLineId, null);
             return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
         });
     }
 
-    public IReadOnlyList<Guid> GetAvailableProductionMarkingCodeIdsForReceipt(long? sourceOrderId, long itemId, string? gtin, int take)
+    public IReadOnlyList<Guid> GetAvailableProductionMarkingCodeIdsForReceipt(long? sourceOrderId, long itemId, string? gtin, int take) =>
+        GetAvailableProductionMarkingCodeIdsForReceipt(sourceOrderId, itemId, gtin, take, orderLineId: null);
+
+    public IReadOnlyList<Guid> GetAvailableProductionMarkingCodeIdsForReceipt(long? sourceOrderId, long itemId, string? gtin, int take, long? orderLineId)
     {
         if (take <= 0)
         {
@@ -16107,7 +16888,7 @@ ORDER BY
   c.id
 FOR UPDATE SKIP LOCKED
 LIMIT @take"));
-            AddAvailableProductionMarkingCodeParameters(command, sourceOrderId, itemId, gtin, take);
+            AddAvailableProductionMarkingCodeParameters(command, sourceOrderId, itemId, gtin, orderLineId, take);
             using var reader = command.ExecuteReader();
             var list = new List<Guid>();
             while (reader.Read())
@@ -16201,6 +16982,10 @@ WHERE c.receipt_doc_id IS NULL
   AND c.status IN (@reserved_status, @printed_status)
   AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
   AND (
+      mo.order_line_id IS NULL
+      OR (@order_line_id::bigint IS NOT NULL AND mo.order_line_id = @order_line_id::bigint)
+  )
+  AND (
       mo.item_id = @item_id
       OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(mo.gtin), '') = @gtin::text)
       OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(c.gtin), '') = @gtin::text)
@@ -16236,6 +17021,7 @@ WHERE c.receipt_doc_id IS NULL
         long? sourceOrderId,
         long itemId,
         string? gtin,
+        long? orderLineId,
         int? take)
     {
         command.Parameters.AddWithValue("@reserved_status", MarkingCodeStatus.Reserved);
@@ -16247,6 +17033,7 @@ WHERE c.receipt_doc_id IS NULL
         command.Parameters.AddWithValue("@source_order_id", sourceOrderId.HasValue ? sourceOrderId.Value : DBNull.Value);
         command.Parameters.AddWithValue("@item_id", itemId);
         command.Parameters.AddWithValue("@gtin", string.IsNullOrWhiteSpace(gtin) ? DBNull.Value : gtin.Trim());
+        command.Parameters.AddWithValue("@order_line_id", orderLineId.HasValue ? orderLineId.Value : DBNull.Value);
         if (take.HasValue)
         {
             command.Parameters.AddWithValue("@take", take.Value);
@@ -18656,6 +19443,11 @@ FROM warehouse_task_lines tl " + whereClause;
     private static object ToDbNullable(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? DBNull.Value : value.Trim();
+    }
+
+    private static object DbValue(object? value)
+    {
+        return value ?? DBNull.Value;
     }
 
     private static DateTime? FromDbDate(string? value)

@@ -347,11 +347,18 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
             }
 
             var item = store.FindItemById(MustardItemId);
-            var codeIds = store.GetAvailableProductionMarkingCodeIdsForReceipt(
-                context.Order067.Id,
-                MustardItemId,
-                item?.Gtin,
-                missing);
+            var codeIds = store is ILineScopedMarkingCodeStore scopedStore
+                ? scopedStore.GetAvailableProductionMarkingCodeIdsForReceipt(
+                    context.Order067.Id,
+                    MustardItemId,
+                    item?.Gtin,
+                    missing,
+                    docLine.OrderLineId)
+                : store.GetAvailableProductionMarkingCodeIdsForReceipt(
+                    context.Order067.Id,
+                    MustardItemId,
+                    item?.Gtin,
+                    missing);
             if (codeIds.Count > 0)
             {
                 store.AssignProductionMarkingCodesToReceipt(codeIds, context.DraftPrd067.Id, docLine.Id, appliedAt);
@@ -383,7 +390,7 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
                 }
             }
 
-            if (!string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            if (ProductionPalletStatus.IsOperational(pallet.Status))
             {
                 toCancel.Add(pallet.PalletId);
             }

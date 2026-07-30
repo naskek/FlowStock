@@ -29,6 +29,7 @@ public static class WarehouseProductionStatePresentation
             "PLANNED" => "Ожидает",
             "PRINTED" => "Этикетка напечатана",
             "FILLED" => "Наполнена",
+            "CORRECTED" => "Скорректирована",
             _ => string.IsNullOrWhiteSpace(status) ? "—" : status.Trim()
         };
     }

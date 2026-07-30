@@ -473,7 +473,7 @@ public sealed class NewLedgerTransitionService
             }
 
             var activePallets = store.GetProductionPalletsByDoc(doc.Id)
-                .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+                .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
                 .ToArray();
             if (activePallets.Any(pallet =>
                     !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))

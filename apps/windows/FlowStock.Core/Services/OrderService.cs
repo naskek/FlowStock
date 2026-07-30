@@ -1310,7 +1310,7 @@ public sealed class OrderService
         return store.GetDocsByOrder(orderId)
             .Where(doc => doc.Type == DocType.ProductionReceipt)
             .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
-            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
             .Where(pallet => pallet.OrderLineId == orderLineId
                              || pallet.Lines.Any(line => line.OrderLineId == orderLineId))
             .ToArray();
