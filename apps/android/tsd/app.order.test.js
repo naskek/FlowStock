@@ -140,6 +140,16 @@ const html = hooks.renderOrderDetails(
           prdRef: "PRD-2026-000028",
         },
         {
+          huCode: "HU-AWAITING",
+          palletStatus: "FILLED",
+          plannedQty: 300,
+          filledQty: 300,
+          prdRef: "PRD-2026-000029",
+          fateCode: "AWAITING_SHIPMENT",
+          fateLabel: "Ожидает отгрузки",
+          fateQty: 300,
+        },
+        {
           huCode: "HU-0002324",
           palletStatus: "PLANNED",
           plannedQty: 378,
@@ -217,6 +227,14 @@ assert.match(cardFor("HU-0002323"), /Наполнена/);
 assert.match(cardFor("HU-0002323"), /План: 378 · Наполнено: 378/);
 assert.match(cardFor("HU-0002323"), /PRD: PRD-2026-000028/);
 assert.match(cardFor("HU-0002323"), /Движение: 001 — Склад ГП · 378 шт\./);
+assert.match(cardFor("HU-AWAITING"), /Ожидает отгрузки/);
+assert.match(cardFor("HU-AWAITING"), /План: 300 · Наполнено: 300/);
+assert.match(cardFor("HU-AWAITING"), /Движение: —/);
+assert.strictEqual(
+  (cardFor("HU-AWAITING").match(/Ожидает отгрузки/g) || []).length,
+  1,
+  "server-derived fate label must be the single primary status"
+);
 assert.match(cardFor("HU-0002324"), /Ожидает/);
 assert.match(cardFor("HU-0002324"), /План: 378 · Наполнено: 0/);
 assert.match(cardFor("HU-0002324"), /Движение: —/);

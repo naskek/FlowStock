@@ -3728,6 +3728,12 @@
       if (hasProblem) {
         return { label: "Проблема", tone: "problem" };
       }
+      if (
+        normalizeOrderLineHuCode(production.fateCode) === "AWAITING_SHIPMENT" &&
+        String(production.fateLabel || "").trim()
+      ) {
+        return { label: String(production.fateLabel).trim(), tone: "filled" };
+      }
       var plannedQty = production.hasPlannedQty ? Number(production.plannedQty) || 0 : 0;
       var filledQty = production.hasFilledQty ? Number(production.filledQty) || 0 : 0;
       if (plannedQty > 0 && filledQty >= plannedQty) {
@@ -3769,7 +3775,11 @@
     if (warehouse && warehouse.hasQty) {
       return formatOrderLineHuLocation(warehouse) + " · " + formatOrderHuQty(warehouse.qty);
     }
-    if (production && production.fateLabel) {
+    if (
+      production &&
+      production.fateLabel &&
+      normalizeOrderLineHuCode(production.fateCode) !== "AWAITING_SHIPMENT"
+    ) {
       return production.fateLabel + (production.fateQty != null ? " · " + formatOrderHuQty(production.fateQty) : "");
     }
     if (shipped && shipped.hasQty) {

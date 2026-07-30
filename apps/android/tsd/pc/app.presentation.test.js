@@ -576,6 +576,39 @@ assert.match(expandedLineWithoutExactCoverageHtml, /Точный итог пок
 assert.match(expandedLineWithoutExactCoverageHtml, /Существующий серверный дефицит: 25/);
 assert.doesNotMatch(expandedLineWithoutExactCoverageHtml, /pc-order-line-coverage-grid/);
 
+const expandedAwaitingShipmentOrderLineHtml = pc.renderOrderLinesTable(
+  [
+    {
+      id: 505,
+      item_name: "Соус",
+      qty_ordered: 60,
+      production_hu_rows: [
+        {
+          hu_code: "HU-AWAITING",
+          pallet_status: "FILLED",
+          planned_qty: 60,
+          filled_qty: 60,
+          prd_ref: "PRD-052",
+          fate_code: "AWAITING_SHIPMENT",
+          fate_label: "Ожидает отгрузки",
+          fate_qty: 60,
+        },
+      ],
+      coverage: { ordered_qty: 60, production_filled_qty: 60, covered_qty: 60, missing_qty: 0 },
+    },
+  ],
+  { order_ref: "005", order_type: "CUSTOMER", order_status: "IN_PROGRESS" },
+  { 505: true }
+);
+assert.match(expandedAwaitingShipmentOrderLineHtml, /HU-AWAITING/);
+assert.match(expandedAwaitingShipmentOrderLineHtml, /Ожидает отгрузки/);
+assert.doesNotMatch(expandedAwaitingShipmentOrderLineHtml, />Наполнена?</);
+assert.strictEqual(
+  (expandedAwaitingShipmentOrderLineHtml.match(/Ожидает отгрузки/g) || []).length,
+  1,
+  "server-derived fate label must not be duplicated in movement"
+);
+
 const expandedCustomerLineWithOnlyShippedHuHtml = pc.renderOrderLinesTable(
   [
     {

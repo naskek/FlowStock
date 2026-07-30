@@ -7,6 +7,94 @@ namespace FlowStock.Server.Tests.Orders;
 
 public sealed class OrderLineHuDetailsBuilderTests
 {
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData(3L, false)]
+    [InlineData(2L, true)]
+    public void BuildByOrder_CustomerFilledHuWithLedger_RequiresExplicitMatchingPalletOwner(
+        long? productionPalletOrderId,
+        bool expectedAwaitingShipment)
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
+        harness.SeedItem(new Item { Id = 5, Name = "Товар", BaseUom = "шт" });
+        var order = new Order
+        {
+            Id = 2,
+            OrderRef = "002",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 6, 10, 8, 0, 0)
+        };
+        harness.SeedOrder(order);
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 20,
+            OrderId = 2,
+            ItemId = 5,
+            QtyOrdered = 600,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        harness.SeedDoc(new Doc
+        {
+            Id = 100,
+            DocRef = "PRD-100",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Draft,
+            OrderId = 2,
+            CreatedAt = new DateTime(2026, 6, 10, 9, 0, 0)
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 101,
+            PrdDocId = 100,
+            OrderId = productionPalletOrderId,
+            OrderLineId = 20,
+            ItemId = 5,
+            HuCode = "HU-CUSTOMER",
+            PlannedQty = 600,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 6, 10, 10, 0, 0),
+            CreatedAt = new DateTime(2026, 6, 10, 9, 0, 0)
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 102,
+            PrdDocId = 100,
+            OrderId = 2,
+            OrderLineId = 20,
+            ItemId = 5,
+            HuCode = "HU-PRINTED",
+            PlannedQty = 600,
+            Status = ProductionPalletStatus.Printed,
+            CreatedAt = new DateTime(2026, 6, 10, 9, 5, 0)
+        });
+        harness.SeedLedgerEntry(100, 5, 1, 600, "HU-CUSTOMER");
+
+        var line = Assert.Single(new OrderService(harness.Store).GetOrderLineViews(2));
+        var details = OrderLineHuDetailsBuilder.BuildByOrder(harness.Store, order, [line])[20];
+
+        Assert.Equal(2, details.ProductionHuRows.Count);
+        var ready = details.ProductionHuRows.Single(row => row.HuCode == "HU-CUSTOMER");
+        Assert.Equal(ProductionPalletStatus.Filled, ready.PalletStatus);
+        Assert.Equal(
+            expectedAwaitingShipment
+                ? OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode
+                : OrderLineHuFateDisplayBuilder.OnStockFateCode,
+            ready.FateCode);
+        Assert.Equal(
+            expectedAwaitingShipment
+                ? OrderLineHuFateDisplayBuilder.AwaitingShipmentFateLabel
+                : "на складе",
+            ready.FateLabel);
+        Assert.Equal(600, ready.FateQty);
+        var printed = details.ProductionHuRows.Single(row => row.HuCode == "HU-PRINTED");
+        Assert.Equal(ProductionPalletStatus.Printed, printed.PalletStatus);
+        Assert.Null(printed.FateCode);
+        harness.VerifyNoGlobalHuFateReads();
+        harness.VerifyScopedHuFateLookup(Moq.Times.Once());
+    }
+
     [Fact]
     public async Task SingleEndpoint_InternalProducedHuIncludesLaterCustomerShipmentFateWithoutChangingLineShipment()
     {
@@ -166,7 +254,7 @@ public sealed class OrderLineHuDetailsBuilderTests
     [Theory]
     [InlineData(ProductionPalletStatus.Planned)]
     [InlineData(ProductionPalletStatus.Printed)]
-    public void BuildByOrder_UnfilledProductionHuRemainsVisibleWithoutScopedFate(string palletStatus)
+    public void BuildByOrder_CustomerUnfilledProductionHuRemainsVisibleWithoutScopedFate(string palletStatus)
     {
         var harness = new CloseDocumentHarness();
         harness.SeedItem(new Item { Id = 5, Name = "Товар", BaseUom = "шт" });
@@ -174,7 +262,7 @@ public sealed class OrderLineHuDetailsBuilderTests
         {
             Id = 7,
             OrderRef = "007",
-            Type = OrderType.Internal,
+            Type = OrderType.Customer,
             Status = OrderStatus.InProgress,
             CreatedAt = new DateTime(2026, 6, 10, 8, 0, 0)
         };
@@ -363,6 +451,9 @@ public sealed class OrderLineHuDetailsBuilderTests
         var line = Assert.Single(new OrderService(harness.Store).GetOrderLineViews(11));
         var details = OrderLineHuDetailsBuilder.BuildByOrder(harness.Store, order, [line])[110];
 
+        var production = Assert.Single(details.ProductionHuRows);
+        Assert.Null(production.FateCode);
+        Assert.Null(production.FateLabel);
         Assert.NotNull(details.Coverage);
         Assert.Equal(0, details.Coverage.CoveredQty, 3);
         Assert.Equal(1800, details.Coverage.MissingQty, 3);

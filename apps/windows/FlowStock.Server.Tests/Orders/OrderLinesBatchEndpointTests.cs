@@ -186,6 +186,15 @@ public sealed class OrderLinesBatchEndpointTests
     public void PostgresScopedHuFateReadModel_UsesExactItemHuPairsWithoutGlobalSourceScan()
     {
         var sql = File.ReadAllText(GetPostgresDataStorePath());
+        var scopedMethodStart = sql.IndexOf(
+            "public IReadOnlyList<ScopedOrderLineHuFateCandidate> GetScopedOrderLineHuFateCandidates",
+            StringComparison.Ordinal);
+        var scopedMethodEnd = sql.IndexOf(
+            "public ",
+            scopedMethodStart + 1,
+            StringComparison.Ordinal);
+        Assert.True(scopedMethodStart >= 0 && scopedMethodEnd > scopedMethodStart);
+        var scopedMethod = sql[scopedMethodStart..scopedMethodEnd];
         var detailsBuilder = File.ReadAllText(Path.GetFullPath(Path.Combine(
             Path.GetDirectoryName(GetPostgresDataStorePath())!,
             "..",
@@ -197,6 +206,7 @@ public sealed class OrderLinesBatchEndpointTests
         Assert.Contains("UNNEST(@item_ids::bigint[], @hu_codes::text[])", sql);
         Assert.Contains("requested.item_id", sql);
         Assert.Contains("requested.hu_code", sql);
+        Assert.Contains("newer.replaces_line_id = dl.id", scopedMethod);
         Assert.DoesNotContain("OrderLineHuFateDisplayBuilder.BuildByOrder", detailsBuilder);
         Assert.Contains("ScopedOrderLineHuFateDisplayBuilder.Build", detailsBuilder);
     }

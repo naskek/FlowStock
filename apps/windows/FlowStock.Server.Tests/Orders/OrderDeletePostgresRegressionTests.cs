@@ -360,6 +360,128 @@ public sealed class OrderDeletePostgresRegressionTests
     }
 
     [Fact]
+    public async Task ScopedHuFate_SupersededOutboundLineAwaitsShipmentAndActiveReplacementShips()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, scopedStore =>
+        {
+            EnsureAtLeastOneLocation(scopedStore);
+            var locationId = scopedStore.GetLocations().First().Id;
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore);
+            var plan = new ProductionPalletService(scopedStore).PlanOrder(fixture.OrderId);
+            var pallet = scopedStore.GetProductionPalletsByDoc(plan.PrdDocId)
+                .Single(candidate =>
+                    candidate.OrderLineId == fixture.DeletedOrderLineId
+                    || candidate.Lines.Any(line => line.OrderLineId == fixture.DeletedOrderLineId));
+            scopedStore.MarkProductionPalletFilled(
+                pallet.Id,
+                new DateTime(2026, 7, 30, 9, 0, 0, DateTimeKind.Utc),
+                "TEST");
+            scopedStore.AddLedgerEntry(new LedgerEntry
+            {
+                Timestamp = new DateTime(2026, 7, 30, 9, 1, 0, DateTimeKind.Utc),
+                DocId = pallet.PrdDocId,
+                ItemId = fixture.DeletedItemId,
+                LocationId = locationId,
+                QtyDelta = pallet.PlannedQty,
+                HuCode = pallet.HuCode
+            });
+
+            var outboundRef = $"OUT-SUP-{DateTime.UtcNow.Ticks.ToString()[^6..]}";
+            var outboundId = scopedStore.AddDoc(new Doc
+            {
+                DocRef = outboundRef,
+                Type = DocType.Outbound,
+                Status = DocStatus.Closed,
+                CreatedAt = new DateTime(2026, 7, 30, 10, 0, 0, DateTimeKind.Utc),
+                ClosedAt = new DateTime(2026, 7, 30, 10, 5, 0, DateTimeKind.Utc),
+                OrderId = fixture.OrderId,
+                OrderRef = fixture.OrderRef
+            });
+            var predecessorId = scopedStore.AddDocLine(new DocLine
+            {
+                DocId = outboundId,
+                OrderLineId = fixture.DeletedOrderLineId,
+                ItemId = fixture.DeletedItemId,
+                Qty = 41,
+                FromLocationId = locationId,
+                FromHu = pallet.HuCode
+            });
+            var tombstoneId = scopedStore.AddDocLine(new DocLine
+            {
+                DocId = outboundId,
+                ReplacesLineId = predecessorId,
+                OrderLineId = fixture.DeletedOrderLineId,
+                ItemId = fixture.DeletedItemId,
+                Qty = 0,
+                FromLocationId = locationId,
+                FromHu = pallet.HuCode
+            });
+
+            OrderLineProductionHuRow ReadProductionHu()
+            {
+                var sourceOrder = scopedStore.GetOrders().Single(order => order.Id == fixture.OrderId);
+                var sourceLine = new OrderService(scopedStore)
+                    .GetOrderLineViews(fixture.OrderId)
+                    .Single(line => line.Id == fixture.DeletedOrderLineId);
+                var details = OrderLineHuDetailsBuilder.BuildByOrder(
+                    scopedStore,
+                    sourceOrder,
+                    [sourceLine])[fixture.DeletedOrderLineId];
+                return Assert.Single(
+                    details.ProductionHuRows,
+                    row => string.Equals(row.HuCode, pallet.HuCode, StringComparison.OrdinalIgnoreCase));
+            }
+
+            var supersededPhase = ReadProductionHu();
+            Assert.Equal(OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode, supersededPhase.FateCode);
+            Assert.Equal(OrderLineHuFateDisplayBuilder.AwaitingShipmentFateLabel, supersededPhase.FateLabel);
+            Assert.Equal(pallet.PlannedQty, supersededPhase.FateQty);
+            Assert.Null(supersededPhase.FateDocRef);
+
+            const double replacementQty = 17;
+            var replacementId = scopedStore.AddDocLine(new DocLine
+            {
+                DocId = outboundId,
+                ReplacesLineId = tombstoneId,
+                OrderLineId = fixture.DeletedOrderLineId,
+                ItemId = fixture.DeletedItemId,
+                Qty = replacementQty,
+                FromLocationId = locationId,
+                FromHu = pallet.HuCode
+            });
+
+            var replacementPhase = ReadProductionHu();
+            Assert.Equal(OrderLineHuFateDisplayBuilder.ShippedFateCode, replacementPhase.FateCode);
+            Assert.Equal("отгружено", replacementPhase.FateLabel);
+            Assert.Equal(replacementQty, replacementPhase.FateQty);
+            Assert.Equal(fixture.OrderRef, replacementPhase.FateOrderRef);
+            Assert.Equal(outboundRef, replacementPhase.FateDocRef);
+
+            var activeShipment = Assert.Single(
+                ((IOptimizedOrderLineHuFateStore)scopedStore)
+                .GetScopedOrderLineHuFateCandidates(
+                    [new ScopedOrderLineHuFateKey(fixture.DeletedItemId, pallet.HuCode)])
+                .Where(candidate =>
+                    string.Equals(
+                        candidate.Kind,
+                        ScopedOrderLineHuFateDisplayBuilder.ShipmentCandidateKind,
+                        StringComparison.OrdinalIgnoreCase)));
+            Assert.Equal(replacementQty, activeShipment.Qty);
+            Assert.Equal(fixture.DeletedOrderLineId, activeShipment.TargetOrderLineId);
+            Assert.Equal(outboundId, activeShipment.DocId);
+            Assert.Equal(outboundRef, activeShipment.DocRef);
+            Assert.NotEqual(predecessorId, replacementId);
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
     public async Task ReleaseProducedStock_WithTwoFilledSingleLinePallets_ReleasesHuAndDeletesLine()
     {
         var connectionString = ResolvePostgresTestConnectionString();

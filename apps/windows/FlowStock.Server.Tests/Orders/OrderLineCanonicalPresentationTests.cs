@@ -115,4 +115,34 @@ public sealed class OrderLineCanonicalPresentationTests
             line.HuDisplayRows.Select(row => row.HuCode));
         Assert.DoesNotContain(line.HuDisplayRows, row => row.HuCode == "HU-FILLED-OLD");
     }
+
+    [Fact]
+    public void HuDisplayRows_AwaitingShipmentReplacesBareFilledStatusForSameHu()
+    {
+        var line = new OrderLineView
+        {
+            ProductionHuDisplayEntries =
+            [
+                new OrderLineHuDisplayEntry("HU-CUSTOMER", "наполнено", 600, false, 2)
+            ],
+            HuFateDisplayEntries =
+            [
+                new OrderLineHuDisplayEntry(
+                    "HU-CUSTOMER",
+                    OrderLineHuFateDisplayBuilder.AwaitingShipmentFateLabel,
+                    600,
+                    false,
+                    OrderLineHuFateDisplayBuilder.AwaitingShipmentSortOrder,
+                    FateCode: OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode,
+                    FateLabel: OrderLineHuFateDisplayBuilder.AwaitingShipmentFateLabel,
+                    FateQty: 600)
+            ]
+        };
+
+        var row = Assert.Single(line.HuDisplayRows);
+        Assert.Equal("HU-CUSTOMER", row.HuCode);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.AwaitingShipmentFateLabel, row.Label);
+        Assert.DoesNotContain(line.HuDisplayRows, candidate =>
+            string.Equals(candidate.Label, "наполнено", StringComparison.OrdinalIgnoreCase));
+    }
 }

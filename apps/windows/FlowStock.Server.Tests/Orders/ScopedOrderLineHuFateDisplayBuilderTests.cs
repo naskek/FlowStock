@@ -150,13 +150,381 @@ public sealed class ScopedOrderLineHuFateDisplayBuilderTests
 
         var row = Assert.Single(ScopedOrderLineHuFateDisplayBuilder.Build(
             store.Object,
-            new Order { Id = 3, OrderRef = "003", Type = OrderType.Internal },
-            [new ScopedOrderLineHuFateSource { OrderLineId = 30, ItemId = 5, HuCode = "HU-1", Qty = 10 }])[30]);
+            new Order { Id = 3, OrderRef = "003", Type = OrderType.Customer, Status = OrderStatus.InProgress },
+            [
+                new ScopedOrderLineHuFateSource
+                {
+                    OrderLineId = 30,
+                    ItemId = 5,
+                    HuCode = "HU-1",
+                    Qty = 10,
+                    ProductionPalletId = 100,
+                    IsOwnedBySourceOrder = true,
+                    IsProductionPalletComplete = true,
+                    ProductionPalletComponentKeys = [new ScopedOrderLineHuFateKey(5, "HU-1")]
+                }
+            ])[30]);
 
         Assert.Equal(OrderLineHuFateDisplayBuilder.ReservedFateCode, row.FateCode);
         Assert.Equal("→ резерв заказ 004", row.FateLabel);
         Assert.Equal("004", row.FateOrderRef);
         Assert.Equal(10, row.FateQty);
+    }
+
+    [Fact]
+    public void Build_CustomerCompleteProductionPalletWithStock_UsesAwaitingShipment()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.As<IOptimizedOrderLineHuFateStore>()
+            .Setup(data => data.GetScopedOrderLineHuFateCandidates(It.IsAny<IReadOnlyCollection<ScopedOrderLineHuFateKey>>()))
+            .Returns(
+            [
+                new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.StockCandidateKind,
+                    ItemId = 5,
+                    HuCode = "HU-1",
+                    Qty = 10
+                }
+            ]);
+
+        var row = Assert.Single(ScopedOrderLineHuFateDisplayBuilder.Build(
+            store.Object,
+            new Order { Id = 3, OrderRef = "003", Type = OrderType.Customer, Status = OrderStatus.InProgress },
+            [
+                new ScopedOrderLineHuFateSource
+                {
+                    OrderLineId = 30,
+                    ItemId = 5,
+                    HuCode = "HU-1",
+                    Qty = 10,
+                    ProductionPalletId = 100,
+                    IsOwnedBySourceOrder = true,
+                    IsProductionPalletComplete = true,
+                    ProductionPalletComponentKeys = [new ScopedOrderLineHuFateKey(5, "HU-1")]
+                }
+            ])[30]);
+
+        Assert.Equal(OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode, row.FateCode);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.AwaitingShipmentFateLabel, row.Label);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.AwaitingShipmentFateLabel, row.FateLabel);
+        Assert.Equal(10, row.FateQty);
+    }
+
+    [Fact]
+    public void Build_CustomerProductionPalletWithoutNormalizedOwnership_RemainsOnStock()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.As<IOptimizedOrderLineHuFateStore>()
+            .Setup(data => data.GetScopedOrderLineHuFateCandidates(It.IsAny<IReadOnlyCollection<ScopedOrderLineHuFateKey>>()))
+            .Returns(
+            [
+                new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.StockCandidateKind,
+                    ItemId = 5,
+                    HuCode = "HU-1",
+                    Qty = 10
+                }
+            ]);
+
+        var row = Assert.Single(ScopedOrderLineHuFateDisplayBuilder.Build(
+            store.Object,
+            new Order { Id = 3, OrderRef = "003", Type = OrderType.Customer, Status = OrderStatus.InProgress },
+            [
+                new ScopedOrderLineHuFateSource
+                {
+                    OrderLineId = 30,
+                    ItemId = 5,
+                    HuCode = "HU-1",
+                    Qty = 10,
+                    ProductionPalletId = 100,
+                    IsOwnedBySourceOrder = false,
+                    IsProductionPalletComplete = true,
+                    ProductionPalletComponentKeys = [new ScopedOrderLineHuFateKey(5, "HU-1")]
+                }
+            ])[30]);
+
+        Assert.Equal(OrderLineHuFateDisplayBuilder.OnStockFateCode, row.FateCode);
+        Assert.NotEqual(OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode, row.FateCode);
+    }
+
+    [Fact]
+    public void Build_CustomerMixedProductionPallet_MissingComponentStockSuppressesAwaiting()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.As<IOptimizedOrderLineHuFateStore>()
+            .Setup(data => data.GetScopedOrderLineHuFateCandidates(
+                It.Is<IReadOnlyCollection<ScopedOrderLineHuFateKey>>(keys => keys.Count == 2)))
+            .Returns(
+            [
+                new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.StockCandidateKind,
+                    ItemId = 5,
+                    HuCode = "HU-MIXED",
+                    Qty = 10
+                }
+            ]);
+        var componentKeys = new[]
+        {
+            new ScopedOrderLineHuFateKey(5, "HU-MIXED"),
+            new ScopedOrderLineHuFateKey(6, "HU-MIXED")
+        };
+
+        var rows = ScopedOrderLineHuFateDisplayBuilder.Build(
+            store.Object,
+            new Order { Id = 3, OrderRef = "003", Type = OrderType.Customer, Status = OrderStatus.Accepted },
+            [
+                new ScopedOrderLineHuFateSource
+                {
+                    OrderLineId = 30,
+                    ItemId = 5,
+                    HuCode = "HU-MIXED",
+                    Qty = 10,
+                    ProductionPalletId = 100,
+                    IsOwnedBySourceOrder = true,
+                    IsProductionPalletComplete = true,
+                    ProductionPalletComponentKeys = componentKeys
+                },
+                new ScopedOrderLineHuFateSource
+                {
+                    OrderLineId = 31,
+                    ItemId = 6,
+                    HuCode = "HU-MIXED",
+                    Qty = 5,
+                    ProductionPalletId = 100,
+                    IsOwnedBySourceOrder = true,
+                    IsProductionPalletComplete = true,
+                    ProductionPalletComponentKeys = componentKeys
+                }
+            ]);
+
+        Assert.Equal(OrderLineHuFateDisplayBuilder.OnStockFateCode, Assert.Single(rows[30]).FateCode);
+        Assert.DoesNotContain(
+            rows.Values.SelectMany(entries => entries),
+            entry => entry.FateCode == OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode);
+    }
+
+    [Fact]
+    public void Build_CustomerMixedProductionPallet_ReservationOnOneComponentSuppressesAwaitingForWholePallet()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.As<IOptimizedOrderLineHuFateStore>()
+            .Setup(data => data.GetScopedOrderLineHuFateCandidates(
+                It.Is<IReadOnlyCollection<ScopedOrderLineHuFateKey>>(keys => keys.Count == 2)))
+            .Returns(
+            [
+                new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.StockCandidateKind,
+                    ItemId = 5,
+                    HuCode = "HU-MIXED",
+                    Qty = 10
+                },
+                new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.StockCandidateKind,
+                    ItemId = 6,
+                    HuCode = "HU-MIXED",
+                    Qty = 5
+                },
+                new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.ReservationCandidateKind,
+                    ItemId = 6,
+                    HuCode = "HU-MIXED",
+                    Qty = 5,
+                    TargetOrderId = 4,
+                    TargetOrderLineId = 40,
+                    TargetOrderRef = "004"
+                }
+            ]);
+        var componentKeys = new[]
+        {
+            new ScopedOrderLineHuFateKey(5, "HU-MIXED"),
+            new ScopedOrderLineHuFateKey(6, "HU-MIXED")
+        };
+
+        var rows = ScopedOrderLineHuFateDisplayBuilder.Build(
+            store.Object,
+            new Order { Id = 3, OrderRef = "003", Type = OrderType.Customer, Status = OrderStatus.InProgress },
+            [
+                new ScopedOrderLineHuFateSource
+                {
+                    OrderLineId = 30,
+                    ItemId = 5,
+                    HuCode = "HU-MIXED",
+                    Qty = 10,
+                    ProductionPalletId = 100,
+                    IsOwnedBySourceOrder = true,
+                    IsProductionPalletComplete = true,
+                    ProductionPalletComponentKeys = componentKeys
+                },
+                new ScopedOrderLineHuFateSource
+                {
+                    OrderLineId = 31,
+                    ItemId = 6,
+                    HuCode = "HU-MIXED",
+                    Qty = 5,
+                    ProductionPalletId = 100,
+                    IsOwnedBySourceOrder = true,
+                    IsProductionPalletComplete = true,
+                    ProductionPalletComponentKeys = componentKeys
+                }
+            ]);
+
+        Assert.Equal(OrderLineHuFateDisplayBuilder.OnStockFateCode, Assert.Single(rows[30]).FateCode);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.ReservedFateCode, Assert.Single(rows[31]).FateCode);
+        Assert.DoesNotContain(
+            rows.Values.SelectMany(entries => entries),
+            entry => entry.FateCode == OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode);
+    }
+
+    [Fact]
+    public void Build_CustomerMixedProductionPallet_ShipmentOnOneComponentSuppressesAwaitingForWholePallet()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.As<IOptimizedOrderLineHuFateStore>()
+            .Setup(data => data.GetScopedOrderLineHuFateCandidates(
+                It.Is<IReadOnlyCollection<ScopedOrderLineHuFateKey>>(keys => keys.Count == 2)))
+            .Returns(
+            [
+                new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.StockCandidateKind,
+                    ItemId = 5,
+                    HuCode = "HU-MIXED",
+                    Qty = 10
+                },
+                new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.StockCandidateKind,
+                    ItemId = 6,
+                    HuCode = "HU-MIXED",
+                    Qty = 5
+                },
+                new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.ShipmentCandidateKind,
+                    ItemId = 6,
+                    HuCode = "HU-MIXED",
+                    Qty = 2,
+                    TargetOrderId = 4,
+                    TargetOrderLineId = 40,
+                    TargetOrderRef = "004",
+                    DocId = 200,
+                    DocRef = "OUT-200",
+                    ClosedAt = new DateTime(2026, 6, 11, 10, 0, 0)
+                }
+            ]);
+        var componentKeys = new[]
+        {
+            new ScopedOrderLineHuFateKey(5, "HU-MIXED"),
+            new ScopedOrderLineHuFateKey(6, "HU-MIXED")
+        };
+
+        var rows = ScopedOrderLineHuFateDisplayBuilder.Build(
+            store.Object,
+            new Order { Id = 3, OrderRef = "003", Type = OrderType.Customer, Status = OrderStatus.InProgress },
+            [
+                new ScopedOrderLineHuFateSource
+                {
+                    OrderLineId = 30,
+                    ItemId = 5,
+                    HuCode = "HU-MIXED",
+                    Qty = 10,
+                    ProductionPalletId = 100,
+                    IsOwnedBySourceOrder = true,
+                    IsProductionPalletComplete = true,
+                    ProductionPalletComponentKeys = componentKeys
+                },
+                new ScopedOrderLineHuFateSource
+                {
+                    OrderLineId = 31,
+                    ItemId = 6,
+                    HuCode = "HU-MIXED",
+                    Qty = 5,
+                    ProductionPalletId = 100,
+                    IsOwnedBySourceOrder = true,
+                    IsProductionPalletComplete = true,
+                    ProductionPalletComponentKeys = componentKeys
+                }
+            ]);
+
+        Assert.Equal(OrderLineHuFateDisplayBuilder.OnStockFateCode, Assert.Single(rows[30]).FateCode);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.ShippedFateCode, Assert.Single(rows[31]).FateCode);
+        Assert.DoesNotContain(
+            rows.Values.SelectMany(entries => entries),
+            entry => entry.FateCode == OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode);
+    }
+
+    [Fact]
+    public void Build_CustomerMixedProductionPallet_WithoutBlockersAwaitsForEveryComponent()
+    {
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.As<IOptimizedOrderLineHuFateStore>()
+            .Setup(data => data.GetScopedOrderLineHuFateCandidates(
+                It.Is<IReadOnlyCollection<ScopedOrderLineHuFateKey>>(keys => keys.Count == 2)))
+            .Returns(
+            [
+                new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.StockCandidateKind,
+                    ItemId = 5,
+                    HuCode = "HU-MIXED",
+                    Qty = 10
+                },
+                new ScopedOrderLineHuFateCandidate
+                {
+                    Kind = ScopedOrderLineHuFateDisplayBuilder.StockCandidateKind,
+                    ItemId = 6,
+                    HuCode = "HU-MIXED",
+                    Qty = 5
+                }
+            ]);
+        var componentKeys = new[]
+        {
+            new ScopedOrderLineHuFateKey(5, "HU-MIXED"),
+            new ScopedOrderLineHuFateKey(6, "HU-MIXED")
+        };
+
+        var rows = ScopedOrderLineHuFateDisplayBuilder.Build(
+            store.Object,
+            new Order { Id = 3, OrderRef = "003", Type = OrderType.Customer, Status = OrderStatus.Accepted },
+            [
+                new ScopedOrderLineHuFateSource
+                {
+                    OrderLineId = 30,
+                    ItemId = 5,
+                    HuCode = "HU-MIXED",
+                    Qty = 10,
+                    ProductionPalletId = 100,
+                    IsOwnedBySourceOrder = true,
+                    IsProductionPalletComplete = true,
+                    ProductionPalletComponentKeys = componentKeys
+                },
+                new ScopedOrderLineHuFateSource
+                {
+                    OrderLineId = 31,
+                    ItemId = 6,
+                    HuCode = "HU-MIXED",
+                    Qty = 5,
+                    ProductionPalletId = 100,
+                    IsOwnedBySourceOrder = true,
+                    IsProductionPalletComplete = true,
+                    ProductionPalletComponentKeys = componentKeys
+                }
+            ]);
+
+        Assert.Equal(
+            OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode,
+            Assert.Single(rows[30]).FateCode);
+        Assert.Equal(
+            OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode,
+            Assert.Single(rows[31]).FateCode);
+        Assert.Equal(10, Assert.Single(rows[30]).FateQty);
+        Assert.Equal(5, Assert.Single(rows[31]).FateQty);
     }
 
     [Fact]

@@ -30,11 +30,20 @@ public static class ScopedOrderLineHuFateDisplayBuilder
                 OrderLineId = row.Source.OrderLineId,
                 ItemId = row.Source.ItemId,
                 HuCode = row.HuCode!,
-                Qty = row.Source.Qty
+                Qty = row.Source.Qty,
+                ProductionPalletId = row.Source.ProductionPalletId,
+                IsOwnedBySourceOrder = row.Source.IsOwnedBySourceOrder,
+                IsProductionPalletComplete = row.Source.IsProductionPalletComplete,
+                ProductionPalletComponentKeys = row.Source.ProductionPalletComponentKeys
+                    .Select(key => new ScopedOrderLineHuFateKey(key.ItemId, NormalizeHu(key.HuCode) ?? string.Empty))
+                    .Where(key => key.ItemId > 0 && key.HuCode.Length > 0)
+                    .Distinct()
+                    .ToArray()
             })
             .ToArray();
         var keys = normalizedSources
-            .Select(source => new ScopedOrderLineHuFateKey(source.ItemId, source.HuCode))
+            .SelectMany(source => source.ProductionPalletComponentKeys
+                .Append(new ScopedOrderLineHuFateKey(source.ItemId, source.HuCode)))
             .Distinct()
             .ToArray();
 
@@ -123,6 +132,19 @@ public static class ScopedOrderLineHuFateDisplayBuilder
                 .Count();
         }
 
+        var awaitingShipmentBlockedPalletIds = normalizedSources
+            .Where(source => source.ProductionPalletId.HasValue)
+            .GroupBy(source => source.ProductionPalletId!.Value)
+            .Where(group => group
+                .SelectMany(source => source.ProductionPalletComponentKeys
+                    .Append(new ScopedOrderLineHuFateKey(source.ItemId, source.HuCode)))
+                .Distinct()
+                .Any(componentKey =>
+                    latestShipmentByKey.ContainsKey(componentKey)
+                    || reservationByKey.ContainsKey(componentKey)))
+            .Select(group => group.Key)
+            .ToHashSet();
+
         phaseStopwatch?.Restart();
         var rows = new Dictionary<long, Dictionary<string, OrderLineHuDisplayEntry>>();
         foreach (var source in normalizedSources)
@@ -167,14 +189,29 @@ public static class ScopedOrderLineHuFateDisplayBuilder
             }
             else if (stockByKey.GetValueOrDefault(key) > StockQuantityRules.QtyTolerance)
             {
+                var awaitingShipment =
+                    OrderLineHuFateDisplayBuilder.IsAwaitingShipmentOrder(sourceOrder)
+                    && source.ProductionPalletId.HasValue
+                    && source.IsOwnedBySourceOrder
+                    && source.IsProductionPalletComplete
+                    && source.ProductionPalletComponentKeys.Count > 0
+                    && !awaitingShipmentBlockedPalletIds.Contains(source.ProductionPalletId.Value)
+                    && source.ProductionPalletComponentKeys.All(componentKey =>
+                        stockByKey.GetValueOrDefault(componentKey) > StockQuantityRules.QtyTolerance);
                 Add(rows, source.OrderLineId, new OrderLineHuDisplayEntry(
                     source.HuCode,
-                    "наполнено",
+                    awaitingShipment ? OrderLineHuFateDisplayBuilder.AwaitingShipmentFateLabel : "наполнено",
                     source.Qty,
                     IsWarehouseBound: false,
-                    SortOrder: OrderLineHuFateDisplayBuilder.FilledSortOrder,
-                    FateCode: OrderLineHuFateDisplayBuilder.OnStockFateCode,
-                    FateLabel: "на складе",
+                    SortOrder: awaitingShipment
+                        ? OrderLineHuFateDisplayBuilder.AwaitingShipmentSortOrder
+                        : OrderLineHuFateDisplayBuilder.FilledSortOrder,
+                    FateCode: awaitingShipment
+                        ? OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode
+                        : OrderLineHuFateDisplayBuilder.OnStockFateCode,
+                    FateLabel: awaitingShipment
+                        ? OrderLineHuFateDisplayBuilder.AwaitingShipmentFateLabel
+                        : "на складе",
                     FateQty: stockByKey[key]));
             }
         }

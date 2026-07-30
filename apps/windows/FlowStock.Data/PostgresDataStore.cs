@@ -13635,6 +13635,11 @@ shipment_rows AS (
       AND o.order_type = @customer_order_type
       AND dl.order_line_id IS NOT NULL
       AND dl.qty > @qty_tolerance
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
     GROUP BY requested.item_id,
              requested.hu_code,
              o.id,

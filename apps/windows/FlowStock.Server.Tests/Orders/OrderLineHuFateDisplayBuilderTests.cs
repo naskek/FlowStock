@@ -108,6 +108,135 @@ public sealed class OrderLineHuFateDisplayBuilderTests
         Assert.Equal(600, sourceRow.FateQty);
     }
 
+    [Theory]
+    [InlineData(OrderStatus.Draft, false)]
+    [InlineData(OrderStatus.InProgress, true)]
+    [InlineData(OrderStatus.Accepted, true)]
+    [InlineData(OrderStatus.Shipped, false)]
+    [InlineData(OrderStatus.Cancelled, false)]
+    [InlineData(OrderStatus.Merged, false)]
+    public void BuildByOrder_CustomerOwnFilledHu_UsesAwaitingShipmentOnlyForOutboundLifecycleStatuses(
+        OrderStatus status,
+        bool expectedAwaitingShipment)
+    {
+        var harness = CreateHarness(OrderType.Customer, status);
+        SeedFilledPallet(harness, "HU-CUSTOMER", qty: 600);
+
+        var sourceRow = Assert.Single(OrderLineHuFateDisplayBuilder.BuildByOrder(harness.Store, 112)[1121]);
+
+        Assert.Equal(
+            expectedAwaitingShipment
+                ? OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode
+                : OrderLineHuFateDisplayBuilder.OnStockFateCode,
+            sourceRow.FateCode);
+        Assert.Equal(
+            expectedAwaitingShipment
+                ? OrderLineHuFateDisplayBuilder.AwaitingShipmentFateLabel
+                : "на складе",
+            sourceRow.FateLabel);
+        Assert.Equal(
+            expectedAwaitingShipment ? "Ожидает отгрузки" : "наполнено",
+            sourceRow.Label);
+        Assert.Equal(600, sourceRow.FateQty);
+    }
+
+    [Fact]
+    public void BuildByOrder_CustomerOwnFilledHu_SameOrderReservationKeepsReservedPriority()
+    {
+        var harness = CreateHarness(OrderType.Customer);
+        SeedFilledPallet(harness, "HU-CUSTOMER-RESERVED", qty: 600);
+        harness.SeedOrderReceiptPlanLines(112, new OrderReceiptPlanLine
+        {
+            Id = 10,
+            OrderId = 112,
+            OrderLineId = 1121,
+            ItemId = 6,
+            QtyPlanned = 600,
+            ToHu = "HU-CUSTOMER-RESERVED"
+        });
+
+        var sourceRow = Assert.Single(OrderLineHuFateDisplayBuilder.BuildByOrder(harness.Store, 112)[1121]);
+
+        Assert.Equal(OrderLineHuFateDisplayBuilder.ReservedFateCode, sourceRow.FateCode);
+        Assert.Equal("резерв этого заказа", sourceRow.FateLabel);
+    }
+
+    [Fact]
+    public void BuildByOrder_CustomerFilledPalletWithoutExplicitOwner_DoesNotAwaitShipment()
+    {
+        var harness = CreateHarness(OrderType.Customer);
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 14,
+            PrdDocId = 100,
+            OrderId = null,
+            OrderLineId = 1121,
+            ItemId = 6,
+            HuCode = "HU-OWNER-NULL",
+            PlannedQty = 600,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 5, 1, 9, 0, 0),
+            CreatedAt = new DateTime(2026, 5, 1, 8, 0, 0)
+        });
+        harness.SeedLedgerEntry(100, 6, 1, 600, "HU-OWNER-NULL");
+
+        var row = Assert.Single(OrderLineHuFateDisplayBuilder.BuildByOrder(harness.Store, 112)[1121]);
+
+        Assert.Equal(OrderLineHuFateDisplayBuilder.OnStockFateCode, row.FateCode);
+        Assert.NotEqual(OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode, row.FateCode);
+    }
+
+    [Fact]
+    public void BuildByOrder_CustomerFilledPalletWithForeignComponentLine_DoesNotAwaitShipment()
+    {
+        var harness = CreateHarness(OrderType.Customer);
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 15,
+            PrdDocId = 100,
+            OrderId = 112,
+            OrderLineId = 1071,
+            ItemId = 6,
+            HuCode = "HU-FOREIGN-LINE",
+            PlannedQty = 600,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 5, 1, 9, 0, 0),
+            CreatedAt = new DateTime(2026, 5, 1, 8, 0, 0)
+        });
+        harness.SeedLedgerEntry(100, 6, 1, 600, "HU-FOREIGN-LINE");
+
+        var row = Assert.Single(OrderLineHuFateDisplayBuilder.BuildByOrder(harness.Store, 112)[1071]);
+
+        Assert.Equal(OrderLineHuFateDisplayBuilder.OnStockFateCode, row.FateCode);
+        Assert.NotEqual(OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode, row.FateCode);
+    }
+
+    [Fact]
+    public void BuildByOrder_CustomerFilledPalletOwnedByAnotherOrder_IsNotAwaitingForPrdOrder()
+    {
+        var harness = CreateHarness(OrderType.Customer);
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 16,
+            PrdDocId = 100,
+            OrderId = 107,
+            OrderLineId = 1121,
+            ItemId = 6,
+            HuCode = "HU-FOREIGN-OWNER",
+            PlannedQty = 600,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 5, 1, 9, 0, 0),
+            CreatedAt = new DateTime(2026, 5, 1, 8, 0, 0)
+        });
+        harness.SeedLedgerEntry(100, 6, 1, 600, "HU-FOREIGN-OWNER");
+
+        var rows = OrderLineHuFateDisplayBuilder.BuildByOrder(harness.Store, 112);
+
+        Assert.DoesNotContain(
+            rows.Values.SelectMany(entries => entries),
+            entry => entry.FateCode == OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode);
+    }
+
     [Fact]
     public void BuildByOrder_MixedFilledAndPrintedRows_AreBothVisible()
     {
@@ -178,6 +307,197 @@ public sealed class OrderLineHuFateDisplayBuilderTests
     }
 
     [Fact]
+    public void BuildByOrder_CustomerMixedFilledHu_AwaitsOnlyWhenEveryComponentHasLedgerStock()
+    {
+        var harness = CreateHarness(OrderType.Customer);
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 21,
+            PrdDocId = 100,
+            OrderId = 112,
+            ItemId = 6,
+            HuCode = "HU-MIXED-READY",
+            PlannedQty = 500,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 5, 1, 9, 0, 0),
+            CreatedAt = new DateTime(2026, 5, 1, 8, 0, 0),
+            Lines =
+            [
+                new ProductionPalletComponentLine { OrderLineId = 1121, ItemId = 6, PlannedQty = 300, FilledQty = 300 },
+                new ProductionPalletComponentLine { OrderLineId = 1122, ItemId = 7, PlannedQty = 200, FilledQty = 200 }
+            ]
+        });
+        harness.SeedLedgerEntry(100, 6, 1, 300, "HU-MIXED-READY");
+        harness.SeedLedgerEntry(100, 7, 1, 200, "HU-MIXED-READY");
+
+        var rows = OrderLineHuFateDisplayBuilder.BuildByOrder(harness.Store, 112);
+
+        var first = Assert.Single(rows[1121]);
+        var second = Assert.Single(rows[1122]);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode, first.FateCode);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode, second.FateCode);
+        Assert.Equal(300, first.FateQty);
+        Assert.Equal(200, second.FateQty);
+    }
+
+    [Fact]
+    public void BuildByOrder_CustomerMixedFilledHu_ReservationOnOneComponentSuppressesAwaitingForWholePallet()
+    {
+        var harness = CreateHarness(OrderType.Customer);
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 24,
+            PrdDocId = 100,
+            OrderId = 112,
+            ItemId = 6,
+            HuCode = "HU-MIXED-RESERVED",
+            PlannedQty = 500,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 5, 1, 9, 0, 0),
+            CreatedAt = new DateTime(2026, 5, 1, 8, 0, 0),
+            Lines =
+            [
+                new ProductionPalletComponentLine { OrderLineId = 1121, ItemId = 6, PlannedQty = 300, FilledQty = 300 },
+                new ProductionPalletComponentLine { OrderLineId = 1122, ItemId = 7, PlannedQty = 200, FilledQty = 200 }
+            ]
+        });
+        harness.SeedLedgerEntry(100, 6, 1, 300, "HU-MIXED-RESERVED");
+        harness.SeedLedgerEntry(100, 7, 1, 200, "HU-MIXED-RESERVED");
+        harness.SeedOrderReceiptPlanLines(115, new OrderReceiptPlanLine
+        {
+            Id = 20,
+            OrderId = 115,
+            OrderLineId = 1152,
+            ItemId = 7,
+            QtyPlanned = 200,
+            ToHu = "HU-MIXED-RESERVED"
+        });
+
+        var rows = OrderLineHuFateDisplayBuilder.BuildByOrder(harness.Store, 112);
+
+        Assert.Equal(OrderLineHuFateDisplayBuilder.OnStockFateCode, Assert.Single(rows[1121]).FateCode);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.ReservedFateCode, Assert.Single(rows[1122]).FateCode);
+        Assert.DoesNotContain(
+            rows.Values.SelectMany(entries => entries),
+            entry => entry.FateCode == OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode);
+    }
+
+    [Fact]
+    public void BuildByOrder_CustomerMixedFilledHu_ShipmentOnOneComponentSuppressesAwaitingForWholePallet()
+    {
+        var harness = CreateHarness(OrderType.Customer);
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 25,
+            PrdDocId = 100,
+            OrderId = 112,
+            ItemId = 6,
+            HuCode = "HU-MIXED-SHIPPED",
+            PlannedQty = 500,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 5, 1, 9, 0, 0),
+            CreatedAt = new DateTime(2026, 5, 1, 8, 0, 0),
+            Lines =
+            [
+                new ProductionPalletComponentLine { OrderLineId = 1121, ItemId = 6, PlannedQty = 300, FilledQty = 300 },
+                new ProductionPalletComponentLine { OrderLineId = 1122, ItemId = 7, PlannedQty = 200, FilledQty = 200 }
+            ]
+        });
+        harness.SeedLedgerEntry(100, 6, 1, 300, "HU-MIXED-SHIPPED");
+        harness.SeedLedgerEntry(100, 7, 1, 200, "HU-MIXED-SHIPPED");
+        harness.SeedDoc(new Doc
+        {
+            Id = 205,
+            DocRef = "OUT-205",
+            Type = DocType.Outbound,
+            Status = DocStatus.Closed,
+            OrderId = 115,
+            CreatedAt = new DateTime(2026, 5, 2, 8, 0, 0),
+            ClosedAt = new DateTime(2026, 5, 2, 9, 0, 0)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 1205,
+            DocId = 205,
+            OrderLineId = 1152,
+            ItemId = 7,
+            Qty = 50,
+            FromHu = "HU-MIXED-SHIPPED"
+        });
+        harness.SeedLedgerEntry(205, 7, 1, -50, "HU-MIXED-SHIPPED");
+
+        var rows = OrderLineHuFateDisplayBuilder.BuildByOrder(harness.Store, 112);
+
+        Assert.Equal(OrderLineHuFateDisplayBuilder.OnStockFateCode, Assert.Single(rows[1121]).FateCode);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.ShippedFateCode, Assert.Single(rows[1122]).FateCode);
+        Assert.DoesNotContain(
+            rows.Values.SelectMany(entries => entries),
+            entry => entry.FateCode == OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode);
+    }
+
+    [Fact]
+    public void BuildByOrder_CustomerMixedFilledHu_MissingComponentStockSuppressesAwaitingForWholeHu()
+    {
+        var harness = CreateHarness(OrderType.Customer);
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 22,
+            PrdDocId = 100,
+            OrderId = 112,
+            ItemId = 6,
+            HuCode = "HU-MIXED-PARTIAL-STOCK",
+            PlannedQty = 500,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 5, 1, 9, 0, 0),
+            CreatedAt = new DateTime(2026, 5, 1, 8, 0, 0),
+            Lines =
+            [
+                new ProductionPalletComponentLine { OrderLineId = 1121, ItemId = 6, PlannedQty = 300, FilledQty = 300 },
+                new ProductionPalletComponentLine { OrderLineId = 1122, ItemId = 7, PlannedQty = 200, FilledQty = 200 }
+            ]
+        });
+        harness.SeedLedgerEntry(100, 6, 1, 300, "HU-MIXED-PARTIAL-STOCK");
+
+        var rows = OrderLineHuFateDisplayBuilder.BuildByOrder(harness.Store, 112);
+
+        Assert.Equal(OrderLineHuFateDisplayBuilder.OnStockFateCode, Assert.Single(rows[1121]).FateCode);
+        Assert.DoesNotContain(
+            rows.Values.SelectMany(entries => entries),
+            entry => entry.FateCode == OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode);
+    }
+
+    [Fact]
+    public void BuildByOrder_CustomerMixedHu_IncompleteComponentSuppressesAwaitingEvenWithLedgerStock()
+    {
+        var harness = CreateHarness(OrderType.Customer);
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 23,
+            PrdDocId = 100,
+            OrderId = 112,
+            ItemId = 6,
+            HuCode = "HU-MIXED-INCOMPLETE",
+            PlannedQty = 500,
+            Status = ProductionPalletStatus.Filled,
+            FilledAt = new DateTime(2026, 5, 1, 9, 0, 0),
+            CreatedAt = new DateTime(2026, 5, 1, 8, 0, 0),
+            Lines =
+            [
+                new ProductionPalletComponentLine { OrderLineId = 1121, ItemId = 6, PlannedQty = 300, FilledQty = 300 },
+                new ProductionPalletComponentLine { OrderLineId = 1122, ItemId = 7, PlannedQty = 200, FilledQty = 100 }
+            ]
+        });
+        harness.SeedLedgerEntry(100, 6, 1, 300, "HU-MIXED-INCOMPLETE");
+        harness.SeedLedgerEntry(100, 7, 1, 100, "HU-MIXED-INCOMPLETE");
+
+        var rows = OrderLineHuFateDisplayBuilder.BuildByOrder(harness.Store, 112);
+
+        Assert.All(
+            rows.Values.SelectMany(entries => entries),
+            entry => Assert.NotEqual(OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode, entry.FateCode));
+    }
+
+    [Fact]
     public void BuildByOrder_UnknownAndLegacyWithoutHu_DoNotInventSourceArrow()
     {
         var harness = CreateHarness();
@@ -211,13 +531,46 @@ public sealed class OrderLineHuFateDisplayBuilderTests
         Assert.Equal("HU-UNKNOWN · резерв · 100", ToRow(targetRow).DisplayText);
     }
 
-    private static CloseDocumentHarness CreateHarness()
+    [Fact]
+    public void BuildByOrder_CustomerLegacyClosedPrdWithoutProductionPallet_RemainsOnStock()
+    {
+        var harness = CreateHarness(OrderType.Customer);
+        harness.SeedDoc(new Doc
+        {
+            Id = 300,
+            DocRef = "PRD-LEGACY",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = 112,
+            CreatedAt = new DateTime(2026, 5, 1, 7, 0, 0),
+            ClosedAt = new DateTime(2026, 5, 1, 8, 0, 0)
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 301,
+            DocId = 300,
+            OrderLineId = 1121,
+            ItemId = 6,
+            Qty = 100,
+            ToHu = "HU-LEGACY"
+        });
+        harness.SeedLedgerEntry(300, 6, 1, 100, "HU-LEGACY");
+
+        var sourceRow = Assert.Single(OrderLineHuFateDisplayBuilder.BuildByOrder(harness.Store, 112)[1121]);
+
+        Assert.Equal(OrderLineHuFateDisplayBuilder.OnStockFateCode, sourceRow.FateCode);
+        Assert.Equal("на складе", sourceRow.FateLabel);
+    }
+
+    private static CloseDocumentHarness CreateHarness(
+        OrderType sourceOrderType = OrderType.Internal,
+        OrderStatus sourceOrderStatus = OrderStatus.InProgress)
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной" });
         harness.SeedItem(new Item { Id = 6, Name = "Хрен 1 кг", BaseUom = "шт" });
         harness.SeedItem(new Item { Id = 7, Name = "Хрен 200 г", BaseUom = "шт" });
-        SeedOrder(harness, 112, OrderType.Internal);
+        SeedOrder(harness, 112, sourceOrderType, sourceOrderStatus);
         SeedOrder(harness, 107, OrderType.Customer);
         SeedOrder(harness, 115, OrderType.Customer);
         harness.SeedOrderLine(new OrderLine { Id = 1121, OrderId = 112, ItemId = 6, QtyOrdered = 1200 });
@@ -237,14 +590,18 @@ public sealed class OrderLineHuFateDisplayBuilderTests
         return harness;
     }
 
-    private static void SeedOrder(CloseDocumentHarness harness, long id, OrderType type)
+    private static void SeedOrder(
+        CloseDocumentHarness harness,
+        long id,
+        OrderType type,
+        OrderStatus status = OrderStatus.InProgress)
     {
         harness.SeedOrder(new Order
         {
             Id = id,
             OrderRef = id.ToString(),
             Type = type,
-            Status = OrderStatus.InProgress,
+            Status = status,
             CreatedAt = new DateTime(2026, 5, 1, 8, 0, 0)
         });
     }

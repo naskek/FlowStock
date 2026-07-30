@@ -9,7 +9,10 @@ public static class OrderLineHuFateDisplayBuilder
     public const string OnStockFateCode = "ON_STOCK";
     public const string ReservedFateCode = "RESERVED";
     public const string ShippedFateCode = "SHIPPED";
+    public const string AwaitingShipmentFateCode = "AWAITING_SHIPMENT";
+    public const string AwaitingShipmentFateLabel = "Ожидает отгрузки";
     public const int FilledSortOrder = 2;
+    public const int AwaitingShipmentSortOrder = FilledSortOrder;
     public const int ReservedSortOrder = 3;
     public const int ShippedSortOrder = 4;
 
@@ -63,7 +66,7 @@ public static class OrderLineHuFateDisplayBuilder
             .ToDictionary(group => group.Key, group => group.Sum(row => row.Qty));
 
         phaseStopwatch?.Restart();
-        var sources = BuildSources(store, docs, orders);
+        var sources = BuildSources(store, docs, orders, stockByHu);
         RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.BuildSourcesMs = elapsed);
         if (timing != null)
         {
@@ -143,14 +146,20 @@ public static class OrderLineHuFateDisplayBuilder
             else if (hasPositiveStock)
             {
                 var stockQty = stockByHu.GetValueOrDefault(source.Key);
+                var awaitingShipment = source.AwaitingShipmentEligible
+                                       && orders.TryGetValue(source.SourceOrderId, out var sourceOrder)
+                                       && IsAwaitingShipmentOrder(sourceOrder)
+                                       && !source.ProductionPalletComponentKeys.Any(componentKey =>
+                                           latestShipmentByHu.ContainsKey(componentKey)
+                                           || reservationByHu.ContainsKey(componentKey));
                 Add(rows, source.SourceOrderLineId, new OrderLineHuDisplayEntry(
                     source.Key.HuCode,
-                    "наполнено",
+                    awaitingShipment ? AwaitingShipmentFateLabel : "наполнено",
                     source.Qty,
                     IsWarehouseBound: false,
-                    SortOrder: FilledSortOrder,
-                    FateCode: OnStockFateCode,
-                    FateLabel: "на складе",
+                    SortOrder: awaitingShipment ? AwaitingShipmentSortOrder : FilledSortOrder,
+                    FateCode: awaitingShipment ? AwaitingShipmentFateCode : OnStockFateCode,
+                    FateLabel: awaitingShipment ? AwaitingShipmentFateLabel : "на складе",
                     FateQty: stockQty));
             }
         }
@@ -229,9 +238,11 @@ public static class OrderLineHuFateDisplayBuilder
     private static Dictionary<HuKey, SourceHu> BuildSources(
         IDataStore store,
         IReadOnlyList<Doc> docs,
-        IReadOnlyDictionary<long, Order> orders)
+        IReadOnlyDictionary<long, Order> orders,
+        IReadOnlyDictionary<HuKey, double> stockByHu)
     {
         var result = new Dictionary<HuKey, SourceHu>();
+        var orderLineIdsByOrder = new Dictionary<long, HashSet<long>>();
 
         foreach (var doc in docs.Where(doc => doc.Type == DocType.ProductionReceipt))
         {
@@ -254,6 +265,25 @@ public static class OrderLineHuFateDisplayBuilder
                         PlannedQty = pallet.PlannedQty,
                         FilledQty = pallet.PlannedQty
                     }];
+                var componentKeys = components
+                    .Where(component => component.ItemId > 0)
+                    .Select(component => new HuKey(component.ItemId, huCode))
+                    .Distinct()
+                    .ToArray();
+                var hasNormalizedOwnership = pallet.OrderId.HasValue
+                                             && orders.TryGetValue(pallet.OrderId.Value, out var palletOwner)
+                                             && IsAwaitingShipmentOrder(palletOwner)
+                                             && components.All(component =>
+                                                 component.OrderLineId.HasValue
+                                                 && GetOrderLineIds(pallet.OrderId.Value)
+                                                     .Contains(component.OrderLineId.Value));
+                var awaitingShipmentEligible =
+                    hasNormalizedOwnership
+                    && string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                    && (!pallet.IsMixedPallet || pallet.AreAllComponentsFilled)
+                    && components.All(component =>
+                        stockByHu.GetValueOrDefault(new HuKey(component.ItemId, huCode))
+                        > StockQuantityRules.QtyTolerance);
                 foreach (var component in components.Where(component => component.OrderLineId.HasValue))
                 {
                     var qty = component.FilledQty > StockQuantityRules.QtyTolerance
@@ -266,7 +296,9 @@ public static class OrderLineHuFateDisplayBuilder
                         qty,
                         Priority: 0,
                         SortAt: pallet.FilledAt ?? pallet.CreatedAt,
-                        SortId: pallet.Id));
+                        SortId: pallet.Id,
+                        AwaitingShipmentEligible: awaitingShipmentEligible,
+                        ProductionPalletComponentKeys: componentKeys));
                 }
             }
         }
@@ -294,11 +326,26 @@ public static class OrderLineHuFateDisplayBuilder
                     Math.Min(line.Qty, ledgerQty),
                     Priority: 1,
                     SortAt: doc.ClosedAt ?? doc.CreatedAt,
-                    SortId: doc.Id));
+                    SortId: doc.Id,
+                    AwaitingShipmentEligible: false,
+                    ProductionPalletComponentKeys: Array.Empty<HuKey>()));
             }
         }
 
         return result;
+
+        HashSet<long> GetOrderLineIds(long sourceOrderId)
+        {
+            if (!orderLineIdsByOrder.TryGetValue(sourceOrderId, out var lineIds))
+            {
+                lineIds = store.GetOrderLines(sourceOrderId)
+                    .Select(line => line.Id)
+                    .ToHashSet();
+                orderLineIdsByOrder[sourceOrderId] = lineIds;
+            }
+
+            return lineIds;
+        }
     }
 
     private static List<TargetReservation> BuildReservations(
@@ -402,6 +449,10 @@ public static class OrderLineHuFateDisplayBuilder
     private static string? NormalizeHu(string? huCode) =>
         string.IsNullOrWhiteSpace(huCode) ? null : huCode.Trim().ToUpperInvariant();
 
+    internal static bool IsAwaitingShipmentOrder(Order order) =>
+        order.Type == OrderType.Customer
+        && order.Status is OrderStatus.InProgress or OrderStatus.Accepted;
+
     private static void RecordPhase(
         OrderLineHuFateTiming? timing,
         Stopwatch? stopwatch,
@@ -421,7 +472,9 @@ public static class OrderLineHuFateDisplayBuilder
         double Qty,
         int Priority,
         DateTime SortAt,
-        long SortId);
+        long SortId,
+        bool AwaitingShipmentEligible,
+        IReadOnlyList<HuKey> ProductionPalletComponentKeys);
 
     private sealed record TargetReservation(HuKey Key, long TargetOrderId, long TargetOrderLineId, double Qty);
 

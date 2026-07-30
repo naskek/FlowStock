@@ -265,6 +265,10 @@
       return "—";
     }
 
+    if (String(row.fate_code || "").trim().toUpperCase() === "AWAITING_SHIPMENT") {
+      return "—";
+    }
+
     var fateOrderRef = String(row.fate_order_ref || "").trim();
     var currentOrderRef = String(order && order.order_ref ? order.order_ref : "").trim();
     var isTransferredToAnotherOrder =
@@ -282,6 +286,17 @@
       parts.push(formatQuantity(row.fate_qty));
     }
     return parts.join(" · ");
+  }
+
+  function formatProductionHuStatus(row) {
+    if (
+      row &&
+      String(row.fate_code || "").trim().toUpperCase() === "AWAITING_SHIPMENT" &&
+      String(row.fate_label || "").trim()
+    ) {
+      return String(row.fate_label).trim();
+    }
+    return translatePalletStatus(row && row.pallet_status);
   }
 
   function renderOrderLineDetails(line, order) {
@@ -336,7 +351,7 @@
         productionRows,
         [
           { label: "HU", value: function (row) { return row.hu_code || "-"; } },
-          { label: "Статус", value: function (row) { return translatePalletStatus(row.pallet_status); } },
+          { label: "Статус", value: function (row) { return formatProductionHuStatus(row); } },
           { label: "План", value: function (row) { return formatQuantity(row.planned_qty || 0); } },
           { label: "Наполнено", value: function (row) { return formatQuantity(row.filled_qty || 0); } },
           { label: "PRD", value: function (row) { return row.prd_ref || "-"; } },

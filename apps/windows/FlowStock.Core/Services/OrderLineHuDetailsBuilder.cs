@@ -25,7 +25,7 @@ public static class OrderLineHuDetailsBuilder
         RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.BuildWarehouseRowsMs = elapsed);
 
         phaseStopwatch?.Restart();
-        var productionResult = BuildProductionRows(store, order.Id);
+        var productionResult = BuildProductionRows(store, order, orderLines);
         RecordPhase(timing, phaseStopwatch, static (value, elapsed) => value.BuildProductionRowsMs = elapsed);
 
         IReadOnlyDictionary<long, IReadOnlyList<OrderLineProductionHuRow>> productionRowsWithFate = productionResult.Rows;
@@ -159,11 +159,13 @@ public static class OrderLineHuDetailsBuilder
 
     private static ProductionRowsResult BuildProductionRows(
         IDataStore store,
-        long orderId)
+        Order order,
+        IReadOnlyCollection<OrderLine> orderLines)
     {
         var rows = new Dictionary<long, List<OrderLineProductionHuRow>>();
         var fateSources = new List<ScopedOrderLineHuFateSource>();
-        foreach (var doc in store.GetDocsByOrder(orderId).Where(doc => doc.Type == DocType.ProductionReceipt))
+        var sourceOrderLineIds = orderLines.Select(line => line.Id).ToHashSet();
+        foreach (var doc in store.GetDocsByOrder(order.Id).Where(doc => doc.Type == DocType.ProductionReceipt))
         {
             foreach (var pallet in store.GetProductionPalletsByDoc(doc.Id)
                          .Where(pallet => ProductionOrderLineHuCodes.IsActivePalletStatus(pallet.Status))
@@ -180,6 +182,21 @@ public static class OrderLineHuDetailsBuilder
                             ? pallet.PlannedQty
                             : 0
                     }];
+                var normalizedHu = NormalizeHu(pallet.HuCode);
+                var componentKeys = normalizedHu == null
+                    ? Array.Empty<ScopedOrderLineHuFateKey>()
+                    : components
+                        .Where(component => component.ItemId > 0)
+                        .Select(component => new ScopedOrderLineHuFateKey(component.ItemId, normalizedHu))
+                        .Distinct()
+                        .ToArray();
+                var isProductionPalletComplete =
+                    string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                    && (!pallet.IsMixedPallet || pallet.AreAllComponentsFilled);
+                var isOwnedBySourceOrder = pallet.OrderId == order.Id
+                                           && components.All(component =>
+                                               component.OrderLineId.HasValue
+                                               && sourceOrderLineIds.Contains(component.OrderLineId.Value));
                 foreach (var component in components.Where(component => component.OrderLineId.HasValue))
                 {
                     var filledQty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
@@ -200,7 +217,11 @@ public static class OrderLineHuDetailsBuilder
                             OrderLineId = component.OrderLineId.Value,
                             ItemId = component.ItemId,
                             HuCode = pallet.HuCode.Trim(),
-                            Qty = Math.Max(0, filledQty)
+                            Qty = Math.Max(0, filledQty),
+                            ProductionPalletId = pallet.Id,
+                            IsOwnedBySourceOrder = isOwnedBySourceOrder,
+                            IsProductionPalletComplete = isProductionPalletComplete,
+                            ProductionPalletComponentKeys = componentKeys
                         });
                     }
                 }

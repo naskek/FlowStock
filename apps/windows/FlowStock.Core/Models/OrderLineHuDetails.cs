@@ -98,6 +98,11 @@ public sealed class ScopedOrderLineHuFateSource
     public long ItemId { get; init; }
     public string HuCode { get; init; } = string.Empty;
     public double Qty { get; init; }
+    public long? ProductionPalletId { get; init; }
+    public bool IsOwnedBySourceOrder { get; init; }
+    public bool IsProductionPalletComplete { get; init; }
+    public IReadOnlyList<ScopedOrderLineHuFateKey> ProductionPalletComponentKeys { get; init; } =
+        Array.Empty<ScopedOrderLineHuFateKey>();
 }
 
 public sealed class ScopedOrderLineHuFateCandidate
