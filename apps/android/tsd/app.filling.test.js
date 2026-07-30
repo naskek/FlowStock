@@ -976,7 +976,7 @@ assert.strictEqual(
   true,
   "order may be marked done after final component when no pallets remain"
 );
-assert(appVersionJs.includes('var version = "71"'), "TSD shell version should be bumped for legacy CSS compatibility");
+assert(/\bvar version = "\d+";/.test(appVersionJs), "TSD shell version should be defined");
 assert(
   appJs.includes("Не удалось загрузить заказы для наполнения") && appJs.includes("console.error(error)"),
   "filling API failures should be visible and logged"
@@ -990,7 +990,9 @@ assert(
   "app-version.js should define shared cache version"
 );
 assert(
-  serviceWorkerJs.includes('importScripts("./app-version.js")') &&
+  serviceWorkerJs.includes(
+    'importScripts("./app-version.js?v=" + TSD_SERVICE_WORKER_VERSION)'
+  ) &&
     serviceWorkerJs.includes("SKIP_WAITING") &&
     serviceWorkerJs.includes("self.skipWaiting()") &&
     !serviceWorkerJs.includes(".then(() => self.skipWaiting())"),

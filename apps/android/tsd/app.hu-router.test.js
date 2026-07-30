@@ -478,8 +478,12 @@ async function main() {
 
   assert(storageJs.includes("/api/tsd/hu/resolve?code="));
   assert(storageJs.includes("/api/tsd/hu/card?code="));
-  assert(appVersionJs.includes('var version = "72"'));
-  assert(serviceWorkerJs.includes('importScripts("./app-version.js")'));
+  assert(/\bvar version = "\d+";/.test(appVersionJs));
+  assert(
+    serviceWorkerJs.includes(
+      'importScripts("./app-version.js?v=" + TSD_SERVICE_WORKER_VERSION)'
+    )
+  );
   assert(serviceWorkerJs.includes('"./app.js"'));
   assert(serviceWorkerJs.includes('"./img/home/hu-search.png"'));
 

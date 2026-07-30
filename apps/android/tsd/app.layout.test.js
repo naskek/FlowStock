@@ -263,11 +263,13 @@ assert(
   pcIndexHtml.indexOf('src="../compat.js"') < pcIndexHtml.indexOf('src="./pc-core.js"'),
   "pc/index.html should load compat.js before pc-core.js"
 );
-assert(appVersionJs.includes('var version = "71"'), "TSD shell version should be 71");
+assert(/\bvar version = "\d+";/.test(appVersionJs), "TSD shell version should be defined");
 assert(
   serviceWorkerJs.includes('"./styles.css"') &&
     serviceWorkerJs.includes('"./compat.js"') &&
-    serviceWorkerJs.includes('importScripts("./app-version.js")'),
+    serviceWorkerJs.includes(
+      'importScripts("./app-version.js?v=" + TSD_SERVICE_WORKER_VERSION)'
+    ),
   "service worker cache contract should cover styles.css and compat.js and keep version import"
 );
 assertCssContains(

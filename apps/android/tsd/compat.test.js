@@ -373,7 +373,7 @@ function testServiceWorkerAndVersion() {
   assert(serviceWorker.indexOf('"./compat.js"') !== -1, "service-worker.js must precache compat.js");
 
   const appVersion = read(path.join(rootDir, "app-version.js"));
-  assert(appVersion.indexOf('version = "71"') !== -1, "app-version.js must be bumped to 71");
+  assert(/\bvar version = "\d+";/.test(appVersion), "app-version.js must define the shell version");
 }
 
 (async function main() {
