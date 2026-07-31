@@ -677,6 +677,14 @@ public sealed class OrderService
                 }
             }
 
+            if (existing.Type != type)
+            {
+                // Permission is server-owned. Any actual type conversion invalidates it in
+                // the same transaction; this also prevents legacy INTERNAL=true from being
+                // reactivated by the reverse transition.
+                store.UpdateOrderPartialOutboundPermission(orderId, false);
+            }
+
             store.UpdateOrder(updated);
 
             foreach (var line in normalized)
@@ -2467,6 +2475,8 @@ public sealed class OrderService
             PartnerName = order.PartnerName,
             PartnerCode = order.PartnerCode,
             UseReservedStock = order.UseReservedStock,
+            AllowPartialOutbound = nextStatus is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+                                   && order.AllowPartialOutbound,
             MarkingStatus = order.MarkingStatus,
             IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
             MarkingRequired = order.MarkingRequired,

@@ -35,6 +35,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <TextBlock Text="Номер" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <TextBox x:Name="OrderRefBox" Grid.Row="0" Grid.Column="1" Margin="0,0,16,6" TabIndex="1" IsReadOnly="True" />
@@ -103,6 +104,12 @@
                 <TextBlock Text="Комментарий" Grid.Row="3" Grid.Column="0" VerticalAlignment="Top" Margin="0,0,8,0" />
                 <TextBox x:Name="CommentBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="3"
                          Height="60" AcceptsReturn="True" TextWrapping="Wrap" TabIndex="6" />
+
+                <CheckBox x:Name="AllowPartialOutboundCheckBox"
+                          Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3"
+                          Margin="0,4,0,0"
+                          Content="Разрешить отгрузку готовых паллет до полной готовности заказа"
+                          Click="AllowPartialOutboundCheckBox_Click" />
             </Grid>
         </GroupBox>
         <Grid Grid.Row="1">

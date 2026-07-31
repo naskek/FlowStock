@@ -6,6 +6,32 @@ namespace FlowStock.Server.Tests.Marking;
 
 public sealed class OrderApiMapperTests
 {
+    [Theory]
+    [InlineData(OrderType.Internal, OrderStatus.InProgress, false)]
+    [InlineData(OrderType.Customer, OrderStatus.Draft, false)]
+    [InlineData(OrderType.Customer, OrderStatus.InProgress, true)]
+    [InlineData(OrderType.Customer, OrderStatus.Accepted, true)]
+    [InlineData(OrderType.Customer, OrderStatus.Shipped, false)]
+    [InlineData(OrderType.Customer, OrderStatus.Cancelled, false)]
+    [InlineData(OrderType.Customer, OrderStatus.Merged, false)]
+    public void MapOrder_ClampsLegacyPartialOutboundPermissionFailClosed(
+        OrderType type,
+        OrderStatus status,
+        bool expected)
+    {
+        var json = JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(new Order
+        {
+            Id = 1,
+            OrderRef = "PERMISSION-1",
+            Type = type,
+            Status = status,
+            AllowPartialOutbound = true,
+            CreatedAt = DateTime.UtcNow
+        }));
+
+        Assert.Equal(expected, json.GetProperty("allow_partial_outbound").GetBoolean());
+    }
+
     [Fact]
     public void MapOrder_ReturnsCanonicalCancelledOrderStatus()
     {

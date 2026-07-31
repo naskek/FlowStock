@@ -1028,6 +1028,8 @@
       remainingPallets: Number(pickOutboundField(row, "remainingPallets", "remaining_pallets")) || 0,
       canClose: (row && row.canClose === true) || (row && row.can_close === true),
       isClosed: (row && row.isClosed === true) || (row && row.is_closed === true),
+      allowPartialOutbound:
+        (row && row.allowPartialOutbound === true) || (row && row.allow_partial_outbound === true),
       operationFingerprint: String(pickOutboundField(row, "operationFingerprint", "operation_fingerprint") || ""),
       draftOutboundDocId:
         Number(pickOutboundField(row, "draftOutboundDocId", "draft_outbound_doc_id")) || 0,

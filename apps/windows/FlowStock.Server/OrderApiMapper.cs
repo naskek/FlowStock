@@ -44,6 +44,7 @@ public static class OrderApiMapper
             status = statusDisplay,
             comment = order.Comment,
             bind_reserved_stock = order.UseReservedStock,
+            allow_partial_outbound = order.EffectiveAllowPartialOutbound,
             marking_status = MarkingStatusMapper.ToString(markingStatus),
             marking_required = order.MarkingRequired,
             marking_applies = order.MarkingApplies,

@@ -291,6 +291,7 @@ const snakeCaseOrder = {
   expected_hu_count: 1,
   picked_hu_count: 0,
   is_complete: false,
+  allow_partial_outbound: true,
   draft_outbound_doc_id: 123,
   draft_outbound_doc_ref: "OUT-2026-000123",
 };
@@ -330,6 +331,7 @@ assert.strictEqual(normalizedCompleteSecondOutboundOrder.orderedQty, 6000);
 assert.strictEqual(normalizedCompleteSecondOutboundOrder.shippedQty, 600);
 assert.strictEqual(normalizedCompleteSecondOutboundOrder.remainingQty, 5400);
 assert.strictEqual(normalizedCompleteSecondOutboundOrder.scannedQty, 5400);
+assert.strictEqual(normalizedCompleteSecondOutboundOrder.allowPartialOutbound, false);
 assert.strictEqual(hooks.isOutboundPickingOperationComplete(normalizedCompleteSecondOutboundOrder), true);
 assert.strictEqual(hooks.isOutboundPickingOperationPartial(normalizedCompleteSecondOutboundOrder), false);
 const camelCaseCompleteSecondOutboundOrder =
@@ -342,6 +344,7 @@ const listHtml = hooks.renderOutboundPickingList([snakeCaseOrder]);
 assert.match(listHtml, /data-outbound-order="93"/);
 assert.match(listHtml, /Заказ № TSD-UI-20260527172818/);
 assert.match(listHtml, /Клиент: Тестовый клиент/);
+assert.match(listHtml, /Частичная отгрузка разрешена/);
 assert.match(listHtml, /Подобрано <strong>0\/1<\/strong>/);
 
 hooks.wireOutboundPickingList();

@@ -185,6 +185,7 @@ public interface IDataStore
     long AddOrder(Order order);
     void UpdateOrder(Order order);
     void UpdateOrderStatus(long orderId, OrderStatus status);
+    void UpdateOrderPartialOutboundPermission(long orderId, bool allowPartialOutbound);
     IReadOnlyList<MarkingOrderQueueRow> GetMarkingOrderQueue(bool includeCompleted);
     IReadOnlyList<MarkingOrderLineCandidate> GetMarkingOrderLineCandidates(IReadOnlyCollection<long> orderIds);
     IReadOnlyList<MarkingOrder> GetMarkingOrdersByIds(IReadOnlyCollection<Guid> ids);

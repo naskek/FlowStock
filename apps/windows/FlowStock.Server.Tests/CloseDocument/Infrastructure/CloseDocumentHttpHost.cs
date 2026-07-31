@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace FlowStock.Server.Tests.CloseDocument.Infrastructure;
 
@@ -24,7 +25,10 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
 
     public HttpClient Client { get; }
 
-    public static async Task<CloseDocumentHttpHost> StartAsync(CloseDocumentHarness harness, InMemoryApiDocStore apiStore)
+    public static async Task<CloseDocumentHttpHost> StartAsync(
+        CloseDocumentHarness harness,
+        InMemoryApiDocStore apiStore,
+        Action<ILoggingBuilder>? configureLogging = null)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
@@ -33,6 +37,7 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         });
 
         builder.WebHost.UseUrls("http://127.0.0.1:0");
+        configureLogging?.Invoke(builder.Logging);
 
         builder.Services.AddSingleton(harness.Store);
         builder.Services.AddSingleton<IApiDocStore>(apiStore);
@@ -47,6 +52,7 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         OrderLinesEndpoint.Map(app);
         OrderDeleteEndpoint.Map(app);
         OrderStatusEndpoint.Map(app);
+        OrderPartialOutboundPermissionEndpoint.Map(app);
         OrderMarkingExportEndpoint.Map(app);
         ProductionNeedCreateOrdersEndpoint.Map(app);
         NewLedgerTransitionEndpoints.Map(app);
@@ -116,5 +122,90 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         Client.Dispose();
         await _app.StopAsync();
         await _app.DisposeAsync();
+    }
+}
+
+internal sealed record CapturedLogEntry(
+    string Category,
+    LogLevel Level,
+    string Message,
+    IReadOnlyDictionary<string, object?> Properties);
+
+internal sealed class CapturingLoggerProvider : ILoggerProvider
+{
+    private readonly List<CapturedLogEntry> _entries = new();
+    private readonly object _sync = new();
+
+    public IReadOnlyList<CapturedLogEntry> Entries
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _entries.ToArray();
+            }
+        }
+    }
+
+    public ILogger CreateLogger(string categoryName) => new CaptureLogger(this, categoryName);
+
+    public void Dispose()
+    {
+    }
+
+    private sealed class CaptureLogger(CapturingLoggerProvider owner, string category) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            var properties = state is IEnumerable<KeyValuePair<string, object?>> values
+                ? values.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
+                : new Dictionary<string, object?>(StringComparer.Ordinal);
+            lock (owner._sync)
+            {
+                owner._entries.Add(new CapturedLogEntry(
+                    category,
+                    logLevel,
+                    formatter(state, exception),
+                    properties));
+            }
+        }
+    }
+}
+
+internal sealed class ThrowingLoggerProvider : ILoggerProvider
+{
+    public ILogger CreateLogger(string categoryName) => new ThrowingLogger(categoryName);
+
+    public void Dispose()
+    {
+    }
+
+    private sealed class ThrowingLogger(string categoryName) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (string.Equals(categoryName, "FlowStock.Server.OrderOperations", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Injected logger provider failure.");
+            }
+        }
     }
 }

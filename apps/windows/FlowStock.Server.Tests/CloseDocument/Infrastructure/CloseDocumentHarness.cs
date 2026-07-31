@@ -38,6 +38,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, int> _kmCodeCountByReceiptLine = new();
     private readonly HashSet<long> _ordersWithOutboundDocs = new();
     private readonly HashSet<long> _commerciallyLockedOrderLineIds = new();
+    private readonly HashSet<long> _ordersWithActiveControl = new();
     private readonly Dictionary<string, HuRecord> _hus = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<(long ItemId, long LocationId, string? HuCode), double> _seedBalances = new();
     private readonly List<LedgerEntry> _postedLedger = new();
@@ -51,6 +52,7 @@ internal sealed class CloseDocumentHarness
     private (long PalletId, string Status)? _nextSelectedAdoptionStatusChange;
     private (long PalletId, SelectedAdoptionComponentLineMutation Mutation)? _nextSelectedAdoptionComponentLineMutation;
     private Action? _afterNextLockOrdersForUpdate;
+    private bool _failNextUpdateOrder;
 
     public CloseDocumentHarness()
     {
@@ -140,6 +142,23 @@ internal sealed class CloseDocumentHarness
     public void FailNextUpdateOrderLineQty()
     {
         _failNextUpdateOrderLineQty = true;
+    }
+
+    public void FailNextUpdateOrder()
+    {
+        _failNextUpdateOrder = true;
+    }
+
+    public void SetActiveOrderControl(long orderId, bool active = true)
+    {
+        if (active)
+        {
+            _ordersWithActiveControl.Add(orderId);
+        }
+        else
+        {
+            _ordersWithActiveControl.Remove(orderId);
+        }
     }
 
     public void RunAfterNextLockOrdersForUpdate(Action action)
@@ -313,6 +332,7 @@ internal sealed class CloseDocumentHarness
             PartnerName = order.PartnerName,
             PartnerCode = order.PartnerCode,
             UseReservedStock = order.UseReservedStock,
+            AllowPartialOutbound = order.AllowPartialOutbound,
             MarkingStatus = order.MarkingStatus,
             IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
             MarkingRequired = order.MarkingRequired,
@@ -872,7 +892,7 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.Initialize());
 
         _store.Setup(store => store.HasActiveOrderControlForOrder(It.IsAny<long>()))
-            .Returns(false);
+            .Returns<long>(orderId => _ordersWithActiveControl.Contains(orderId));
 
         _store.Setup(store => store.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>()))
             .Returns<IReadOnlyCollection<long>>(ids =>
@@ -969,6 +989,7 @@ internal sealed class CloseDocumentHarness
                     PartnerName = order.PartnerName,
                     PartnerCode = order.PartnerCode,
                     UseReservedStock = order.UseReservedStock,
+                    AllowPartialOutbound = order.AllowPartialOutbound,
                     MarkingStatus = order.MarkingStatus,
                     MarkingRequired = order.MarkingRequired,
                     MarkingApplies = order.MarkingApplies,
@@ -983,6 +1004,12 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.UpdateOrder(It.IsAny<Order>()))
             .Callback<Order>(order =>
             {
+                if (_failNextUpdateOrder)
+                {
+                    _failNextUpdateOrder = false;
+                    throw new InvalidOperationException("Injected UpdateOrder failure.");
+                }
+
                 if (!_orders.TryGetValue(order.Id, out var current))
                 {
                     return;
@@ -992,7 +1019,7 @@ internal sealed class CloseDocumentHarness
                 {
                     Id = current.Id,
                     OrderRef = order.OrderRef,
-                    Type = current.Type,
+                    Type = order.Type,
                     PartnerId = order.PartnerId,
                     DueDate = order.DueDate,
                     Status = order.Status,
@@ -1002,6 +1029,7 @@ internal sealed class CloseDocumentHarness
                     PartnerName = current.PartnerName,
                     PartnerCode = current.PartnerCode,
                     UseReservedStock = order.UseReservedStock,
+                    AllowPartialOutbound = current.AllowPartialOutbound,
                     MarkingStatus = current.MarkingStatus,
                     MarkingRequired = current.MarkingRequired,
                     MarkingApplies = current.MarkingApplies,
@@ -1033,6 +1061,41 @@ internal sealed class CloseDocumentHarness
                     PartnerName = current.PartnerName,
                     PartnerCode = current.PartnerCode,
                     UseReservedStock = current.UseReservedStock,
+                    AllowPartialOutbound = status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged
+                        ? false
+                        : current.AllowPartialOutbound,
+                    MarkingStatus = current.MarkingStatus,
+                    MarkingRequired = current.MarkingRequired,
+                    MarkingApplies = current.MarkingApplies,
+                    MarkingCodeCovered = current.MarkingCodeCovered,
+                    MarkingExcelGeneratedAt = current.MarkingExcelGeneratedAt,
+                    MarkingPrintedAt = current.MarkingPrintedAt
+                };
+            });
+
+        _store.Setup(store => store.UpdateOrderPartialOutboundPermission(It.IsAny<long>(), It.IsAny<bool>()))
+            .Callback<long, bool>((orderId, allowPartialOutbound) =>
+            {
+                if (!_orders.TryGetValue(orderId, out var current))
+                {
+                    return;
+                }
+
+                _orders[orderId] = new Order
+                {
+                    Id = current.Id,
+                    OrderRef = current.OrderRef,
+                    Type = current.Type,
+                    PartnerId = current.PartnerId,
+                    DueDate = current.DueDate,
+                    Status = current.Status,
+                    Comment = current.Comment,
+                    CreatedAt = current.CreatedAt,
+                    ShippedAt = current.ShippedAt,
+                    PartnerName = current.PartnerName,
+                    PartnerCode = current.PartnerCode,
+                    UseReservedStock = current.UseReservedStock,
+                    AllowPartialOutbound = allowPartialOutbound,
                     MarkingStatus = current.MarkingStatus,
                     MarkingRequired = current.MarkingRequired,
                     MarkingApplies = current.MarkingApplies,
@@ -3105,6 +3168,7 @@ internal sealed class CloseDocumentHarness
             PartnerName = order.PartnerName,
             PartnerCode = order.PartnerCode,
             UseReservedStock = order.UseReservedStock,
+            AllowPartialOutbound = order.AllowPartialOutbound,
             MarkingStatus = order.MarkingStatus,
             IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
             MarkingRequired = markingApplies && !markingCodeCovered,

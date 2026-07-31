@@ -33,6 +33,12 @@ TSD работает только онлайн через `FlowStock.Server`. С
 - PWA использует API сервера и не хранит справочники как оффлайн-датасет.
 - Настройки приложения сохраняются локально в браузере.
 
+## Ранняя частичная отгрузка
+
+- List/details `/api/tsd/outbound/orders` содержит additive boolean `allow_partial_outbound`; отсутствующее или `null` значение клиент трактует как `false`.
+- При server-returned `true` TSD показывает метку `Частичная отгрузка разрешена`. Клиент не вычисляет eligibility/readiness и не включает заказ самостоятельно.
+- Permission не заменяет существующий `allow_partial=true` в запросе неполного `complete` и не ослабляет server-side scan/status guards.
+
 ## Совместимость WebView 51
 - Для ATOL Smart.Slim Android 7 / старого Android System WebView 51 используется
   упрощенный CSS-режим `html.tsd-legacy-css`.

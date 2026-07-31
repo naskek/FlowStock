@@ -40,6 +40,7 @@ public sealed class AppServices
     public WpfIncomingRequestsApiService WpfIncomingRequestsApi { get; }
     public WpfCreateOrderService WpfCreateOrders { get; }
     public WpfUpdateOrderService WpfUpdateOrders { get; }
+    public WpfOrderPartialOutboundPermissionService WpfOrderPartialOutboundPermissions { get; }
     public WpfDeleteOrderService WpfDeleteOrders { get; }
     public WpfSetOrderStatusService WpfSetOrderStatuses { get; }
     public IncomingRequestOrderApiBridgeService IncomingRequestOrderApprovals { get; }
@@ -113,6 +114,7 @@ public sealed class AppServices
         WpfIncomingRequestsApi = new WpfIncomingRequestsApiService(Settings, appLogger);
         WpfCreateOrders = new WpfCreateOrderService(Settings, appLogger);
         WpfUpdateOrders = new WpfUpdateOrderService(Settings, appLogger);
+        WpfOrderPartialOutboundPermissions = new WpfOrderPartialOutboundPermissionService(Settings, appLogger);
         WpfDeleteOrders = new WpfDeleteOrderService(Settings, appLogger);
         WpfSetOrderStatuses = new WpfSetOrderStatusService(Settings, appLogger);
         IncomingRequestOrderApprovals = new IncomingRequestOrderApiBridgeService(Settings, appLogger, WpfIncomingRequestsApi);

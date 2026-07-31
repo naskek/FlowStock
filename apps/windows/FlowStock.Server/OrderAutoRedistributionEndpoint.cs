@@ -53,8 +53,15 @@ public static class OrderAutoRedistributionEndpoint
         var applyResult = service.ApplyFromOpenInternalOrders(targetCustomerOrderId);
         var envelope = OrderCustomerSaveFollowUpBuilder.Build(store, applyResult);
         var logger = loggerFactory.CreateLogger("OrderAutoRedistribution");
+        var mergedSources = applyResult.Transfers
+            .Select(transfer => transfer.SourceOrderId)
+            .Distinct()
+            .Select(store.GetOrder)
+            .Where(source => source?.Status == Core.Models.OrderStatus.Merged)
+            .Select(source => $"{source!.Id}:MERGED:allow_partial_outbound={source.EffectiveAllowPartialOutbound.ToString().ToLowerInvariant()}")
+            .ToArray();
         logger.LogInformation(
-            "AutoRedistribute target_order_id={TargetOrderId} target_order_ref={TargetOrderRef} target_status={TargetStatus} use_reserved_stock={UseReservedStock} customer_lines={CustomerLineCount} refreshed_count={RefreshedCount} changed_count={ChangedCount} open_internal_candidates={OpenInternalCandidateCount} matching_internal_candidates={MatchingInternalCandidateCount} transfers_count={TransfersCount} skipped_reason={SkippedReason} warnings={Warnings}",
+            "AutoRedistribute target_order_id={TargetOrderId} target_order_ref={TargetOrderRef} target_status={TargetStatus} use_reserved_stock={UseReservedStock} customer_lines={CustomerLineCount} refreshed_count={RefreshedCount} changed_count={ChangedCount} open_internal_candidates={OpenInternalCandidateCount} matching_internal_candidates={MatchingInternalCandidateCount} transfers_count={TransfersCount} merged_source_final_state={MergedSourceFinalState} skipped_reason={SkippedReason} warnings={Warnings}",
             order.Id,
             order.OrderRef,
             order.Status,
@@ -65,6 +72,7 @@ public static class OrderAutoRedistributionEndpoint
             applyResult.OpenInternalCandidateCount,
             applyResult.MatchingInternalCandidateCount,
             applyResult.Transfers.Count,
+            string.Join(",", mergedSources),
             applyResult.SkippedReason,
             string.Join(",", applyResult.Warnings.Select(warning => warning.Code).Distinct(StringComparer.OrdinalIgnoreCase)));
 

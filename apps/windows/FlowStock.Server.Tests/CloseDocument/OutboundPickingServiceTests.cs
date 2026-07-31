@@ -7,6 +7,72 @@ namespace FlowStock.Server.Tests.CloseDocument;
 public sealed class OutboundPickingServiceTests
 {
     [Fact]
+    public void EarlyPartialPermission_ControlsVisibility_AndOpenDraftContinuesAfterDisable()
+    {
+        var harness = CreateBasicPickingHarness();
+        harness.Store.UpdateOrderStatus(20, OrderStatus.InProgress);
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 202,
+            OrderId = 20,
+            ItemId = 1001,
+            QtyOrdered = 5,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        var service = CreatePickingService(harness);
+
+        Assert.DoesNotContain(service.GetOrders(), row => row.OrderId == 20);
+
+        harness.Store.UpdateOrderPartialOutboundPermission(20, true);
+        var permitted = Assert.Single(service.GetOrders(), row => row.OrderId == 20);
+        Assert.True(permitted.AllowPartialOutbound);
+        Assert.True(service.Scan(20, "HU-000001", "TSD-01").Success);
+
+        harness.Store.UpdateOrderPartialOutboundPermission(20, false);
+        var continuation = Assert.Single(service.GetOrders(), row => row.OrderId == 20);
+        Assert.False(continuation.AllowPartialOutbound);
+        Assert.NotNull(service.GetDetails(20).DraftOutboundDocId);
+    }
+
+    [Fact]
+    public void EarlyPartialPermission_DoesNotBypassActiveControl()
+    {
+        var harness = CreateBasicPickingHarness();
+        harness.Store.UpdateOrderStatus(20, OrderStatus.InProgress);
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 202,
+            OrderId = 20,
+            ItemId = 1001,
+            QtyOrdered = 5,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+        harness.Store.UpdateOrderPartialOutboundPermission(20, true);
+        harness.SetActiveOrderControl(20);
+
+        Assert.DoesNotContain(CreatePickingService(harness).GetOrders(), row => row.OrderId == 20);
+    }
+
+    [Fact]
+    public void TerminalLegacyPermission_IsFailClosedInFallback()
+    {
+        var harness = CreateBasicPickingHarness();
+        harness.SeedOrder(new Order
+        {
+            Id = 20,
+            OrderRef = "SO-020",
+            Type = OrderType.Customer,
+            PartnerId = 200,
+            Status = OrderStatus.Shipped,
+            AllowPartialOutbound = true,
+            CreatedAt = DateTime.UtcNow
+        });
+
+        Assert.DoesNotContain(CreatePickingService(harness).GetOrders(), row => row.OrderId == 20);
+        Assert.False(harness.GetOrder(20).EffectiveAllowPartialOutbound);
+    }
+
+    [Fact]
     public void ListIncludesAcceptedAndHuCoveredCustomerOrders()
     {
         var harness = CreateBasicPickingHarness();
@@ -124,10 +190,10 @@ public sealed class OutboundPickingServiceTests
         });
         var service = CreatePickingService(harness);
 
-        var details = service.GetDetails(20);
+        var detailsError = Assert.Throws<InvalidOperationException>(() => service.GetDetails(20));
         var scan = service.Scan(20, "HU-RESERVATION-ONLY", "TSD-01");
 
-        Assert.Empty(details.Hus);
+        Assert.Contains("готовые к отгрузке", detailsError.Message, StringComparison.OrdinalIgnoreCase);
         Assert.False(scan.Success);
         Assert.Equal("HU_BOUND_WITHOUT_STOCK", scan.ErrorCode);
         Assert.Contains("физически", scan.Message, StringComparison.OrdinalIgnoreCase);
@@ -135,7 +201,7 @@ public sealed class OutboundPickingServiceTests
     }
 
     [Fact]
-    public void ScanRejectsHuPickedInOtherOpenOutbound()
+    public void ForeignOpenOutboundExcludesHuFromListAndScanRejectsIt()
     {
         var harness = CreateBasicPickingHarness();
         harness.SeedDoc(new Doc
@@ -157,10 +223,75 @@ public sealed class OutboundPickingServiceTests
             FromHu = "HU-000001"
         });
 
-        var result = CreatePickingService(harness).Scan(20, "HU-000001", "TSD-01");
+        var service = CreatePickingService(harness);
+        var rows = service.GetOrders();
+        var result = service.Scan(20, "HU-000001", "TSD-01");
 
+        Assert.DoesNotContain(rows, row => row.OrderId == 20);
         Assert.False(result.Success);
         Assert.Equal("HU_PICKED_IN_OTHER_OUTBOUND", result.ErrorCode);
+    }
+
+    [Fact]
+    public void OpenOutboundWithoutOrderIdExcludesHuFromListAndScanRejectsIt()
+    {
+        var harness = CreateBasicPickingHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 502,
+            DocRef = "OUT-WITHOUT-ORDER",
+            Type = DocType.Outbound,
+            Status = DocStatus.Draft,
+            OrderId = null,
+            CreatedAt = DateTime.UtcNow
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 503,
+            DocId = 502,
+            ItemId = 1001,
+            Qty = 5,
+            FromLocationId = 1,
+            FromHu = "HU-000001"
+        });
+
+        var service = CreatePickingService(harness);
+        var rows = service.GetOrders();
+        var result = service.Scan(20, "HU-000001", "TSD-01");
+
+        Assert.DoesNotContain(rows, row => row.OrderId == 20);
+        Assert.False(result.Success);
+        Assert.Equal("HU_PICKED_IN_OTHER_OUTBOUND", result.ErrorCode);
+    }
+
+    [Fact]
+    public void ClosedOutboundWithoutOrderIdIsNotForeignDraftConflict()
+    {
+        var harness = CreateBasicPickingHarness();
+        harness.SeedDoc(new Doc
+        {
+            Id = 504,
+            DocRef = "OUT-CLOSED-WITHOUT-ORDER",
+            Type = DocType.Outbound,
+            Status = DocStatus.Closed,
+            OrderId = null,
+            CreatedAt = DateTime.UtcNow,
+            ClosedAt = DateTime.UtcNow
+        });
+        harness.SeedLine(new DocLine
+        {
+            Id = 505,
+            DocId = 504,
+            ItemId = 1001,
+            Qty = 5,
+            FromLocationId = 1,
+            FromHu = "HU-000001"
+        });
+
+        var service = CreatePickingService(harness);
+
+        Assert.Contains(service.GetOrders(), row => row.OrderId == 20);
+        Assert.NotEqual("HU_PICKED_IN_OTHER_OUTBOUND", service.Scan(20, "HU-000001", "TSD-01").ErrorCode);
     }
 
     [Fact]

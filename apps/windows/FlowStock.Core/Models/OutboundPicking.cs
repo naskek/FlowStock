@@ -12,6 +12,7 @@ public sealed class OutboundPickingOrderRow
     public double ShippedQty { get; init; }
     public double RemainingQty { get; init; }
     public double ScannedQty { get; init; }
+    public bool AllowPartialOutbound { get; init; }
     public bool IsComplete => ExpectedHuCount > 0 && PickedHuCount >= ExpectedHuCount;
     public int RequiredPallets => ExpectedHuCount;
     public int ScannedPallets => PickedHuCount;
@@ -35,6 +36,7 @@ public sealed class OutboundPickingOrderDetails
     public double ShippedQty { get; init; }
     public double RemainingQty { get; init; }
     public double ScannedQty { get; init; }
+    public bool AllowPartialOutbound { get; init; }
     public bool IsComplete => ExpectedHuCount > 0 && PickedHuCount >= ExpectedHuCount;
     public int RequiredPallets => ExpectedHuCount;
     public int ScannedPallets => PickedHuCount;

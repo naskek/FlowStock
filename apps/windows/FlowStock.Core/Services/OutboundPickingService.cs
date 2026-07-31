@@ -38,8 +38,7 @@ public sealed class OutboundPickingService
 
         var candidateOrders = _store.GetOrders()
             .Where(order => order.Type == OrderType.Customer
-                            && order.Status is not (OrderStatus.Draft or OrderStatus.Cancelled or OrderStatus.Merged)
-                            && !_store.HasActiveOrderControlForOrder(order.Id))
+                            && order.Status is not (OrderStatus.Draft or OrderStatus.Cancelled or OrderStatus.Merged or OrderStatus.Shipped))
             .ToArray();
         if (candidateOrders.Length == 0)
         {
@@ -75,7 +74,10 @@ public sealed class OutboundPickingService
         IReadOnlyDictionary<long, IReadOnlyDictionary<long, double>> shippedTotalsByOrderId,
         IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> orderLinesByOrderId)
     {
-        var expectedLines = boundHuCache.GetUnshippedOutboundHuLines(order);
+        var foreignOpenHus = CustomerOutboundBoundHuService.GetForeignOpenOutboundHuCodes(_store, order.Id);
+        var expectedLines = boundHuCache.GetUnshippedOutboundHuLines(order)
+            .Where(line => !foreignOpenHus.Contains(NormalizeHu(line.HuCode) ?? string.Empty))
+            .ToArray();
         var expectedHuCodes = expectedLines
             .Select(line => NormalizeHu(line.HuCode))
             .Where(code => !string.IsNullOrWhiteSpace(code))
@@ -122,6 +124,7 @@ public sealed class OutboundPickingService
             RemainingQty = progress.RemainingQty,
             ScannedQty = scannedQty,
             IsClosed = pickingDoc?.Status == DocStatus.Closed,
+            AllowPartialOutbound = order.EffectiveAllowPartialOutbound,
             OperationFingerprint = operationFingerprint
         };
     }
@@ -159,32 +162,19 @@ public sealed class OutboundPickingService
         CustomerOutboundBoundHuBatchCache boundHuCache,
         IReadOnlyDictionary<long, IReadOnlyList<Doc>> docsByOrderId)
     {
-        if (!IsCustomerOrderCandidateForPicking(order))
-        {
-            return false;
-        }
-
-        if (IsAcceptedCustomerOrder(order))
-        {
-            return true;
-        }
-
-        var hasExpectedHu = boundHuCache.GetUnshippedOutboundHuLines(order).Count > 0;
-        if (!hasExpectedHu)
-        {
-            return false;
-        }
-
+        var foreignOpenHus = CustomerOutboundBoundHuService.GetForeignOpenOutboundHuCodes(_store, order.Id);
+        var hasExpectedHu = boundHuCache.GetUnshippedOutboundHuLines(order)
+            .Any(line => !foreignOpenHus.Contains(NormalizeHu(line.HuCode) ?? string.Empty));
         docsByOrderId.TryGetValue(order.Id, out var docs);
         docs ??= Array.Empty<Doc>();
-        if (docs.Any(doc => doc.Type == DocType.Outbound && IsTsdPickingDoc(doc)))
-        {
-            return true;
-        }
-
         var progress = OrderShipmentProgressService.Get(_store, order.Id);
-        return progress.IsPartiallyShipped
-               || !CustomerOutboundBoundHuService.HasReceiptProductionNeed(_store, order.Id);
+        return IsPickingEligible(
+            order,
+            _store.HasActiveOrderControlForOrder(order.Id),
+            hasExpectedHu,
+            IsAcceptedCustomerOrder(order) || !CustomerOutboundBoundHuService.HasReceiptProductionNeed(_store, order.Id),
+            docs.Any(doc => doc.Type == DocType.Outbound && doc.Status == DocStatus.Draft && IsTsdPickingDoc(doc)),
+            progress.IsPartiallyShipped);
     }
 
     private IReadOnlyDictionary<long, IReadOnlyList<Doc>> LoadDocsByOrderId(IReadOnlyCollection<long> orderIds)
@@ -262,9 +252,17 @@ public sealed class OutboundPickingService
                || fullName.Contains("Castle.Proxies", StringComparison.OrdinalIgnoreCase);
     }
 
-    public OutboundPickingOrderDetails GetDetails(long orderId)
+    public OutboundPickingOrderDetails GetDetails(long orderId) => GetDetailsCore(orderId, allowTerminalResult: false);
+
+    private OutboundPickingOrderDetails GetDetailsCore(long orderId, bool allowTerminalResult)
     {
-        var order = EnsureCustomerOrderForPickingView(orderId);
+        var order = allowTerminalResult
+            ? _store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.")
+            : EnsureCustomerOrderForPickingView(orderId);
+        if (order.Type != OrderType.Customer)
+        {
+            throw new InvalidOperationException("Для подбора доступны только клиентские заказы.");
+        }
         var expected = BuildExpectedHus(order);
         var draft = FindDraftOutbound(orderId);
         var pickingDoc = draft ?? FindTsdPickingOutbound(orderId);
@@ -300,6 +298,7 @@ public sealed class OutboundPickingService
             RemainingQty = progress.RemainingQty,
             ScannedQty = scannedQty,
             IsClosed = pickingDoc?.Status == DocStatus.Closed,
+            AllowPartialOutbound = order.EffectiveAllowPartialOutbound,
             OperationFingerprint = operationFingerprint,
             Hus = expected
                 .OrderBy(hu => hu.HuCode, StringComparer.OrdinalIgnoreCase)
@@ -329,6 +328,28 @@ public sealed class OutboundPickingService
             if (alreadyPickedClosed != null)
             {
                 return alreadyPickedClosed;
+            }
+
+            var occupiedByForeignDraft = FindOpenOutboundByHu(normalizedHu, orderId);
+            if (occupiedByForeignDraft != null)
+            {
+                return OutboundPickingScanResult.Failure(
+                    "HU_PICKED_IN_OTHER_OUTBOUND",
+                    "HU уже подобрана в другом открытом документе отгрузки.");
+            }
+
+            if (IsBoundHuWithoutPhysicalStock(orderId, normalizedHu))
+            {
+                return OutboundPickingScanResult.Failure(
+                    "HU_BOUND_WITHOUT_STOCK",
+                    "HU привязан к заказу, но физически не принят или отсутствует на складе.");
+            }
+
+            if (_store.HasActiveOrderControlForOrder(orderId))
+            {
+                return OutboundPickingScanResult.Failure(
+                    "ORDER_CONTROL_ACTIVE",
+                    "Заказ находится в активном контроле готовых заказов.");
             }
 
             var order = EnsureCustomerOrderReadyForPicking(orderId);
@@ -412,7 +433,7 @@ public sealed class OutboundPickingService
                 }
 
                 var lockedOrder = store.GetOrder(order.Id);
-                if (lockedOrder == null || !IsCustomerOrderReadyForPicking(lockedOrder))
+                if (lockedOrder == null || !IsCustomerOrderCandidateForPicking(lockedOrder))
                 {
                     transactionFailure = OutboundPickingScanResult.Failure("VALIDATION_ERROR", "Для подбора доступны только клиентские заказы, готовые к отгрузке.");
                     return;
@@ -423,6 +444,12 @@ public sealed class OutboundPickingService
                     transactionFailure = OutboundPickingScanResult.Failure(
                         "ORDER_CONTROL_ACTIVE",
                         "Заказ находится в активном контроле готовых заказов.");
+                    return;
+                }
+
+                if (!IsCustomerOrderReadyForPicking(lockedOrder, store))
+                {
+                    transactionFailure = OutboundPickingScanResult.Failure("VALIDATION_ERROR", "Для подбора доступны только клиентские заказы, готовые к отгрузке.");
                     return;
                 }
 
@@ -528,17 +555,18 @@ public sealed class OutboundPickingService
                     ClosedOutboundDocId = closedPickingDoc.Id,
                     ClosedOutboundDocRef = closedPickingDoc.DocRef,
                     Message = $"Отгрузка уже проведена ({closedPickingDoc.DocRef}).",
-                    Order = GetDetails(orderId)
+                    Order = GetDetailsCore(orderId, allowTerminalResult: true)
                 };
             }
 
-            order = EnsureCustomerOrderReadyForPicking(orderId);
             if (_store.HasActiveOrderControlForOrder(order.Id))
             {
                 return OutboundPickingCompleteResult.Failure(
                     "ORDER_CONTROL_ACTIVE",
                     "Заказ находится в активном контроле готовых заказов.");
             }
+
+            order = EnsureCustomerOrderReadyForPicking(orderId);
 
             var details = GetDetails(order.Id);
             if (details.ExpectedHuCount == 0)
@@ -575,7 +603,7 @@ public sealed class OutboundPickingService
                     ClosedOutboundDocId = autoClose.ClosedDocId,
                     ClosedOutboundDocRef = autoClose.ClosedDocRef,
                     Message = autoClose.Message,
-                    Order = autoClose.Order ?? GetDetails(order.Id)
+                    Order = autoClose.Order ?? GetDetailsCore(order.Id, allowTerminalResult: true)
                 };
             }
 
@@ -611,7 +639,7 @@ public sealed class OutboundPickingService
 
         if (outbound.Status == DocStatus.Closed)
         {
-            return OutboundAutoCloseAttempt.AlreadyClosed(outbound, GetDetails(orderId));
+            return OutboundAutoCloseAttempt.AlreadyClosed(outbound, GetDetailsCore(orderId, allowTerminalResult: true));
         }
 
         var close = _documents.TryCloseDoc(outbound.Id, allowNegative: false);
@@ -627,7 +655,7 @@ public sealed class OutboundPickingService
         return OutboundAutoCloseAttempt.Closed(
             closedDoc?.DocRef ?? outbound.DocRef,
             outbound.Id,
-            GetDetails(orderId));
+            GetDetailsCore(orderId, allowTerminalResult: true));
     }
 
     private static bool HasPhysicalHuStock(ExpectedHu expectedHu)
@@ -753,7 +781,9 @@ public sealed class OutboundPickingService
         var data = store ?? _store;
         var normalizedHu = NormalizeHu(huCode);
         return data.GetDocs()
-            .Where(doc => doc.Type == DocType.Outbound && doc.Status == DocStatus.Draft && doc.OrderId != currentOrderId)
+            .Where(doc => doc.Type == DocType.Outbound
+                          && doc.Status == DocStatus.Draft
+                          && doc.OrderId != currentOrderId)
             .FirstOrDefault(doc => data.GetDocLines(doc.Id)
                 .Any(line => string.Equals(NormalizeHu(line.FromHu), normalizedHu, StringComparison.OrdinalIgnoreCase)));
     }
@@ -795,7 +825,7 @@ public sealed class OutboundPickingService
             throw new InvalidOperationException("Для подбора доступны только клиентские заказы.");
         }
 
-        if (IsCustomerOrderReadyForPicking(order) || FindTsdPickingOutbound(orderId) != null)
+        if (IsCustomerOrderReadyForPicking(order))
         {
             return order;
         }
@@ -814,26 +844,37 @@ public sealed class OutboundPickingService
                && order.Status is not (OrderStatus.Draft or OrderStatus.Cancelled or OrderStatus.Merged or OrderStatus.Shipped);
     }
 
-    private bool IsCustomerOrderReadyForPicking(Order order)
+    private bool IsCustomerOrderReadyForPicking(Order order, IDataStore? store = null)
     {
-        if (!IsCustomerOrderCandidateForPicking(order))
-        {
-            return false;
-        }
+        var data = store ?? _store;
+        var hasExpectedHu = CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(data, order.Id).Count > 0;
+        var progress = OrderShipmentProgressService.Get(data, order.Id);
+        var hasTsdOutbound = data.GetDocsByOrder(order.Id)
+            .Any(doc => doc.Type == DocType.Outbound && doc.Status == DocStatus.Draft && IsTsdPickingDoc(doc));
+        return IsPickingEligible(
+            order,
+            data.HasActiveOrderControlForOrder(order.Id),
+            hasExpectedHu,
+            IsAcceptedCustomerOrder(order) || !CustomerOutboundBoundHuService.HasReceiptProductionNeed(data, order.Id),
+            hasTsdOutbound,
+            progress.IsPartiallyShipped);
+    }
 
-        if (IsAcceptedCustomerOrder(order))
-        {
-            return true;
-        }
-
-        var hasExpectedHu = CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(_store, order.Id).Count > 0;
-        if (!hasExpectedHu)
-        {
-            return false;
-        }
-
-        return OrderShipmentProgressService.Get(_store, order.Id).IsPartiallyShipped
-               || !CustomerOutboundBoundHuService.HasReceiptProductionNeed(_store, order.Id);
+    private static bool IsPickingEligible(
+        Order order,
+        bool hasActiveOrderControl,
+        bool hasAvailableExpectedHu,
+        bool isFullyReady,
+        bool hasOpenTsdOutbound,
+        bool hasPartialShipment)
+    {
+        return IsCustomerOrderCandidateForPicking(order)
+               && !hasActiveOrderControl
+               && hasAvailableExpectedHu
+               && (isFullyReady
+                   || order.EffectiveAllowPartialOutbound
+                   || hasOpenTsdOutbound
+                   || hasPartialShipment);
     }
 
     private static string? NormalizeHu(string? value)

@@ -1534,6 +1534,9 @@ public sealed class WpfReadApiService
             Status = status,
             Comment = ReadString(element, "comment"),
             UseReservedStock = ReadBool(element, "bind_reserved_stock"),
+            AllowPartialOutbound = status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged
+                ? false
+                : ReadBool(element, "allow_partial_outbound"),
             MarkingStatus = MarkingStatusMapper.FromString(
                 ReadString(element, "marking_effective_status")
                 ?? ReadString(element, "marking_status")),

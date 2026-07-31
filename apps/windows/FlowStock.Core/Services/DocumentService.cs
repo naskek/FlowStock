@@ -380,6 +380,7 @@ public sealed class DocumentService
         var closedAt = DateTime.Now;
         var transactionErrors = new List<string>();
         var generatedLedgerEntries = new List<GeneratedLedgerEntry>();
+        var partialOutboundPermissionAutoReset = false;
 
         var transactionStopwatch = Stopwatch.StartNew();
         _data.ExecuteInTransaction(store =>
@@ -781,8 +782,15 @@ public sealed class DocumentService
                 }
             }
 
+            var permissionBeforeByOrderId = CollectAffectedOrderIds(store, doc, lines)
+                .Select(orderId => store.GetOrder(orderId))
+                .Where(order => order != null)
+                .ToDictionary(order => order!.Id, order => order!.AllowPartialOutbound);
+
             store.UpdateDocStatus(docId, DocStatus.Closed, closedAt);
             TryRefreshLinkedOrderStatus(store, doc, lines, timing);
+            partialOutboundPermissionAutoReset = permissionBeforeByOrderId.Any(entry =>
+                entry.Value && store.GetOrder(entry.Key)?.AllowPartialOutbound == false);
             AddCloseBusinessNotifications(store, doc, closedAt);
         });
         transactionStopwatch.Stop();
@@ -802,7 +810,8 @@ public sealed class DocumentService
         {
             Success = true,
             GeneratedLedgerEntries = generatedLedgerEntries,
-            Timing = timing
+            Timing = timing,
+            PartialOutboundPermissionAutoReset = partialOutboundPermissionAutoReset
         };
     }
 

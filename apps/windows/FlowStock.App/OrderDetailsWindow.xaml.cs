@@ -44,6 +44,11 @@ public partial class OrderDetailsWindow : Window
     private bool _isClosed;
     private bool _isOrderLinesGridSorting;
     private bool _suppressOrderLineSelectionChanged;
+    private bool _suppressPartialOutboundPermissionChange;
+    private bool _partialOutboundPermissionInFlight;
+    private bool _canonicalPartialOutboundPermission;
+    private OrderStatus _canonicalPartialOutboundStatus = OrderStatus.Draft;
+    private bool _canonicalPartialOutboundIsCustomer = true;
     private long _orderLineSelectionRestoreGeneration;
     private long _orderLinesGridColumnWidthRestoreGeneration;
     private long _orderLinesGridSortingGeneration;
@@ -271,6 +276,10 @@ public partial class OrderDetailsWindow : Window
         PartnerCombo.SelectedItem = null;
         DueDatePicker.SelectedDate = null;
         CommentBox.Text = string.Empty;
+        _canonicalPartialOutboundPermission = false;
+        _canonicalPartialOutboundStatus = OrderStatus.Draft;
+        _canonicalPartialOutboundIsCustomer = true;
+        ApplyPartialOutboundPermissionState();
         OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft, OrderType.Customer);
         _lines.Clear();
         _productionPalletHuLocked = false;
@@ -326,6 +335,10 @@ public partial class OrderDetailsWindow : Window
             : null;
         DueDatePicker.SelectedDate = _order.DueDate;
         CommentBox.Text = _order.Comment ?? string.Empty;
+        _canonicalPartialOutboundPermission = _order.EffectiveAllowPartialOutbound;
+        _canonicalPartialOutboundStatus = _order.Status;
+        _canonicalPartialOutboundIsCustomer = _order.Type == OrderType.Customer;
+        ApplyPartialOutboundPermissionState();
 
         var isFinalStatus = _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged;
         OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type);
@@ -2645,6 +2658,7 @@ public partial class OrderDetailsWindow : Window
         UpdateMarkingExportButton();
         UpdatePalletButtons();
         UpdateTypeUi();
+        ApplyPartialOutboundPermissionState();
     }
 
     private void UpdateMarkingExportButton()
@@ -3015,6 +3029,7 @@ public partial class OrderDetailsWindow : Window
         ShortageColumn.Visibility = type == OrderType.Internal ? Visibility.Collapsed : Visibility.Visible;
 
         var isCustomer = type == OrderType.Customer;
+        ApplyPartialOutboundPermissionState();
         SetOrderLinesGridItemsSourcePreservingSelection();
         HuAvailableColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
         HuBoundColumn.Visibility = Visibility.Visible;
@@ -3069,6 +3084,106 @@ public partial class OrderDetailsWindow : Window
         UpdateTypeUi();
         RefreshLineMetrics();
         MarkDirty();
+    }
+
+    private void ApplyPartialOutboundPermissionState()
+    {
+        if (!IsInitialized || AllowPartialOutboundCheckBox == null)
+        {
+            return;
+        }
+
+        var isCustomer = GetSelectedOrderType() == OrderType.Customer
+                         && _canonicalPartialOutboundIsCustomer;
+        var status = _canonicalPartialOutboundStatus;
+        var isActiveSaved = _orderId.HasValue && status is OrderStatus.InProgress or OrderStatus.Accepted;
+        var isTerminal = status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged;
+        _suppressPartialOutboundPermissionChange = true;
+        try
+        {
+            AllowPartialOutboundCheckBox.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
+            AllowPartialOutboundCheckBox.IsChecked = isCustomer && isActiveSaved && !isTerminal
+                ? _canonicalPartialOutboundPermission
+                : false;
+            AllowPartialOutboundCheckBox.IsEnabled = isCustomer && isActiveSaved && !_partialOutboundPermissionInFlight;
+        }
+        finally
+        {
+            _suppressPartialOutboundPermissionChange = false;
+        }
+    }
+
+    private async void AllowPartialOutboundCheckBox_Click(object sender, RoutedEventArgs e)
+    {
+        if (_suppressPartialOutboundPermissionChange || _partialOutboundPermissionInFlight || !_orderId.HasValue)
+        {
+            ApplyPartialOutboundPermissionState();
+            return;
+        }
+
+        var requested = AllowPartialOutboundCheckBox.IsChecked == true;
+        if (requested)
+        {
+            var confirmation = MessageBox.Show(
+                "В TSD станут доступны только фактически готовые к отгрузке HU. Заказ не станет полностью готовым.",
+                "Частичная отгрузка",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (confirmation != MessageBoxResult.Yes)
+            {
+                ApplyPartialOutboundPermissionState();
+                return;
+            }
+        }
+
+        _partialOutboundPermissionInFlight = true;
+        ApplyPartialOutboundPermissionState();
+        try
+        {
+            var result = await _services.WpfOrderPartialOutboundPermissions
+                .SetAsync(_orderId.Value, requested)
+                .ConfigureAwait(true);
+            var canonicalApplied = false;
+            if (result.Response?.TryGetCanonicalState(out var canonicalStatus, out var canonicalPermission) == true)
+            {
+                _canonicalPartialOutboundStatus = canonicalStatus;
+                _canonicalPartialOutboundIsCustomer = !string.Equals(
+                    result.ErrorCode,
+                    "ORDER_PARTIAL_OUTBOUND_NOT_CUSTOMER",
+                    StringComparison.OrdinalIgnoreCase);
+                _canonicalPartialOutboundPermission = _canonicalPartialOutboundIsCustomer
+                    && canonicalStatus is OrderStatus.InProgress or OrderStatus.Accepted
+                    && canonicalPermission;
+                canonicalApplied = true;
+            }
+
+            if (!result.IsSuccess)
+            {
+                if (canonicalApplied)
+                {
+                    OrderStateChanged?.Invoke(this, EventArgs.Empty);
+                }
+                MessageBox.Show(result.Message, "Частичная отгрузка", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (!canonicalApplied)
+            {
+                MessageBox.Show(
+                    "Сервер не вернул canonical состояние разрешения.",
+                    "Частичная отгрузка",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            OrderStateChanged?.Invoke(this, EventArgs.Empty);
+        }
+        finally
+        {
+            _partialOutboundPermissionInFlight = false;
+            ApplyPartialOutboundPermissionState();
+        }
     }
 
     private void BeginLoad()

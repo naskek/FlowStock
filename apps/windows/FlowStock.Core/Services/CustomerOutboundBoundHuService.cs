@@ -122,7 +122,18 @@ public static class CustomerOutboundBoundHuService
                 continue;
             }
 
-            foreach (var palletLine in ExpandProductionPalletOutboundLines(pallet))
+            var palletLines = ExpandProductionPalletOutboundLines(pallet).ToArray();
+            if (pallet.IsMixedPallet && !CanProjectWholePallet(
+                    palletLines,
+                    huCode,
+                    shipmentRemainingByOrderLine,
+                    shippedByOrderLineHu,
+                    stockByHuItem))
+            {
+                continue;
+            }
+
+            foreach (var palletLine in palletLines)
             {
                 if (!shipmentRemainingByOrderLine.TryGetValue(palletLine.OrderLineId, out var shipmentRemaining))
                 {
@@ -142,7 +153,9 @@ public static class CustomerOutboundBoundHuService
                     continue;
                 }
 
-                var qty = Math.Min(stockRow.Qty, shipmentRemaining);
+                var plannedRemaining = Math.Max(0, palletLine.PlannedQty
+                    - (shippedByOrderLineHu.TryGetValue(shippedKey, out var alreadyShipped) ? alreadyShipped : 0d));
+                var qty = Math.Min(Math.Min(stockRow.Qty, shipmentRemaining), plannedRemaining);
                 if (qty <= QtyTolerance)
                 {
                     continue;
@@ -193,11 +206,17 @@ public static class CustomerOutboundBoundHuService
             .Where(line => line.QtyRemaining > QtyTolerance)
             .ToDictionary(line => line.OrderLineId, line => line.QtyRemaining);
         var result = new List<CustomerOutboundBoundHuLine>();
+        var foreignOpenHus = GetForeignOpenOutboundHuCodes(store, orderId);
         foreach (var line in merged.Values
             .OrderBy(line => line.HuCode, StringComparer.OrdinalIgnoreCase)
             .ThenBy(line => line.OrderLineId)
             .ThenBy(line => line.ItemId))
         {
+            if (foreignOpenHus.Contains(NormalizeHu(line.HuCode) ?? string.Empty))
+            {
+                continue;
+            }
+
             if (!shipmentRemainingByOrderLine.TryGetValue(line.OrderLineId, out var remaining)
                 || remaining <= QtyTolerance)
             {
@@ -222,6 +241,27 @@ public static class CustomerOutboundBoundHuService
                 SourceType = line.SourceType
             });
             shipmentRemainingByOrderLine[line.OrderLineId] = remaining - qty;
+        }
+
+        return result;
+    }
+
+    public static IReadOnlySet<string> GetForeignOpenOutboundHuCodes(IDataStore store, long orderId)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var doc in store.GetDocs()
+                     .Where(doc => doc.Type == DocType.Outbound
+                                   && doc.Status == DocStatus.Draft
+                                   && doc.OrderId != orderId))
+        {
+            foreach (var line in store.GetDocLines(doc.Id))
+            {
+                var huCode = NormalizeHu(line.FromHu);
+                if (!string.IsNullOrWhiteSpace(huCode))
+                {
+                    result.Add(huCode);
+                }
+            }
         }
 
         return result;
@@ -395,7 +435,32 @@ public static class CustomerOutboundBoundHuService
                                  StringComparison.OrdinalIgnoreCase));
     }
 
-    private static IEnumerable<(long OrderLineId, long ItemId, string ItemName)> ExpandProductionPalletOutboundLines(
+    private static bool CanProjectWholePallet(
+        IReadOnlyList<(long OrderLineId, long ItemId, string ItemName, double PlannedQty)> palletLines,
+        string huCode,
+        IReadOnlyDictionary<long, double> shipmentRemainingByOrderLine,
+        IReadOnlyDictionary<(long OrderLineId, string HuCode), double> shippedByOrderLineHu,
+        IReadOnlyDictionary<string, HuStockRow> stockByHuItem)
+    {
+        foreach (var line in palletLines)
+        {
+            var shipmentRemaining = shipmentRemainingByOrderLine.TryGetValue(line.OrderLineId, out var remaining)
+                ? remaining
+                : 0d;
+            var shipped = shippedByOrderLineHu.TryGetValue((line.OrderLineId, huCode), out var value) ? value : 0d;
+            var required = Math.Min(shipmentRemaining, Math.Max(0, line.PlannedQty - shipped));
+            if (required > QtyTolerance
+                && (!stockByHuItem.TryGetValue(BuildHuItemKey(huCode, line.ItemId), out var stock)
+                    || stock.Qty + QtyTolerance < required))
+            {
+                return false;
+            }
+        }
+
+        return palletLines.Count > 0;
+    }
+
+    private static IEnumerable<(long OrderLineId, long ItemId, string ItemName, double PlannedQty)> ExpandProductionPalletOutboundLines(
         ProductionPallet pallet)
     {
         if (pallet.Lines.Count > 0)
@@ -407,7 +472,7 @@ public static class CustomerOutboundBoundHuService
                     continue;
                 }
 
-                yield return (line.OrderLineId.Value, line.ItemId, line.ItemName);
+                yield return (line.OrderLineId.Value, line.ItemId, line.ItemName, line.PlannedQty);
             }
 
             yield break;
@@ -418,7 +483,7 @@ public static class CustomerOutboundBoundHuService
             yield break;
         }
 
-        yield return (pallet.OrderLineId.Value, pallet.ItemId, pallet.ItemName);
+        yield return (pallet.OrderLineId.Value, pallet.ItemId, pallet.ItemName, pallet.PlannedQty);
     }
 
     private static void MergeOutboundHuLine(
@@ -750,7 +815,18 @@ public sealed class CustomerOutboundBoundHuBatchCache
                 continue;
             }
 
-            foreach (var palletLine in ExpandProductionPalletOutboundLines(pallet))
+            var palletLines = ExpandProductionPalletOutboundLines(pallet).ToArray();
+            if (pallet.IsMixedPallet && !CanProjectWholePallet(
+                    palletLines,
+                    huCode,
+                    shipmentRemainingByOrderLine,
+                    shippedByOrderLineHu,
+                    _stockByHuItem))
+            {
+                continue;
+            }
+
+            foreach (var palletLine in palletLines)
             {
                 if (!shipmentRemainingByOrderLine.TryGetValue(palletLine.OrderLineId, out var shipmentRemaining))
                 {
@@ -770,7 +846,9 @@ public sealed class CustomerOutboundBoundHuBatchCache
                     continue;
                 }
 
-                var qty = Math.Min(stockRow.Qty, shipmentRemaining);
+                var plannedRemaining = Math.Max(0, palletLine.PlannedQty
+                    - (shippedByOrderLineHu.TryGetValue(shippedKey, out var alreadyShipped) ? alreadyShipped : 0d));
+                var qty = Math.Min(Math.Min(stockRow.Qty, shipmentRemaining), plannedRemaining);
                 if (qty <= QtyTolerance)
                 {
                     continue;
@@ -868,7 +946,32 @@ public sealed class CustomerOutboundBoundHuBatchCache
         return $"{line.OrderLineId}|{NormalizeHu(line.HuCode)}|{line.ItemId}";
     }
 
-    private static IEnumerable<(long OrderLineId, long ItemId, string ItemName)> ExpandProductionPalletOutboundLines(
+    private static bool CanProjectWholePallet(
+        IReadOnlyList<(long OrderLineId, long ItemId, string ItemName, double PlannedQty)> palletLines,
+        string huCode,
+        IReadOnlyDictionary<long, double> shipmentRemainingByOrderLine,
+        IReadOnlyDictionary<(long OrderLineId, string HuCode), double> shippedByOrderLineHu,
+        IReadOnlyDictionary<string, HuStockRow> stockByHuItem)
+    {
+        foreach (var line in palletLines)
+        {
+            var shipmentRemaining = shipmentRemainingByOrderLine.TryGetValue(line.OrderLineId, out var remaining)
+                ? remaining
+                : 0d;
+            var shipped = shippedByOrderLineHu.TryGetValue((line.OrderLineId, huCode), out var value) ? value : 0d;
+            var required = Math.Min(shipmentRemaining, Math.Max(0, line.PlannedQty - shipped));
+            if (required > QtyTolerance
+                && (!stockByHuItem.TryGetValue(BuildHuItemKey(huCode, line.ItemId), out var stock)
+                    || stock.Qty + QtyTolerance < required))
+            {
+                return false;
+            }
+        }
+
+        return palletLines.Count > 0;
+    }
+
+    private static IEnumerable<(long OrderLineId, long ItemId, string ItemName, double PlannedQty)> ExpandProductionPalletOutboundLines(
         ProductionPallet pallet)
     {
         if (pallet.Lines.Count > 0)
@@ -880,7 +983,7 @@ public sealed class CustomerOutboundBoundHuBatchCache
                     continue;
                 }
 
-                yield return (line.OrderLineId.Value, line.ItemId, line.ItemName);
+                yield return (line.OrderLineId.Value, line.ItemId, line.ItemName, line.PlannedQty);
             }
 
             yield break;
@@ -891,7 +994,7 @@ public sealed class CustomerOutboundBoundHuBatchCache
             yield break;
         }
 
-        yield return (pallet.OrderLineId.Value, pallet.ItemId, pallet.ItemName);
+        yield return (pallet.OrderLineId.Value, pallet.ItemId, pallet.ItemName, pallet.PlannedQty);
     }
 
     private static string BuildHuItemKey(string? huCode, long itemId)

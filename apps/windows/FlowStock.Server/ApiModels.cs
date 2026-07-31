@@ -909,6 +909,45 @@ public sealed class ApiErrorResult
     public string? Message { get; init; }
 }
 
+public sealed class SetOrderPartialOutboundPermissionRequest
+{
+    [JsonPropertyName("allow_partial_outbound")]
+    public bool? AllowPartialOutbound { get; init; }
+
+    [JsonPropertyName("device_id")]
+    public string? DeviceId { get; init; }
+}
+
+public sealed class SetOrderPartialOutboundPermissionResponse
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("result")]
+    public string? Result { get; init; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
+
+    [JsonPropertyName("message")]
+    public string? Message { get; init; }
+
+    [JsonPropertyName("order_id")]
+    public long OrderId { get; init; }
+
+    [JsonPropertyName("order_ref")]
+    public string? OrderRef { get; init; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; init; }
+
+    [JsonPropertyName("allow_partial_outbound")]
+    public bool? AllowPartialOutbound { get; init; }
+
+    [JsonPropertyName("changed")]
+    public bool Changed { get; init; }
+}
+
 public sealed class OperationEventRequest
 {
     [JsonPropertyName("schema_version")]

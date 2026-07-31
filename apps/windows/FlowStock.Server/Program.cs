@@ -129,6 +129,7 @@ OrderUpdateEndpoint.Map(app);
 OrderProducedStockReleaseEndpoint.Map(app);
 OrderDeleteEndpoint.Map(app);
 OrderStatusEndpoint.Map(app);
+OrderPartialOutboundPermissionEndpoint.Map(app);
 OrderRedistributionEndpoint.Map(app);
 OrderProducedHuReservationEndpoint.Map(app);
 OrderAutoRedistributionEndpoint.Map(app);

@@ -27,6 +27,7 @@ public static class CloseDocumentEndpoint
         var started = Stopwatch.StartNew();
         var path = request.Path.Value ?? "/api/docs/{docUid}/close";
         CloseDocTiming? closeTiming = null;
+        CloseDocResult? closeResult = null;
 
         IResult LogAndReturn(
             IResult result,
@@ -44,7 +45,11 @@ public static class CloseDocumentEndpoint
             bool? alreadyClosed = null,
             IEnumerable<string>? errors = null,
             string? eventId = null,
-            string? deviceId = null)
+            string? deviceId = null,
+            long? orderId = null,
+            string? orderStatusAfter = null,
+            bool? allowPartialOutboundAfter = null,
+            bool? partialOutboundPermissionAutoReset = null)
         {
             started.Stop();
             ServerOperationLogging.LogDocumentLifecycleOperation(
@@ -72,6 +77,10 @@ public static class CloseDocumentEndpoint
                 collectAffectedOrdersMs: closeTiming?.CollectAffectedOrdersMs,
                 refreshStatusMs: closeTiming?.RefreshStatusMs,
                 refreshReceiptPlansMs: closeTiming?.RefreshReceiptPlansMs,
+                orderId: orderId,
+                orderStatusAfter: orderStatusAfter,
+                allowPartialOutboundAfter: allowPartialOutboundAfter,
+                partialOutboundPermissionAutoReset: partialOutboundPermissionAutoReset,
                 errors: errors);
             return result;
         }
@@ -129,6 +138,9 @@ public static class CloseDocumentEndpoint
             {
                 var replayDocInfo = apiStore.GetApiDoc(docUid);
                 var replayDoc = replayDocInfo == null ? null : store.GetDoc(replayDocInfo.DocId);
+                var replayOrder = replayDoc?.OrderId is long replayOrderId
+                    ? store.GetOrder(replayOrderId)
+                    : null;
                 if (replayDocInfo != null)
                 {
                     apiStore.UpdateApiDocStatus(docUid, "CLOSED");
@@ -157,7 +169,11 @@ public static class CloseDocumentEndpoint
                     deviceId: closeRequest.DeviceId,
                     apiEventWritten: false,
                     idempotentReplay: true,
-                    alreadyClosed: false);
+                    alreadyClosed: false,
+                    orderId: replayOrder?.Id,
+                    orderStatusAfter: replayOrder == null ? null : OrderStatusMapper.StatusToString(replayOrder.Status),
+                    allowPartialOutboundAfter: replayOrder?.EffectiveAllowPartialOutbound,
+                    partialOutboundPermissionAutoReset: false);
             }
 
             return LogAndReturn(
@@ -200,7 +216,8 @@ public static class CloseDocumentEndpoint
                 apiStore.UpdateApiDocStatus(docUid, "CLOSED");
                 apiStore.RecordEvent(closeRequest.EventId, "DOC_CLOSE", docUid, closeRequest.DeviceId, rawJson);
             },
-            timing => closeTiming = timing);
+            timing => closeTiming = timing,
+            result => closeResult = result);
 
         var currentDocAfter = store.GetDoc(docInfo.DocId);
         var lineCountAfter = currentDocAfter?.LineCount ?? lineCountBefore;
@@ -213,6 +230,9 @@ public static class CloseDocumentEndpoint
         var responseOutcome = response.Ok
             ? response.IdempotentReplay ? "IDEMPOTENT_REPLAY" : response.Result
             : (responseErrors.Contains("DOC_NOT_FOUND", StringComparer.OrdinalIgnoreCase) ? "DOC_NOT_FOUND" : response.Result);
+        var linkedOrderAfter = currentDocAfter?.OrderId is long linkedOrderId
+            ? store.GetOrder(linkedOrderId)
+            : null;
 
         return LogAndReturn(
             Results.Ok(response),
@@ -230,6 +250,10 @@ public static class CloseDocumentEndpoint
             apiEventWritten: response.Ok && !response.IdempotentReplay,
             idempotentReplay: response.IdempotentReplay,
             alreadyClosed: response.AlreadyClosed,
+            orderId: linkedOrderAfter?.Id,
+            orderStatusAfter: linkedOrderAfter == null ? null : OrderStatusMapper.StatusToString(linkedOrderAfter.Status),
+            allowPartialOutboundAfter: linkedOrderAfter?.EffectiveAllowPartialOutbound,
+            partialOutboundPermissionAutoReset: closeResult?.PartialOutboundPermissionAutoReset ?? false,
             errors: response.Ok ? null : responseErrors);
     }
 

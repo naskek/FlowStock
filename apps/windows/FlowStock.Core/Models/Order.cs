@@ -14,6 +14,7 @@ public sealed class Order
     public string? PartnerName { get; init; }
     public string? PartnerCode { get; init; }
     public bool UseReservedStock { get; init; }
+    public bool AllowPartialOutbound { get; init; }
     public string MarkingResponsibility { get; init; } = FlowStock.Core.Models.Marking.MarkingResponsibility.FlowStock;
     public MarkingStatus MarkingStatus { get; init; } = MarkingStatus.NotRequired;
     public bool IsLegacyExcelGeneratedMarkingStatus { get; init; }
@@ -36,6 +37,11 @@ public sealed class Order
     public double ShipmentRemainingQty { get; init; }
     public bool IsPartiallyShipped { get; init; }
     public string? ActiveOrderControlRef { get; init; }
+
+    public bool EffectiveAllowPartialOutbound =>
+        Type == OrderType.Customer
+        && Status is OrderStatus.InProgress or OrderStatus.Accepted
+        && AllowPartialOutbound;
 
     public string OrderControlDisplay => string.IsNullOrWhiteSpace(ActiveOrderControlRef)
         ? "нет"

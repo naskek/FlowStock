@@ -108,6 +108,7 @@ public static class TsdOutboundPickingEndpoints
             remaining_pallets = row.RemainingPallets,
             can_close = row.CanClose,
             is_closed = row.IsClosed,
+            allow_partial_outbound = row.AllowPartialOutbound,
             operation_fingerprint = row.OperationFingerprint
         };
     }
@@ -134,6 +135,7 @@ public static class TsdOutboundPickingEndpoints
             remaining_pallets = details.RemainingPallets,
             can_close = details.CanClose,
             is_closed = details.IsClosed,
+            allow_partial_outbound = details.AllowPartialOutbound,
             operation_fingerprint = details.OperationFingerprint,
             hus = details.Hus.Select(MapHu).ToArray()
         };

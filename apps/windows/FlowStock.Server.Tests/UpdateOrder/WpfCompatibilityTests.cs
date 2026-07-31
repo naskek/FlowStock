@@ -170,6 +170,63 @@ public sealed class WpfCompatibilityTests
         Assert.Contains("проведённой отгрузки", result.Message);
     }
 
+    [Fact]
+    public async Task PartialOutboundPermission_DomainFailurePreservesCanonicalResponse()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedOrder(new Order
+        {
+            Id = 42,
+            OrderRef = "SO-042",
+            Type = OrderType.Customer,
+            Status = OrderStatus.Shipped,
+            AllowPartialOutbound = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+        using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerUpdateOrder: true);
+        var service = new WpfOrderPartialOutboundPermissionService(
+            new SettingsService(temp.SettingsPath),
+            new FileLogger(temp.LogPath));
+
+        var result = await service.SetAsync(42, true);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("ORDER_PARTIAL_OUTBOUND_TERMINAL", result.ErrorCode);
+        Assert.NotNull(result.Response);
+        Assert.Equal(42, result.Response!.OrderId);
+        Assert.Equal("SO-042", result.Response.OrderRef);
+        Assert.Equal("SHIPPED", result.Response.Status);
+        Assert.Equal(false, result.Response.AllowPartialOutbound);
+        Assert.True(result.Response.TryGetCanonicalState(out var status, out var permission));
+        Assert.Equal(OrderStatus.Shipped, status);
+        Assert.False(permission);
+    }
+
+    [Fact]
+    public async Task PartialOutboundPermission_NotFoundAndIncompletePayloadAreNotCanonical()
+    {
+        var harness = new CloseDocumentHarness();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+        using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerUpdateOrder: true);
+        var service = new WpfOrderPartialOutboundPermissionService(
+            new SettingsService(temp.SettingsPath),
+            new FileLogger(temp.LogPath));
+
+        var notFound = await service.SetAsync(999, true);
+
+        Assert.False(notFound.IsSuccess);
+        Assert.Equal("ORDER_NOT_FOUND", notFound.ErrorCode);
+        Assert.NotNull(notFound.Response);
+        Assert.False(notFound.Response!.TryGetCanonicalState(out _, out _));
+        Assert.False(new PermissionResponse
+        {
+            Ok = false,
+            Error = "INVALID_JSON",
+            OrderId = 42
+        }.TryGetCanonicalState(out _, out _));
+    }
+
     private sealed class TempSettingsScope : IDisposable
     {
         private readonly string _dir;

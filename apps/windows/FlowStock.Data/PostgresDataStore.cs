@@ -100,6 +100,7 @@ WITH candidate_orders AS (
     SELECT o.id,
            o.order_ref,
            o.status AS persisted_status,
+           COALESCE(o.allow_partial_outbound, FALSE) AS allow_partial_outbound,
            COALESCE(p.name, '') AS partner_name
     FROM orders o
     LEFT JOIN partners p ON p.id = o.partner_id
@@ -197,6 +198,7 @@ warehouse_plan_lines AS (
 ),
 filled_pallet_lines AS (
     SELECT pp.order_id,
+           pp.id AS production_pallet_id,
            pll.order_line_id,
            pll.item_id,
            UPPER(BTRIM(pp.hu_code)) AS hu_code,
@@ -212,9 +214,10 @@ filled_pallet_lines AS (
       AND pll.order_line_id IS NOT NULL
       AND pll.planned_qty > @qty_tolerance
       AND NULLIF(BTRIM(pp.hu_code), '') IS NOT NULL
-    GROUP BY pp.order_id, pll.order_line_id, pll.item_id, UPPER(BTRIM(pp.hu_code)), pp.prd_doc_id
+    GROUP BY pp.order_id, pp.id, pll.order_line_id, pll.item_id, UPPER(BTRIM(pp.hu_code)), pp.prd_doc_id
     UNION ALL
     SELECT pp.order_id,
+           pp.id AS production_pallet_id,
            pp.order_line_id,
            pp.item_id,
            UPPER(BTRIM(pp.hu_code)) AS hu_code,
@@ -234,7 +237,7 @@ filled_pallet_lines AS (
           FROM production_pallet_lines pll
           WHERE pll.production_pallet_id = pp.id
       )
-    GROUP BY pp.order_id, pp.order_line_id, pp.item_id, UPPER(BTRIM(pp.hu_code)), pp.prd_doc_id
+    GROUP BY pp.order_id, pp.id, pp.order_line_id, pp.item_id, UPPER(BTRIM(pp.hu_code)), pp.prd_doc_id
 ),
 candidate_hu_items AS (
     SELECT item_id, hu_code FROM warehouse_plan_lines
@@ -320,6 +323,35 @@ receipt_need AS (
     LEFT JOIN reserved_totals reserved ON reserved.order_line_id = ols.order_line_id
     GROUP BY co.id
 ),
+foreign_open_hus AS (
+    SELECT d.order_id AS owner_order_id,
+           UPPER(BTRIM(dl.from_hu)) AS hu_code
+    FROM docs d
+    INNER JOIN active_doc_lines dl ON dl.doc_id = d.id
+    WHERE d.type = @outbound_doc_type
+      AND d.status = @draft_doc_status
+      AND NULLIF(BTRIM(dl.from_hu), '') IS NOT NULL
+    GROUP BY d.order_id, UPPER(BTRIM(dl.from_hu))
+),
+filled_pallet_whole_ready AS (
+    SELECT fpl.order_id,
+           fpl.production_pallet_id,
+           fpl.hu_code
+    FROM filled_pallet_lines fpl
+    LEFT JOIN shipment_line_remaining slr ON slr.order_line_id = fpl.order_line_id
+    LEFT JOIN closed_shipped_by_line_hu shipped_hu ON shipped_hu.order_line_id = fpl.order_line_id
+                                                  AND shipped_hu.hu_code = fpl.hu_code
+    LEFT JOIN ledger_by_hu_item stock ON stock.item_id = fpl.item_id
+                                     AND stock.hu_code = fpl.hu_code
+    GROUP BY fpl.order_id, fpl.production_pallet_id, fpl.hu_code
+    HAVING COUNT(*) <= 1 OR BOOL_AND(
+        LEAST(
+            COALESCE(slr.remaining_qty, 0),
+            GREATEST(0, fpl.planned_qty - COALESCE(shipped_hu.shipped_qty, 0))) <= @qty_tolerance
+        OR COALESCE(stock.qty, 0) + @qty_tolerance >= LEAST(
+            COALESCE(slr.remaining_qty, 0),
+            GREATEST(0, fpl.planned_qty - COALESCE(shipped_hu.shipped_qty, 0))))
+),
 expected_line_sources AS (
     SELECT wpl.order_id,
            wpl.order_line_id,
@@ -336,6 +368,12 @@ expected_line_sources AS (
     LEFT JOIN closed_shipped_by_line_hu shipped_hu ON shipped_hu.order_line_id = wpl.order_line_id
                                                   AND shipped_hu.hu_code = wpl.hu_code
     WHERE wpl.qty_planned - COALESCE(shipped_hu.shipped_qty, 0) > @qty_tolerance
+      AND NOT EXISTS (
+          SELECT 1
+          FROM foreign_open_hus foreign_hu
+          WHERE foreign_hu.owner_order_id IS DISTINCT FROM wpl.order_id
+            AND foreign_hu.hu_code = wpl.hu_code
+      )
     UNION ALL
     SELECT fpl.order_id,
            fpl.order_line_id,
@@ -345,6 +383,10 @@ expected_line_sources AS (
                stock.qty,
                slr.remaining_qty)::double precision AS qty
     FROM filled_pallet_lines fpl
+    INNER JOIN filled_pallet_whole_ready whole_ready
+            ON whole_ready.order_id = fpl.order_id
+           AND whole_ready.production_pallet_id = fpl.production_pallet_id
+           AND whole_ready.hu_code = fpl.hu_code
     INNER JOIN ledger_by_hu_item stock ON stock.item_id = fpl.item_id
                                       AND stock.hu_code = fpl.hu_code
     INNER JOIN shipment_line_remaining slr ON slr.order_line_id = fpl.order_line_id
@@ -352,6 +394,12 @@ expected_line_sources AS (
     LEFT JOIN closed_shipped_by_line_hu shipped_hu ON shipped_hu.order_line_id = fpl.order_line_id
                                                   AND shipped_hu.hu_code = fpl.hu_code
     WHERE fpl.planned_qty - COALESCE(shipped_hu.shipped_qty, 0) > @qty_tolerance
+      AND NOT EXISTS (
+          SELECT 1
+          FROM foreign_open_hus foreign_hu
+          WHERE foreign_hu.owner_order_id IS DISTINCT FROM fpl.order_id
+            AND foreign_hu.hu_code = fpl.hu_code
+      )
 ),
 expected_hus AS (
     SELECT DISTINCT order_id, hu_code
@@ -370,6 +418,7 @@ tsd_docs AS (
     FROM docs d
     INNER JOIN candidate_orders co ON co.id = d.order_id
     WHERE d.type = @outbound_doc_type
+      AND d.status = @draft_doc_status
       AND UPPER(BTRIM(COALESCE(d.comment, ''))) LIKE UPPER(@tsd_picking_comment) || '%'
     GROUP BY d.order_id
 ),
@@ -447,6 +496,7 @@ SELECT co.id,
        progress.remaining_qty,
        COALESCE(scanned.scanned_qty, 0)::double precision AS scanned_qty,
        COALESCE(selected.status = @closed_doc_status, FALSE) AS is_closed,
+       co.allow_partial_outbound,
        COALESCE(fingerprint.source, '') AS fingerprint_source
 FROM candidate_orders co
 INNER JOIN shipment_progress progress ON progress.order_id = co.id
@@ -460,6 +510,7 @@ LEFT JOIN fingerprint_source fingerprint ON fingerprint.order_id = co.id
 WHERE expected.expected_hu_count > 0
   AND (
       co.persisted_status = @accepted_order_status
+      OR co.allow_partial_outbound
       OR COALESCE(tsd.has_tsd_doc, FALSE)
       OR (progress.shipped_qty > @qty_tolerance AND progress.remaining_qty > @qty_tolerance)
       OR NOT COALESCE(receipt_need.has_receipt_need, FALSE)
@@ -484,7 +535,8 @@ order_base AS (
            COALESCE(o.marking_status, 'NOT_REQUIRED') AS marking_status,
            o.marking_excel_generated_at,
            o.marking_printed_at,
-           COALESCE(o.marking_responsibility, 'FLOWSTOCK') AS marking_responsibility
+           COALESCE(o.marking_responsibility, 'FLOWSTOCK') AS marking_responsibility,
+           COALESCE(o.allow_partial_outbound, FALSE) AS allow_partial_outbound
     FROM orders o
     INNER JOIN order_scope os ON os.id = o.id
     LEFT JOIN partners p ON p.id = o.partner_id
@@ -1161,7 +1213,8 @@ SELECT ob.id,
        COALESCE(olf.shipment_shipped_qty, 0) AS shipment_shipped_qty,
        COALESCE(olf.shipment_remaining_qty, 0) AS shipment_remaining_qty,
        aoc.task_ref AS active_order_control_ref,
-       ob.marking_responsibility AS marking_responsibility
+       ob.marking_responsibility AS marking_responsibility,
+       ob.allow_partial_outbound AS allow_partial_outbound
 FROM order_base ob
 LEFT JOIN status_summary ss ON ss.order_id = ob.id
 LEFT JOIN doc_summary ds ON ds.order_id = ob.id
@@ -5673,7 +5726,8 @@ orders_read_model.created_at DESC,
                     RemainingQty = reader.GetDouble(8),
                     ScannedQty = reader.GetDouble(9),
                     IsClosed = reader.GetBoolean(10),
-                    OperationFingerprint = BuildTsdOutboundOperationFingerprint(reader.GetString(11))
+                    AllowPartialOutbound = reader.GetBoolean(11),
+                    OperationFingerprint = BuildTsdOutboundOperationFingerprint(reader.GetString(12))
                 });
             }
 
@@ -6523,8 +6577,35 @@ WHERE id = @id;
     {
         WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "UPDATE orders SET status = @status WHERE id = @id");
+            using var command = CreateCommand(connection, @"
+UPDATE orders
+SET status = @status,
+    allow_partial_outbound = CASE
+        WHEN @status IN (@shipped_status, @cancelled_status, @merged_status) THEN FALSE
+        ELSE allow_partial_outbound
+    END
+WHERE id = @id;
+");
             command.Parameters.AddWithValue("@status", OrderStatusMapper.StatusToString(status));
+            command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
+            command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@merged_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+            command.Parameters.AddWithValue("@id", orderId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateOrderPartialOutboundPermission(long orderId, bool allowPartialOutbound)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE orders
+SET allow_partial_outbound = @allow_partial_outbound
+WHERE id = @id;
+");
+            command.Parameters.AddWithValue("@allow_partial_outbound", allowPartialOutbound);
             command.Parameters.AddWithValue("@id", orderId);
             command.ExecuteNonQuery();
             return 0;
@@ -16076,6 +16157,9 @@ ORDER BY pll.production_pallet_id, pll.id;
         var markingResponsibility = reader.FieldCount > 29 && !reader.IsDBNull(29)
             ? reader.GetString(29)
             : MarkingResponsibility.FlowStock;
+        var allowPartialOutbound = reader.FieldCount > 30
+                                   && !reader.IsDBNull(30)
+                                   && reader.GetBoolean(30);
 
         return new Order
         {
@@ -16091,6 +16175,8 @@ ORDER BY pll.production_pallet_id, pll.id;
             PartnerName = partnerName,
             PartnerCode = partnerCode,
             UseReservedStock = useReservedStock,
+            AllowPartialOutbound = status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+                                   && allowPartialOutbound,
             MarkingResponsibility = markingResponsibility,
             MarkingStatus = markingStatus,
             IsLegacyExcelGeneratedMarkingStatus = string.Equals(rawMarkingStatus, "EXCEL_GENERATED", StringComparison.OrdinalIgnoreCase),
@@ -16220,6 +16306,23 @@ LIMIT 1;";
         return command.ExecuteScalar() != null;
     }
 
+    private static bool ConstraintExists(NpgsqlConnection connection, string tableName, string constraintName)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT 1
+FROM pg_constraint c
+INNER JOIN pg_class t ON t.oid = c.conrelid
+INNER JOIN pg_namespace n ON n.oid = t.relnamespace
+WHERE n.nspname = current_schema()
+  AND t.relname = @table_name
+  AND c.conname = @constraint_name
+LIMIT 1;";
+        command.Parameters.AddWithValue("@table_name", tableName.ToLowerInvariant());
+        command.Parameters.AddWithValue("@constraint_name", constraintName);
+        return command.ExecuteScalar() != null;
+    }
+
     private static void EnsureSchemaReady(NpgsqlConnection connection)
     {
         if (!TableExists(connection, "schema_migrations"))
@@ -16324,6 +16427,8 @@ LIMIT 1;";
             || !ColumnExists(connection, "orders", "marking_excel_generated_at")
             || !ColumnExists(connection, "orders", "marking_printed_at")
             || !ColumnExists(connection, "orders", "marking_responsibility")
+            || !ColumnExists(connection, "orders", "allow_partial_outbound")
+            || !ConstraintExists(connection, "orders", "ck_orders_terminal_partial_outbound_false")
             || !ColumnExists(connection, "order_lines", "production_purpose")
             || !ColumnExists(connection, "order_lines", "production_pallet_group")
             || !ColumnExists(connection, "order_lines", "cancelled_at")

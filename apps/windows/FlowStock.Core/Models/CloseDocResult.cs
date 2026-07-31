@@ -8,6 +8,7 @@ public sealed class CloseDocResult
     public IReadOnlyList<GeneratedLedgerEntry> GeneratedLedgerEntries { get; init; } =
         Array.Empty<GeneratedLedgerEntry>();
     public CloseDocTiming? Timing { get; init; }
+    public bool PartialOutboundPermissionAutoReset { get; init; }
 }
 
 public sealed class GeneratedLedgerEntry

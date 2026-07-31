@@ -102,6 +102,57 @@ public sealed class CustomerOutboundBoundHuTests
     }
 
     [Fact]
+    public void MixedFilledHu_IsProjectedOnlyWhenEveryRequiredComponentHasLedgerStock()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "FG-01", Name = "Готовая продукция" });
+        harness.SeedItem(new Item { Id = 1001, Name = "Компонент A" });
+        harness.SeedItem(new Item { Id = 1002, Name = "Компонент B" });
+        harness.SeedOrder(new Order
+        {
+            Id = 90,
+            OrderRef = "SO-MIXED",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = DateTime.UtcNow
+        });
+        harness.SeedOrderLine(new OrderLine { Id = 901, OrderId = 90, ItemId = 1001, QtyOrdered = 2 });
+        harness.SeedOrderLine(new OrderLine { Id = 902, OrderId = 90, ItemId = 1002, QtyOrdered = 3 });
+        harness.SeedDoc(new Doc
+        {
+            Id = 900,
+            DocRef = "PRD-MIXED",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = 90,
+            CreatedAt = DateTime.UtcNow
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 9001,
+            PrdDocId = 900,
+            DocLineId = 90001,
+            OrderId = 90,
+            HuCode = "HU-MIXED",
+            Status = ProductionPalletStatus.Filled,
+            ToLocationId = 1,
+            Lines =
+            [
+                new ProductionPalletComponentLine { Id = 1, ProductionPalletId = 9001, OrderLineId = 901, ItemId = 1001, ItemName = "Компонент A", PlannedQty = 2, FilledQty = 2 },
+                new ProductionPalletComponentLine { Id = 2, ProductionPalletId = 9001, OrderLineId = 902, ItemId = 1002, ItemName = "Компонент B", PlannedQty = 3, FilledQty = 3 }
+            ]
+        });
+        harness.SeedBalance(1001, 1, 2, "HU-MIXED");
+
+        Assert.Empty(CustomerOutboundBoundHuService.GetUnshippedFilledProductionPalletHuLines(harness.Store, 90));
+
+        harness.SeedBalance(1002, 1, 3, "HU-MIXED");
+        var wholeHu = CustomerOutboundBoundHuService.GetUnshippedFilledProductionPalletHuLines(harness.Store, 90);
+        Assert.Equal(2, wholeHu.Count);
+        Assert.All(wholeHu, line => Assert.Equal("HU-MIXED", line.HuCode));
+    }
+
+    [Fact]
     public void GetUnshippedOutboundHuLines_ExcludesPrintedAndCancelledPallets()
     {
         var harness = CreateOrder080PalletizedHarness();
