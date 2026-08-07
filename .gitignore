@@ -42,3 +42,4 @@ obj/
 
 # Local helper scripts
 run_flowstock.cmd
+artifacts/
