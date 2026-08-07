@@ -30,7 +30,35 @@ public sealed class HuBindingManageReadModelService
     public IReadOnlyList<HuBindingManageItemRow> GetItems(string? search, int limit)
     {
         var normalizedLimit = NormalizeLimit(limit, MaxItemsLimit);
-        return _readStore.GetManagementItems(NormalizeSearch(search), normalizedLimit);
+        var coarseItems = _readStore.GetManagementItems(NormalizeSearch(search), int.MaxValue);
+        if (_dataStore is not IHuOperatorFactsStore factsStore || coarseItems.Count == 0)
+        {
+            return coarseItems.Take(normalizedLimit).ToArray();
+        }
+
+        var huByItem = _dataStore.GetHuStockRows()
+            .Where(row => row.Qty > QtyTolerance)
+            .Select(row => (row.ItemId, HuCode: NormalizeHu(row.HuCode)))
+            .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
+            .Select(row => (row.ItemId, HuCode: row.HuCode!))
+            .Distinct()
+            .ToArray();
+        var decisions = EvaluateBindingEligibility(factsStore, huByItem.Select(row => row.HuCode));
+        var eligibleCountByItem = huByItem
+            .Where(row => decisions.TryGetValue(row.HuCode, out var decision) && decision.Allowed)
+            .GroupBy(row => row.ItemId)
+            .ToDictionary(group => group.Key, group => group.Select(row => row.HuCode).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+
+        return coarseItems
+            .Where(item => eligibleCountByItem.ContainsKey(item.ItemId))
+            .Select(item => new HuBindingManageItemRow
+            {
+                ItemId = item.ItemId,
+                ItemName = item.ItemName,
+                HuCount = eligibleCountByItem[item.ItemId]
+            })
+            .Take(normalizedLimit)
+            .ToArray();
     }
 
     public HuBindingManageHuPage GetHuRows(long itemId, HuBindingManageHuFilter filter)
@@ -44,7 +72,48 @@ public sealed class HuBindingManageReadModelService
             Limit = NormalizeLimit(filter.Limit, MaxHuLimit),
             Offset = Math.Max(0, filter.Offset)
         };
-        return _readStore.GetManagementHuRows(itemId, normalized);
+        if (_dataStore is not IHuOperatorFactsStore factsStore)
+        {
+            return _readStore.GetManagementHuRows(itemId, normalized);
+        }
+
+        var coarseRows = new List<HuBindingManageHuRow>();
+        var coarseOffset = 0;
+        string itemName = string.Empty;
+        while (true)
+        {
+            var coarsePage = _readStore.GetManagementHuRows(itemId, new HuBindingManageHuFilter
+            {
+                HuSearch = normalized.HuSearch,
+                OrderSearch = normalized.OrderSearch,
+                PartnerSearch = normalized.PartnerSearch,
+                State = normalized.State,
+                Limit = MaxHuLimit,
+                Offset = coarseOffset
+            });
+            itemName = string.IsNullOrWhiteSpace(itemName) ? coarsePage.ItemName : itemName;
+            coarseRows.AddRange(coarsePage.HuRows);
+            coarseOffset += coarsePage.HuRows.Count;
+            if (coarsePage.HuRows.Count == 0 || coarseOffset >= coarsePage.Total)
+            {
+                break;
+            }
+        }
+
+        var decisions = EvaluateBindingEligibility(factsStore, coarseRows.Select(row => row.HuCode));
+        var eligibleRows = coarseRows
+            .Where(row => decisions.TryGetValue(row.HuCode, out var decision) && decision.Allowed)
+            .OrderBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return new HuBindingManageHuPage
+        {
+            ItemId = itemId,
+            ItemName = itemName,
+            Total = eligibleRows.Length,
+            Limit = normalized.Limit,
+            Offset = normalized.Offset,
+            HuRows = eligibleRows.Skip(normalized.Offset).Take(normalized.Limit).ToArray()
+        };
     }
 
     public IReadOnlyList<HuBindingManageTargetLine> GetTargets(long itemId)
@@ -145,6 +214,33 @@ public sealed class HuBindingManageReadModelService
 
     private static string? NormalizeSearch(string? search) =>
         string.IsNullOrWhiteSpace(search) ? null : search.Trim();
+
+    private static string? NormalizeHu(string? huCode) =>
+        string.IsNullOrWhiteSpace(huCode) ? null : huCode.Trim().ToUpperInvariant();
+
+    private static IReadOnlyDictionary<string, HuMutationEligibilityDecision> EvaluateBindingEligibility(
+        IHuOperatorFactsStore factsStore,
+        IEnumerable<string> huCodes)
+    {
+        return new HuMutationEligibilityService(factsStore).Evaluate(
+            huCodes.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            facts =>
+            {
+                var activeTargets = facts.Reservations
+                    .Where(reservation => reservation.Qty > QtyTolerance)
+                    .Where(reservation => string.Equals(reservation.OrderType, "CUSTOMER", StringComparison.OrdinalIgnoreCase))
+                    .Where(reservation => !string.Equals(reservation.OrderStatus, "SHIPPED", StringComparison.OrdinalIgnoreCase)
+                                          && !string.Equals(reservation.OrderStatus, "CANCELLED", StringComparison.OrdinalIgnoreCase)
+                                          && !string.Equals(reservation.OrderStatus, "MERGED", StringComparison.OrdinalIgnoreCase))
+                    .Select(reservation => reservation.OrderId)
+                    .Distinct()
+                    .ToArray();
+                return HuMutationEligibilityService.WholeStockContext(
+                    facts,
+                    HuMutationOperation.ReserveOrBind,
+                    activeTargets.Length == 1 ? activeTargets[0] : null);
+            });
+    }
 
     private static int NormalizeLimit(int limit, int max)
     {

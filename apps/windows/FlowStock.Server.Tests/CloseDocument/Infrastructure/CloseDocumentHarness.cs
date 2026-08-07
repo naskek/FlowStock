@@ -873,6 +873,25 @@ internal sealed class CloseDocumentHarness
 
     private void ConfigureStore()
     {
+        _store.As<IHuTransactionLockStore>()
+            .Setup(store => store.LockNormalizedHus(It.IsAny<IReadOnlyCollection<string>>()));
+        _store.As<IHuTransactionLockStore>()
+            .Setup(store => store.LockDocumentsForUpdate(It.IsAny<IReadOnlyCollection<long>>()));
+
+        _store.As<IHuOperatorFactsStore>()
+            .Setup(store => store.GetForHus(It.IsAny<IReadOnlyCollection<string>>()))
+            .Returns<IReadOnlyCollection<string>>(codes => codes
+                .Select(BuildHuOperatorFacts)
+                .Where(facts => facts != null)
+                .Cast<HuOperatorFacts>()
+                .ToArray());
+        _store.As<IHuOperatorFactsStore>()
+            .Setup(store => store.GetForHu(It.IsAny<string>()))
+            .Returns<string>(BuildHuOperatorFacts);
+        _store.As<IHuOperatorFactsStore>()
+            .Setup(store => store.GetForOrder(It.IsAny<long>()))
+            .Returns(Array.Empty<HuOperatorFacts>());
+
         _store.As<IReadyHuBindingSummaryStore>()
             .Setup(store => store.HasPendingReadyHuBinding())
             .Returns(() => HasPendingReadyHuBindingInHarness());
@@ -4297,6 +4316,136 @@ internal sealed class CloseDocumentHarness
                 Qty = pair.Value
             })
             .ToArray();
+    }
+
+    private HuOperatorFacts? BuildHuOperatorFacts(string huCode)
+    {
+        var normalizedHu = NormalizeHu(huCode);
+        if (string.IsNullOrWhiteSpace(normalizedHu))
+        {
+            return null;
+        }
+
+        var seededStock = _seedBalances
+            .Where(pair => string.Equals(NormalizeHu(pair.Key.HuCode), normalizedHu, StringComparison.Ordinal))
+            .Select(pair => new HuStockRow
+            {
+                ItemId = pair.Key.ItemId,
+                LocationId = pair.Key.LocationId,
+                HuCode = normalizedHu,
+                Qty = pair.Value
+            })
+            .ToArray();
+        var currentStock = seededStock.Length > 0
+            ? seededStock
+            : BuildHuStockRows()
+                .Where(row => string.Equals(NormalizeHu(row.HuCode), normalizedHu, StringComparison.Ordinal))
+                .ToArray();
+        var stock = currentStock
+            .Select(row => new HuOperatorStockFact
+            {
+                ItemId = row.ItemId,
+                ItemName = _items.TryGetValue(row.ItemId, out var item) ? item.Name : $"Товар {row.ItemId}",
+                LocationId = row.LocationId,
+                LocationCode = _locations.TryGetValue(row.LocationId, out var location) ? location.Code : row.LocationId.ToString(),
+                LocationName = _locations.TryGetValue(row.LocationId, out location) ? location.Name : null,
+                Qty = row.Qty
+            })
+            .ToArray();
+        var production = _productionPallets.Values
+            .Where(pallet => string.Equals(NormalizeHu(pallet.HuCode), normalizedHu, StringComparison.Ordinal))
+            .Select(pallet => new HuOperatorProductionPalletFact
+            {
+                PalletId = pallet.Id,
+                Status = pallet.Status,
+                OwnerOrderId = pallet.OrderId,
+                OwnerOrderRef = pallet.OrderId.HasValue && _orders.TryGetValue(pallet.OrderId.Value, out var owner)
+                    ? owner.OrderRef
+                    : null,
+                OwnerOrderType = pallet.OrderId.HasValue && _orders.TryGetValue(pallet.OrderId.Value, out owner)
+                    ? OrderStatusMapper.TypeToString(owner.Type)
+                    : null,
+                OwnerOrderStatus = pallet.OrderId.HasValue && _orders.TryGetValue(pallet.OrderId.Value, out owner)
+                    ? OrderStatusMapper.StatusToString(owner.Status)
+                    : null,
+                Components = pallet.Lines.Count > 0
+                    ? pallet.Lines.Select(line => new HuOperatorComponentFact
+                    {
+                        OrderLineId = line.OrderLineId,
+                        OrderLineOrderId = line.OrderLineId.HasValue && _orderIdByOrderLineId.TryGetValue(line.OrderLineId.Value, out var orderId)
+                            ? orderId
+                            : null,
+                        ItemId = line.ItemId,
+                        ItemName = line.ItemName,
+                        PlannedQty = line.PlannedQty,
+                        FilledQty = line.FilledQty
+                    }).ToArray()
+                    :
+                    [
+                        new HuOperatorComponentFact
+                        {
+                            OrderLineId = pallet.OrderLineId,
+                            OrderLineOrderId = pallet.OrderId,
+                            ItemId = pallet.ItemId,
+                            ItemName = _items.TryGetValue(pallet.ItemId, out var palletItem) ? palletItem.Name : $"Товар {pallet.ItemId}",
+                            PlannedQty = pallet.PlannedQty,
+                            FilledQty = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                                ? pallet.PlannedQty
+                                : 0
+                        }
+                    ]
+            })
+            .ToArray();
+        var reservations = _orderReceiptPlanLines
+            .SelectMany(pair => pair.Value)
+            .Where(line => string.Equals(NormalizeHu(line.ToHu), normalizedHu, StringComparison.Ordinal))
+            .Select(line => new HuOperatorReservationFact
+            {
+                OrderId = line.OrderId,
+                OrderRef = _orders.TryGetValue(line.OrderId, out var order) ? order.OrderRef : line.OrderId.ToString(),
+                OrderType = _orders.TryGetValue(line.OrderId, out order) ? OrderStatusMapper.TypeToString(order.Type) : "CUSTOMER",
+                OrderStatus = _orders.TryGetValue(line.OrderId, out order) ? OrderStatusMapper.StatusToString(order.Status) : "IN_PROGRESS",
+                OrderLineId = line.OrderLineId,
+                ItemId = line.ItemId,
+                Qty = line.QtyPlanned
+            })
+            .ToArray();
+        var outbound = _docs.Values
+            .Where(doc => doc.Type == DocType.Outbound)
+            .SelectMany(doc => GetActiveDocLines(doc.Id)
+                .Where(line => string.Equals(NormalizeHu(line.FromHu ?? doc.ShippingRef), normalizedHu, StringComparison.Ordinal))
+                .Select(line => new HuOperatorOutboundFact
+                {
+                    DocumentId = doc.Id,
+                    DocumentRef = doc.DocRef,
+                    DocumentStatus = DocTypeMapper.StatusToString(doc.Status),
+                    OrderId = doc.OrderId,
+                    OrderRef = doc.OrderId.HasValue && _orders.TryGetValue(doc.OrderId.Value, out var order) ? order.OrderRef : null,
+                    OrderType = doc.OrderId.HasValue && _orders.TryGetValue(doc.OrderId.Value, out order)
+                        ? OrderStatusMapper.TypeToString(order.Type)
+                        : null,
+                    OrderStatus = doc.OrderId.HasValue && _orders.TryGetValue(doc.OrderId.Value, out order)
+                        ? OrderStatusMapper.StatusToString(order.Status)
+                        : null,
+                    OrderLineId = line.OrderLineId,
+                    ItemId = line.ItemId,
+                    ItemName = _items.TryGetValue(line.ItemId, out var item) ? item.Name : $"Товар {line.ItemId}",
+                    Qty = line.Qty,
+                    ClosedAt = doc.ClosedAt
+                }))
+            .ToArray();
+
+        return new HuOperatorFacts
+        {
+            HuCode = normalizedHu,
+            RegistryKnown = _hus.ContainsKey(normalizedHu),
+            Stock = stock,
+            // Close tests seed current balances and ledger history separately; production
+            // composition is validated through the explicit current stock composition here.
+            ProductionPallets = Array.Empty<HuOperatorProductionPalletFact>(),
+            Reservations = reservations,
+            Outbound = outbound
+        };
     }
 
     private IReadOnlyList<ScopedOrderLineHuFateCandidate> BuildScopedOrderLineHuFateCandidates(

@@ -32,10 +32,81 @@ public sealed class OrderHuBindingManageApplyService
         OrderHuBindingManageApplyResult? result = null;
         _dataStore.ExecuteInTransaction(store =>
         {
+            var orderIds = request.Lines.Select(line => line.OrderId).Distinct().ToArray();
+            var missingOrderId = orderIds.FirstOrDefault(orderId => store.GetOrder(orderId) == null);
+            if (missingOrderId > 0)
+            {
+                throw Error("ORDER_NOT_FOUND", $"Заказ {missingOrderId} не найден.");
+            }
+
+            var huCodes = request.ExpectedHuStates.Select(state => state.HuCode)
+                .Concat(request.Lines.SelectMany(line =>
+                    (line.ExpectedBoundHuCodes ?? Array.Empty<string>())
+                    .Concat(line.FinalHuCodes ?? Array.Empty<string>())))
+                .Select(HuBindingApplyShared.NormalizeHu)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Cast<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var factsStore = HuMutationEligibilityService.LockMutationScope(store, orderIds, huCodes);
+            EnsureFinalHusEligible(factsStore, request);
+
             result = ApplyFinalCore(store, request);
         });
 
         return result ?? ApplyFinalCore(_dataStore, request);
+    }
+
+    private static void EnsureFinalHusEligible(
+        IHuOperatorFactsStore factsStore,
+        OrderHuBindingManageApplyRequest request)
+    {
+        var targetByHu = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in request.Lines)
+        {
+            foreach (var huCode in line.FinalHuCodes ?? Array.Empty<string>())
+            {
+                var normalized = HuBindingApplyShared.NormalizeHu(huCode);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                {
+                    targetByHu[normalized] = line.OrderId;
+                }
+            }
+        }
+
+        var affectedOrderIds = request.Lines.Select(line => line.OrderId).ToHashSet();
+        var decisions = new HuMutationEligibilityService(factsStore).Evaluate(
+            targetByHu.Keys.ToArray(),
+            facts =>
+            {
+                var baseContext = HuMutationEligibilityService.WholeStockContext(
+                    facts,
+                    HuMutationOperation.ReserveOrBind,
+                    targetByHu[HuBindingApplyShared.NormalizeHu(facts.HuCode)!]);
+                return new HuMutationEligibilityContext
+                {
+                    Operation = baseContext.Operation,
+                    TargetOrderId = baseContext.TargetOrderId,
+                    RequestedComponents = baseContext.RequestedComponents,
+                    PermittedReservationOrderIds = affectedOrderIds
+                };
+            });
+        var rejected = decisions.FirstOrDefault(pair => !pair.Value.Allowed);
+        if (rejected.Value == null)
+        {
+            return;
+        }
+
+        var reasons = rejected.Value.Reasons;
+        var code = reasons.Any(reason => reason.Code == HuMutationEligibilityReasonCode.HuMixedNotSupported)
+            ? "HU_MIXED_NOT_SUPPORTED"
+            : reasons.Any(reason => reason.Code == HuMutationEligibilityReasonCode.HuReservedByOtherOrder)
+                ? "HU_RESERVED_BY_OTHER_ORDER"
+                : "HU_BINDING_STALE";
+        throw Error(
+            code,
+            $"HU '{rejected.Key}' недоступен для привязки.",
+            reasons.Select(reason => reason.Details).ToArray());
     }
 
     private OrderHuBindingManageApplyResult ApplyFinalCore(IDataStore store, OrderHuBindingManageApplyRequest request)

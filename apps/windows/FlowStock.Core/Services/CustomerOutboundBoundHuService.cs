@@ -58,6 +58,10 @@ public static class CustomerOutboundBoundHuService
             {
                 continue;
             }
+            if (remainingQty + QtyTolerance < stockRow.Qty)
+            {
+                continue;
+            }
 
             var locationId = (long?)stockRow.LocationId;
             var locationCode = locationsById.TryGetValue(stockRow.LocationId, out var stockLocationCode)
@@ -69,7 +73,7 @@ public static class CustomerOutboundBoundHuService
                 OrderLineId = planLine.OrderLineId,
                 ItemId = planLine.ItemId,
                 ItemName = planLine.ItemName,
-                Qty = Math.Min(remainingQty, stockRow.Qty),
+                Qty = stockRow.Qty,
                 HuCode = huCode,
                 FromLocationId = locationId,
                 FromLocationCode = locationCode,
@@ -155,8 +159,10 @@ public static class CustomerOutboundBoundHuService
 
                 var plannedRemaining = Math.Max(0, palletLine.PlannedQty
                     - (shippedByOrderLineHu.TryGetValue(shippedKey, out var alreadyShipped) ? alreadyShipped : 0d));
-                var qty = Math.Min(Math.Min(stockRow.Qty, shipmentRemaining), plannedRemaining);
-                if (qty <= QtyTolerance)
+                var qty = stockRow.Qty;
+                if (qty <= QtyTolerance
+                    || shipmentRemaining + QtyTolerance < qty
+                    || Math.Abs(plannedRemaining - qty) > QtyTolerance)
                 {
                     continue;
                 }
@@ -223,8 +229,8 @@ public static class CustomerOutboundBoundHuService
                 continue;
             }
 
-            var qty = Math.Min(Math.Max(0, line.Qty), remaining);
-            if (qty <= QtyTolerance)
+            var qty = Math.Max(0, line.Qty);
+            if (qty <= QtyTolerance || qty > remaining + QtyTolerance)
             {
                 continue;
             }
@@ -243,7 +249,62 @@ public static class CustomerOutboundBoundHuService
             shipmentRemainingByOrderLine[line.OrderLineId] = remaining - qty;
         }
 
-        return result;
+        return FilterEligibleOutboundHuLines(store, orderId, result);
+    }
+
+    private static IReadOnlyList<CustomerOutboundBoundHuLine> FilterEligibleOutboundHuLines(
+        IDataStore store,
+        long orderId,
+        IReadOnlyList<CustomerOutboundBoundHuLine> lines)
+    {
+        if (lines.Count == 0 || store is not IHuOperatorFactsStore factsStore)
+        {
+            return lines;
+        }
+
+        var sameOrderDraftByHu = store.GetDocsByOrder(orderId)
+            .Where(doc => doc.Type == DocType.Outbound && doc.Status == DocStatus.Draft)
+            .SelectMany(doc => store.GetDocLines(doc.Id)
+                .Select(line => new { DocId = doc.Id, HuCode = NormalizeHu(line.FromHu ?? doc.ShippingRef) }))
+            .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
+            .GroupBy(row => row.HuCode!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                {
+                    var documentIds = group.Select(row => row.DocId).Distinct().ToArray();
+                    return documentIds.Length == 1 ? documentIds[0] : (long?)null;
+                },
+                StringComparer.OrdinalIgnoreCase);
+        var factsByHu = factsStore.GetForHus(lines.Select(line => line.HuCode).Distinct(StringComparer.OrdinalIgnoreCase).ToArray())
+            .ToDictionary(facts => NormalizeHu(facts.HuCode) ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var group in lines.GroupBy(line => NormalizeHu(line.HuCode)!, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!factsByHu.TryGetValue(group.Key, out var facts))
+            {
+                continue;
+            }
+
+            sameOrderDraftByHu.TryGetValue(group.Key, out var currentDocumentId);
+            var decision = HuMutationEligibilityPolicy.Evaluate(
+                facts,
+                new HuMutationEligibilityContext
+                {
+                    Operation = HuMutationOperation.OutboundDraft,
+                    TargetOrderId = orderId,
+                    CurrentOutboundDocumentId = currentDocumentId,
+                    RequestedComponents = group
+                        .Select(line => new HuMutationRequestedComponent(line.ItemId, line.Qty, line.FromLocationId))
+                        .ToArray()
+                });
+            if (decision.Allowed)
+            {
+                allowed.Add(group.Key);
+            }
+        }
+
+        return lines.Where(line => allowed.Contains(NormalizeHu(line.HuCode) ?? string.Empty)).ToArray();
     }
 
     public static IReadOnlySet<string> GetForeignOpenOutboundHuCodes(IDataStore store, long orderId)
@@ -291,6 +352,38 @@ public static class CustomerOutboundBoundHuService
             return 0;
         }
 
+        var initialBoundLines = GetUnshippedOutboundHuLines(store, order.Id);
+        var initialHuCodes = initialBoundLines
+            .Select(line => NormalizeHu(line.HuCode))
+            .Concat(store.GetDocLines(docId).Select(line => NormalizeHu(line.FromHu ?? doc.ShippingRef)))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        HuMutationEligibilityService.LockMutationScope(
+            store,
+            [order.Id],
+            initialHuCodes,
+            [docId]);
+
+        doc = store.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft || doc.OrderId != order.Id)
+        {
+            throw new InvalidOperationException("HU_STATE_CHANGED: документ отгрузки изменился. Повторите операцию.");
+        }
+
+        var boundLines = GetUnshippedOutboundHuLines(store, order.Id);
+        var refreshedHuCodes = boundLines
+            .Select(line => NormalizeHu(line.HuCode))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (refreshedHuCodes.Except(initialHuCodes, StringComparer.OrdinalIgnoreCase).Any())
+        {
+            throw new InvalidOperationException("HU_STATE_CHANGED: набор HU изменился после блокировки. Повторите операцию.");
+        }
+
         var addedLines = 0;
         if (replaceAll)
         {
@@ -303,7 +396,7 @@ public static class CustomerOutboundBoundHuService
             .Select(key => key!.Value)
             .ToHashSet();
 
-        foreach (var boundLine in GetUnshippedOutboundHuLines(store, order.Id))
+        foreach (var boundLine in boundLines)
         {
             var key = (boundLine.OrderLineId, boundLine.HuCode);
             if (existingKeys.Contains(key))
@@ -717,8 +810,8 @@ public sealed class CustomerOutboundBoundHuBatchCache
                 continue;
             }
 
-            var qty = Math.Min(Math.Max(0, line.Qty), remaining);
-            if (qty <= QtyTolerance)
+            var qty = Math.Max(0, line.Qty);
+            if (qty <= QtyTolerance || qty > remaining + QtyTolerance)
             {
                 continue;
             }
@@ -766,6 +859,10 @@ public sealed class CustomerOutboundBoundHuBatchCache
             {
                 continue;
             }
+            if (remainingQty + QtyTolerance < stockRow.Qty)
+            {
+                continue;
+            }
 
             var locationId = (long?)stockRow.LocationId;
             var locationCode = _locationsById.TryGetValue(stockRow.LocationId, out var stockLocationCode)
@@ -777,7 +874,7 @@ public sealed class CustomerOutboundBoundHuBatchCache
                 OrderLineId = planLine.OrderLineId,
                 ItemId = planLine.ItemId,
                 ItemName = planLine.ItemName,
-                Qty = Math.Min(remainingQty, stockRow.Qty),
+                Qty = stockRow.Qty,
                 HuCode = huCode,
                 FromLocationId = locationId,
                 FromLocationCode = locationCode,
@@ -848,8 +945,10 @@ public sealed class CustomerOutboundBoundHuBatchCache
 
                 var plannedRemaining = Math.Max(0, palletLine.PlannedQty
                     - (shippedByOrderLineHu.TryGetValue(shippedKey, out var alreadyShipped) ? alreadyShipped : 0d));
-                var qty = Math.Min(Math.Min(stockRow.Qty, shipmentRemaining), plannedRemaining);
-                if (qty <= QtyTolerance)
+                var qty = stockRow.Qty;
+                if (qty <= QtyTolerance
+                    || shipmentRemaining + QtyTolerance < qty
+                    || Math.Abs(plannedRemaining - qty) > QtyTolerance)
                 {
                     continue;
                 }

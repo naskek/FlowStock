@@ -33,7 +33,7 @@ public sealed class OutboundPickingService
     {
         if (_store is IOptimizedTsdOutboundPickingStore optimizedStore)
         {
-            return optimizedStore.GetTsdOutboundOrderRows();
+            return FilterOptimizedOrderRows(optimizedStore.GetTsdOutboundOrderRows());
         }
 
         var candidateOrders = _store.GetOrders()
@@ -64,6 +64,111 @@ public sealed class OutboundPickingService
             .Where(row => row.ExpectedHuCount > 0)
             .OrderBy(row => row.OrderRef, StringComparer.CurrentCultureIgnoreCase)
             .ToArray();
+    }
+
+    private IReadOnlyList<OutboundPickingOrderRow> FilterOptimizedOrderRows(
+        IReadOnlyList<OutboundPickingOrderRow> coarseRows)
+    {
+        if (coarseRows.Count == 0 || _store is not IHuOperatorFactsStore factsStore)
+        {
+            return coarseRows;
+        }
+
+        var orderIds = coarseRows.Select(row => row.OrderId).Distinct().ToArray();
+        var boundHuCache = CustomerOutboundBoundHuBatchCache.Load(_store, orderIds);
+        var docsByOrderId = LoadDocsByOrderId(orderIds);
+        var docLinesByDocId = LoadDocLinesByDocId(docsByOrderId);
+        var expectedByOrder = new Dictionary<long, IReadOnlyList<CustomerOutboundBoundHuLine>>();
+        foreach (var row in coarseRows)
+        {
+            expectedByOrder[row.OrderId] = boundHuCache.GetUnshippedOutboundHuLines(new Order
+            {
+                Id = row.OrderId,
+                Type = OrderType.Customer
+            });
+        }
+
+        var huCodes = expectedByOrder.Values
+            .SelectMany(lines => lines)
+            .Select(line => NormalizeHu(line.HuCode))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var factsByHu = factsStore.GetForHus(huCodes)
+            .ToDictionary(facts => NormalizeHu(facts.HuCode) ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+        var result = new List<OutboundPickingOrderRow>();
+        foreach (var row in coarseRows)
+        {
+            docsByOrderId.TryGetValue(row.OrderId, out var docs);
+            docs ??= Array.Empty<Doc>();
+            var currentDraft = docs
+                .Where(doc => doc.Type == DocType.Outbound && doc.Status == DocStatus.Draft)
+                .OrderBy(doc => doc.Id)
+                .FirstOrDefault();
+            var eligibleCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var huGroup in expectedByOrder[row.OrderId]
+                         .GroupBy(line => NormalizeHu(line.HuCode) ?? string.Empty, StringComparer.OrdinalIgnoreCase))
+            {
+                if (huGroup.Key.Length == 0 || !factsByHu.TryGetValue(huGroup.Key, out var facts))
+                {
+                    continue;
+                }
+
+                var decision = HuMutationEligibilityPolicy.Evaluate(
+                    facts,
+                    new HuMutationEligibilityContext
+                    {
+                        Operation = HuMutationOperation.Offer,
+                        TargetOrderId = row.OrderId,
+                        CurrentOutboundDocumentId = currentDraft?.Id,
+                        RequestedComponents = huGroup
+                            .Select(line => new HuMutationRequestedComponent(line.ItemId, line.Qty, line.FromLocationId))
+                            .ToArray()
+                    });
+                if (decision.Allowed)
+                {
+                    eligibleCodes.Add(huGroup.Key);
+                }
+            }
+
+            if (eligibleCodes.Count == 0)
+            {
+                continue;
+            }
+
+            var pickingDoc = currentDraft ?? docs
+                .Where(doc => doc.Type == DocType.Outbound && IsTsdPickingDoc(doc))
+                .OrderByDescending(doc => doc.Id)
+                .FirstOrDefault();
+            var pickedCodes = pickingDoc == null || !docLinesByDocId.TryGetValue(pickingDoc.Id, out var pickingLines)
+                ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                : pickingLines
+                    .Select(line => NormalizeHu(line.FromHu ?? pickingDoc.ShippingRef))
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Cast<string>()
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            result.Add(new OutboundPickingOrderRow
+            {
+                OrderId = row.OrderId,
+                OrderRef = row.OrderRef,
+                PartnerName = row.PartnerName,
+                Status = row.Status,
+                ExpectedHuCount = eligibleCodes.Count,
+                PickedHuCount = eligibleCodes.Count(pickedCodes.Contains),
+                OrderedQty = row.OrderedQty,
+                ShippedQty = row.ShippedQty,
+                RemainingQty = row.RemainingQty,
+                ScannedQty = row.ScannedQty,
+                IsClosed = row.IsClosed,
+                AllowPartialOutbound = row.AllowPartialOutbound,
+                OperationFingerprint = BuildListOperationFingerprint(
+                    eligibleCodes.OrderBy(code => code, StringComparer.OrdinalIgnoreCase).ToArray(),
+                    pickedCodes)
+            });
+        }
+
+        return result;
     }
 
     private OutboundPickingOrderRow BuildListRow(
@@ -453,11 +558,50 @@ public sealed class OutboundPickingService
                     return;
                 }
 
+                var draft = FindDraftOutbound(lockedOrder.Id, store);
+                var factsStore = HuMutationEligibilityService.LockMutationScope(
+                    store,
+                    [lockedOrder.Id],
+                    [normalizedHu],
+                    draft == null ? Array.Empty<long>() : [draft.Id]);
                 var lockedExpected = BuildExpectedHus(lockedOrder, store);
                 var lockedExpectedHu = lockedExpected.FirstOrDefault(hu => string.Equals(hu.HuCode, normalizedHu, StringComparison.OrdinalIgnoreCase));
                 if (lockedExpectedHu == null)
                 {
                     transactionFailure = OutboundPickingScanResult.Failure("HU_NOT_EXPECTED", "HU не ожидается для выбранного заказа.");
+                    return;
+                }
+
+                var facts = factsStore.GetForHus([normalizedHu]).SingleOrDefault();
+                if (facts == null)
+                {
+                    transactionFailure = OutboundPickingScanResult.Failure(
+                        "HU_NOT_EXPECTED",
+                        "HU facts изменились во время подбора. Повторите сканирование.");
+                    return;
+                }
+
+                var decision = HuMutationEligibilityPolicy.Evaluate(
+                    facts,
+                    new HuMutationEligibilityContext
+                    {
+                        Operation = HuMutationOperation.OutboundDraft,
+                        TargetOrderId = lockedOrder.Id,
+                        CurrentOutboundDocumentId = draft?.Id,
+                        RequestedComponents = lockedExpectedHu.Lines
+                            .Select(line => new HuMutationRequestedComponent(line.ItemId, line.Qty, line.LocationId))
+                            .ToArray()
+                    });
+                if (!decision.Allowed)
+                {
+                    var reason = decision.Reasons[0];
+                    var errorCode = reason.Code switch
+                    {
+                        HuMutationEligibilityReasonCode.HuNotInPhysicalStock => "HU_NO_PHYSICAL_STOCK",
+                        HuMutationEligibilityReasonCode.HuInOtherOutbound => "HU_PICKED_IN_OTHER_OUTBOUND",
+                        _ => "HU_NOT_EXPECTED"
+                    };
+                    transactionFailure = OutboundPickingScanResult.Failure(errorCode, reason.Details);
                     return;
                 }
 
@@ -476,7 +620,6 @@ public sealed class OutboundPickingService
                     return;
                 }
 
-                var draft = FindDraftOutbound(lockedOrder.Id, store);
                 if (draft != null && IsHuPicked(draft.Id, normalizedHu, store))
                 {
                     return;

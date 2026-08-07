@@ -399,6 +399,15 @@ public sealed class DocumentService
             }
 
             IReadOnlyList<DocLine>? lines = null;
+            if (doc.Type == DocType.Outbound
+                && (store is not IHuTransactionLockStore || store is not IHuOperatorFactsStore))
+            {
+                transactionErrors.Add(HuMutationEligibilityReasonCode.HuStateChanged);
+                transactionErrors.Add(
+                    "Authoritative OUTBOUND Close requires transaction-scoped HU locks and facts.");
+                return;
+            }
+
             if (store is IHuTransactionLockStore lockStore)
             {
                 var initialLines = store.GetDocLines(docId);
@@ -494,6 +503,7 @@ public sealed class DocumentService
                 }
 
                 transactionErrors.AddRange(BuildTransactionalOutboundErrors(store, doc, lines));
+                transactionErrors.AddRange(BuildHuMutationOutboundErrors(store, doc, lines));
                 if (transactionErrors.Count > 0)
                 {
                     return;
@@ -526,10 +536,6 @@ public sealed class DocumentService
             {
                 AutoAssignProductionReceiptMarkingCodes(store, doc, lines, closedAt);
             }
-
-            var orderBoundHuByItem = doc.Type == DocType.Outbound && doc.OrderId.HasValue
-                ? BuildOrderBoundHuByItem(store, doc.OrderId.Value)
-                : null;
 
             foreach (var line in lines)
             {
@@ -605,13 +611,12 @@ public sealed class DocumentService
                             }
                             else
                             {
-                                HashSet<string>? boundHuCodes = null;
-                                orderBoundHuByItem?.TryGetValue(line.ItemId, out boundHuCodes);
-                                var hasOrderBinding = doc.OrderId.HasValue;
-                                var allowedHuCodes = hasOrderBinding
-                                    ? (IReadOnlySet<string>)(boundHuCodes ?? EmptyHuSet)
-                                    : boundHuCodes;
-                                AddOutboundLedgerEntriesFromLocation(store, closedAt, docId, line, line.FromLocationId.Value, allowedHuCodes);
+                                AddHuLessOutboundLedgerEntriesFromLocation(
+                                    store,
+                                    closedAt,
+                                    docId,
+                                    line,
+                                    line.FromLocationId.Value);
                             }
                         }
                         else
@@ -653,41 +658,18 @@ public sealed class DocumentService
                                 break;
                             }
 
-                            var locationCodes = locations.ToDictionary(location => location.Id, location => location.Code);
-                            HashSet<string>? boundHuCodes = null;
-                            orderBoundHuByItem?.TryGetValue(line.ItemId, out boundHuCodes);
-                            var hasOrderBinding = doc.OrderId.HasValue;
-                            var allowedHuCodes = hasOrderBinding
-                                ? (IReadOnlySet<string>)(boundHuCodes ?? EmptyHuSet)
-                                : boundHuCodes;
-                            var hasOrderBoundHu = allowedHuCodes != null;
                             var nonHuSources = locations
                                 .Select(location => new
                                 {
                                     LocationId = location.Id,
                                     location.Code,
                                     HuCode = (string?)null,
-                                    Qty = hasOrderBoundHu ? 0d : store.GetLedgerBalance(line.ItemId, location.Id, null)
+                                    Qty = store.GetLedgerBalance(line.ItemId, location.Id, null)
                                 })
                                 .Where(source => source.Qty > 0);
 
-                            var huSources = store.GetHuStockRows()
-                                .Where(row => row.ItemId == line.ItemId && row.Qty > 0)
-                                .Select(row => new
-                                {
-                                    row.LocationId,
-                                    Code = locationCodes.TryGetValue(row.LocationId, out var code) ? code : row.LocationId.ToString(CultureInfo.InvariantCulture),
-                                    HuCode = NormalizeHuValue(row.HuCode),
-                                    row.Qty
-                                })
-                                .Where(source => !hasOrderBoundHu || (source.HuCode != null && allowedHuCodes!.Contains(source.HuCode)))
-                                .Where(source => !string.IsNullOrWhiteSpace(source.HuCode));
-
                             var sources = nonHuSources
-                                .Concat(huSources)
                                 .OrderBy(source => source.Code, StringComparer.OrdinalIgnoreCase)
-                                .ThenBy(source => string.IsNullOrWhiteSpace(source.HuCode) ? 0 : 1)
-                                .ThenBy(source => source.HuCode, StringComparer.OrdinalIgnoreCase)
                                 .ToList();
 
                             foreach (var source in sources)
@@ -929,6 +911,17 @@ public sealed class DocumentService
         var addedLines = 0;
         _data.ExecuteInTransaction(store =>
         {
+            var candidateHuCodes = CustomerOutboundBoundHuService
+                .GetUnshippedOutboundHuLines(store, order.Id)
+                .Select(line => line.HuCode)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            HuMutationEligibilityService.LockMutationScope(
+                store,
+                [order.Id],
+                candidateHuCodes,
+                [docId]);
+
             store.UpdateDocHeader(docId, order.PartnerId, cleanedOrderRef, doc.ShippingRef);
             store.UpdateDocOrder(docId, order.Id, cleanedOrderRef);
             addedLines = CustomerOutboundBoundHuService.SyncDraftOutboundFromBoundHu(store, docId, replaceAll: true);
@@ -2396,11 +2389,6 @@ public sealed class DocumentService
             }
         }
 
-        if (doc.Type == DocType.Outbound)
-        {
-            check.Errors.AddRange(BuildMixedOutboundHuErrors(_data, doc, lines));
-        }
-
         if (doc.Type == DocType.ProductionReceipt && hasProductionPallets)
         {
             var pallets = _data.GetProductionPalletsByDoc(docId)
@@ -2766,8 +2754,195 @@ public sealed class DocumentService
             }
         }
 
-        errors.AddRange(BuildMixedOutboundHuErrors(store, doc, lines));
         return errors.Distinct(StringComparer.CurrentCulture).ToArray();
+    }
+
+    private static IReadOnlyList<string> BuildHuMutationOutboundErrors(
+        IDataStore store,
+        Doc doc,
+        IReadOnlyList<DocLine> lines)
+    {
+        if (doc.Type != DocType.Outbound)
+        {
+            return Array.Empty<string>();
+        }
+
+        if (store is not IHuOperatorFactsStore factsStore)
+        {
+            return
+            [
+                HuMutationEligibilityReasonCode.HuStateChanged,
+                "Не удалось повторно загрузить HU facts в транзакции закрытия."
+            ];
+        }
+
+        var requestedByHu = lines
+            .Select(line => new
+            {
+                Line = line,
+                HuCode = NormalizeHuValue(line.FromHu ?? doc.ShippingRef)
+            })
+            .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
+            .GroupBy(row => row.HuCode!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<HuMutationRequestedComponent>)group
+                    .Select(row => new HuMutationRequestedComponent(
+                        row.Line.ItemId,
+                        row.Line.Qty,
+                        row.Line.FromLocationId))
+                    .ToArray(),
+                StringComparer.OrdinalIgnoreCase);
+        if (requestedByHu.Count == 0)
+        {
+            return BuildHuLessOutboundErrors(store, lines);
+        }
+
+        var factsByHu = factsStore.GetForHus(requestedByHu.Keys.ToArray())
+            .ToDictionary(facts => NormalizeHuValue(facts.HuCode) ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+        var errors = new List<string>();
+        foreach (var requested in requestedByHu.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            if (!factsByHu.TryGetValue(requested.Key, out var facts))
+            {
+                errors.Add(HuMutationEligibilityReasonCode.HuStateChanged);
+                errors.Add($"HU {requested.Key}: facts изменились во время закрытия. Повторите операцию.");
+                continue;
+            }
+
+            var decision = HuMutationEligibilityPolicy.Evaluate(
+                facts,
+                new HuMutationEligibilityContext
+                {
+                    Operation = HuMutationOperation.OutboundClose,
+                    TargetOrderId = doc.OrderId,
+                    CurrentOutboundDocumentId = doc.Id,
+                    RequestedComponents = requested.Value
+                });
+            if (decision.Allowed)
+            {
+                continue;
+            }
+
+            foreach (var reason in decision.Reasons)
+            {
+                var isMixed = facts.Stock
+                    .Where(row => row.Qty > QtyTolerance)
+                    .Select(row => row.ItemId)
+                    .Distinct()
+                    .Take(2)
+                    .Count() > 1;
+                var publicCode = reason.Code switch
+                {
+                    HuMutationEligibilityReasonCode.HuPartialQuantityNotAllowed when isMixed =>
+                        "MIXED_HU_SHIP_AS_WHOLE_REQUIRED",
+                    HuMutationEligibilityReasonCode.HuCompositionMismatch when isMixed =>
+                        "MIXED_HU_SHIP_AS_WHOLE_REQUIRED",
+                    HuMutationEligibilityReasonCode.HuPartialQuantityNotAllowed =>
+                        "HU_SHIP_AS_WHOLE_REQUIRED",
+                    HuMutationEligibilityReasonCode.HuCompositionMismatch =>
+                        "HU_SHIP_AS_WHOLE_REQUIRED",
+                    HuMutationEligibilityReasonCode.HuNotInPhysicalStock =>
+                        HuMutationEligibilityReasonCode.HuNotInPhysicalStock,
+                    HuMutationEligibilityReasonCode.HuStateChanged =>
+                        HuMutationEligibilityReasonCode.HuStateChanged,
+                    _ => HuMutationEligibilityReasonCode.HuInconsistent
+                };
+                errors.Add(publicCode);
+                errors.Add($"HU {requested.Key}: {reason.Details}");
+            }
+        }
+
+        errors.AddRange(BuildHuLessOutboundErrors(
+            store,
+            lines.Where(line => string.IsNullOrWhiteSpace(NormalizeHuValue(line.FromHu ?? doc.ShippingRef))).ToArray()));
+        return errors.Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    private static IReadOnlyList<string> BuildHuLessOutboundErrors(
+        IDataStore store,
+        IReadOnlyList<DocLine> lines)
+    {
+        var errors = new List<string>();
+        if (lines.Count == 0)
+        {
+            return errors;
+        }
+
+        var autoLocationIds = store.GetLocations()
+            .Where(location => location.AutoHuDistributionEnabled)
+            .Select(location => location.Id)
+            .Distinct()
+            .ToArray();
+        var itemIds = lines.Select(line => line.ItemId).Distinct().ToArray();
+        var locationIds = lines
+            .Where(line => line.FromLocationId.HasValue)
+            .Select(line => line.FromLocationId!.Value)
+            .Concat(autoLocationIds)
+            .Distinct()
+            .ToArray();
+        var availableByItemLocation = itemIds
+            .SelectMany(itemId => locationIds.Select(locationId => new
+            {
+                ItemId = itemId,
+                LocationId = locationId,
+                Qty = store.GetLedgerBalance(itemId, locationId, null)
+            }))
+            .ToDictionary(row => (row.ItemId, row.LocationId), row => Math.Max(0, row.Qty));
+
+        var explicitRequested = lines
+            .Where(line => line.FromLocationId.HasValue)
+            .GroupBy(line => (line.ItemId, LocationId: line.FromLocationId!.Value))
+            .ToDictionary(group => group.Key, group => group.Sum(line => line.Qty));
+        foreach (var request in explicitRequested)
+        {
+            var available = availableByItemLocation.GetValueOrDefault(request.Key);
+            if (request.Value > available + QtyTolerance)
+            {
+                AddHuLessShortageError(store, errors, request.Key.ItemId, request.Value - available, [request.Key.LocationId]);
+            }
+
+            availableByItemLocation[request.Key] = Math.Max(0, available - request.Value);
+        }
+
+        var autoRequested = lines
+            .Where(line => !line.FromLocationId.HasValue)
+            .GroupBy(line => line.ItemId)
+            .ToDictionary(group => group.Key, group => group.Sum(line => line.Qty));
+        foreach (var request in autoRequested)
+        {
+            var available = autoLocationIds.Sum(locationId =>
+                availableByItemLocation.GetValueOrDefault((request.Key, locationId)));
+            if (request.Value > available + QtyTolerance)
+            {
+                AddHuLessShortageError(store, errors, request.Key, request.Value - available, autoLocationIds);
+            }
+        }
+
+        return errors.Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    private static void AddHuLessShortageError(
+        IDataStore store,
+        ICollection<string> errors,
+        long itemId,
+        double shortage,
+        IReadOnlyCollection<long> locationIds)
+    {
+        var locationSet = locationIds.ToHashSet();
+        var huBackedAvailable = store.GetHuStockRows()
+            .Where(row => row.ItemId == itemId && row.Qty > QtyTolerance)
+            .Where(row => locationSet.Contains(row.LocationId))
+            .Where(row => !string.IsNullOrWhiteSpace(NormalizeHuValue(row.HuCode)))
+            .Sum(row => row.Qty);
+        if (huBackedAvailable + QtyTolerance >= shortage)
+        {
+            errors.Add(HuMutationEligibilityReasonCode.HuExplicitRequiredForHuStock);
+            errors.Add($"Товар {itemId}: для HU-backed остатка требуется явно указать HU.");
+            return;
+        }
+
+        errors.Add($"Товар {itemId}: недостаточный HU-less остаток на складе.");
     }
 
     private static IReadOnlyList<string> BuildOutboundOrderLinkErrors(
@@ -2807,77 +2982,6 @@ public sealed class DocumentService
             "OUTBOUND_ORDER_LINE_ORDER_MISMATCH",
             "Строки отгрузки должны относиться к заказу, указанному в шапке документа."
         ];
-    }
-
-    private static IReadOnlyList<string> BuildMixedOutboundHuErrors(
-        IDataStore store,
-        Doc doc,
-        IReadOnlyList<DocLine> lines)
-    {
-        if (doc.Type != DocType.Outbound)
-        {
-            return Array.Empty<string>();
-        }
-
-        var actualByHu = lines
-            .Select(line => new { Line = line, HuCode = NormalizeHuValue(line.FromHu ?? doc.ShippingRef) })
-            .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
-            .GroupBy(row => row.HuCode!, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(
-                group => group.Key,
-                group => group.Select(row => row.Line).ToArray(),
-                StringComparer.OrdinalIgnoreCase);
-
-        var expectedByHu = doc.OrderId.HasValue
-            ? CustomerOutboundBoundHuService.GetUnshippedOutboundHuLines(store, doc.OrderId.Value)
-                .GroupBy(line => NormalizeHuValue(line.HuCode)!, StringComparer.OrdinalIgnoreCase)
-                .Where(group => group.Count() > 1)
-                .ToDictionary(
-                    group => group.Key,
-                    group => group
-                        .GroupBy(line => line.ItemId)
-                        .ToDictionary(itemGroup => itemGroup.Key, itemGroup => itemGroup.Sum(line => line.Qty)),
-                    StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, Dictionary<long, double>>(StringComparer.OrdinalIgnoreCase);
-
-        var errors = new List<string>();
-        foreach (var entry in actualByHu)
-        {
-            Dictionary<long, double>? requiredByItem = null;
-            var isMixedHu = false;
-            var pallet = store.GetProductionPalletByHu(entry.Key);
-            if (pallet?.IsMixedPallet == true)
-            {
-                isMixedHu = true;
-                requiredByItem = pallet.Lines
-                    .GroupBy(line => line.ItemId)
-                    .ToDictionary(group => group.Key, group => group.Sum(line => line.PlannedQty));
-            }
-            else if (expectedByHu.TryGetValue(entry.Key, out requiredByItem))
-            {
-                isMixedHu = true;
-            }
-
-            if (!isMixedHu || requiredByItem == null)
-            {
-                continue;
-            }
-
-            var actualByItem = entry.Value
-                .GroupBy(line => line.ItemId)
-                .ToDictionary(group => group.Key, group => group.Sum(line => line.Qty));
-            var isComplete = actualByItem.Count == requiredByItem.Count
-                             && requiredByItem.All(required =>
-                                 actualByItem.TryGetValue(required.Key, out var actualQty)
-                                 && Math.Abs(actualQty - required.Value) <= QtyTolerance);
-            if (!isComplete)
-            {
-                errors.Add("MIXED_HU_SHIP_AS_WHOLE_REQUIRED");
-                errors.Add($"Микс-паллета {entry.Key} должна отгружаться целиком.");
-            }
-        }
-
-        return errors;
     }
 
     private static void TryRefreshLinkedOrderStatus(
@@ -3640,6 +3744,31 @@ public sealed class DocumentService
             });
             remaining -= take;
         }
+    }
+
+    private static void AddHuLessOutboundLedgerEntriesFromLocation(
+        IDataStore store,
+        DateTime closedAt,
+        long docId,
+        DocLine line,
+        long locationId)
+    {
+        var available = store.GetLedgerBalance(line.ItemId, locationId, null);
+        if (available + QtyTolerance < line.Qty)
+        {
+            throw new InvalidOperationException(
+                $"Товар {line.ItemId}: недостаточный HU-less остаток на складе.");
+        }
+
+        store.AddLedgerEntry(new LedgerEntry
+        {
+            Timestamp = closedAt,
+            DocId = docId,
+            ItemId = line.ItemId,
+            LocationId = locationId,
+            QtyDelta = -line.Qty,
+            HuCode = null
+        });
     }
 
     private void AddProductionPalletLedgerEntries(

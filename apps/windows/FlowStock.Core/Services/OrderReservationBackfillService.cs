@@ -25,6 +25,43 @@ public sealed class OrderReservationBackfillService
         OrderReservationBackfillReport? result = null;
         _data.ExecuteInTransaction(store =>
         {
+            var initialOrderIds = store.GetOrders()
+                .Where(order => order.Type == OrderType.Customer)
+                .Select(order => order.Id)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToArray();
+            var initialHuCodes = store.GetHuStockRows()
+                .Where(row => row.Qty > QtyTolerance)
+                .Select(row => NormalizeHu(row.HuCode))
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Cast<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(code => code, StringComparer.Ordinal)
+                .ToArray();
+            HuMutationEligibilityService.LockMutationScope(store, initialOrderIds, initialHuCodes);
+
+            var refreshedOrderIds = store.GetOrders()
+                .Where(order => order.Type == OrderType.Customer)
+                .Select(order => order.Id)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToArray();
+            var refreshedHuCodes = store.GetHuStockRows()
+                .Where(row => row.Qty > QtyTolerance)
+                .Select(row => NormalizeHu(row.HuCode))
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Cast<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(code => code, StringComparer.Ordinal)
+                .ToArray();
+            if (!initialOrderIds.SequenceEqual(refreshedOrderIds)
+                || !initialHuCodes.SequenceEqual(refreshedHuCodes, StringComparer.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "HU_STATE_CHANGED: предложения backfill изменились после блокировки. Повторите операцию.");
+            }
+
             result = BuildAndMaybeApply(store, apply: true);
         });
 
@@ -328,7 +365,7 @@ public sealed class OrderReservationBackfillService
         IDataStore store,
         IReadOnlySet<(long ItemId, string HuCode)> excludedHuKeys)
     {
-        return store.GetHuStockRows()
+        var result = store.GetHuStockRows()
             .Where(row => row.Qty > QtyTolerance)
             .Select(row => new
             {
@@ -347,6 +384,39 @@ public sealed class OrderReservationBackfillService
                 group.Sum(entry => entry.Qty)))
             .Where(source => source.QtyAvailable > QtyTolerance)
             .ToList();
+
+        if (store is not IHuOperatorFactsStore factsStore || result.Count == 0)
+        {
+            return result;
+        }
+
+        var huCodes = result
+            .Select(source => source.HuCode)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var decisions = new HuMutationEligibilityService(factsStore).Evaluate(
+            huCodes,
+            facts =>
+            {
+                var activeTargets = facts.Reservations
+                    .Where(reservation => reservation.Qty > QtyTolerance)
+                    .Where(reservation => string.Equals(reservation.OrderType, "CUSTOMER", StringComparison.OrdinalIgnoreCase))
+                    .Where(reservation => !string.Equals(reservation.OrderStatus, "SHIPPED", StringComparison.OrdinalIgnoreCase)
+                                          && !string.Equals(reservation.OrderStatus, "CANCELLED", StringComparison.OrdinalIgnoreCase)
+                                          && !string.Equals(reservation.OrderStatus, "MERGED", StringComparison.OrdinalIgnoreCase))
+                    .Select(reservation => reservation.OrderId)
+                    .Distinct()
+                    .ToArray();
+                return HuMutationEligibilityService.WholeStockContext(
+                    facts,
+                    HuMutationOperation.ReserveOrBind,
+                    activeTargets.Length == 1 ? activeTargets[0] : null);
+            });
+        var allowedHu = decisions
+            .Where(pair => pair.Value.Allowed)
+            .Select(pair => pair.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return result.Where(source => allowedHu.Contains(source.HuCode)).ToList();
     }
 
     private static bool ItemTypeUsesOrderReservation(IDataStore store, long itemId)

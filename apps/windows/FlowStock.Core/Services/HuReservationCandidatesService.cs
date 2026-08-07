@@ -32,6 +32,7 @@ public sealed class HuReservationCandidatesService
                 query.OrderId > 0 ? query.OrderId : null,
                 itemIds,
                 query.ExcludeHuCodes);
+        sources = FilterEligiblePhysicalHus(sources, query.OrderId > 0 ? query.OrderId : null);
 
         var sourcesByItem = sources
             .GroupBy(row => row.ItemId)
@@ -56,6 +57,32 @@ public sealed class HuReservationCandidatesService
         }
 
         return new HuReservationCandidatesResult { Lines = lineResults };
+    }
+
+    private IReadOnlyList<HuReservationCandidateSourceRow> FilterEligiblePhysicalHus(
+        IReadOnlyList<HuReservationCandidateSourceRow> sources,
+        long? targetOrderId)
+    {
+        if (sources.Count == 0 || _dataStore is not IHuOperatorFactsStore factsStore)
+        {
+            return sources;
+        }
+
+        var huCodes = sources
+            .Select(row => row.HuCode)
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var decisions = new HuMutationEligibilityService(factsStore).Evaluate(
+            huCodes,
+            facts => HuMutationEligibilityService.WholeStockContext(
+                facts,
+                HuMutationOperation.ReserveOrBind,
+                targetOrderId));
+        return sources
+            .Where(row => decisions.TryGetValue(row.HuCode.Trim().ToUpperInvariant(), out var decision)
+                          && decision.Allowed)
+            .ToArray();
     }
 
     private static List<HuReservationCandidateResult> BuildLineCandidates(

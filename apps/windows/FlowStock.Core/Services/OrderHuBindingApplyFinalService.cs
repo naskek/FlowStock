@@ -22,6 +22,23 @@ public sealed class OrderHuBindingApplyFinalService
         OrderHuBindingApplyFinalResult? result = null;
         _dataStore.ExecuteInTransaction(store =>
         {
+            var currentAndFinalHuCodes = request.Lines
+                .SelectMany(line => (line.ExpectedBoundHuCodes ?? Array.Empty<string>())
+                    .Concat(line.FinalHuCodes ?? Array.Empty<string>()))
+                .Select(HuBindingApplyShared.NormalizeHu)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Cast<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var factsStore = HuMutationEligibilityService.LockMutationScope(
+                store,
+                [customerOrderId],
+                currentAndFinalHuCodes);
+            EnsureFinalHusEligible(
+                factsStore,
+                customerOrderId,
+                request.Lines.SelectMany(line => line.FinalHuCodes ?? Array.Empty<string>()).ToArray());
+
             result = ApplyFinalCore(store, customerOrderId, request);
         });
 
@@ -254,4 +271,35 @@ public sealed class OrderHuBindingApplyFinalService
         string message,
         IReadOnlyList<string>? problems = null) =>
         HuBindingApplyShared.Error(code, message, problems);
+
+    private static void EnsureFinalHusEligible(
+        IHuOperatorFactsStore factsStore,
+        long customerOrderId,
+        IReadOnlyCollection<string> huCodes)
+    {
+        var normalized = huCodes
+            .Select(HuBindingApplyShared.NormalizeHu)
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var decisions = new HuMutationEligibilityService(factsStore).Evaluate(
+            normalized,
+            facts => HuMutationEligibilityService.WholeStockContext(
+                facts,
+                HuMutationOperation.ReserveOrBind,
+                customerOrderId));
+        var rejected = decisions.FirstOrDefault(pair => !pair.Value.Allowed);
+        if (rejected.Value == null)
+        {
+            return;
+        }
+
+        var reservationConflict = rejected.Value.Reasons.Any(reason =>
+            reason.Code == HuMutationEligibilityReasonCode.HuReservedByOtherOrder);
+        throw Error(
+            reservationConflict ? "HU_RESERVED_BY_OTHER_ORDER" : "HU_NOT_AVAILABLE",
+            $"HU '{rejected.Key}' недоступен для привязки.",
+            rejected.Value.Reasons.Select(reason => reason.Details).ToArray());
+    }
 }

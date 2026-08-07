@@ -195,18 +195,18 @@ public sealed class OrderHuReservationApplyServiceTests
     }
 
     [Fact]
-    public void MixedHuItemSpecificApply()
+    public void MixedHuItemSpecificApply_IsRejectedAsUnsafeLegacyBinding()
     {
         var context = CreateContext();
         context.SeedCustomerOrder(78, 203, itemId: 6, qtyOrdered: 600);
         context.SeedCandidate(Source("LEDGER_STOCK", "HU-MIXED", itemId: 6, qty: 250, shipReady: true));
         context.SeedCandidate(Source("LEDGER_STOCK", "HU-MIXED", itemId: 7, qty: 350, shipReady: true));
 
-        var result = context.Apply(78, Line(203, "HU-MIXED"));
+        var ex = Assert.Throws<OrderHuReservationApplyException>(() =>
+            context.Apply(78, Line(203, "HU-MIXED")));
 
-        var applied = Assert.Single(result.AppliedLines);
-        Assert.Equal(250, applied.ReservedQty, 3);
-        Assert.Equal(250, Assert.Single(context.GetPlanLines(78)).QtyPlanned, 3);
+        Assert.Equal("HU_NOT_AVAILABLE", ex.ErrorCode);
+        Assert.Empty(context.GetPlanLines(78));
     }
 
     [Fact]
@@ -277,6 +277,16 @@ public sealed class OrderHuReservationApplyServiceTests
         public HuReservationApplyTestContext()
         {
             _store.As<IOptimizedHuReservationCandidatesStore>();
+            _store.As<IHuOperatorFactsStore>()
+                .Setup(store => store.GetForHus(It.IsAny<IReadOnlyCollection<string>>()))
+                .Returns<IReadOnlyCollection<string>>(codes => codes
+                    .Select(BuildHuOperatorFacts)
+                    .Where(facts => facts != null)
+                    .Cast<HuOperatorFacts>()
+                    .ToArray());
+            _store.As<IHuOperatorFactsStore>()
+                .Setup(store => store.GetForHu(It.IsAny<string>()))
+                .Returns<string>(BuildHuOperatorFacts);
             _store.Setup(store => store.GetOrder(It.IsAny<long>()))
                 .Returns<long>(id => _orders.TryGetValue(id, out var order) ? order : null);
             _store.Setup(store => store.GetOrderLines(It.IsAny<long>()))
@@ -551,6 +561,32 @@ public sealed class OrderHuReservationApplyServiceTests
         }
 
         public void SeedCandidate(HuReservationCandidateSourceRow source) => _sources.Add(source);
+
+        private HuOperatorFacts? BuildHuOperatorFacts(string huCode)
+        {
+            var normalized = huCode.Trim().ToUpperInvariant();
+            var rows = _sources
+                .Where(row => string.Equals(row.HuCode, normalized, StringComparison.OrdinalIgnoreCase))
+                .Where(row => string.Equals(row.Source, "LEDGER_STOCK", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            return rows.Length == 0
+                ? null
+                : new HuOperatorFacts
+                {
+                    HuCode = normalized,
+                    Stock = rows
+                        .GroupBy(row => row.ItemId)
+                        .Select(group => new HuOperatorStockFact
+                        {
+                            ItemId = group.Key,
+                            ItemName = $"Товар {group.Key}",
+                            LocationId = 1,
+                            LocationCode = "MAIN",
+                            Qty = group.Sum(row => row.Qty)
+                        })
+                        .ToArray()
+                };
+        }
 
         private static OrderLine CloneOrderLine(OrderLine line) => new()
         {

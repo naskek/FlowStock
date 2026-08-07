@@ -27,6 +27,69 @@ public sealed class OrderRedistributionService
         OrderRedistributionResult? result = null;
         _data.ExecuteInTransaction(store =>
         {
+            var orderIds = new[] { sourceInternalOrderId, targetCustomerOrderId }
+                .Where(id => id > 0)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToArray();
+            var initialSplit = ComputeTransferQuantities(
+                store,
+                store.GetOrder(sourceInternalOrderId)
+                    ?? throw new InvalidOperationException("Внутренний заказ-источник не найден."),
+                store.GetOrder(targetCustomerOrderId)
+                    ?? throw new InvalidOperationException("Клиентский заказ-получатель не найден."),
+                sourceInternalOrderId,
+                targetCustomerOrderId,
+                itemId,
+                qty);
+            var initialHuCodes = initialSplit.QtyFromProduced > QtyTolerance
+                ? OrderProducedHuReservationService.ResolveHuCodes(
+                    store,
+                    new OrderProducedHuReservationRequest
+                    {
+                        SourceInternalOrderId = sourceInternalOrderId,
+                        TargetCustomerOrderId = targetCustomerOrderId,
+                        ItemId = itemId,
+                        Qty = initialSplit.QtyFromProduced
+                    })
+                : Array.Empty<string>();
+            var factsStore = HuMutationEligibilityService.LockMutationScope(store, orderIds, initialHuCodes);
+            var refreshedHuCodes = initialSplit.QtyFromProduced > QtyTolerance
+                ? OrderProducedHuReservationService.ResolveHuCodes(
+                    store,
+                    new OrderProducedHuReservationRequest
+                    {
+                        SourceInternalOrderId = sourceInternalOrderId,
+                        TargetCustomerOrderId = targetCustomerOrderId,
+                        ItemId = itemId,
+                        Qty = initialSplit.QtyFromProduced
+                    })
+                : Array.Empty<string>();
+            if (!initialHuCodes.OrderBy(code => code, StringComparer.OrdinalIgnoreCase).SequenceEqual(
+                    refreshedHuCodes.OrderBy(code => code, StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("HU_STATE_CHANGED: набор готовых HU изменился. Повторите операцию.");
+            }
+
+            if (refreshedHuCodes.Count > 0)
+            {
+                var decisions = new HuMutationEligibilityService(factsStore).Evaluate(
+                    refreshedHuCodes,
+                    facts => HuMutationEligibilityService.WholeStockContext(
+                        facts,
+                        HuMutationOperation.ReserveOrBind,
+                        targetCustomerOrderId,
+                        sourceInternalOrderId));
+                var rejected = decisions.FirstOrDefault(pair => !pair.Value.Allowed);
+                if (rejected.Value != null)
+                {
+                    throw new InvalidOperationException(
+                        $"HU {rejected.Key} недоступна для перераспределения: "
+                        + string.Join("; ", rejected.Value.Reasons.Select(reason => reason.Details)));
+                }
+            }
+
             result = RedistributeCore(store, sourceInternalOrderId, targetCustomerOrderId, itemId, qty);
         });
 

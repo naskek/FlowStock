@@ -1,6 +1,7 @@
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
+using FlowStock.Server.Tests.Support;
 using Moq;
 
 namespace FlowStock.Server.Tests.CreateOrder;
@@ -208,6 +209,15 @@ public sealed class OrderReservationBackfillTests
     private static BackfillScenario BuildScenario()
     {
         var scenario = new BackfillScenario();
+        HuMutationTestStore.Configure(
+            scenario.Store,
+            huCode => HuMutationTestStore.BuildFacts(
+                huCode,
+                scenario.HuStockRows,
+                scenario.Plans,
+                scenario.Orders,
+                scenario.Docs,
+                scenario.DocLines));
         scenario.Store.Setup(store => store.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(scenario.Store.Object));
         scenario.Store.Setup(store => store.GetOrders())

@@ -4,6 +4,7 @@ using System.Text.Json;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Server;
+using FlowStock.Server.Tests.Support;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -206,6 +207,15 @@ internal sealed class BackfillEndpointScenario
     public static BackfillEndpointScenario Build()
     {
         var scenario = new BackfillEndpointScenario();
+        HuMutationTestStore.Configure(
+            scenario.Store,
+            huCode => HuMutationTestStore.BuildFacts(
+                huCode,
+                scenario.HuStockRows,
+                scenario.Plans,
+                scenario.Orders,
+                scenario.Docs,
+                scenario.DocLines));
         scenario.Store.Setup(store => store.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(scenario.Store.Object));
         scenario.Store.Setup(store => store.CountLedgerEntries()).Returns(() => scenario.LedgerRows);

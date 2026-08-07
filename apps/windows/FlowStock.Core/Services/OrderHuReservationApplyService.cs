@@ -21,6 +21,26 @@ public sealed class OrderHuReservationApplyService
         OrderHuReservationApplyResult? result = null;
         _dataStore.ExecuteInTransaction(store =>
         {
+            var selectedHuCodes = request.Lines
+                .SelectMany(line => line.SelectedHuCodes ?? Array.Empty<string>())
+                .Select(code => string.IsNullOrWhiteSpace(code) ? null : code.Trim().ToUpperInvariant())
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Cast<string>()
+                .ToArray();
+            var currentHuCodes = store.GetOrderReceiptPlanLines(customerOrderId)
+                .Select(line => string.IsNullOrWhiteSpace(line.ToHu) ? null : line.ToHu.Trim().ToUpperInvariant())
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Cast<string>();
+            var lockedHuCodes = selectedHuCodes
+                .Concat(currentHuCodes)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var factsStore = HuMutationEligibilityService.LockMutationScope(
+                store,
+                [customerOrderId],
+                lockedHuCodes);
+            EnsureSelectedHusEligible(factsStore, customerOrderId, selectedHuCodes);
+
             result = ApplyCore(store, customerOrderId, request);
         });
 
@@ -422,6 +442,31 @@ public sealed class OrderHuReservationApplyService
         }
 
         return normalized;
+    }
+
+    private static void EnsureSelectedHusEligible(
+        IHuOperatorFactsStore factsStore,
+        long customerOrderId,
+        IReadOnlyCollection<string> huCodes)
+    {
+        var decisions = new HuMutationEligibilityService(factsStore).Evaluate(
+            huCodes,
+            facts => HuMutationEligibilityService.WholeStockContext(
+                facts,
+                HuMutationOperation.ReserveOrBind,
+                customerOrderId));
+        var rejected = decisions.FirstOrDefault(pair => !pair.Value.Allowed);
+        if (rejected.Value == null)
+        {
+            return;
+        }
+
+        var reservationConflict = rejected.Value.Reasons.Any(reason =>
+            reason.Code == HuMutationEligibilityReasonCode.HuReservedByOtherOrder);
+        throw new OrderHuReservationApplyException(
+            reservationConflict ? "HU_RESERVED_BY_OTHER_ORDER" : "HU_NOT_AVAILABLE",
+            $"HU '{rejected.Key}' недоступен для резервирования.",
+            rejected.Value.Reasons.Select(reason => reason.Details).ToArray());
     }
 
     private static bool IsAllowedSource(string source)

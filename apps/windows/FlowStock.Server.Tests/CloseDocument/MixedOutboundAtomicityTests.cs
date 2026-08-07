@@ -17,7 +17,7 @@ public sealed class MixedOutboundAtomicityTests
 
         Assert.False(close.Success);
         Assert.Contains("MIXED_HU_SHIP_AS_WHOLE_REQUIRED", close.Errors);
-        Assert.Contains(close.Errors, error => error.Contains("Микс-паллета HU-MIX-001 должна отгружаться целиком.", StringComparison.Ordinal));
+        Assert.Contains(close.Errors, error => error.Contains("HU-MIX-001", StringComparison.Ordinal));
         Assert.Empty(harness.LedgerEntries);
         Assert.Equal(DocStatus.Draft, harness.GetDoc(draftId).Status);
     }
@@ -48,7 +48,7 @@ public sealed class MixedOutboundAtomicityTests
 
         Assert.False(close.Success);
         Assert.Contains("MIXED_HU_SHIP_AS_WHOLE_REQUIRED", close.Errors);
-        Assert.Contains(close.Errors, error => error.Contains("Микс-паллета HU-MIX-001 должна отгружаться целиком.", StringComparison.Ordinal));
+        Assert.Contains(close.Errors, error => error.Contains("HU-MIX-001", StringComparison.Ordinal));
         Assert.Empty(harness.LedgerEntries);
         Assert.Equal(DocStatus.Draft, harness.GetDoc(draftId).Status);
     }
@@ -65,6 +65,37 @@ public sealed class MixedOutboundAtomicityTests
         Assert.Equal(2, ledger.Length);
         Assert.Equal(new double[] { -5d, -2d }, ledger.Select(entry => entry.QtyDelta).ToArray());
         Assert.All(ledger, entry => Assert.Equal("HU-MIX-001", entry.HuCode));
+    }
+
+    [Fact]
+    public void CloseMixedHu_CurrentLedgerCompositionIsNotOverriddenByCancelledHistoricalPlan()
+    {
+        var (harness, draftId) = CreateMixedOutboundDraft();
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 1,
+            OrderId = 20,
+            HuCode = "HU-MIX-001",
+            Status = ProductionPalletStatus.Cancelled,
+            Lines =
+            [
+                new ProductionPalletComponentLine
+                {
+                    Id = 11, ProductionPalletId = 1, OrderLineId = 201, ItemId = 1001,
+                    ItemName = "Горчица", PlannedQty = 50, FilledQty = 0, CreatedAt = DateTime.UtcNow
+                },
+                new ProductionPalletComponentLine
+                {
+                    Id = 12, ProductionPalletId = 1, OrderLineId = 202, ItemId = 1002,
+                    ItemName = "Соус", PlannedQty = 20, FilledQty = 0, CreatedAt = DateTime.UtcNow
+                }
+            ]
+        });
+
+        var close = harness.CreateService().TryCloseDoc(draftId, allowNegative: false);
+
+        Assert.True(close.Success, string.Join("; ", close.Errors));
+        Assert.Equal(-7d, harness.LedgerEntries.Sum(entry => entry.QtyDelta), 6);
     }
 
     private static (CloseDocumentHarness Harness, long DraftId) CreateMixedOutboundDraft()

@@ -332,6 +332,38 @@ public sealed class ProductionPalletService
                 throw new InvalidOperationException("Не удалось заблокировать заказы для планирования паллет.");
             }
 
+            var selectedWarehouseHuCodes = request.SelectedWarehouseHus
+                .Select(selection => HuBindingApplyShared.NormalizeHu(selection.HuCode))
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Cast<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var factsStore = HuMutationEligibilityService.LockMutationScope(
+                store,
+                lockOrderIds,
+                selectedWarehouseHuCodes);
+            if (selectedWarehouseHuCodes.Length > 0)
+            {
+                var decisions = new HuMutationEligibilityService(factsStore).Evaluate(
+                    selectedWarehouseHuCodes,
+                    facts => HuMutationEligibilityService.WholeStockContext(
+                        facts,
+                        HuMutationOperation.ReserveOrBind,
+                        orderId));
+                var rejected = decisions.FirstOrDefault(pair => !pair.Value.Allowed);
+                if (rejected.Value != null)
+                {
+                    var publicCode = rejected.Value.Reasons.Any(
+                        reason => reason.Code == HuMutationEligibilityReasonCode.HuReservedByOtherOrder)
+                        ? "HU_RESERVED_BY_OTHER_ORDER"
+                        : "STALE_WAREHOUSE_SELECTION";
+                    throw SelectedCoverageError(
+                        publicCode,
+                        $"HU '{rejected.Key}' изменилась или больше не подходит.",
+                        rejected.Value.Reasons.Select(reason => reason.Details).ToArray());
+                }
+            }
+
             targetOrder = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
             EnsureSelectedCoverageTargetOrderIsOpenCustomer(targetOrder);
             boundWarehouseHus = ApplySelectedWarehouseHuCoverageInStore(store, targetOrder, request.SelectedWarehouseHus);

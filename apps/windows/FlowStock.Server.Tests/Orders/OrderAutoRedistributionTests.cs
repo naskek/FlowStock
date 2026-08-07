@@ -3,6 +3,7 @@ using FlowStock.Core.Models;
 using FlowStock.Core.Models.Marking;
 using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
+using FlowStock.Server.Tests.Support;
 using Moq;
 
 namespace FlowStock.Server.Tests.Orders;
@@ -56,6 +57,7 @@ public sealed class OrderAutoRedistributionTests
 
         double? customerQtyAfterAll = null;
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        HuMutationTestStore.Configure(store, _ => null);
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.GetMarkingOrdersByItemIds(It.IsAny<IReadOnlyCollection<long>>()))

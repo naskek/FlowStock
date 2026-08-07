@@ -21,6 +21,46 @@ public sealed class OrderProducedHuReservationService
         OrderProducedHuReservationResult? result = null;
         _data.ExecuteInTransaction(store =>
         {
+            var orderIds = new[] { request.SourceInternalOrderId, request.TargetCustomerOrderId }
+                .Where(id => id > 0)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToArray();
+            if (!store.LockOrdersForUpdate(orderIds))
+            {
+                throw new InvalidOperationException("HU_STATE_CHANGED: заказ изменился во время резервирования.");
+            }
+
+            var huCodes = ResolveHuCodes(store, request);
+            foreach (var huCode in huCodes)
+            {
+                if (!TryGetReadyHuFromInternal(
+                        store,
+                        request.SourceInternalOrderId,
+                        request.ItemId,
+                        huCode,
+                        out _,
+                        out var validationError))
+                {
+                    throw new InvalidOperationException(validationError);
+                }
+            }
+
+            var factsStore = HuMutationEligibilityService.LockMutationScope(store, orderIds, huCodes);
+            var decisions = new HuMutationEligibilityService(factsStore).Evaluate(
+                huCodes,
+                facts => HuMutationEligibilityService.WholeStockContext(
+                    facts,
+                    HuMutationOperation.ReserveOrBind,
+                    request.TargetCustomerOrderId));
+            var rejected = decisions.FirstOrDefault(pair => !pair.Value.Allowed);
+            if (rejected.Value != null)
+            {
+                throw new InvalidOperationException(
+                    $"HU {rejected.Key} недоступна для резервирования: "
+                    + string.Join("; ", rejected.Value.Reasons.Select(reason => reason.Details)));
+            }
+
             result = ReserveCore(store, request);
         });
 
@@ -154,10 +194,12 @@ public sealed class OrderProducedHuReservationService
                 continue;
             }
 
-            var takeQty = Math.Min(stockQty, readyPallet!.PlannedQty);
-            if (takeQty <= QtyTolerance)
+            var takeQty = stockQty;
+            if (takeQty <= QtyTolerance
+                || Math.Abs(takeQty - readyPallet!.PlannedQty) > QtyTolerance)
             {
-                throw new InvalidOperationException($"HU {huCode} не содержит выпущенного объема для резервирования.");
+                throw new InvalidOperationException(
+                    $"HU {huCode} должна резервироваться целиком; ledger и production composition не совпадают.");
             }
 
             var locationId = customerPlan.FirstOrDefault(line => line.ToLocationId.HasValue)?.ToLocationId
@@ -227,7 +269,7 @@ public sealed class OrderProducedHuReservationService
         };
     }
 
-    private static IReadOnlyList<string> ResolveHuCodes(
+    internal static IReadOnlyList<string> ResolveHuCodes(
         IDataStore store,
         OrderProducedHuReservationRequest request)
     {
@@ -294,8 +336,13 @@ public sealed class OrderProducedHuReservationService
                 continue;
             }
 
+            if (stockQty > remaining + QtyTolerance)
+            {
+                continue;
+            }
+
             selected.Add(huCode);
-            remaining -= Math.Min(remaining, stockQty);
+            remaining -= stockQty;
         }
 
         if (remaining > QtyTolerance)

@@ -63,29 +63,23 @@ public sealed class HuBindingManageReadModelTests
     }
 
     [Fact]
-    public void GetHuRows_MultipleLocationRows_AreAggregated()
+    public void GetHuRows_MultipleLocationHu_IsExcludedBySafetyPolicy()
     {
         var harness = NewHarness();
         harness.SeedBalance(ItemA, Loc1, 100, "HU-AGG");
         harness.SeedBalance(ItemA, Loc2, 50, "HU-AGG");
 
-        var row = Assert.Single(Service(harness).GetHuRows(ItemA, AllFilter()).HuRows);
-
-        Assert.Equal(150, row.Qty, 3);
-        Assert.Contains("MAIN", row.LocationDisplay);
-        Assert.Contains("SECOND", row.LocationDisplay);
+        Assert.Empty(Service(harness).GetHuRows(ItemA, AllFilter()).HuRows);
     }
 
     [Fact]
-    public void GetHuRows_MixedHu_IsDetected()
+    public void GetHuRows_MixedHu_IsExcludedFromItemScopedBinding()
     {
         var harness = NewHarness();
         harness.SeedBalance(ItemA, Loc1, 100, "HU-MIX");
         harness.SeedBalance(ItemB, Loc1, 80, "HU-MIX");
 
-        var row = Assert.Single(Service(harness).GetHuRows(ItemA, AllFilter()).HuRows);
-
-        Assert.True(row.IsMixed);
+        Assert.Empty(Service(harness).GetHuRows(ItemA, AllFilter()).HuRows);
     }
 
     [Fact]
@@ -145,6 +139,20 @@ public sealed class HuBindingManageReadModelTests
         var secondPage = Service(harness).GetHuRows(ItemA, Filter(limit: 2, offset: 2));
         Assert.Equal(3, secondPage.Total);
         Assert.Single(secondPage.HuRows);
+    }
+
+    [Fact]
+    public void GetHuRows_EligibilityIsAppliedBeforePagination()
+    {
+        var harness = NewHarness();
+        harness.SeedBalance(ItemA, Loc1, 10, "HU-01-UNSAFE");
+        harness.SeedBalance(ItemB, Loc1, 10, "HU-01-UNSAFE");
+        harness.SeedBalance(ItemA, Loc1, 10, "HU-02-VALID");
+
+        var page = Service(harness).GetHuRows(ItemA, Filter(limit: 1));
+
+        Assert.Equal(1, page.Total);
+        Assert.Equal("HU-02-VALID", Assert.Single(page.HuRows).HuCode);
     }
 
     [Fact]

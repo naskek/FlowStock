@@ -340,7 +340,6 @@ public sealed class CustomerOutboundBoundHuTests
             Status = "ACTIVE",
             CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0, DateTimeKind.Utc)
         });
-        harness.SeedBalance(30, 1, 1890, "HU-0000506");
         harness.SeedDoc(new Doc
         {
             Id = 201,

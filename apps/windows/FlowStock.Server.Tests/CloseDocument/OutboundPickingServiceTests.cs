@@ -122,6 +122,36 @@ public sealed class OutboundPickingServiceTests
     }
 
     [Fact]
+    public void CloseExplicitSingleHu_WithPartialQuantity_IsRejectedBeforeLedger()
+    {
+        var harness = CreateBasicPickingHarness();
+        var picking = CreatePickingService(harness);
+        var scan = picking.Scan(20, "HU-000001", "TSD-01");
+        var draftId = scan.Order!.DraftOutboundDocId!.Value;
+        var line = Assert.Single(harness.GetDocLines(draftId));
+        harness.Store.DeleteDocLine(line.Id);
+        harness.SeedLine(new DocLine
+        {
+            Id = line.Id,
+            DocId = line.DocId,
+            OrderLineId = line.OrderLineId,
+            ItemId = line.ItemId,
+            Qty = 2,
+            QtyInput = 2,
+            UomCode = line.UomCode,
+            FromLocationId = line.FromLocationId,
+            FromHu = line.FromHu
+        });
+
+        var close = harness.CreateService().TryCloseDoc(draftId, allowNegative: false);
+
+        Assert.False(close.Success);
+        Assert.Contains("HU_SHIP_AS_WHOLE_REQUIRED", close.Errors);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(draftId).Status);
+    }
+
+    [Fact]
     public void RepeatedScanIsIdempotent()
     {
         var harness = CreateBasicPickingHarness();
@@ -729,7 +759,6 @@ public sealed class OutboundPickingServiceTests
             Status = "ACTIVE",
             CreatedAt = new DateTime(2026, 5, 8, 10, 0, 0, DateTimeKind.Utc)
         });
-        harness.SeedBalance(30, 1, 1890, "HU-0000506");
         harness.SeedDoc(new Doc
         {
             Id = 201,

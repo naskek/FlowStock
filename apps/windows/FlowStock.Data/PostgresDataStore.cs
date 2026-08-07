@@ -12171,8 +12171,6 @@ FOR UPDATE;
             }
         }
 
-        LockNormalizedHus(GetReservationHus(connection, new[] { orderId }, new[] { orderLineId }));
-
         using (var lineCommand = CreateCommand(connection, @"
 SELECT COUNT(*) FILTER (WHERE id = @order_line_id) AS target_count,
        COUNT(*) AS line_count
@@ -12314,6 +12312,39 @@ LIMIT 1;
                 throw new OrderProducedStockReleaseException(
                     "MIXED_PALLET_RELEASE_NOT_SUPPORTED",
                     "Освобождение mixed/shared паллет пока не поддерживается.");
+            }
+        }
+
+        var lockedHuCodes = GetReservationHus(connection, new[] { orderId }, new[] { orderLineId })
+            .Concat(targetPallets.Select(pallet => pallet.HuCode))
+            .Where(hu => !string.IsNullOrWhiteSpace(hu))
+            .Select(hu => hu.Trim().ToUpperInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(hu => hu, StringComparer.Ordinal)
+            .ToArray();
+        LockNormalizedHus(lockedHuCodes);
+
+        var factsByHu = GetForHus(lockedHuCodes)
+            .ToDictionary(facts => facts.HuCode, StringComparer.OrdinalIgnoreCase);
+        foreach (var targetHu in targetPallets
+                     .Select(pallet => pallet.HuCode.Trim().ToUpperInvariant())
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!factsByHu.TryGetValue(targetHu, out var facts))
+            {
+                throw new OrderProducedStockReleaseException(
+                    "HU_RELEASE_UNSAFE",
+                    $"HU {targetHu}: facts изменились во время освобождения.");
+            }
+
+            var decision = HuMutationEligibilityPolicy.Evaluate(
+                facts,
+                HuMutationEligibilityService.ReleaseProducedStockContext(facts, orderId));
+            if (!decision.Allowed)
+            {
+                throw new OrderProducedStockReleaseException(
+                    "HU_RELEASE_UNSAFE",
+                    $"HU {targetHu}: {string.Join("; ", decision.Reasons.Select(reason => reason.Details))}");
             }
         }
 
@@ -13455,7 +13486,7 @@ HAVING ABS(COALESCE(SUM(qty_delta), 0)) > @qty_tolerance;
     {
         return orderId <= 0
             ? Array.Empty<HuOperatorFacts>()
-            : LoadHuOperatorFacts(orderId, huCode: null);
+            : LoadHuOperatorFacts(orderId, huCodes: null);
     }
 
     public HuOperatorFacts? GetForHu(string huCode)
@@ -13466,17 +13497,34 @@ HAVING ABS(COALESCE(SUM(qty_delta), 0)) > @qty_tolerance;
             return null;
         }
 
-        return LoadHuOperatorFacts(orderId: null, normalizedHu).SingleOrDefault();
+        return LoadHuOperatorFacts(orderId: null, [normalizedHu]).SingleOrDefault();
     }
 
-    private IReadOnlyList<HuOperatorFacts> LoadHuOperatorFacts(long? orderId, string? huCode)
+    public IReadOnlyList<HuOperatorFacts> GetForHus(IReadOnlyCollection<string> huCodes)
+    {
+        var normalized = (huCodes ?? Array.Empty<string>())
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Select(code => code.Trim().ToUpperInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(code => code, StringComparer.Ordinal)
+            .ToArray();
+        return normalized.Length == 0
+            ? Array.Empty<HuOperatorFacts>()
+            : LoadHuOperatorFacts(orderId: null, normalized);
+    }
+
+    private IReadOnlyList<HuOperatorFacts> LoadHuOperatorFacts(
+        long? orderId,
+        IReadOnlyCollection<string>? huCodes)
     {
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-WITH target_hus AS (
-    SELECT @hu_code::text AS hu_code
-    WHERE @hu_code IS NOT NULL
+ WITH target_hus AS (
+     SELECT DISTINCT UPPER(BTRIM(candidate.hu_code)) AS hu_code
+     FROM UNNEST(@hu_codes::text[]) AS candidate(hu_code)
+     WHERE candidate.hu_code IS NOT NULL
+       AND BTRIM(candidate.hu_code) <> ''
 
     UNION
 
@@ -13734,8 +13782,10 @@ ORDER BY target.hu_code;
 ");
             command.Parameters.Add("@order_id", NpgsqlDbType.Bigint).Value =
                 orderId.HasValue ? orderId.Value : DBNull.Value;
-            command.Parameters.Add("@hu_code", NpgsqlDbType.Text).Value =
-                string.IsNullOrWhiteSpace(huCode) ? DBNull.Value : huCode;
+            command.Parameters.AddWithValue(
+                "@hu_codes",
+                NpgsqlDbType.Array | NpgsqlDbType.Text,
+                huCodes?.ToArray() ?? Array.Empty<string>());
             command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
 
             using var reader = command.ExecuteReader();
