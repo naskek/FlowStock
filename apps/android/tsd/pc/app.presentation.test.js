@@ -911,8 +911,44 @@ assert.strictEqual(lastPage.hasMore, false);
 
 const stockPageHtml = pc.renderStock();
 assert.match(stockPageHtml, /stockCreateProductionOrderBtn/);
-assert.match(stockPageHtml, /Сформировать заказ/);
+assert.match(stockPageHtml, /Пополнение склада/);
+assert.match(stockPageHtml, /Подготовить заказ/);
+assert.doesNotMatch(stockPageHtml, /Сформировать заказ/);
+assert.match(stockPageHtml, /data-stock-section="replenishment"/);
+assert.match(stockPageHtml, /data-stock-section="list"/);
+assert.ok(
+  stockPageHtml.indexOf('data-stock-section="replenishment"') < stockPageHtml.indexOf('id="stockSearchInput"'),
+  "replenishment preview must be structurally separated from warehouse search"
+);
+assert.match(stockPageHtml, /Товары на складе/);
+assert.match(stockPageHtml, /data-stock-section="list"[\s\S]*id="stockSearchInput"[\s\S]*id="stockStatus"/);
+assert.match(
+  fs.readFileSync(stockPath, "utf8"),
+  /setStatus\("Позиций: " \+ rows\.length\)/,
+  "filtered warehouse position count must stay with the warehouse list"
+);
 assert.doesNotMatch(stockPageHtml, /Показать производственный план/);
+
+const replenishmentReadyHtml = pc.renderStockReplenishmentPreview({ status: "ready", count: 4 });
+assert.match(replenishmentReadyHtml, /pc-stock-replenishment-icon/);
+assert.match(replenishmentReadyHtml, /<svg/);
+assert.match(replenishmentReadyHtml, />4 позиции</);
+assert.doesNotMatch(replenishmentReadyHtml, /требуют пополнения/);
+assert.doesNotMatch(replenishmentReadyHtml, /Рассчитать, какие товары нужно добавить/);
+assert.doesNotMatch(replenishmentReadyHtml, /disabled aria-disabled="true"/);
+assert.match(pc.renderStockReplenishmentPreview({ status: "ready", count: 1 }), />1 позиция</);
+
+const replenishmentEmptyHtml = pc.renderStockReplenishmentPreview({ status: "empty", count: 0 });
+assert.match(replenishmentEmptyHtml, /Пополнение не требуется/);
+assert.match(replenishmentEmptyHtml, /disabled aria-disabled="true"/);
+
+const replenishmentLoadingHtml = pc.renderStockReplenishmentPreview({ status: "loading" });
+assert.match(replenishmentLoadingHtml, />Загрузка…</);
+assert.match(replenishmentLoadingHtml, /disabled aria-disabled="true"/);
+
+const replenishmentErrorHtml = pc.renderStockReplenishmentPreview({ status: "error" });
+assert.match(replenishmentErrorHtml, /Не удалось загрузить предпросмотр/);
+assert.doesNotMatch(replenishmentErrorHtml, /пополнение не требуется/);
 assert.ok(
   !pc.getEnabledViews().includes("production-need"),
   "separate production need tab must be hidden from normal PC navigation"

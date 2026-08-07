@@ -241,6 +241,122 @@ body.pc-body::before {
   padding-bottom: 6px;
 }
 
+.pc-stock-replenishment-card {
+  display: grid;
+  grid-template-columns: 36px max-content minmax(220px, 1fr) max-content;
+  align-items: center;
+  gap: 14px;
+  min-height: 60px;
+  margin-bottom: 20px;
+  padding: 7px 12px;
+  border: 1px solid #cfe0ea;
+  border-radius: 12px;
+  background: #fbfdfe;
+  box-shadow: 0 2px 8px rgba(31, 111, 139, 0.07);
+}
+
+.pc-stock-replenishment-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  color: #2879c9;
+  background: #eaf3ff;
+}
+
+.pc-stock-replenishment-icon svg {
+  width: 21px;
+  height: 21px;
+}
+
+.pc-stock-replenishment-title {
+  color: var(--pc-ink);
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.pc-stock-replenishment-status-slot {
+  display: flex;
+  align-items: center;
+  min-width: 220px;
+  min-height: 28px;
+}
+
+.pc-stock-replenishment-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  max-width: 100%;
+  padding: 4px 10px;
+  overflow: hidden;
+  border: 1px solid #cfe2f3;
+  border-radius: 999px;
+  color: #286b96;
+  background: #eef7fb;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc-stock-replenishment-card.is-empty .pc-stock-replenishment-status {
+  border-color: #dce5ea;
+  color: #52606d;
+  background: #f3f6f8;
+}
+
+.pc-stock-replenishment-card.is-error .pc-stock-replenishment-status {
+  border-color: #ecd9bd;
+  color: #9a5d12;
+  background: #fff8eb;
+}
+
+.pc-stock-replenishment-card .btn {
+  min-height: 34px;
+  padding: 7px 12px;
+  white-space: nowrap;
+}
+
+.pc-stock-replenishment-card .btn:disabled {
+  border-color: #ccd8df;
+  background: #f3f6f8;
+  color: #7b8793;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.pc-stock-list-section {
+  min-width: 0;
+}
+
+.pc-stock-list-title {
+  margin-bottom: 10px;
+  color: var(--pc-ink);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.pc-stock-list-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 24px;
+  margin-bottom: 12px;
+}
+
+.pc-stock-search-field {
+  flex: 1 1 420px;
+  max-width: 560px;
+}
+
+.pc-stock-list-status {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
 .pc-note {
   font-size: 12px;
   color: #244d62;

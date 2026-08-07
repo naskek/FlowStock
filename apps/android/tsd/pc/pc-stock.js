@@ -66,20 +66,62 @@
     return deps.renderPageShell(
       '<section class="pc-card">' +
       '  <div class="section-title">Состояние склада</div>' +
-      '  <div class="pc-toolbar">' +
-      '    <div class="pc-toolbar-actions">' +
-      '      <button id="stockCreateProductionOrderBtn" class="btn btn-primary" type="button">Сформировать заказ</button>' +
+      '  <div id="stockReplenishmentWrap">' + renderStockReplenishmentPreview({ status: "loading" }) + "</div>" +
+      '  <section class="pc-stock-list-section" data-stock-section="list">' +
+      '    <div class="pc-stock-list-title">Товары на складе</div>' +
+      '    <div class="pc-stock-list-toolbar">' +
+      '      <div class="form-field pc-stock-search-field">' +
+      '        <label class="form-label" for="stockSearchInput">Поиск по товарам</label>' +
+      '        <input class="form-input" id="stockSearchInput" type="text" autocomplete="off" placeholder="Название, бренд, объем, SKU, GTIN, штрихкод" />' +
+      "      </div>" +
+      '      <div id="stockStatus" class="pc-status pc-stock-list-status"></div>' +
       "    </div>" +
-      '    <div class="form-field">' +
-      '      <label class="form-label" for="stockSearchInput">Поиск</label>' +
-      '      <input class="form-input" id="stockSearchInput" type="text" autocomplete="off" placeholder="Название, бренд, объем, SKU, GTIN, штрихкод" />' +
-      "    </div>" +
-      '    <div id="stockStatus" class="pc-status"></div>' +
-      "  </div>" +
-      '  <div id="stockLowWrap"></div>' +
-      '  <div id="stockTableWrap"></div>' +
+      '    <div id="stockLowWrap"></div>' +
+      '    <div id="stockTableWrap"></div>' +
+      "  </section>" +
       "</section>"
     );
+  }
+
+  function renderStockReplenishmentPreview(state) {
+    var source = state || {};
+    var status = String(source.status || "loading");
+    var count = Math.max(0, Number(source.count) || 0);
+    var statusText = "Загрузка…";
+    if (status === "ready") {
+      statusText = count + " " + getPositionWord(count);
+    } else if (status === "empty") {
+      statusText = "Пополнение не требуется";
+    } else if (status === "error") {
+      statusText = "Не удалось загрузить предпросмотр";
+    }
+    var disabled = status !== "ready" || count < 1;
+    return (
+      '<section class="pc-stock-replenishment-card is-' + deps.escapeHtml(status) + '" data-stock-section="replenishment">' +
+      '  <span class="pc-stock-replenishment-icon" aria-hidden="true">' +
+      '    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+      '      <path d="M4 7.5 12 3l8 4.5-8 4.5-8-4.5Z" />' +
+      '      <path d="M4 7.5v9L12 21l8-4.5v-9M12 12v9M8 5.25l8 4.5v4" />' +
+      "    </svg>" +
+      "  </span>" +
+      '  <div class="pc-stock-replenishment-title">Пополнение склада</div>' +
+      '  <div class="pc-stock-replenishment-status-slot">' +
+      '    <div id="stockReplenishmentStatus" class="pc-stock-replenishment-status" aria-live="polite">' + deps.escapeHtml(statusText) + "</div>" +
+      "  </div>" +
+      '  <button id="stockCreateProductionOrderBtn" class="btn btn-outline" type="button"' +
+      (disabled ? ' disabled aria-disabled="true"' : "") +
+      ">Подготовить заказ</button>" +
+      "</section>"
+    );
+  }
+
+  function getPositionWord(count) {
+    var value = Math.abs(Number(count) || 0) % 100;
+    var lastDigit = value % 10;
+    if (value > 10 && value < 20) return "позиций";
+    if (lastDigit === 1) return "позиция";
+    if (lastDigit > 1 && lastDigit < 5) return "позиции";
+    return "позиций";
   }
 
   function renderStockTable(rows, expandedItemIds) {
@@ -430,7 +472,7 @@
 
   function wireStock() {
     var searchInput = document.getElementById("stockSearchInput");
-    var createOrdersBtn = document.getElementById("stockCreateProductionOrderBtn");
+    var replenishmentWrap = document.getElementById("stockReplenishmentWrap");
     var statusEl = document.getElementById("stockStatus");
     var lowWrap = document.getElementById("stockLowWrap");
     var tableWrap = document.getElementById("stockTableWrap");
@@ -473,10 +515,55 @@
       });
     }
     function loadAndRender() {
-      setStatus("Загрузка...");
+      setStatus("Загрузка списка...");
       return loadStockData().then(renderRows).catch(function () {
         setStatus("Не удалось загрузить объединённое состояние склада");
         if (tableWrap) tableWrap.innerHTML = '<div class="empty-state">Не удалось загрузить объединённое состояние склада.</div>';
+      });
+    }
+    function setReplenishmentPreview(state) {
+      if (!replenishmentWrap) return;
+      replenishmentWrap.innerHTML = renderStockReplenishmentPreview(state);
+      bindReplenishmentAction();
+    }
+    function loadReplenishmentPreview() {
+      setReplenishmentPreview({ status: "loading" });
+      return deps.loadProductionNeedCreateOrdersPreview().then(function (preview) {
+        var rows = Array.isArray(preview && preview.rows) ? preview.rows : [];
+        setReplenishmentPreview({
+          status: rows.length ? "ready" : "empty",
+          count: rows.length,
+        });
+      }).catch(function () {
+        setReplenishmentPreview({ status: "error" });
+      });
+    }
+    function refreshStockPage() {
+      return Promise.all([loadAndRender(), loadReplenishmentPreview()]);
+    }
+    function bindReplenishmentAction() {
+        var createOrdersBtn = document.getElementById("stockCreateProductionOrderBtn");
+      if (!createOrdersBtn || createOrdersBtn.disabled) return;
+      createOrdersBtn.addEventListener("click", function () {
+        createOrdersBtn.disabled = true;
+        var previewStatus = document.getElementById("stockReplenishmentStatus");
+        var previousStatusText = previewStatus ? previewStatus.textContent : "";
+        var openingStatusText = "Открываем актуальный предпросмотр…";
+        if (previewStatus) previewStatus.textContent = openingStatusText;
+        deps.runProductionNeedCreateOrdersFlow(function () {
+          return refreshStockPage();
+        }, function () {
+          setReplenishmentPreview({ status: "empty" });
+        }).then(function () {
+          if (document.getElementById("stockReplenishmentStatus") === previewStatus &&
+              previewStatus.textContent === openingStatusText) {
+            previewStatus.textContent = previousStatusText;
+          }
+        }).catch(function () {
+          setReplenishmentPreview({ status: "error" });
+        }).finally(function () {
+          createOrdersBtn.disabled = false;
+        });
       });
     }
     if (searchInput) {
@@ -485,24 +572,8 @@
         debounce = window.setTimeout(renderRows, 150);
       });
     }
-    if (createOrdersBtn) {
-      createOrdersBtn.addEventListener("click", function () {
-        createOrdersBtn.disabled = true;
-        setStatus("Подготовка предпросмотра...");
-        deps.runProductionNeedCreateOrdersFlow(function (message) {
-          setStatus(message || "Производственный черновик сформирован.");
-          return loadAndRender();
-        }, function (message) {
-          setStatus(message || "Нет позиций для создания внутреннего заказа");
-        }).catch(function () {
-          setStatus("Ошибка формирования производственного черновика");
-        }).finally(function () {
-          createOrdersBtn.disabled = false;
-        });
-      });
-    }
-    deps.setActiveLiveRefreshHandler(loadAndRender);
-    loadAndRender();
+    deps.setActiveLiveRefreshHandler(refreshStockPage);
+    refreshStockPage();
   }
 
   window.FlowStockPcStock = {
@@ -512,6 +583,7 @@
     loadStockData: loadStockData,
     testHooks: {
       renderStock: renderStock,
+      renderStockReplenishmentPreview: renderStockReplenishmentPreview,
       renderStockTable: renderStockTable,
       mapWarehouseProductionStateRow: mapWarehouseProductionStateRow,
     },

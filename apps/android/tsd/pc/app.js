@@ -104,6 +104,7 @@
     fetchJson: fetchJson,
     renderPageShell: renderPageShell,
     setActiveLiveRefreshHandler: setActiveLiveRefreshHandler,
+    loadProductionNeedCreateOrdersPreview: loadProductionNeedCreateOrdersPreview,
     runProductionNeedCreateOrdersFlow: runProductionNeedCreateOrdersFlow,
     translatePalletStatus: translatePalletStatus,
     escapeHtml: escapeHtml,
@@ -3615,6 +3616,7 @@
     window.FlowStockPcTestHooks.normalizeMarkingTaskRows = normalizeMarkingTaskRows;
     window.FlowStockPcTestHooks.getEnabledViews = getEnabledViews;
     window.FlowStockPcTestHooks.renderStock = stock.testHooks.renderStock;
+    window.FlowStockPcTestHooks.renderStockReplenishmentPreview = stock.testHooks.renderStockReplenishmentPreview;
     window.FlowStockPcTestHooks.renderStockTable = stock.testHooks.renderStockTable;
     window.FlowStockPcTestHooks.mapWarehouseProductionStateRow = stock.testHooks.mapWarehouseProductionStateRow;
     window.FlowStockPcTestHooks.translatePalletStatus = translatePalletStatus;

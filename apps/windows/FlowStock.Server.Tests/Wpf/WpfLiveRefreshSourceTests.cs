@@ -102,12 +102,17 @@ public sealed class WpfLiveRefreshSourceTests
     }
 
     [Fact]
-    public void ServerLivePublisher_TreatsHuReservationCandidatesAsReadOnlyPost()
+    public void ServerLivePublisher_TreatsReadOnlyPostPreviewsAsNonPublishing()
     {
         var code = File.ReadAllText(GetRepoFile("apps", "windows", "FlowStock.Server", "Program.cs"));
+        var publisher = SliceMethod(code, "static bool ShouldPublishLiveEvent(HttpContext context)", "static bool IsReadOnlyApiPost(PathString path)");
+        var readOnlyPosts = SliceMethod(code, "static bool IsReadOnlyApiPost(PathString path)", "enum PartnerRole");
 
-        Assert.Contains("IsReadOnlyApiPost(path)", code, StringComparison.Ordinal);
-        Assert.Contains("\"/api/orders/hu-reservation-candidates\"", code, StringComparison.Ordinal);
+        Assert.Contains("HttpMethods.IsPost(context.Request.Method)", publisher, StringComparison.Ordinal);
+        Assert.Contains("IsReadOnlyApiPost(path)", publisher, StringComparison.Ordinal);
+        Assert.Contains("\"/api/orders/hu-reservation-candidates\"", readOnlyPosts, StringComparison.Ordinal);
+        Assert.Contains("\"/api/reports/production-need/create-orders/preview\"", readOnlyPosts, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"/api/production-needs/create-orders\"", readOnlyPosts, StringComparison.Ordinal);
     }
 
     [Fact]

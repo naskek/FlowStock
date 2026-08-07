@@ -4191,7 +4191,8 @@ static bool ShouldPublishLiveEvent(HttpContext context)
 
 static bool IsReadOnlyApiPost(PathString path)
 {
-    return path.StartsWithSegments("/api/orders/hu-reservation-candidates", StringComparison.OrdinalIgnoreCase);
+    return path.StartsWithSegments("/api/orders/hu-reservation-candidates", StringComparison.OrdinalIgnoreCase)
+           || path.StartsWithSegments("/api/reports/production-need/create-orders/preview", StringComparison.OrdinalIgnoreCase);
 }
 
 enum PartnerRole
