@@ -41,6 +41,9 @@ var ordersExplainEnabled = string.Equals(
     StringComparison.OrdinalIgnoreCase);
 var ordersExplainConsumed = 0;
 var appVersion = ResolveAppVersion();
+var tsdRoot = ServerPaths.TsdRoot;
+var pcRoot = ServerPaths.PcRoot;
+var pcWebBundle = PcWebStaticFiles.Load(tsdRoot, pcRoot);
 var discoveryOptions = FlowStockDiscoveryOptions.FromConfiguration(builder.Configuration, appVersion);
 
 builder.Services.AddSingleton<PostgresDataStore>(sp =>
@@ -148,7 +151,11 @@ ReadyHuBindingEndpoint.Map(app);
 ProductionNeedCreateOrdersEndpoint.Map(app);
 NewLedgerTransitionEndpoints.Map(app);
 MaintenanceBackfillEndpoints.Map(app);
-app.MapGet("/api/version", () => Results.Ok(new { version = appVersion }));
+app.MapGet("/api/version", (HttpContext context) =>
+{
+    PcWebStaticFiles.ApplyVersionCacheHeaders(context.Response);
+    return Results.Ok(new { version = appVersion, pc_web_version = pcWebBundle.Version });
+});
 FlowStockDiscoveryEndpoints.Map(app);
 
 app.MapGet("/health/live", () => Results.Ok(new { status = "alive" }));
@@ -256,10 +263,7 @@ static void ApplyTsdStaticCacheHeaders(HttpContext context)
     }
 }
 
-var tsdRoot = ServerPaths.TsdRoot;
 var tsdIndexPath = Path.Combine(tsdRoot, "index.html");
-var pcRoot = ServerPaths.PcRoot;
-var pcIndexPath = Path.Combine(pcRoot, "index.html");
 
 if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
 {
@@ -291,36 +295,7 @@ if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
     });
 }
 
-if (Directory.Exists(pcRoot) && File.Exists(pcIndexPath))
-{
-    var pcProvider = new PhysicalFileProvider(pcRoot);
-    var pcContentTypes = new FileExtensionContentTypeProvider();
-    pcContentTypes.Mappings[".webmanifest"] = "application/manifest+json";
-
-    app.UseWhen(
-        context => !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
-                   && !context.Request.Path.StartsWithSegments("/tsd", StringComparison.OrdinalIgnoreCase),
-        pcApp =>
-        {
-            pcApp.UseDefaultFiles(new DefaultFilesOptions { FileProvider = pcProvider });
-            pcApp.UseStaticFiles(new StaticFileOptions
-            {
-                FileProvider = pcProvider,
-                ContentTypeProvider = pcContentTypes
-            });
-            pcApp.Use(async (context, next) =>
-            {
-                await next();
-                if (context.Response.StatusCode != StatusCodes.Status404NotFound)
-                {
-                    return;
-                }
-
-                context.Response.ContentType = "text/html; charset=utf-8";
-                await context.Response.SendFileAsync(pcIndexPath);
-            });
-        });
-}
+PcWebStaticFiles.Use(app, pcWebBundle);
 
 app.MapGet("/api/ping", () =>
 {

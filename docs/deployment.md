@@ -37,6 +37,14 @@ DC='docker compose --project-name flowstock --env-file deploy/.env -f deploy/doc
 - `https://SERVER_IP:7154/tsd/` — TSD web client.
 - В `deploy/.env.example` по умолчанию: внешний HTTPS-порт `7154`, public UDP discovery listener `7155/udp`, loopback backend port `17155/udp`.
 
+## Обновление PC web client
+
+- Версия PC frontend не привязана к версии server assembly: `/api/version` сохраняет поле `version` и отдельно возвращает детерминированный `pc_web_version` текущего JS/CSS bundle.
+- PC index всегда отдается с `Cache-Control: no-store, max-age=0`; `/api/version` — с `no-store`. Runtime JS/CSS и общий `/compat.js` с актуальным `?v=<pc_web_version>` immutable, а без `v` или с неактуальным `v` требуют revalidation через `no-cache`. Logo, favicon и другие декоративные PC assets также используют `no-cache` и не меняют `pc_web_version`.
+- Уже открытая авторизованная вкладка не перезагружается автоматически: при обнаружении нового `pc_web_version` она показывает немодальный баннер `Доступна новая версия FlowStock`, а reload выполняется только по кнопке `Обновить`.
+
+Одноразовое ограничение первого rollout этой политики: ранее сохранённый браузером PC index без cache headers может быть полностью взят из локального кэша без обращения к серверу. Для такой вкладки может потребоваться одно ручное обновление с обходом кэша (`Ctrl+F5`). Не добавляйте для обхода `Clear-Site-Data`, cookies, service worker, origin-wide очистку кэша или forced reload. После первого получения нового `no-store` index последующие deploy не требуют `Ctrl+F5`.
+
 ## Обязательные файлы и каталоги
 
 - `deploy/.env` — создаётся из `deploy/.env.example`.

@@ -5,12 +5,23 @@
   var header = document.querySelector ? document.querySelector(".pc-header") : null;
   var tabs = document.querySelectorAll(".pc-tab");
   var logoutBtn = document.getElementById("logoutBtn");
+  var versionBanner = document.getElementById("pcVersionBanner");
+  var versionReloadBtn = document.getElementById("pcVersionReloadBtn");
+  var versionMeta = document.querySelector
+    ? document.querySelector('meta[name="flowstock-pc-web-version"]')
+    : null;
 
   var currentView = "orders";
   var LAST_VIEW_KEY = "flowstock_pc_last_view";
   var VERSION_CHECK_INTERVAL_MS = 600000;
   var versionCheckTimerId = 0;
-  var knownServerVersion = "";
+  var loadedPcWebVersion = versionMeta
+    ? String(versionMeta.getAttribute("content") || "").trim()
+    : "";
+  var knownServerVersion = loadedPcWebVersion;
+  var versionCheckInFlight = null;
+  var versionCheckGeneration = 0;
+  var versionWatcherGeneration = 0;
   var liveEventSource = null;
   var liveReconnectTimerId = 0;
   var liveRefreshTimerId = 0;
@@ -19,6 +30,11 @@
   var ORDERS_PAGE_SIZE = 20;
   var ORDERS_FETCH_LIMIT = ORDERS_PAGE_SIZE + 1;
   var activeLiveRefreshHandler = null;
+
+  if (versionReloadBtn) {
+    versionReloadBtn.addEventListener("click", reloadForNewVersion);
+  }
+
   var core = window.FlowStockPcCore;
   var clientBlocksRefreshInFlight = false;
   var auth = window.FlowStockPcAuth;
@@ -1009,7 +1025,9 @@
         return response
           .json()
           .then(function (payload) {
-            return payload && payload.version ? String(payload.version).trim() : "";
+            return payload && payload.pc_web_version
+              ? String(payload.pc_web_version).trim()
+              : "";
           })
           .catch(function () {
             return "";
@@ -1020,39 +1038,75 @@
       });
   }
 
-  function checkServerVersionAndReloadIfNeeded() {
-    return fetchServerVersion().then(function (version) {
-      if (!version) {
-        return false;
-      }
+  function setVersionUpdateAvailable(isAvailable) {
+    if (versionBanner) {
+      versionBanner.hidden = !isAvailable;
+    }
+  }
 
-      if (!knownServerVersion) {
-        knownServerVersion = version;
-        return false;
-      }
-
-      if (version !== knownServerVersion) {
-        knownServerVersion = version;
-        window.location.reload();
-        return true;
-      }
-
+  function applyServerPcWebVersion(version) {
+    if (!version || !loadedPcWebVersion) {
       return false;
+    }
+
+    knownServerVersion = version;
+    var isAvailable = version !== loadedPcWebVersion;
+    setVersionUpdateAvailable(isAvailable);
+    return isAvailable;
+  }
+
+  function checkServerVersionAndShowUpdateBanner() {
+    var checkGeneration = versionWatcherGeneration;
+    if (versionCheckInFlight) {
+      if (versionCheckGeneration === checkGeneration) {
+        return versionCheckInFlight;
+      }
+      return versionCheckInFlight.then(function () {
+        if (versionWatcherGeneration !== checkGeneration) {
+          return "";
+        }
+        return checkServerVersionAndShowUpdateBanner();
+      });
+    }
+
+    versionCheckGeneration = checkGeneration;
+    versionCheckInFlight = fetchServerVersion().then(function (version) {
+      if (version && versionWatcherGeneration === checkGeneration) {
+        applyServerPcWebVersion(version);
+      }
+      return version;
     });
+    versionCheckInFlight = versionCheckInFlight.then(
+      function (version) {
+        versionCheckInFlight = null;
+        return version;
+      },
+      function () {
+        versionCheckInFlight = null;
+        return "";
+      }
+    );
+    return versionCheckInFlight;
+  }
+
+  function reloadForNewVersion() {
+    window.location.reload();
   }
 
   function stopVersionWatcher() {
+    versionWatcherGeneration += 1;
     if (versionCheckTimerId) {
       clearInterval(versionCheckTimerId);
       versionCheckTimerId = 0;
     }
+    setVersionUpdateAvailable(false);
   }
 
   function startVersionWatcher() {
     stopVersionWatcher();
-    checkServerVersionAndReloadIfNeeded();
+    checkServerVersionAndShowUpdateBanner();
     versionCheckTimerId = window.setInterval(function () {
-      checkServerVersionAndReloadIfNeeded();
+      checkServerVersionAndShowUpdateBanner();
     }, VERSION_CHECK_INTERVAL_MS);
   }
 
@@ -3635,6 +3689,19 @@
     window.FlowStockPcTestHooks.getOpenOrderModalController = orderModal.getOpenOrderModalController;
     window.FlowStockPcTestHooks.__setOpenOrderModalControllerForTest =
       orderModal.__setOpenOrderModalControllerForTest;
+    window.FlowStockPcTestHooks.applyServerPcWebVersion = applyServerPcWebVersion;
+    window.FlowStockPcTestHooks.checkServerVersionAndShowUpdateBanner =
+      checkServerVersionAndShowUpdateBanner;
+    window.FlowStockPcTestHooks.startVersionWatcher = startVersionWatcher;
+    window.FlowStockPcTestHooks.stopVersionWatcher = stopVersionWatcher;
+    window.FlowStockPcTestHooks.reloadForNewVersion = reloadForNewVersion;
+    window.FlowStockPcTestHooks.getVersionWatcherState = function () {
+      return {
+        loadedPcWebVersion: loadedPcWebVersion,
+        knownServerVersion: knownServerVersion,
+        timerId: versionCheckTimerId,
+      };
+    };
     return;
   }
 
@@ -3654,7 +3721,7 @@
       clearAccount();
       stopVersionWatcher();
       stopLiveUpdates();
-      knownServerVersion = "";
+      knownServerVersion = loadedPcWebVersion;
       applyClientBlocks(null);
       syncTabsVisibility();
       setAccountLabel(null);
@@ -3670,6 +3737,7 @@
     if (!hasPcAccess(loadAccount())) {
       return;
     }
+    checkServerVersionAndShowUpdateBanner();
     refreshClientBlocksIfChanged();
   });
 
@@ -3677,6 +3745,7 @@
     if (document.hidden || !hasPcAccess(loadAccount())) {
       return;
     }
+    checkServerVersionAndShowUpdateBanner();
     refreshClientBlocksIfChanged();
   });
 

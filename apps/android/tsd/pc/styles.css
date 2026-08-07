@@ -115,6 +115,34 @@ body.pc-body::before {
   overflow-x: auto;
 }
 
+.pc-version-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 10;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 12px 10px 16px;
+  color: var(--pc-ink);
+  background: #ffffff;
+  border: 1px solid var(--pc-border);
+  border-radius: 12px;
+  box-shadow: var(--pc-shadow);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pc-version-banner .btn {
+  flex: 0 0 auto;
+}
+
+.pc-version-banner[hidden] {
+  display: none;
+}
+
 .pc-tab {
   appearance: none;
   background: transparent;

@@ -9,15 +9,82 @@ const orderModalPath = path.join(__dirname, "pc-order-modal.js");
 const catalogPath = path.join(__dirname, "pc-catalog.js");
 const stockPath = path.join(__dirname, "pc-stock.js");
 const appPath = path.join(__dirname, "app.js");
+const indexPath = path.join(__dirname, "index.html");
 const styles = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
 const hooks = {};
+const versionBanner = { hidden: true };
+const versionReloadHandlers = {};
+let reloadCount = 0;
+let nextTimerId = 0;
+const activeIntervals = new Map();
+let versionFetchRejects = false;
+let versionFetchCount = 0;
+let versionResponse = { pc_web_version: "loaded-version", version: "server-version" };
+let deferredVersionResponse = null;
+
+function createDeferred() {
+  let resolve;
+  const promise = new Promise(function (resolvePromise) {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function createVersionFetchResponse(payload) {
+  return {
+    ok: true,
+    json: function () { return Promise.resolve(payload); },
+  };
+}
+
 const context = {
   console,
+  clearInterval: function (timerId) {
+    activeIntervals.delete(timerId);
+  },
+  fetch: function () {
+    versionFetchCount += 1;
+    if (versionFetchRejects) {
+      return Promise.reject(new Error("offline"));
+    }
+    if (deferredVersionResponse) {
+      return deferredVersionResponse.promise.then(createVersionFetchResponse);
+    }
+    return Promise.resolve(createVersionFetchResponse(versionResponse));
+  },
   window: {
     FlowStockPcTestHooks: hooks,
+    location: {
+      reload: function () { reloadCount += 1; },
+    },
+    setInterval: function (handler, intervalMs) {
+      nextTimerId += 1;
+      activeIntervals.set(nextTimerId, { handler, intervalMs });
+      return nextTimerId;
+    },
   },
   document: {
-    getElementById: function () {
+    getElementById: function (id) {
+      if (id === "pcVersionBanner") {
+        return versionBanner;
+      }
+      if (id === "pcVersionReloadBtn") {
+        return {
+          addEventListener: function (type, handler) {
+            versionReloadHandlers[type] = handler;
+          },
+        };
+      }
+      return null;
+    },
+    querySelector: function (selector) {
+      if (selector === 'meta[name="flowstock-pc-web-version"]') {
+        return {
+          getAttribute: function (name) {
+            return name === "content" ? "loaded-version" : null;
+          },
+        };
+      }
       return null;
     },
     querySelectorAll: function () {
@@ -1292,3 +1359,120 @@ assert.match(
   /expandedOrderLineIds:\s*\{\}/,
   "open order modal should keep expanded order line state across live refresh"
 );
+
+const pcIndexSource = fs.readFileSync(indexPath, "utf8");
+const pcAppSource = fs.readFileSync(appPath, "utf8");
+assert.match(pcIndexSource, /id="pcVersionBanner"/);
+assert.match(pcIndexSource, /Доступна новая версия FlowStock/);
+assert.match(pcIndexSource, /id="pcVersionReloadBtn"[^>]*>Обновить</);
+assert.match(styles, /\.pc-version-banner\[hidden\]\s*\{[^}]*display:\s*none/s);
+assert(
+  pcIndexSource.indexOf('id="pcVersionBanner"') > pcIndexSource.indexOf('id="app"'),
+  "version banner must live outside the route-rendered #app container"
+);
+assert.strictEqual(
+  (pcAppSource.match(/window\.setInterval\(/g) || []).length,
+  1,
+  "existing PC version watcher should remain the single interval lifecycle"
+);
+assert.strictEqual(
+  (pcAppSource.match(/window\.location\.reload\(\)/g) || []).length,
+  1,
+  "only the explicit version update action may reload the page"
+);
+assert.doesNotMatch(
+  pcAppSource,
+  /payload\s*&&\s*payload\.version\s*\?/,
+  "PC update compatibility must use pc_web_version instead of server assembly version"
+);
+assert.match(
+  pcAppSource,
+  /onLoginSuccess:\s*function\s*\(\)\s*\{\s*startVersionWatcher\(\)/,
+  "successful PC authentication should start the existing version watcher"
+);
+assert.match(
+  pcAppSource,
+  /clearAccount\(\);\s*stopVersionWatcher\(\)/,
+  "PC logout should stop the existing version watcher"
+);
+
+async function runPcVersionWatcherTests() {
+  assert.strictEqual(pc.getVersionWatcherState().loadedPcWebVersion, "loaded-version");
+
+  assert.strictEqual(pc.applyServerPcWebVersion("loaded-version"), false);
+  assert.strictEqual(versionBanner.hidden, true);
+  assert.strictEqual(reloadCount, 0);
+
+  assert.strictEqual(pc.applyServerPcWebVersion("new-version"), true);
+  assert.strictEqual(versionBanner.hidden, false);
+  assert.strictEqual(reloadCount, 0, "version mismatch must not reload automatically");
+
+  versionResponse = { pc_web_version: "new-version", version: "server-version" };
+  const fetchCountBeforeDeduplication = versionFetchCount;
+  const firstCheck = pc.checkServerVersionAndShowUpdateBanner();
+  const concurrentCheck = pc.checkServerVersionAndShowUpdateBanner();
+  assert.strictEqual(firstCheck, concurrentCheck, "concurrent version checks should share one request");
+  await firstCheck;
+  assert.strictEqual(versionFetchCount, fetchCountBeforeDeduplication + 1);
+
+  versionResponse = { version: "changed-server-version" };
+  await pc.checkServerVersionAndShowUpdateBanner();
+  assert.strictEqual(versionBanner.hidden, false, "missing pc_web_version must keep the banner state");
+
+  versionFetchRejects = true;
+  await pc.checkServerVersionAndShowUpdateBanner();
+  assert.strictEqual(versionBanner.hidden, false, "network failure must keep an existing update banner");
+  assert.strictEqual(reloadCount, 0);
+  versionFetchRejects = false;
+  versionResponse = { pc_web_version: "loaded-version", version: "server-version" };
+
+  pc.applyServerPcWebVersion("new-version");
+  assert.strictEqual(versionBanner.hidden, false);
+  pc.stopVersionWatcher();
+  assert.strictEqual(versionBanner.hidden, true, "logout must hide an existing version banner");
+
+  deferredVersionResponse = createDeferred();
+  pc.startVersionWatcher();
+  const lateVersionCheck = pc.checkServerVersionAndShowUpdateBanner();
+  pc.stopVersionWatcher();
+  deferredVersionResponse.resolve({ pc_web_version: "late-mismatch" });
+  deferredVersionResponse = null;
+  await lateVersionCheck;
+  assert.strictEqual(
+    versionBanner.hidden,
+    true,
+    "a version response completed after logout must not show the banner"
+  );
+
+  const fetchCountBeforeNextLogin = versionFetchCount;
+  pc.startVersionWatcher();
+  await pc.checkServerVersionAndShowUpdateBanner();
+  assert.strictEqual(
+    versionFetchCount,
+    fetchCountBeforeNextLogin + 1,
+    "the next login must start a fresh version check"
+  );
+  pc.stopVersionWatcher();
+
+  pc.startVersionWatcher();
+  assert.strictEqual(activeIntervals.size, 1);
+  const firstTimerId = pc.getVersionWatcherState().timerId;
+  pc.startVersionWatcher();
+  assert.strictEqual(activeIntervals.size, 1, "restarting watcher must replace its existing interval");
+  assert.notStrictEqual(pc.getVersionWatcherState().timerId, firstTimerId);
+  pc.stopVersionWatcher();
+  assert.strictEqual(activeIntervals.size, 0);
+
+  assert.strictEqual(typeof versionReloadHandlers.click, "function");
+  versionReloadHandlers.click();
+  assert.strictEqual(reloadCount, 1, "explicit Обновить action should reload exactly once");
+
+  versionResponse = { pc_web_version: "loaded-version", version: "changed-server-version" };
+  pc.applyServerPcWebVersion(versionResponse.pc_web_version);
+  assert.strictEqual(versionBanner.hidden, true, "banner should hide when frontend versions match again");
+}
+
+runPcVersionWatcherTests().catch(function (error) {
+  console.error(error);
+  process.exitCode = 1;
+});
