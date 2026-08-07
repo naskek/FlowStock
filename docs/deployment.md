@@ -1,6 +1,6 @@
 # Деплой FlowStock
 
-> **Compatibility warning для HU correction.** После первого committed `CORRECT_FILLED` в данных появляется `production_pallets.status = CORRECTED`. Старый runtime с условиями вида `status <> 'CANCELLED'` может ошибочно считать такую историческую ревизию активной. До применения миграции нужен свежий PostgreSQL backup. Если функция ещё не использовалась, additive schema допускает обычный code rollback. После появления `CORRECTED` сначала выключите `pc_hu_correction`; запуск старого runtime допускается только после forward-fix либо восстановления согласованного pre-deploy backup. Production deploy и backup выполняет пользователь вручную по действующему каноническому FlowStock PowerShell-процессу; Compose запускается из `/opt/FlowStock` с явными `-p flowstock -f deploy/docker-compose.yml`.
+> **Compatibility warning для HU correction.** После первого committed `CORRECT_FILLED` в данных появляется `production_pallets.status = CORRECTED`. Старый runtime с условиями вида `status <> 'CANCELLED'` может ошибочно считать такую историческую ревизию активной. До применения миграции нужен свежий PostgreSQL backup. Если функция ещё не использовалась, additive schema допускает обычный code rollback. После появления `CORRECTED` сначала выключите `pc_hu_correction`; запуск старого runtime допускается только после forward-fix либо восстановления согласованного pre-deploy backup. Production deploy и backup выполняет пользователь вручную по действующему каноническому FlowStock PowerShell-процессу; Compose запускается из `/opt/FlowStock` с явными `-p flowstock --env-file deploy/.env -f deploy/docker-compose.yml`.
 
 > **Compatibility warning для ранней частичной отгрузки.** Миграция `V0031` добавляет `orders.allow_partial_outbound` и CHECK `terminal status => allow_partial_outbound = false`; новый runtime атомарно сбрасывает флаг при `SHIPPED`, `CANCELLED`, `MERGED`. Пока у всех активных заказов permission равен `false`, additive schema совместима с обычным code rollback. Если существует активный заказ с `allow_partial_outbound = true`, старый runtime нельзя запускать как штатный rollback: он не выполняет terminal-reset, и его попытка терминального перехода такого заказа будет fail-closed отклонена CHECK constraint. Поддерживаемые варианты в этом состоянии — forward-fix либо восстановление согласованного pre-deploy PostgreSQL backup. Ручной `UPDATE` production-БД не является rollback-процедурой. Production backup и deploy выполняет пользователь вручную по каноническому FlowStock-процессу.
 
@@ -14,18 +14,18 @@
 - Все последующие изменения схемы применяются через версионируемые SQL-миграции из `deploy/postgres/migrations/`.
 - На сервере должен быть обычный git clone репозитория.
 - Обновления из GitHub выполняются вручную по запросу; автоматического deploy-loop нет.
-- Рекомендуемый путь обновления:
-  1. backup (создаётся автоматически внутри `deploy_update.sh`);
-  2. schema migration;
-  3. recreate контейнеров приложения;
-  4. проверка health.
+- Production deploy и update выполняются пользователем вручную через канонический FlowStock PowerShell-процесс:
+  1. определить локальный expected commit и создать свежий PostgreSQL backup;
+  2. обновить `/opt/FlowStock` и подтвердить server `HEAD`;
+  3. выполнить Compose config/resolved gate и build/deploy одной invocation `docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml ...`;
+  4. проверить containers, live/ready, TSD version, disk space и путь backup.
 
 ### Сокращение для ручных команд
 
 Все ручные команды `docker compose` в этом документе используют переменную:
 
 ```bash
-DC='docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml'
+DC='docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml'
 ```
 
 Задайте её один раз в сессии (`export DC=...` не нужен, достаточно `DC=...` и вызова `$DC ...` в том же shell) или используйте полную форму.
@@ -65,7 +65,7 @@ FLOWSTOCK_DOTNET_SDK_IMAGE=registry.example.com/mirror/dotnet/sdk:8.0
 FLOWSTOCK_DOTNET_ASPNET_IMAGE=registry.example.com/mirror/dotnet/aspnet:8.0
 ```
 
-`deploy_from_git.sh` и `deploy_update.sh` подхватят override автоматически. Неофициальный fallback registry в проект намеренно не зашит: используйте собственный mirror, registry cache или заранее прогретый внутренний registry.
+Compose подхватит override из `deploy/.env`. Существующие `deploy_from_git.sh` и `deploy_update.sh` также читают этот файл, но являются helper/legacy scripts, а не каноническим production deploy-процессом. Неофициальный fallback registry в проект намеренно не зашит: используйте собственный mirror, registry cache или заранее прогретый внутренний registry.
 
 ## Сервисы
 
@@ -75,6 +75,59 @@ FLOWSTOCK_DOTNET_ASPNET_IMAGE=registry.example.com/mirror/dotnet/aspnet:8.0
 - `discovery-relay` — host-network UDP sidecar для native Android discovery: всегда слушает host `0.0.0.0:7155/udp`, пересылает datagram в loopback backend `flowstock` и отвечает исходному клиенту с source port `7155`.
 - `nginx` — стартует после healthy `flowstock` и healthy `discovery-relay`; использует `deploy/nginx/certs/flowstock.crt` и `deploy/nginx/certs/flowstock.key`.
 - `pgbackup` — регулярные scheduled backup'ы `pg_dump -Fc` внутри compose-стека.
+
+## PostgreSQL bind и обязательная проверка Compose
+
+Основной bind PostgreSQL задаётся через `FLOWSTOCK_PG_BIND_HOST`. Без явной настройки используется безопасный loopback `127.0.0.1`.
+
+Необязательный второй bind задаётся через `FLOWSTOCK_PG_SECOND_BIND_HOST`. Пустое или отсутствующее значение означает single-bind: вторая декларация `ports` интерполируется в тот же адрес, что и основная. Эта схема поддерживается только если фактическая версия Docker Compose нормализует resolved-конфигурацию до одного mapping. Для production dual-bind задайте конкретные адреса интерфейсов:
+
+```bash
+FLOWSTOCK_PG_BIND_HOST=192.168.1.3
+FLOWSTOCK_PG_SECOND_BIND_HOST=100.66.142.112
+```
+
+Не используйте для этих переменных пустой host в resolved mapping, `0.0.0.0`, `::` или `[::]`: PostgreSQL должен публиковаться только на явно выбранных интерфейсах.
+
+Перед первым `up` после изменения bind-контракта и перед каждым production deploy выполните одной и той же Compose invocation:
+
+```bash
+$DC config -q
+$DC config --format json
+```
+
+Для single-bind resolved `services.postgres.ports` должен содержать ровно один mapping с `host_ip: 127.0.0.1`. Для production dual-bind должны присутствовать ровно два различных mapping с `host_ip: 192.168.1.3` и `host_ip: 100.66.142.112`; пустые и wildcard HostIp запрещены. Если фактическая production-версия Compose возвращает другой результат, deploy блокируется до отдельного архитектурного решения.
+
+Конфигурация, прошедшая gate, применяется без изменения invocation:
+
+```bash
+$DC up -d --build --remove-orphans
+$DC ps
+POSTGRES_CONTAINER_ID="$($DC ps -q postgres)"
+docker inspect "$POSTGRES_CONTAINER_ID" --format '{{json .HostConfig.PortBindings}}'
+```
+
+Таким образом `config`, `up`, `ps` и получение ID контейнера используют один `-p flowstock`, один `deploy/.env` и один `deploy/docker-compose.yml`.
+
+### Разовый переход с ручного production drift
+
+После появления canonical commit, но до запуска канонического PowerShell deploy-процесса:
+
+1. Сохраните `deploy/.env`, `git diff -- deploy/docker-compose.yml`, `deploy/.env.backup-*` и `deploy/docker-compose.yml.before-*` в закрытом каталоге вне `/opt/FlowStock`; для каталога используйте права `700`, для файлов — `600`.
+2. Переместите `deploy/.env.backup-*` и `deploy/docker-compose.yml.before-*` из clone в этот каталог. Не добавляйте их в Git и не используйте `git clean`.
+3. Добавьте в существующий `/opt/FlowStock/deploy/.env` оба production-адреса, не удаляя основной bind:
+
+   ```bash
+   FLOWSTOCK_PG_BIND_HOST=192.168.1.3
+   FLOWSTOCK_PG_SECOND_BIND_HOST=100.66.142.112
+   ```
+
+4. Повторно проверьте `git diff -- deploy/docker-compose.yml`. Единственным tracked изменением должна быть известная ручная строка `- "100.66.142.112:5432:5432"`; при любом другом diff остановитесь.
+5. Уберите только подтверждённый drift командой `git restore --source=HEAD -- deploy/docker-compose.yml` и подтвердите чистый `git status --short`. Ignored `deploy/.env` остаётся на месте.
+
+На подготовительном этапе не выполняйте `git fetch`, `git pull`, merge, fast-forward или Compose-команды. Восстановление файла в working tree не меняет уже запущенный контейнер PostgreSQL: действующий dual-bind сохраняется до controlled recreate.
+
+Дальнейшее обновление выполняется только существующим каноническим FlowStock PowerShell deploy-процессом в порядке: локальный expected commit, свежий PostgreSQL backup, update `/opt/FlowStock`, проверка server `HEAD`, `config -q` и resolved HostIp gate, `up`, containers, `/health/live`, `/health/ready`, TSD version, disk space и путь backup. Для этого rollout не используйте `deploy_from_git.sh`, `deploy_update.sh`, короткую SSH deploy-команду или отдельный server-side deploy. После recreate проверьте фактические Docker `PortBindings` и доступ к PostgreSQL отдельно через LAN и Tailscale.
 
 ## Canonical HTTPS endpoint и discovery
 
@@ -100,7 +153,7 @@ FLOWSTOCK_DISCOVERY_RELAY_MAX_IN_FLIGHT=64
 
 - `FLOWSTOCK_DISCOVERY_BEHIND_RELAY=1` задаётся Compose для `flowstock`: backend per-source limiter отключён, остаётся absolute backend global ceiling `320/10s`. Основные relay limits: `20/source/10s`, `120/global/10s`, local healthcheck `20/10s`.
 - Docker healthcheck `discovery-relay` использует protocol-v1 request через public listener и имеет timeout `12s`.
-- Deploy scripts не меняют firewall автоматически. На сервере/firewall inbound UDP `7155` должен быть разрешён только из operator LAN; `deploy_update.sh` выполняет read-only `ss -lun` и best-effort firewall inspection.
+- Helper scripts не меняют firewall автоматически. На сервере/firewall inbound UDP `7155` должен быть разрешён только из operator LAN; legacy/helper `deploy_update.sh` выполняет read-only `ss -lun` и best-effort firewall inspection, но не заменяет канонический PowerShell deploy-процесс.
 - `docker compose config -q` проверяет только корректность compose-файла и не доказывает проходимость directed broadcast через firewall/host listener.
 
 Быстрая проверка после deploy:
@@ -162,18 +215,15 @@ cp deploy/.env.example deploy/.env
 ```
 
 2. Отредактируйте `deploy/.env`: реальный пароль PostgreSQL, `FLOWSTOCK_PUBLIC_BASE_URL`, `FLOWSTOCK_INSTANCE_NAME`, нужные порты.
-   Для прямого доступа WPF к PostgreSQL из LAN задайте `FLOWSTOCK_PG_BIND_HOST`:
+   Для прямого доступа WPF к PostgreSQL задайте bind-переменные:
    - безопасный default: `127.0.0.1` (доступ только с хоста сервера);
    - пример для production LAN: `FLOWSTOCK_PG_BIND_HOST=192.168.1.3`;
+   - optional Tailscale bind: `FLOWSTOCK_PG_SECOND_BIND_HOST=100.66.142.112`;
+   - пустой `FLOWSTOCK_PG_SECOND_BIND_HOST` не добавляет второй resolved mapping после обязательной проверки Compose;
    - `docker-compose.override.yml` не требуется.
 3. Один раз выполните bootstrap локального CA (см. раздел выше).
 4. Установите сгенерированный root CA cert на клиентские устройства, включая Android TSD user trust store для release APK.
-5. Выполните первый deploy:
-
-```bash
-cd /opt/FlowStock
-bash deploy/scripts/deploy_update.sh
-```
+5. Выполните первый deploy существующим каноническим FlowStock PowerShell-процессом: expected commit, свежий PostgreSQL backup, update `/opt/FlowStock`, проверка `HEAD`, Compose config/resolved gate, build/deploy и post-deploy проверки.
 
 6. Проверьте health:
 
@@ -194,68 +244,25 @@ bash deploy/scripts/release_status.sh
 
 ```bash
 $DC down -v
-bash deploy/scripts/deploy_update.sh
 ```
+
+После очистки повторите канонический PowerShell deploy-процесс. Не используйте эту процедуру на существующем production volume.
 
 ## Обычное обновление production
 
-Рекомендуемый путь обновления из GitHub:
+Production update выполняет пользователь вручную существующим каноническим FlowStock PowerShell-процессом. Процесс определяет expected commit локально, создаёт свежий PostgreSQL backup, обновляет `/opt/FlowStock`, проверяет server `HEAD`, выполняет `config -q` и resolved gate, затем build/deploy и проверки containers, live/ready, TSD version, disk space и пути backup.
+
+Все Compose-команды этого процесса используют одну invocation:
 
 ```bash
-cd /opt/FlowStock
-bash deploy/scripts/deploy_from_git.sh
+docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml ...
 ```
 
-По умолчанию `deploy_from_git.sh`:
+`deploy_from_git.sh` и `deploy_update.sh` сохраняются как helper/legacy scripts для ограниченных вспомогательных сценариев. Они не являются каноническим production deploy-процессом и не запускаются вместо PowerShell-процесса.
 
-- делает `fetch` из `origin` и резолвит `origin/main`;
-- отказывается продолжать, если в отслеживаемом worktree есть локальные изменения;
-- записывает метаданные попытки deploy;
-- выполняет fast-forward локальной ветки `main`;
-- запускает стандартный deployment flow;
-- записывает метаданные успешного релиза.
+## Проверка server clone
 
-Деплой конкретного tag или commit вместо `origin/main`:
-
-```bash
-cd /opt/FlowStock
-bash deploy/scripts/deploy_from_git.sh v2026.04.10-1
-```
-
-Нижележащий `deploy_update.sh` остаётся доступен, когда репозиторий уже стоит на нужной ревизии и требуется только rebuild/restart:
-
-```bash
-cd /opt/FlowStock
-bash deploy/scripts/deploy_update.sh
-```
-
-Что делает `deploy_update.sh`:
-
-- проверяет наличие TLS-ассетов; в `local_ca` режиме перевыпускает серверный сертификат, если он отсутствует, не совпадает с конфигурацией или близок к истечению;
-- валидирует `docker compose config`;
-- валидирует настройки discovery relay и выполняет read-only UDP/firewall preflight;
-- поднимает `postgres` и дожидается healthy;
-- создаёт pre-deploy dump в `deploy/runtime/backups/`;
-- делает pull базовых образов;
-- пересобирает `flowstock` и `discovery-relay`;
-- запускает `migrator`;
-- останавливает и удаляет старый `discovery-relay` перед изменением backend, чтобы public UDP `7155` не принимал discovery traffic при недоступном backend;
-- пересоздаёт `flowstock` с loopback backend publish и дожидается healthy `flowstock`;
-- проверяет, что public UDP `7155` свободен, и выполняет direct backend healthcheck на `127.0.0.1:${FLOWSTOCK_DISCOVERY_BACKEND_PORT:-17155}`;
-- запускает `discovery-relay` и дожидается healthy `discovery-relay`;
-- пересоздаёт `nginx`, `pgbackup` и дожидается running `nginx`.
-
-## Проверка сервера для git-driven deploy
-
-Выполните один раз после подготовки server clone:
-
-```bash
-cd /opt/FlowStock
-git checkout main
-git pull --ff-only origin main
-bash deploy/scripts/release_status.sh
-bash deploy/scripts/deploy_from_git.sh
-```
+После подготовки clone проверьте чистый tracked worktree, доступность ожидаемого commit и соответствие server `HEAD` в составе канонического PowerShell-процесса. Не выполняйте отдельный server-side deploy вместо него.
 
 Если сервер использует mirror для базовых образов, задайте `FLOWSTOCK_DOTNET_SDK_IMAGE` и `FLOWSTOCK_DOTNET_ASPNET_IMAGE` в `deploy/.env` до первого запуска.
 
@@ -349,10 +356,10 @@ $DC logs --tail=100 discovery-relay
 git checkout <previous-good-commit-or-tag>
 ```
 
-3. Восстановите pre-deploy dump, созданный `deploy_update.sh`:
+3. Восстановите свежий pre-deploy dump, путь которого сообщил канонический PowerShell deploy-процесс:
 
 ```bash
-bash deploy/scripts/restore_dump.sh /opt/FlowStock/deploy/runtime/backups/FlowStock_<timestamp>.dump
+bash deploy/scripts/restore_dump.sh <backup-path-reported-by-PowerShell-process>
 ```
 
 4. Поднимите предыдущую рабочую ревизию приложения. Для старой revision без `discovery-relay` запускайте только существующие сервисы; для новой revision с relay используйте `discovery-relay` между `flowstock` и `nginx`:
@@ -435,7 +442,7 @@ $DC restart nginx
 - Production backfill статусов ЧЗ (`backfill_marking_status.sh`) — `deploy/docs/operations/marking-backfill.md`
 - Полная проверка UDP discovery — `deploy/docs/operations/discovery-smoke.md`
 
-Общее правило для любой миграции, помеченной в release notes как чувствительная: свежий backup перед применением обязателен (сверх автоматического pre-deploy dump).
+Общее правило для любой миграции, помеченной в release notes как чувствительная: свежий backup перед применением обязателен и создаётся каноническим PowerShell deploy-процессом.
 
 ## Примечания
 
@@ -443,6 +450,6 @@ $DC restart nginx
 - Каждый migration-файл выполняется раннером внутри транзакции. При любой SQL-ошибке процесс завершается с non-zero кодом, а файл не записывается в `schema_migrations`.
 - `deploy/postgres/init/001_init.sql` намеренно минимален: он только bootstrap'ит `schema_migrations` для нового Postgres volume.
 - WPF-клиент не отвечает за создание production schema. Если в БД нет миграций, приложение явно сообщает об этом состоянии вместо скрытого создания/обновления схемы.
-- Держите server-side clone репозитория чистым: `deploy_from_git.sh` останавливается, если на сервере вручную изменяли tracked files.
+- Держите server-side clone репозитория чистым: канонический PowerShell deploy-процесс должен остановиться при неожиданных tracked изменениях.
 - Метаданные релизов хранятся в `deploy/runtime/releases/`.
 - `deploy/nginx/gen_cert.sh` остаётся только как быстрый self-signed fallback; рекомендуемый режим для внутреннего production — `FLOWSTOCK_TLS_MODE=local_ca`.
