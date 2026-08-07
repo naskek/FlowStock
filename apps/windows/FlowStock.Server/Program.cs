@@ -90,6 +90,7 @@ builder.Services.AddSingleton<PostgresDataStore>(sp =>
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IMarkingCutoverPreflightStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.ITsdHuResolverStore>(sp => sp.GetRequiredService<PostgresDataStore>());
+builder.Services.AddSingleton<FlowStock.Core.Abstractions.IHuOperatorFactsStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString));
 builder.Services.Configure<FlowStockLedgerFlowOptions>(
     builder.Configuration.GetSection(FlowStockLedgerFlowOptions.SectionName));
@@ -110,6 +111,7 @@ builder.Services.AddSingleton<OutboundPickingService>(sp => new OutboundPickingS
     sp.GetRequiredService<FlowStockLedgerFlowOptions>()));
 builder.Services.AddSingleton<OrderControlService>();
 builder.Services.AddSingleton<TsdHuResolverService>();
+builder.Services.AddSingleton<HuOperatorReadModelService>();
 builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseActionBundleService>();
 builder.Services.AddSingleton<FlowStock.Core.Services.Warehouse.WarehouseTaskExecutionService>();
 builder.Services.AddSingleton<CatalogService>();

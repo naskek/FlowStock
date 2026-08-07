@@ -7,6 +7,160 @@ namespace FlowStock.Server.Tests.Orders;
 
 public sealed class OrderLineHuDetailsBuilderTests
 {
+    [Fact]
+    public async Task SingleEndpoint_ReturnsCanonicalHuPresentationAndSuppressesPlannedRows()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedItem(new Item { Id = 5, Name = "Товар", BaseUom = "шт" });
+        harness.SeedOrder(new Order
+        {
+            Id = 2,
+            OrderRef = "002",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 8, 7, 8, 0, 0)
+        });
+        harness.SeedOrderLine(new OrderLine { Id = 20, OrderId = 2, ItemId = 5, QtyOrdered = 200 });
+        harness.SeedHuOperatorFactsForOrder(2,
+        [
+            OperatorProductionFacts("HU-PLANNED", ProductionPalletStatus.Planned),
+            OperatorProductionFacts("HU-PRINTED", ProductionPalletStatus.Printed)
+        ]);
+
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+        using var response = await host.Client.GetAsync("/api/orders/2/lines");
+        response.EnsureSuccessStatusCode();
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        var line = Assert.Single(json.RootElement.EnumerateArray());
+        var presentation = line.GetProperty("hu_presentation");
+        var production = Assert.Single(presentation.GetProperty("production_tasks").EnumerateArray());
+        Assert.Equal("HU-PRINTED", production.GetProperty("hu_code").GetString());
+        Assert.Equal("AWAITING_FILL", production.GetProperty("state").GetProperty("code").GetString());
+        Assert.False(production.TryGetProperty("components", out _));
+        Assert.False(production.TryGetProperty("planned_qty", out _));
+        Assert.False(production.TryGetProperty("filled_qty", out _));
+        Assert.Empty(presentation.GetProperty("operational_hus").EnumerateArray());
+
+        static HuOperatorFacts OperatorProductionFacts(string huCode, string status) => new()
+        {
+            HuCode = huCode,
+            ProductionPallets =
+            [
+                new HuOperatorProductionPalletFact
+                {
+                    PalletId = string.Equals(status, ProductionPalletStatus.Planned, StringComparison.Ordinal) ? 1 : 2,
+                    Status = status,
+                    OwnerOrderId = 2,
+                    OwnerOrderRef = "002",
+                    OwnerOrderType = "CUSTOMER",
+                    OwnerOrderStatus = "IN_PROGRESS",
+                    Components =
+                    [
+                        new HuOperatorComponentFact
+                        {
+                            OrderLineId = 20,
+                            OrderLineOrderId = 2,
+                            ItemId = 5,
+                            ItemName = "Товар",
+                            Uom = "шт",
+                            PlannedQty = 100
+                        }
+                    ]
+                }
+            ]
+        };
+    }
+
+    [Fact]
+    public async Task SingleEndpoint_KeepsInconsistentWarehouseHuWithNullableLineQuantity()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedItem(new Item { Id = 5, Name = "Товар", BaseUom = "шт" });
+        harness.SeedOrder(new Order
+        {
+            Id = 2,
+            OrderRef = "002",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 8, 7, 8, 0, 0)
+        });
+        harness.SeedOrderLine(new OrderLine { Id = 20, OrderId = 2, ItemId = 5, QtyOrdered = 100 });
+        harness.SeedHuOperatorFactsForOrder(2,
+        [
+            new HuOperatorFacts
+            {
+                HuCode = "HU-PARTIAL-OUT",
+                Stock =
+                [
+                    new HuOperatorStockFact
+                    {
+                        ItemId = 5,
+                        ItemName = "Товар",
+                        Uom = "шт",
+                        LocationId = 10,
+                        LocationCode = "MAIN",
+                        Qty = 60
+                    }
+                ],
+                Outbound =
+                [
+                    new HuOperatorOutboundFact
+                    {
+                        DocumentId = 91,
+                        DocumentRef = "OUT-91",
+                        DocumentStatus = "CLOSED",
+                        OrderId = 2,
+                        OrderRef = "002",
+                        OrderLineId = 20,
+                        ItemId = 5,
+                        ItemName = "Товар",
+                        Uom = "шт",
+                        Qty = 40
+                    }
+                ],
+                LedgerMovements =
+                [
+                    Movement(1, 10, "INBOUND", 100),
+                    Movement(2, 91, "OUTBOUND", -40)
+                ]
+            }
+        ]);
+
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+        using var response = await host.Client.GetAsync("/api/orders/2/lines");
+        response.EnsureSuccessStatusCode();
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        var row = Assert.Single(
+            Assert.Single(json.RootElement.EnumerateArray())
+                .GetProperty("hu_presentation")
+                .GetProperty("operational_hus")
+                .EnumerateArray());
+        Assert.Equal("INCONSISTENT", row.GetProperty("state").GetProperty("code").GetString());
+        Assert.Equal(JsonValueKind.Null, row.GetProperty("qty").ValueKind);
+
+        static HuOperatorLedgerMovementFact Movement(
+            long ledgerId,
+            long documentId,
+            string documentType,
+            double qtyDelta) => new()
+        {
+            LedgerId = ledgerId,
+            Timestamp = new DateTime(2026, 8, 7, 8, 0, 0).AddMinutes(ledgerId),
+            DocumentId = documentId,
+            DocumentRef = $"DOC-{documentId}",
+            DocumentType = documentType,
+            DocumentStatus = "CLOSED",
+            ItemId = 5,
+            ItemName = "Товар",
+            Uom = "шт",
+            LocationId = 10,
+            LocationCode = "MAIN",
+            QtyDelta = qtyDelta
+        };
+    }
+
     [Theory]
     [InlineData(null, false)]
     [InlineData(3L, false)]

@@ -83,6 +83,14 @@ internal sealed class CloseDocumentHarness
                 times);
     }
 
+    public void SeedHuOperatorFactsForOrder(long orderId, IReadOnlyList<HuOperatorFacts> facts)
+    {
+        var store = _store.As<IHuOperatorFactsStore>();
+        store.Setup(value => value.GetForOrder(orderId)).Returns(facts);
+        store.Setup(value => value.GetForHu(It.IsAny<string>())).Returns((string huCode) =>
+            facts.FirstOrDefault(row => string.Equals(row.HuCode, huCode, StringComparison.OrdinalIgnoreCase)));
+    }
+
     public void VerifyReadyHuBindingSummaryPathUsed(Times times)
     {
         _store.As<IReadyHuBindingSummaryStore>()

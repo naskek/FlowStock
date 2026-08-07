@@ -189,4 +189,5 @@ public sealed class TsdHuView
     public IReadOnlyList<TsdHuReservationFact> Reservations { get; init; } = Array.Empty<TsdHuReservationFact>();
     public IReadOnlyList<TsdHuDocumentFact> Documents { get; init; } = Array.Empty<TsdHuDocumentFact>();
     public TsdHuMovementFact? LatestMovement { get; init; }
+    public GlobalHuOperatorReadModel OperatorReadModel { get; init; } = new();
 }

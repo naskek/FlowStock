@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
@@ -13,7 +14,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
+public sealed class PostgresDataStore : IDataStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -13450,6 +13451,313 @@ HAVING ABS(COALESCE(SUM(qty_delta), 0)) > @qty_tolerance;
         });
     }
 
+    public IReadOnlyList<HuOperatorFacts> GetForOrder(long orderId)
+    {
+        return orderId <= 0
+            ? Array.Empty<HuOperatorFacts>()
+            : LoadHuOperatorFacts(orderId, huCode: null);
+    }
+
+    public HuOperatorFacts? GetForHu(string huCode)
+    {
+        var normalizedHu = (huCode ?? string.Empty).Trim().ToUpperInvariant();
+        if (normalizedHu.Length == 0)
+        {
+            return null;
+        }
+
+        return LoadHuOperatorFacts(orderId: null, normalizedHu).SingleOrDefault();
+    }
+
+    private IReadOnlyList<HuOperatorFacts> LoadHuOperatorFacts(long? orderId, string? huCode)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH target_hus AS (
+    SELECT @hu_code::text AS hu_code
+    WHERE @hu_code IS NOT NULL
+
+    UNION
+
+    SELECT DISTINCT UPPER(BTRIM(pp.hu_code)) AS hu_code
+    FROM production_pallets pp
+    LEFT JOIN order_lines direct_line ON direct_line.id = pp.order_line_id
+    WHERE pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+      AND @order_id IS NOT NULL
+      AND (pp.order_id = @order_id OR direct_line.order_id = @order_id)
+
+    UNION
+
+    SELECT DISTINCT UPPER(BTRIM(pp.hu_code)) AS hu_code
+    FROM production_pallets pp
+    INNER JOIN production_pallet_lines component ON component.production_pallet_id = pp.id
+    INNER JOIN order_lines component_line ON component_line.id = component.order_line_id
+    WHERE pp.hu_code IS NOT NULL
+      AND BTRIM(pp.hu_code) <> ''
+      AND @order_id IS NOT NULL
+      AND component_line.order_id = @order_id
+
+    UNION
+
+    SELECT DISTINCT UPPER(BTRIM(plan_line.to_hu)) AS hu_code
+    FROM order_receipt_plan_lines plan_line
+    WHERE @order_id IS NOT NULL
+      AND plan_line.order_id = @order_id
+      AND plan_line.to_hu IS NOT NULL
+      AND BTRIM(plan_line.to_hu) <> ''
+
+    UNION
+
+    SELECT DISTINCT UPPER(BTRIM(doc_line.from_hu)) AS hu_code
+    FROM docs doc
+    INNER JOIN doc_lines doc_line ON doc_line.doc_id = doc.id
+    WHERE doc.order_id = @order_id
+      AND @order_id IS NOT NULL
+      AND doc.type = 'OUTBOUND'
+      AND doc_line.from_hu IS NOT NULL
+      AND BTRIM(doc_line.from_hu) <> ''
+      AND doc_line.qty > @qty_tolerance
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = doc_line.id
+      )
+),
+stock AS (
+    SELECT UPPER(BTRIM(COALESCE(ledger_row.hu_code, ledger_row.hu))) AS hu_code,
+           ledger_row.item_id,
+           item.name AS item_name,
+           COALESCE(item.base_uom, 'шт') AS uom,
+           ledger_row.location_id,
+           location.code AS location_code,
+           location.name AS location_name,
+           SUM(ledger_row.qty_delta)::double precision AS qty
+    FROM ledger ledger_row
+    INNER JOIN target_hus target ON target.hu_code = UPPER(BTRIM(COALESCE(ledger_row.hu_code, ledger_row.hu)))
+    INNER JOIN items item ON item.id = ledger_row.item_id
+    INNER JOIN locations location ON location.id = ledger_row.location_id
+    GROUP BY UPPER(BTRIM(COALESCE(ledger_row.hu_code, ledger_row.hu))),
+             ledger_row.item_id,
+             item.name,
+             item.base_uom,
+             ledger_row.location_id,
+             location.code,
+             location.name
+    HAVING ABS(SUM(ledger_row.qty_delta)) > @qty_tolerance
+),
+production AS (
+    SELECT UPPER(BTRIM(pallet.hu_code)) AS hu_code,
+           pallet.id AS pallet_id,
+           pallet.status,
+           pallet.order_id AS owner_order_id,
+           owner.order_ref AS owner_order_ref,
+           owner.order_type AS owner_order_type,
+           owner.status AS owner_order_status,
+           COALESCE((
+               SELECT jsonb_agg(jsonb_build_object(
+                   'OrderLineId', component.order_line_id,
+                   'OrderLineOrderId', component_order_line.order_id,
+                   'ItemId', component.item_id,
+                   'ItemName', component_item.name,
+                   'Uom', COALESCE(component_item.base_uom, 'шт'),
+                   'PlannedQty', component.planned_qty::double precision,
+                   'FilledQty', component.filled_qty::double precision
+               ) ORDER BY component.id)
+               FROM production_pallet_lines component
+               LEFT JOIN order_lines component_order_line ON component_order_line.id = component.order_line_id
+               INNER JOIN items component_item ON component_item.id = component.item_id
+               WHERE component.production_pallet_id = pallet.id
+           ), jsonb_build_array(jsonb_build_object(
+               'OrderLineId', pallet.order_line_id,
+               'OrderLineOrderId', fallback_order_line.order_id,
+               'ItemId', pallet.item_id,
+               'ItemName', fallback_item.name,
+               'Uom', COALESCE(fallback_item.base_uom, 'шт'),
+               'PlannedQty', pallet.planned_qty::double precision,
+               'FilledQty', CASE
+                   WHEN UPPER(BTRIM(pallet.status)) = 'FILLED' THEN pallet.planned_qty::double precision
+                   ELSE 0::double precision
+               END
+           ))) AS components
+    FROM production_pallets pallet
+    INNER JOIN target_hus target ON target.hu_code = UPPER(BTRIM(pallet.hu_code))
+    LEFT JOIN items fallback_item ON fallback_item.id = pallet.item_id
+    LEFT JOIN order_lines fallback_order_line ON fallback_order_line.id = pallet.order_line_id
+    LEFT JOIN orders owner ON owner.id = pallet.order_id
+),
+reservations AS (
+    SELECT UPPER(BTRIM(plan_line.to_hu)) AS hu_code,
+           plan_line.order_id,
+           reservation_order.order_ref,
+           reservation_order.order_type,
+           reservation_order.status AS order_status,
+           plan_line.order_line_id,
+           plan_line.item_id,
+           plan_line.qty_planned::double precision AS qty
+    FROM order_receipt_plan_lines plan_line
+    INNER JOIN target_hus target ON target.hu_code = UPPER(BTRIM(plan_line.to_hu))
+    INNER JOIN orders reservation_order ON reservation_order.id = plan_line.order_id
+    WHERE plan_line.qty_planned > @qty_tolerance
+),
+outbound AS (
+    SELECT UPPER(BTRIM(doc_line.from_hu)) AS hu_code,
+           doc.id AS document_id,
+           doc.doc_ref AS document_ref,
+           doc.status AS document_status,
+           doc.order_id,
+           target_order.order_ref,
+           target_order.order_type,
+           target_order.status AS order_status,
+           doc_line.order_line_id,
+           doc_line.item_id,
+           item.name AS item_name,
+           COALESCE(item.base_uom, 'шт') AS uom,
+           doc_line.qty::double precision AS qty,
+           doc.closed_at
+    FROM docs doc
+    INNER JOIN doc_lines doc_line ON doc_line.doc_id = doc.id
+    INNER JOIN target_hus target ON target.hu_code = UPPER(BTRIM(doc_line.from_hu))
+    INNER JOIN items item ON item.id = doc_line.item_id
+    LEFT JOIN orders target_order ON target_order.id = doc.order_id
+    WHERE doc.type = 'OUTBOUND'
+      AND doc_line.qty > @qty_tolerance
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = doc_line.id
+      )
+),
+movements AS (
+    SELECT UPPER(BTRIM(COALESCE(ledger_row.hu_code, ledger_row.hu))) AS hu_code,
+           ledger_row.id AS ledger_id,
+           ledger_row.ts,
+           doc.id AS document_id,
+           doc.doc_ref AS document_ref,
+           doc.type AS document_type,
+           doc.status AS document_status,
+           ledger_row.item_id,
+           item.name AS item_name,
+           COALESCE(item.base_uom, 'шт') AS uom,
+           ledger_row.location_id,
+           location.code AS location_code,
+           location.name AS location_name,
+           ledger_row.qty_delta::double precision AS qty_delta
+    FROM ledger ledger_row
+    INNER JOIN target_hus target ON target.hu_code = UPPER(BTRIM(COALESCE(ledger_row.hu_code, ledger_row.hu)))
+    INNER JOIN docs doc ON doc.id = ledger_row.doc_id
+    INNER JOIN items item ON item.id = ledger_row.item_id
+    INNER JOIN locations location ON location.id = ledger_row.location_id
+)
+SELECT target.hu_code,
+       EXISTS (SELECT 1 FROM hus registry WHERE UPPER(BTRIM(registry.hu_code)) = target.hu_code) AS registry_known,
+       COALESCE((
+           SELECT jsonb_agg(jsonb_build_object(
+               'ItemId', row.item_id,
+               'ItemName', row.item_name,
+               'Uom', row.uom,
+               'LocationId', row.location_id,
+               'LocationCode', row.location_code,
+               'LocationName', row.location_name,
+               'Qty', row.qty
+           ) ORDER BY row.item_id, row.location_id)
+           FROM stock row
+           WHERE row.hu_code = target.hu_code
+       ), '[]'::jsonb)::text AS stock_json,
+       COALESCE((
+           SELECT jsonb_agg(jsonb_build_object(
+               'PalletId', row.pallet_id,
+               'Status', row.status,
+               'OwnerOrderId', row.owner_order_id,
+               'OwnerOrderRef', row.owner_order_ref,
+               'OwnerOrderType', row.owner_order_type,
+               'OwnerOrderStatus', row.owner_order_status,
+               'Components', row.components
+           ) ORDER BY row.pallet_id)
+           FROM production row
+           WHERE row.hu_code = target.hu_code
+       ), '[]'::jsonb)::text AS production_json,
+       COALESCE((
+           SELECT jsonb_agg(jsonb_build_object(
+               'OrderId', row.order_id,
+               'OrderRef', row.order_ref,
+               'OrderType', row.order_type,
+               'OrderStatus', row.order_status,
+               'OrderLineId', row.order_line_id,
+               'ItemId', row.item_id,
+               'Qty', row.qty
+           ) ORDER BY row.order_id, row.order_line_id, row.item_id)
+           FROM reservations row
+           WHERE row.hu_code = target.hu_code
+       ), '[]'::jsonb)::text AS reservations_json,
+       COALESCE((
+           SELECT jsonb_agg(jsonb_build_object(
+               'DocumentId', row.document_id,
+               'DocumentRef', row.document_ref,
+               'DocumentStatus', row.document_status,
+               'OrderId', row.order_id,
+               'OrderRef', row.order_ref,
+               'OrderType', row.order_type,
+               'OrderStatus', row.order_status,
+               'OrderLineId', row.order_line_id,
+               'ItemId', row.item_id,
+               'ItemName', row.item_name,
+               'Uom', row.uom,
+               'Qty', row.qty,
+               'ClosedAt', row.closed_at
+           ) ORDER BY row.document_id, row.order_line_id, row.item_id)
+           FROM outbound row
+           WHERE row.hu_code = target.hu_code
+       ), '[]'::jsonb)::text AS outbound_json,
+       COALESCE((
+           SELECT jsonb_agg(jsonb_build_object(
+               'LedgerId', row.ledger_id,
+               'Timestamp', row.ts,
+               'DocumentId', row.document_id,
+               'DocumentRef', row.document_ref,
+               'DocumentType', row.document_type,
+               'DocumentStatus', row.document_status,
+               'ItemId', row.item_id,
+               'ItemName', row.item_name,
+               'Uom', row.uom,
+               'LocationId', row.location_id,
+               'LocationCode', row.location_code,
+               'LocationName', row.location_name,
+               'QtyDelta', row.qty_delta
+           ) ORDER BY row.ledger_id)
+           FROM movements row
+           WHERE row.hu_code = target.hu_code
+       ), '[]'::jsonb)::text AS movements_json
+FROM target_hus target
+ORDER BY target.hu_code;
+");
+            command.Parameters.Add("@order_id", NpgsqlDbType.Bigint).Value =
+                orderId.HasValue ? orderId.Value : DBNull.Value;
+            command.Parameters.Add("@hu_code", NpgsqlDbType.Text).Value =
+                string.IsNullOrWhiteSpace(huCode) ? DBNull.Value : huCode;
+            command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+
+            using var reader = command.ExecuteReader();
+            var rows = new List<HuOperatorFacts>();
+            while (reader.Read())
+            {
+                rows.Add(new HuOperatorFacts
+                {
+                    HuCode = reader.GetString(0),
+                    RegistryKnown = reader.GetBoolean(1),
+                    Stock = DeserializeHuFacts<HuOperatorStockFact>(reader.GetString(2)),
+                    ProductionPallets = DeserializeHuFacts<HuOperatorProductionPalletFact>(reader.GetString(3)),
+                    Reservations = DeserializeHuFacts<HuOperatorReservationFact>(reader.GetString(4)),
+                    Outbound = DeserializeHuFacts<HuOperatorOutboundFact>(reader.GetString(5)),
+                    LedgerMovements = DeserializeHuFacts<HuOperatorLedgerMovementFact>(reader.GetString(6))
+                });
+            }
+
+            return rows;
+        });
+    }
+
     public TsdHuResolverStoreResult GetTsdHuFacts(string huCode)
     {
         var normalizedHu = (huCode ?? string.Empty).Trim().ToUpperInvariant();
@@ -14705,6 +15013,9 @@ RETURNING id;
             return 0;
         });
     }
+
+    private static IReadOnlyList<T> DeserializeHuFacts<T>(string json) =>
+        JsonSerializer.Deserialize<T[]>(json) ?? Array.Empty<T>();
 
     private T WithConnection<T>(Func<NpgsqlConnection, T> action)
     {

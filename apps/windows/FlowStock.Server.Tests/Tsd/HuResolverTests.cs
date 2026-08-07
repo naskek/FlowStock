@@ -155,6 +155,8 @@ public sealed class HuResolverTests
 
         Assert.Equal(TsdHuState.PlannedProduction, result.State);
         Assert.Contains(result.DocumentActions, action => action.Type == TsdHuActionType.OpenFilling && action.OrderId == 20);
+        Assert.Null(result.OperatorReadModel.OperatorPresentation.ProductionTask);
+        Assert.Null(result.OperatorReadModel.OperatorPresentation.OperationalHu);
     }
 
     [Fact]
@@ -226,6 +228,12 @@ public sealed class HuResolverTests
         Assert.Equal(TsdHuState.FilledProductionPallet, result.State);
         Assert.NotEqual(TsdHuState.AwaitingShipment, result.State);
         Assert.NotEqual(TsdHuState.Shipped, result.State);
+        var operational = Assert.IsType<OperationalHuPresentation>(
+            result.OperatorReadModel.OperatorPresentation.OperationalHu);
+        Assert.Equal(OperationalHuSemanticCode.Inconsistent, operational.State.Code);
+        Assert.Contains(
+            operational.Diagnostics ?? [],
+            reason => reason.Code == HuOperatorDiagnosticCode.CorrectionLineageUncertain);
     }
 
     [Fact]
@@ -242,6 +250,12 @@ public sealed class HuResolverTests
         var result = Resolve(facts, MixedAwaitingCandidate(shipmentItemId: 10, ledgerBalance: 0));
 
         Assert.Equal(TsdHuState.Shipped, result.State);
+        var operational = Assert.IsType<OperationalHuPresentation>(
+            result.OperatorReadModel.OperatorPresentation.OperationalHu);
+        Assert.Equal(OperationalHuSemanticCode.Inconsistent, operational.State.Code);
+        Assert.Contains(
+            operational.Diagnostics ?? [],
+            reason => reason.Code == HuOperatorDiagnosticCode.CorrectionLineageUncertain);
     }
 
     [Fact]
@@ -402,10 +416,66 @@ public sealed class HuResolverTests
         using var resolveJson = JsonDocument.Parse(await resolveResponse.Content.ReadAsStringAsync());
         using var cardJson = JsonDocument.Parse(await cardResponse.Content.ReadAsStringAsync());
         Assert.Equal("WAREHOUSE_FREE", resolveJson.RootElement.GetProperty("state").GetString());
+        var operatorPresentation = resolveJson.RootElement.GetProperty("operator_presentation");
+        Assert.Equal(
+            "ON_STOCK",
+            operatorPresentation.GetProperty("operational_hu").GetProperty("state").GetProperty("code").GetString());
+        var component = Assert.Single(
+            operatorPresentation.GetProperty("operational_hu").GetProperty("components").EnumerateArray());
+        Assert.Equal(600, component.GetProperty("qty").GetDouble(), 3);
+        Assert.False(component.TryGetProperty("planned_qty", out _));
+        Assert.False(component.TryGetProperty("filled_qty", out _));
+        Assert.False(component.TryGetProperty("order_line_id", out _));
+        Assert.False(component.TryGetProperty("order_line_order_id", out _));
+        Assert.Equal(JsonValueKind.Null, operatorPresentation.GetProperty("production_task").ValueKind);
         Assert.Equal(JsonValueKind.Null, resolveJson.RootElement.GetProperty("stock").ValueKind);
         Assert.Equal(1, cardJson.RootElement.GetProperty("stock").GetArrayLength());
         Assert.Equal(2, store.Calls.Count);
         Assert.All(store.Calls, code => Assert.Equal("HU-000321", code));
+    }
+
+    [Fact]
+    public async Task ResolveEndpoint_ProductionComponentsExposeOnlyPresentationShape()
+    {
+        var store = new FakeStore(new TsdHuFacts
+        {
+            HuCode = "HU-000654",
+            ProductionPallets =
+            [
+                new TsdHuProductionPalletFact
+                {
+                    PalletId = 1,
+                    Status = ProductionPalletStatus.Printed,
+                    Components =
+                    [
+                        new TsdHuComponentFact
+                        {
+                            ItemId = 7,
+                            ItemName = "Товар",
+                            Uom = "шт",
+                            PlannedQty = 25,
+                            FilledQty = 0
+                        }
+                    ]
+                }
+            ]
+        });
+        await using var host = await HuResolverHost.StartAsync(store);
+
+        using var response = await host.Client.GetAsync("/api/tsd/hu/resolve?code=HU-000654");
+        response.EnsureSuccessStatusCode();
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        var production = json.RootElement
+            .GetProperty("operator_presentation")
+            .GetProperty("production_task");
+        Assert.Equal("AWAITING_FILL", production.GetProperty("state").GetProperty("code").GetString());
+        var component = Assert.Single(production.GetProperty("components").EnumerateArray());
+        Assert.Equal(25, component.GetProperty("qty").GetDouble(), 3);
+        Assert.False(component.TryGetProperty("planned_qty", out _));
+        Assert.False(component.TryGetProperty("filled_qty", out _));
+        Assert.False(component.TryGetProperty("order_line_id", out _));
+        Assert.False(component.TryGetProperty("order_line_order_id", out _));
     }
 
     [Fact]
@@ -465,14 +535,42 @@ public sealed class HuResolverTests
         Assert.Equal(1, CountOccurrences(method, "CreateCommand(connection"));
     }
 
+    [Fact]
+    public void PostgresOrderOperatorFacts_UsesOneOrderScopedBatchCommand()
+    {
+        var source = ReadRepoFile("apps", "windows", "FlowStock.Data", "PostgresDataStore.cs");
+        var start = source.IndexOf("private IReadOnlyList<HuOperatorFacts> LoadHuOperatorFacts", StringComparison.Ordinal);
+        var end = source.IndexOf("public TsdHuResolverStoreResult GetTsdHuFacts", start, StringComparison.Ordinal);
+        var method = source[start..end];
+        var globalFactsStart = method.IndexOf("stock AS (", StringComparison.Ordinal);
+        var globalFactsEnd = method.IndexOf("ORDER BY target.hu_code;", globalFactsStart, StringComparison.Ordinal);
+        var globalFactsCtes = method[globalFactsStart..globalFactsEnd];
+
+        Assert.Contains("WITH target_hus AS", method);
+        Assert.Contains("SELECT @hu_code::text AS hu_code", method);
+        Assert.Contains("INNER JOIN target_hus target", method);
+        Assert.Contains("FROM stock row", method);
+        Assert.Contains("FROM production row", method);
+        Assert.Contains("FROM reservations row", method);
+        Assert.Contains("FROM outbound row", method);
+        Assert.Contains("FROM movements row", method);
+        Assert.DoesNotContain("@order_id", globalFactsCtes, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(method, "CreateCommand(connection"));
+        Assert.DoesNotContain("HuOperatorClassifier", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetTsdHuFacts", method, StringComparison.Ordinal);
+    }
+
     private static TsdHuView Resolve(
         TsdHuFacts facts,
         params ProductionHuAwaitingShipmentEligibilityFacts[] awaitingShipmentCandidates)
-        => new TsdHuResolverService(new FakeStore(new TsdHuResolverStoreResult
+    {
+        var store = new FakeStore(new TsdHuResolverStoreResult
         {
             PresentationFacts = facts,
             AwaitingShipmentCandidates = awaitingShipmentCandidates
-        })).Resolve(facts.HuCode);
+        });
+        return new TsdHuResolverService(store, new HuOperatorReadModelService(store)).Resolve(facts.HuCode);
+    }
 
     private static TsdHuFacts MixedFilledFacts(bool includeStock)
     {
@@ -642,7 +740,7 @@ public sealed class HuResolverTests
         throw new FileNotFoundException(string.Join(Path.DirectorySeparatorChar, parts));
     }
 
-    private sealed class FakeStore : ITsdHuResolverStore
+    private sealed class FakeStore : ITsdHuResolverStore, IHuOperatorFactsStore
     {
         private readonly TsdHuResolverStoreResult _result;
 
@@ -662,6 +760,70 @@ public sealed class HuResolverTests
         {
             Calls.Add(huCode);
             return _result;
+        }
+
+        public IReadOnlyList<HuOperatorFacts> GetForOrder(long orderId) => Array.Empty<HuOperatorFacts>();
+
+        public HuOperatorFacts? GetForHu(string huCode)
+        {
+            var facts = _result.PresentationFacts;
+            return new HuOperatorFacts
+            {
+                HuCode = facts.HuCode,
+                RegistryKnown = facts.Registry != null,
+                Stock = facts.Stock.Select(row => new HuOperatorStockFact
+                {
+                    ItemId = row.ItemId,
+                    ItemName = row.ItemName,
+                    Uom = row.Uom,
+                    LocationId = row.LocationId,
+                    LocationCode = row.LocationCode,
+                    Qty = row.Qty
+                }).ToArray(),
+                ProductionPallets = facts.ProductionPallets.Select(pallet => new HuOperatorProductionPalletFact
+                {
+                    PalletId = pallet.PalletId,
+                    Status = pallet.Status,
+                    OwnerOrderId = pallet.OrderId,
+                    OwnerOrderRef = pallet.OrderRef,
+                    OwnerOrderType = pallet.OrderType,
+                    OwnerOrderStatus = pallet.OrderStatus,
+                    Components = pallet.Components.Select(component => new HuOperatorComponentFact
+                    {
+                        ItemId = component.ItemId,
+                        ItemName = component.ItemName,
+                        Uom = component.Uom,
+                        PlannedQty = component.PlannedQty,
+                        FilledQty = component.FilledQty
+                    }).ToArray()
+                }).ToArray(),
+                Reservations = facts.Reservations.Select(row => new HuOperatorReservationFact
+                {
+                    OrderId = row.OrderId,
+                    OrderRef = row.OrderRef,
+                    OrderType = row.OrderType,
+                    OrderStatus = row.OrderStatus,
+                    ItemId = row.ItemId,
+                    Qty = row.Qty
+                }).ToArray(),
+                Outbound = facts.Documents
+                    .Where(row => string.Equals(row.DocType, "OUTBOUND", StringComparison.OrdinalIgnoreCase))
+                    .Select(row => new HuOperatorOutboundFact
+                    {
+                        DocumentId = row.DocId,
+                        DocumentRef = row.DocRef,
+                        DocumentStatus = row.DocStatus,
+                        OrderId = row.OrderId,
+                        OrderRef = row.OrderRef,
+                        OrderType = row.OrderType,
+                        OrderStatus = row.OrderStatus,
+                        ItemId = row.ItemId,
+                        ItemName = row.ItemName,
+                        Uom = row.Uom,
+                        Qty = row.Qty,
+                        ClosedAt = row.ClosedAt
+                    }).ToArray()
+            };
         }
     }
 
@@ -686,6 +848,8 @@ public sealed class HuResolverTests
             });
             builder.WebHost.UseUrls("http://127.0.0.1:0");
             builder.Services.AddSingleton(store);
+            builder.Services.AddSingleton<IHuOperatorFactsStore>((IHuOperatorFactsStore)store);
+            builder.Services.AddSingleton<HuOperatorReadModelService>();
             builder.Services.AddSingleton<TsdHuResolverService>();
             var app = builder.Build();
             TsdHuResolverEndpoints.Map(app);

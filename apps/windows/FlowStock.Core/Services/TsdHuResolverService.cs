@@ -8,10 +8,14 @@ public sealed class TsdHuResolverService
 {
     private static readonly Regex HuPattern = new(@"HU-?(\d{6,})", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private readonly ITsdHuResolverStore _store;
+    private readonly HuOperatorReadModelService _operatorReadModel;
 
-    public TsdHuResolverService(ITsdHuResolverStore store)
+    public TsdHuResolverService(
+        ITsdHuResolverStore store,
+        HuOperatorReadModelService operatorReadModel)
     {
         _store = store;
+        _operatorReadModel = operatorReadModel;
     }
 
     public TsdHuView Resolve(string code)
@@ -22,7 +26,7 @@ public sealed class TsdHuResolverService
             throw new InvalidOperationException("Укажите корректный HU-код.");
         }
 
-        return BuildView(_store.GetTsdHuFacts(huCode));
+        return BuildView(_store.GetTsdHuFacts(huCode), _operatorReadModel.GetForHu(huCode));
     }
 
     public TsdHuView GetCard(string code) => Resolve(code);
@@ -34,7 +38,9 @@ public sealed class TsdHuResolverService
         return match.Success ? $"HU-{match.Groups[1].Value}" : string.Empty;
     }
 
-    private static TsdHuView BuildView(TsdHuResolverStoreResult storeResult)
+    private static TsdHuView BuildView(
+        TsdHuResolverStoreResult storeResult,
+        GlobalHuOperatorReadModel operatorReadModel)
     {
         var facts = storeResult.PresentationFacts;
         var known = facts.Registry != null
@@ -83,7 +89,8 @@ public sealed class TsdHuResolverService
             ProductionPallets = facts.ProductionPallets,
             Reservations = facts.Reservations,
             Documents = facts.Documents,
-            LatestMovement = facts.LatestMovement
+            LatestMovement = facts.LatestMovement,
+            OperatorReadModel = operatorReadModel
         };
     }
 

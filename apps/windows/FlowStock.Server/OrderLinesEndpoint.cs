@@ -69,8 +69,16 @@ public static class OrderLinesEndpoint
         phaseStopwatch.Stop();
         var huDetailsMs = phaseStopwatch.ElapsedMilliseconds;
 
+        var operatorPresentationByLine = store is IHuOperatorFactsStore operatorFactsStore
+            ? new HuOperatorReadModelService(operatorFactsStore).GetForOrder(orderId)
+            : new Dictionary<long, OrderLineHuPresentation>();
+
         var lines = lineViews
-            .Select(line => MapOrderLine(line, productionHusByOrderLine, detailsByOrderLine.GetValueOrDefault(line.Id)))
+            .Select(line => MapOrderLine(
+                line,
+                productionHusByOrderLine,
+                detailsByOrderLine.GetValueOrDefault(line.Id),
+                operatorPresentationByLine.GetValueOrDefault(line.Id)))
             .ToList();
         totalStopwatch.Stop();
 
@@ -135,7 +143,7 @@ public static class OrderLinesEndpoint
                 }
 
                 return lines
-                    .Select(line => MapOrderLine(line, productionHusByOrderLine, details: null))
+                    .Select(line => MapOrderLine(line, productionHusByOrderLine, details: null, huPresentation: null))
                     .ToList();
             });
     }
@@ -240,7 +248,8 @@ public static class OrderLinesEndpoint
     private static OrderLineResponse MapOrderLine(
         OrderLineView line,
         IReadOnlyDictionary<long, string[]> productionHusByOrderLine,
-        OrderLineHuDetails? details)
+        OrderLineHuDetails? details,
+        OrderLineHuPresentation? huPresentation)
     {
         var huCodes = productionHusByOrderLine.TryGetValue(line.Id, out var values)
             ? values
@@ -282,8 +291,47 @@ public static class OrderLinesEndpoint
             details?.WarehouseHuRows.Select(MapWarehouseHuRow).ToArray(),
             details?.ProductionHuRows.Select(MapProductionHuRow).ToArray(),
             details?.ShippedHuRows.Select(MapShippedHuRow).ToArray(),
-            details?.Coverage is { } coverage ? MapCoverage(coverage) : null);
+            details?.Coverage is { } coverage ? MapCoverage(coverage) : null,
+            huPresentation == null ? null : MapHuPresentation(huPresentation));
     }
+
+    private static HuPresentationResponse MapHuPresentation(OrderLineHuPresentation presentation) =>
+        new(
+            presentation.ProductionTasks.Select(row => new ProductionTaskPresentationResponse(
+                row.HuCode,
+                row.Qty,
+                row.Uom,
+                new HuStateResponse(row.State.Code, row.State.Label),
+                row.Progress == null
+                    ? null
+                    : new HuProgressResponse(
+                        row.Progress.CompletedComponents,
+                        row.Progress.TotalComponents))).ToArray(),
+            presentation.OperationalHus.Select(row => new OperationalHuPresentationResponse(
+                row.HuCode,
+                row.Qty,
+                row.Uom,
+                new HuStateResponse(row.State.Code, row.State.Label),
+                row.Location == null
+                    ? null
+                    : new HuLocationResponse(row.Location.Id, row.Location.Code, row.Location.Name),
+                MapOrderReference(row.ReservationTarget),
+                MapOrderReference(row.ShipmentTarget),
+                row.IsMixed,
+                row.Diagnostics == null
+                    ? null
+                    : new HuDiagnosticsResponse(row.Diagnostics.Select(reason => new HuDiagnosticReasonResponse(
+                        reason.Code,
+                        reason.Message,
+                        reason.RelatedOrders?.Select(reference => new HuOrderReferenceResponse(
+                            reference.OrderId,
+                            reference.OrderRef)).ToArray() ?? Array.Empty<HuOrderReferenceResponse>(),
+                        reason.RelatedDocuments?.Select(reference => new HuDocumentReferenceResponse(
+                            reference.DocumentId,
+                            reference.DocumentRef)).ToArray() ?? Array.Empty<HuDocumentReferenceResponse>())).ToArray()))).ToArray());
+
+    private static HuOrderReferenceResponse? MapOrderReference(HuOperatorOrderReference? reference) =>
+        reference == null ? null : new HuOrderReferenceResponse(reference.OrderId, reference.OrderRef);
 
     private static WarehouseHuRowResponse MapWarehouseHuRow(OrderLineWarehouseHuRow row) =>
         new(row.HuCode, row.Qty, row.LocationCode, row.LocationName, row.StockStatus, row.IsBoundToOrder);
@@ -390,7 +438,9 @@ public static class OrderLinesEndpoint
         [property: JsonPropertyName("shipped_hu_rows"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         IReadOnlyList<ShippedHuRowResponse>? ShippedHuRows,
         [property: JsonPropertyName("coverage"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        CoverageResponse? Coverage);
+        CoverageResponse? Coverage,
+        [property: JsonPropertyName("hu_presentation"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        HuPresentationResponse? HuPresentation);
 
     private sealed record WarehouseHuRowResponse(
         [property: JsonPropertyName("hu_code")] string HuCode,
@@ -428,4 +478,61 @@ public static class OrderLinesEndpoint
         [property: JsonPropertyName("shipped_qty")] double ShippedQty,
         [property: JsonPropertyName("covered_qty")] double CoveredQty,
         [property: JsonPropertyName("missing_qty")] double MissingQty);
+
+    private sealed record HuPresentationResponse(
+        [property: JsonPropertyName("production_tasks")] IReadOnlyList<ProductionTaskPresentationResponse> ProductionTasks,
+        [property: JsonPropertyName("operational_hus")] IReadOnlyList<OperationalHuPresentationResponse> OperationalHus);
+
+    private sealed record ProductionTaskPresentationResponse(
+        [property: JsonPropertyName("hu_code")] string HuCode,
+        [property: JsonPropertyName("qty")] double Qty,
+        [property: JsonPropertyName("uom")] string Uom,
+        [property: JsonPropertyName("state")] HuStateResponse State,
+        [property: JsonPropertyName("progress"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        HuProgressResponse? Progress);
+
+    private sealed record OperationalHuPresentationResponse(
+        [property: JsonPropertyName("hu_code")] string HuCode,
+        [property: JsonPropertyName("qty")] double? Qty,
+        [property: JsonPropertyName("uom")] string? Uom,
+        [property: JsonPropertyName("state")] HuStateResponse State,
+        [property: JsonPropertyName("location"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        HuLocationResponse? Location,
+        [property: JsonPropertyName("reservation_target"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        HuOrderReferenceResponse? ReservationTarget,
+        [property: JsonPropertyName("shipment_target"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        HuOrderReferenceResponse? ShipmentTarget,
+        [property: JsonPropertyName("is_mixed")] bool IsMixed,
+        [property: JsonPropertyName("diagnostics"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        HuDiagnosticsResponse? Diagnostics);
+
+    private sealed record HuStateResponse(
+        [property: JsonPropertyName("code")] string Code,
+        [property: JsonPropertyName("label")] string Label);
+
+    private sealed record HuProgressResponse(
+        [property: JsonPropertyName("completed_components")] int CompletedComponents,
+        [property: JsonPropertyName("total_components")] int TotalComponents);
+
+    private sealed record HuLocationResponse(
+        [property: JsonPropertyName("id")] long Id,
+        [property: JsonPropertyName("code")] string Code,
+        [property: JsonPropertyName("name")] string? Name);
+
+    private sealed record HuOrderReferenceResponse(
+        [property: JsonPropertyName("order_id")] long OrderId,
+        [property: JsonPropertyName("order_ref")] string OrderRef);
+
+    private sealed record HuDocumentReferenceResponse(
+        [property: JsonPropertyName("document_id")] long DocumentId,
+        [property: JsonPropertyName("document_ref")] string DocumentRef);
+
+    private sealed record HuDiagnosticsResponse(
+        [property: JsonPropertyName("reasons")] IReadOnlyList<HuDiagnosticReasonResponse> Reasons);
+
+    private sealed record HuDiagnosticReasonResponse(
+        [property: JsonPropertyName("code")] string Code,
+        [property: JsonPropertyName("message")] string Message,
+        [property: JsonPropertyName("related_orders")] IReadOnlyList<HuOrderReferenceResponse> RelatedOrders,
+        [property: JsonPropertyName("related_documents")] IReadOnlyList<HuDocumentReferenceResponse> RelatedDocuments);
 }

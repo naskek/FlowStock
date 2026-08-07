@@ -741,16 +741,24 @@ public static class ProductionPalletEndpoints
         return Results.Ok(service.GetFillingOrders().Select(MapFillingOrder));
     }
 
-    private static IResult HandleStartFilling(long orderId, ProductionPalletService service)
+    private static IResult HandleStartFilling(
+        long orderId,
+        ProductionPalletService service,
+        IServiceProvider services)
     {
-        return HandleFillingContext(orderId, service);
+        return HandleFillingContext(orderId, service, services);
     }
 
-    private static IResult HandleFillingContext(long orderId, ProductionPalletService service)
+    private static IResult HandleFillingContext(
+        long orderId,
+        ProductionPalletService service,
+        IServiceProvider services)
     {
         try
         {
-            return Results.Ok(MapFillingContext(service.GetFillingContext(orderId)));
+            return Results.Ok(MapFillingContext(
+                service.GetFillingContext(orderId),
+                GetProductionPresentations(services, orderId)));
         }
         catch (InvalidOperationException ex)
         {
@@ -758,7 +766,12 @@ public static class ProductionPalletEndpoints
         }
     }
 
-    private static IResult HandleCompleteFilling(long orderId, ProductionFillingCompleteRequest request, ProductionPalletService service, IDataStore store)
+    private static IResult HandleCompleteFilling(
+        long orderId,
+        ProductionFillingCompleteRequest request,
+        ProductionPalletService service,
+        IDataStore store,
+        IServiceProvider services)
     {
         try
         {
@@ -775,7 +788,9 @@ public static class ProductionPalletEndpoints
                 is_closed = true,
                 closed_at = result.ClosedAt,
                 operation_id = orderId,
-                context = result.Context == null ? null : MapFillingContext(result.Context)
+                context = result.Context == null
+                    ? null
+                    : MapFillingContext(result.Context, GetProductionPresentations(services, orderId))
             });
         }
         catch (Exception ex)
@@ -785,7 +800,10 @@ public static class ProductionPalletEndpoints
         }
     }
 
-    private static IResult HandleScan(ProductionPalletScanRequest request, ProductionPalletService service)
+    private static IResult HandleScan(
+        ProductionPalletScanRequest request,
+        ProductionPalletService service,
+        IServiceProvider services)
     {
         try
         {
@@ -795,7 +813,10 @@ public static class ProductionPalletEndpoints
                 return Results.BadRequest(new { ok = false, error = result.Error, message = result.ErrorMessage ?? result.Error });
             }
 
-            return Results.Ok(MapScanResult(result));
+            var presentations = result.OrderId is long orderId
+                ? GetProductionPresentations(services, orderId)
+                : null;
+            return Results.Ok(MapScanResult(result, presentations));
         }
         catch (Exception ex)
         {
@@ -803,7 +824,10 @@ public static class ProductionPalletEndpoints
         }
     }
 
-    private static IResult HandleFill(ProductionPalletFillRequest request, ProductionPalletService service)
+    private static IResult HandleFill(
+        ProductionPalletFillRequest request,
+        ProductionPalletService service,
+        IServiceProvider services)
     {
         try
         {
@@ -813,6 +837,9 @@ public static class ProductionPalletEndpoints
                 return Results.BadRequest(new { ok = false, error = result.Error, message = result.ErrorMessage ?? result.Error });
             }
 
+            var presentations = result.Pallet?.OrderId is long orderId
+                ? GetProductionPresentations(services, orderId)
+                : null;
             return Results.Ok(new
             {
                 ok = true,
@@ -822,8 +849,8 @@ public static class ProductionPalletEndpoints
                 closed_prd_doc_ref = result.ClosedPrdDocRef,
                 error = result.Error,
                 message = result.ErrorMessage ?? result.Message,
-                pallet = result.Pallet == null ? null : MapPallet(result.Pallet),
-                document = result.Document == null ? null : MapDocument(result.Document)
+                pallet = result.Pallet == null ? null : MapPallet(result.Pallet, FindPresentation(presentations, result.Pallet.HuCode)),
+                document = result.Document == null ? null : MapDocument(result.Document, presentations)
             });
         }
         catch (Exception ex)
@@ -834,7 +861,8 @@ public static class ProductionPalletEndpoints
 
     private static IResult HandleFillMixedComponents(
         ProductionPalletMixedComponentFillRequest request,
-        ProductionPalletService service)
+        ProductionPalletService service,
+        IServiceProvider services)
     {
         try
         {
@@ -849,6 +877,9 @@ public static class ProductionPalletEndpoints
                 return Results.BadRequest(new { ok = false, error = result.Error, message = result.ErrorMessage ?? result.Error });
             }
 
+            var presentations = result.Pallet?.OrderId is long orderId
+                ? GetProductionPresentations(services, orderId)
+                : null;
             return Results.Ok(new
             {
                 ok = true,
@@ -862,8 +893,8 @@ public static class ProductionPalletEndpoints
                 closed_prd_doc_ref = result.ClosedPrdDocRef,
                 error = result.Error,
                 message = result.ErrorMessage ?? result.Message,
-                pallet = result.Pallet == null ? null : MapPallet(result.Pallet),
-                document = result.Document == null ? null : MapDocument(result.Document)
+                pallet = result.Pallet == null ? null : MapPallet(result.Pallet, FindPresentation(presentations, result.Pallet.HuCode)),
+                document = result.Document == null ? null : MapDocument(result.Document, presentations)
             });
         }
         catch (Exception ex)
@@ -908,7 +939,9 @@ public static class ProductionPalletEndpoints
         };
     }
 
-    private static object MapFillingContext(ProductionFillingContext context)
+    private static object MapFillingContext(
+        ProductionFillingContext context,
+        IReadOnlyDictionary<string, ProductionTaskPresentation>? presentations = null)
     {
         return new
         {
@@ -927,7 +960,7 @@ public static class ProductionPalletEndpoints
             can_close = context.Progress.CanClose,
             is_closed = context.Progress.IsClosed,
             operation_fingerprint = context.Progress.OperationFingerprint,
-            document = MapDocument(context.Document)
+            document = MapDocument(context.Document, presentations)
         };
     }
 
@@ -1127,7 +1160,9 @@ public static class ProductionPalletEndpoints
         };
     }
 
-    private static object MapScanResult(ProductionPalletScanResult result)
+    private static object MapScanResult(
+        ProductionPalletScanResult result,
+        IReadOnlyDictionary<string, ProductionTaskPresentation>? presentations = null)
     {
         return new
         {
@@ -1167,11 +1202,14 @@ public static class ProductionPalletEndpoints
             can_fill = result.CanFill,
             filled_component_count = result.Lines.Count(line => line.IsCompleted),
             total_component_count = result.Lines.Count,
-            document = result.Document == null ? null : MapDocument(result.Document)
+            production_presentation = MapProductionPresentation(FindPresentation(presentations, result.HuCode)),
+            document = result.Document == null ? null : MapDocument(result.Document, presentations)
         };
     }
 
-    private static object MapDocument(ProductionPalletDocument document)
+    private static object MapDocument(
+        ProductionPalletDocument document,
+        IReadOnlyDictionary<string, ProductionTaskPresentation>? presentations = null)
     {
         return new
         {
@@ -1190,7 +1228,8 @@ public static class ProductionPalletEndpoints
                 remaining_pallet_count = line.RemainingPalletCount,
                 remaining_qty = line.RemainingQty
             }),
-            pallets = document.Pallets.Select(MapPallet)
+            pallets = document.Pallets.Select(pallet =>
+                MapPallet(pallet, FindPresentation(presentations, pallet.HuCode)))
         };
     }
 
@@ -1207,7 +1246,9 @@ public static class ProductionPalletEndpoints
         };
     }
 
-    private static object MapPallet(ProductionPallet pallet)
+    private static object MapPallet(
+        ProductionPallet pallet,
+        ProductionTaskPresentation? presentation = null)
     {
         return new
         {
@@ -1228,6 +1269,7 @@ public static class ProductionPalletEndpoints
             is_mixed_pallet = pallet.IsMixedPallet,
             filled_component_count = pallet.FilledComponentCount,
             total_component_count = pallet.TotalComponentCount,
+            production_presentation = MapProductionPresentation(presentation),
             lines = pallet.Lines.Select(line => new
             {
                 component_line_id = line.Id,
@@ -1246,6 +1288,47 @@ public static class ProductionPalletEndpoints
             created_at = pallet.CreatedAt
         };
     }
+
+    private static IReadOnlyDictionary<string, ProductionTaskPresentation>? GetProductionPresentations(
+        IServiceProvider services,
+        long orderId)
+    {
+        var readModel = services.GetService<HuOperatorReadModelService>();
+        return readModel?.GetProductionForOrder(orderId).ToDictionary(
+            row => row.HuCode,
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static ProductionTaskPresentation? FindPresentation(
+        IReadOnlyDictionary<string, ProductionTaskPresentation>? presentations,
+        string? huCode)
+    {
+        if (presentations == null || string.IsNullOrWhiteSpace(huCode))
+        {
+            return null;
+        }
+
+        return presentations.TryGetValue(huCode.Trim(), out var presentation) ? presentation : null;
+    }
+
+    private static object? MapProductionPresentation(ProductionTaskPresentation? presentation) =>
+        presentation == null
+            ? null
+            : new
+            {
+                state = new
+                {
+                    code = presentation.State.Code,
+                    label = presentation.State.Label
+                },
+                progress = presentation.Progress == null
+                    ? null
+                    : new
+                    {
+                        completed_components = presentation.Progress.CompletedComponents,
+                        total_components = presentation.Progress.TotalComponents
+                    }
+            };
 
     private sealed class ProductionPalletFillRequest
     {

@@ -199,6 +199,55 @@ public sealed class ProductionPalletFillingContextTests
     }
 
     [Fact]
+    public async Task FillingContextHttp_ExposesServerOwnedProductionPresentation()
+    {
+        var fixture = CreateOrderWithValidAndOrphanPallet();
+        fixture.Harness.SeedHuOperatorFactsForOrder(fixture.OrderId,
+        [
+            new HuOperatorFacts
+            {
+                HuCode = fixture.ValidHuCode,
+                RegistryKnown = true,
+                ProductionPallets =
+                [
+                    new HuOperatorProductionPalletFact
+                    {
+                        PalletId = 1,
+                        Status = ProductionPalletStatus.Planned,
+                        OwnerOrderId = fixture.OrderId,
+                        Components =
+                        [
+                            new HuOperatorComponentFact
+                            {
+                                OrderLineId = fixture.ValidOrderLineId,
+                                OrderLineOrderId = fixture.OrderId,
+                                ItemId = fixture.ValidItemId,
+                                ItemName = "Горчица",
+                                PlannedQty = 600,
+                                Uom = "шт"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]);
+        await using var host = await ProductionPalletTsdHttpHost.StartAsync(fixture.Harness);
+
+        var response = await host.Client.GetAsync($"/api/tsd/production/orders/{fixture.OrderId}/filling-context");
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        var pallet = Assert.Single(document.RootElement
+            .GetProperty("document")
+            .GetProperty("pallets")
+            .EnumerateArray());
+        var presentation = pallet.GetProperty("production_presentation");
+        Assert.Equal("LABEL_NOT_PRINTED", presentation.GetProperty("state").GetProperty("code").GetString());
+        Assert.Equal("Этикетка не напечатана", presentation.GetProperty("state").GetProperty("label").GetString());
+        Assert.Equal(JsonValueKind.Null, presentation.GetProperty("progress").ValueKind);
+    }
+
+    [Fact]
     public void ScanAndFill_ActiveOrphanHeaderPallet_ReturnBusinessErrorWithoutFilling()
     {
         var fixture = CreateOrderWithValidAndOrphanPallet();
@@ -690,6 +739,11 @@ internal sealed class ProductionPalletTsdHttpHost : IAsyncDisposable
         });
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Services.AddSingleton<IDataStore>(harness.Store);
+        if (harness.Store is IHuOperatorFactsStore factsStore)
+        {
+            builder.Services.AddSingleton(factsStore);
+            builder.Services.AddSingleton<HuOperatorReadModelService>();
+        }
         if (service == null)
         {
             builder.Services.AddSingleton(sp => new ProductionPalletService(sp.GetRequiredService<IDataStore>()));

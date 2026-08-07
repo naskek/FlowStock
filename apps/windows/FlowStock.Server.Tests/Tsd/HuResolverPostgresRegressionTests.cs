@@ -55,6 +55,10 @@ public sealed class HuResolverPostgresRegressionTests
             var superseded = Resolve(store, fixture.HuCode);
             Assert.Equal(TsdHuState.AwaitingShipment, superseded.State);
             Assert.DoesNotContain(superseded.Documents, document => document.DocId == outboundId);
+            Assert.Equal(
+                OperationalHuSemanticCode.AwaitingShipment,
+                Assert.IsType<OperationalHuPresentation>(
+                    superseded.OperatorReadModel.OperatorPresentation.OperationalHu).State.Code);
 
             const double replacementQty = 19;
             store.AddDocLine(new DocLine
@@ -164,6 +168,163 @@ public sealed class HuResolverPostgresRegressionTests
             Assert.Equal(2, candidate.Components.Count);
             Assert.Single(candidate.ComponentKeys);
             Assert.Equal(fixture.Quantities.Sum(), candidate.ComponentKeys[0].LedgerBalance);
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task CanonicalOrderAndHuScopes_KeepSameStateIncludingNegativeLedger()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, store =>
+        {
+            var fixture = SeedFilledProductionHu(store);
+            var factsStore = (IHuOperatorFactsStore)store;
+
+            var orderFacts = Assert.Single(
+                factsStore.GetForOrder(fixture.OrderId),
+                row => string.Equals(row.HuCode, fixture.HuCode, StringComparison.OrdinalIgnoreCase));
+            var huFacts = Assert.IsType<HuOperatorFacts>(factsStore.GetForHu(fixture.HuCode));
+            Assert.Equal(StateCode(orderFacts), StateCode(huFacts));
+
+            store.AddLedgerEntry(new LedgerEntry
+            {
+                Timestamp = new DateTime(2026, 7, 30, 9, 2, 0, DateTimeKind.Utc),
+                DocId = huFacts.LedgerMovements.First().DocumentId,
+                ItemId = fixture.ItemIds[0],
+                LocationId = fixture.LocationId,
+                QtyDelta = -fixture.Quantities[0] - 1,
+                HuCode = fixture.HuCode
+            });
+
+            orderFacts = Assert.Single(
+                factsStore.GetForOrder(fixture.OrderId),
+                row => string.Equals(row.HuCode, fixture.HuCode, StringComparison.OrdinalIgnoreCase));
+            huFacts = Assert.IsType<HuOperatorFacts>(factsStore.GetForHu(fixture.HuCode));
+            Assert.Equal(OperationalHuSemanticCode.Inconsistent, StateCode(orderFacts));
+            Assert.Equal(StateCode(orderFacts), StateCode(huFacts));
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task CanonicalClassifier_UsesClosedInventoryCorrectionAfterProvenWholeShipment()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, store =>
+        {
+            var fixture = SeedFilledProductionHu(store);
+            var outboundId = store.AddDoc(new Doc
+            {
+                DocRef = $"OUT-WHOLE-{Suffix()}",
+                Type = DocType.Outbound,
+                Status = DocStatus.Closed,
+                CreatedAt = new DateTime(2026, 7, 30, 10, 0, 0, DateTimeKind.Utc),
+                ClosedAt = new DateTime(2026, 7, 30, 10, 1, 0, DateTimeKind.Utc),
+                OrderId = fixture.OrderId,
+                OrderRef = fixture.OrderRef
+            });
+            store.AddDocLine(new DocLine
+            {
+                DocId = outboundId,
+                OrderLineId = fixture.OrderLineIds[0],
+                ItemId = fixture.ItemIds[0],
+                Qty = fixture.Quantities[0],
+                FromLocationId = fixture.LocationId,
+                FromHu = fixture.HuCode
+            });
+            store.AddLedgerEntry(new LedgerEntry
+            {
+                Timestamp = new DateTime(2026, 7, 30, 10, 1, 0, DateTimeKind.Utc),
+                DocId = outboundId,
+                ItemId = fixture.ItemIds[0],
+                LocationId = fixture.LocationId,
+                QtyDelta = -fixture.Quantities[0],
+                HuCode = fixture.HuCode
+            });
+
+            var factsStore = (IHuOperatorFactsStore)store;
+            Assert.Equal(
+                OperationalHuSemanticCode.Shipped,
+                StateCode(Assert.IsType<HuOperatorFacts>(factsStore.GetForHu(fixture.HuCode))));
+
+            var correctionId = store.AddDoc(new Doc
+            {
+                DocRef = $"COR-RESTORE-{Suffix()}",
+                Type = DocType.InventoryCorrection,
+                Status = DocStatus.Draft,
+                CreatedAt = new DateTime(2026, 7, 30, 10, 2, 0, DateTimeKind.Utc)
+            });
+            store.AddDocLine(new DocLine
+            {
+                DocId = correctionId,
+                ItemId = fixture.ItemIds[0],
+                Qty = fixture.Quantities[0],
+                ToLocationId = fixture.LocationId,
+                ToHu = fixture.HuCode
+            });
+            var close = new DocumentService(store).TryCloseDoc(correctionId, allowNegative: false);
+            Assert.True(close.Success, string.Join("; ", close.Errors));
+
+            var restoredFacts = Assert.IsType<HuOperatorFacts>(factsStore.GetForHu(fixture.HuCode));
+            Assert.Contains(
+                restoredFacts.LedgerMovements,
+                movement => movement.DocumentId == correctionId
+                            && movement.DocumentType == "INVENTORY_CORRECTION"
+                            && movement.QtyDelta > 0);
+            Assert.Equal(OperationalHuSemanticCode.AwaitingShipment, StateCode(restoredFacts));
+
+            var secondOutboundId = store.AddDoc(new Doc
+            {
+                DocRef = $"OUT-WHOLE-SECOND-{Suffix()}",
+                Type = DocType.Outbound,
+                Status = DocStatus.Closed,
+                CreatedAt = new DateTime(2026, 7, 30, 10, 3, 0, DateTimeKind.Utc),
+                ClosedAt = new DateTime(2026, 7, 30, 10, 4, 0, DateTimeKind.Utc),
+                OrderId = fixture.OrderId,
+                OrderRef = fixture.OrderRef
+            });
+            store.AddDocLine(new DocLine
+            {
+                DocId = secondOutboundId,
+                OrderLineId = fixture.OrderLineIds[0],
+                ItemId = fixture.ItemIds[0],
+                Qty = fixture.Quantities[0],
+                FromLocationId = fixture.LocationId,
+                FromHu = fixture.HuCode
+            });
+            store.AddLedgerEntry(new LedgerEntry
+            {
+                Timestamp = new DateTime(2026, 7, 30, 10, 4, 0, DateTimeKind.Utc),
+                DocId = secondOutboundId,
+                ItemId = fixture.ItemIds[0],
+                LocationId = fixture.LocationId,
+                QtyDelta = -fixture.Quantities[0],
+                HuCode = fixture.HuCode
+            });
+
+            var reshippedFacts = Assert.IsType<HuOperatorFacts>(factsStore.GetForHu(fixture.HuCode));
+            var classification = Assert.IsType<HuOperatorOperationalClassification>(
+                HuOperatorClassifier.Classify(reshippedFacts));
+            Assert.Equal(OperationalHuSemanticCode.Shipped, classification.StateCode);
+            Assert.Equal(secondOutboundId, classification.CurrentShipmentDocumentId);
+            Assert.Equal(
+                fixture.Quantities[0],
+                Assert.Single(
+                    new HuOperatorReadModelService(factsStore)
+                        .GetForOrder(fixture.OrderId)[fixture.OrderLineIds[0]]
+                        .OperationalHus).Qty!.Value,
+                3);
             return Task.CompletedTask;
         });
     }
@@ -284,7 +445,17 @@ public sealed class HuResolverPostgresRegressionTests
     }
 
     private static TsdHuView Resolve(IDataStore store, string huCode) =>
-        new TsdHuResolverService((ITsdHuResolverStore)store).Resolve(huCode);
+        new TsdHuResolverService(
+            (ITsdHuResolverStore)store,
+            new HuOperatorReadModelService((IHuOperatorFactsStore)store)).Resolve(huCode);
+
+    private static string StateCode(HuOperatorFacts facts) =>
+        HuOperatorClassifier.Classify(facts) switch
+        {
+            HuOperatorProductionClassification production => production.StateCode,
+            HuOperatorOperationalClassification operational => operational.StateCode,
+            _ => "NONE"
+        };
 
     private static void EnsureAtLeastOneLocation(IDataStore store)
     {

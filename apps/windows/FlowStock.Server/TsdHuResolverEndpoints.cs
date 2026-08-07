@@ -38,6 +38,12 @@ public static class TsdHuResolverEndpoints
             state = view.State,
             title = view.Title,
             description = view.Description,
+            operator_presentation = new
+            {
+                production_task = MapProductionPresentation(view.OperatorReadModel.OperatorPresentation.ProductionTask),
+                operational_hu = MapOperationalPresentation(view.OperatorReadModel.OperatorPresentation.OperationalHu)
+            },
+            history_available = view.OperatorReadModel.HistoryAvailable,
             card_action = MapAction(view.CardAction),
             document_actions = view.DocumentActions.Select(MapAction).ToArray(),
             stock = includeCard ? view.Stock.Select(row => new
@@ -110,6 +116,74 @@ public static class TsdHuResolverEndpoints
             } : null
         };
     }
+
+    private static object? MapProductionPresentation(ProductionTaskPresentation? row) =>
+        row == null ? null : new
+        {
+            hu_code = row.HuCode,
+            qty = row.Qty,
+            uom = row.Uom,
+            state = new { code = row.State.Code, label = row.State.Label },
+            progress = row.Progress == null ? null : new
+            {
+                completed_components = row.Progress.CompletedComponents,
+                total_components = row.Progress.TotalComponents
+            },
+            components = row.Components.Select(component => new
+            {
+                item_id = component.ItemId,
+                item_name = component.ItemName,
+                qty = component.Qty,
+                uom = component.Uom
+            }).ToArray()
+        };
+
+    private static object? MapOperationalPresentation(OperationalHuPresentation? row) =>
+        row == null ? null : new
+        {
+            hu_code = row.HuCode,
+            qty = row.Qty,
+            uom = row.Uom,
+            state = new { code = row.State.Code, label = row.State.Label },
+            components = row.Components.Select(component => new
+            {
+                item_id = component.ItemId,
+                item_name = component.ItemName,
+                qty = component.Qty,
+                uom = component.Uom
+            }).ToArray(),
+            location = row.Location == null ? null : new
+            {
+                id = row.Location.Id,
+                code = row.Location.Code,
+                name = row.Location.Name
+            },
+            reservation_target = MapOrderReference(row.ReservationTarget),
+            shipment_target = MapOrderReference(row.ShipmentTarget),
+            is_mixed = row.IsMixed,
+            diagnostics = row.Diagnostics == null ? null : new
+            {
+                reasons = row.Diagnostics.Select(reason => new
+                {
+                    code = reason.Code,
+                    message = reason.Message,
+                    related_orders = reason.RelatedOrders?.Select(MapOrderReference).ToArray()
+                        ?? Array.Empty<object>(),
+                    related_documents = reason.RelatedDocuments?.Select(reference => new
+                    {
+                        document_id = reference.DocumentId,
+                        document_ref = reference.DocumentRef
+                    }).ToArray()
+                }).ToArray()
+            }
+        };
+
+    private static object? MapOrderReference(HuOperatorOrderReference? reference) =>
+        reference == null ? null : new
+        {
+            order_id = reference.OrderId,
+            order_ref = reference.OrderRef
+        };
 
     private static object? MapAction(TsdHuAction? action)
     {
