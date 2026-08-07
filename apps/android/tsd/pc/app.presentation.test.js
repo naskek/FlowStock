@@ -1282,6 +1282,37 @@ const productionNeedHtml = pc.renderProductionNeedTable([productionNeedRow]);
 assert.match(productionNeedHtml, /Во внутренних заказах/);
 assert.match(productionNeedHtml, /Наполнено паллетами/);
 assert.match(productionNeedHtml, /1 \/ 2 паллет, 25 шт/);
+
+const productionNeedPreviewHtml = pc.renderProductionNeedPreviewModalContent([
+  {
+    itemId: 1001,
+    itemName: "Горчица",
+    gtin: "04607186951520",
+    qtyToCreate: 125,
+    reason: "Этот текст причины не должен отображаться",
+  },
+]);
+assert.match(productionNeedPreviewHtml, /Предпросмотр внутреннего заказа/);
+assert.match(productionNeedPreviewHtml, /Количество можно изменить\. Строки с 0 не будут созданы\./);
+assert.strictEqual(
+  (productionNeedPreviewHtml.match(/<th(?:\s|>)/g) || []).length,
+  3,
+  "production need preview must contain exactly three columns"
+);
+assert.match(productionNeedPreviewHtml, /<th>Номенклатура<\/th>/);
+assert.match(productionNeedPreviewHtml, /<th>GTIN<\/th>/);
+assert.match(productionNeedPreviewHtml, /<th class="pc-num">Количество<\/th>/);
+assert.doesNotMatch(productionNeedPreviewHtml, /Причина/);
+assert.doesNotMatch(productionNeedPreviewHtml, /Этот текст причины не должен отображаться/);
+assert.match(productionNeedPreviewHtml, />Создать заказ<\/button>/);
+assert.doesNotMatch(productionNeedPreviewHtml, />Подтвердить<\/button>/);
+assert.match(productionNeedPreviewHtml, />×<\/button>/);
+assert.match(productionNeedPreviewHtml, /id="productionNeedPreviewCancelBtn"/);
+assert.match(productionNeedPreviewHtml, /id="productionNeedPreviewConfirmBtn"/);
+assert.match(styles, /\.pc-production-need-preview-table\s*\{[^}]*width:\s*100%;[^}]*table-layout:\s*fixed;/s);
+assert.match(styles, /\.pc-modal-footer\.pc-production-need-preview-footer\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*flex-end;[^}]*border-top:\s*1px solid/s);
+assert.match(styles, /\.pc-modal-footer \.btn\.pc-production-need-preview-cancel\s*\{[^}]*border-color:\s*#dc2626;[^}]*background:\s*transparent;[^}]*color:\s*#dc2626;/s);
+assert.match(styles, /\.pc-modal-footer \.btn\.pc-production-need-preview-confirm\s*\{[^}]*background:\s*var\(--pc-accent\);[^}]*color:\s*#ffffff;/s);
 assert.match(
   fs.readFileSync(appPath, "utf8"),
   /\/api\/reports\/production-need\/create-orders\/preview/,

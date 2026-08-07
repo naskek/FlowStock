@@ -424,20 +424,17 @@
     });
   }
 
-  function openProductionNeedPreviewModal(rows, onConfirm, onCancel) {
-    var modal = document.createElement("div");
-    var confirmed = false;
-    modal.className = "pc-modal";
-    modal.innerHTML =
-      '<div class="pc-modal-card pc-order-modal-card">' +
+  function renderProductionNeedPreviewModalContent(rows) {
+    return (
+      '<div class="pc-modal-card pc-order-modal-card pc-production-need-preview-card">' +
       '  <div class="pc-modal-header">' +
-      '    <div class="pc-modal-title">Предпросмотр производственного заказа</div>' +
-      '    <button class="btn btn-outline" type="button" id="productionNeedPreviewCloseBtn">Закрыть</button>' +
+      '    <div class="pc-modal-title">Предпросмотр внутреннего заказа</div>' +
+      '    <button class="pc-production-need-preview-close" type="button" id="productionNeedPreviewCloseBtn" aria-label="Закрыть" title="Закрыть">×</button>' +
       "  </div>" +
-      '  <div class="pc-status">Количество можно изменить. Строки с 0 не будут созданы.</div>' +
-      '  <div class="pc-table-scroll">' +
-      '    <table class="pc-table">' +
-      "      <thead><tr><th>Номенклатура</th><th>GTIN</th><th>Причина</th><th class=\"pc-num\">Количество</th></tr></thead>" +
+      '  <div class="pc-status pc-production-need-preview-note">Количество можно изменить. Строки с 0 не будут созданы.</div>' +
+      '  <div class="pc-table-scroll pc-production-need-preview-table-wrap">' +
+      '    <table class="pc-table pc-production-need-preview-table">' +
+      "      <thead><tr><th>Номенклатура</th><th>GTIN</th><th class=\"pc-num\">Количество</th></tr></thead>" +
       '      <tbody>' +
       rows.map(function (row, index) {
         var previewIndex = String(index);
@@ -445,7 +442,6 @@
           "<tr>" +
           "<td>" + escapeHtml(row.itemName || "-") + "</td>" +
           "<td>" + escapeHtml(row.gtin || "-") + "</td>" +
-          "<td>" + escapeHtml(row.reason || "Пополнение склада до минимума") + "</td>" +
           '<td class="pc-num"><input class="form-input pc-production-need-qty-input" type="number" min="0" step="0.001" data-preview-index="' + previewIndex + '" value="' + escapeHtml(String(Number(row.qtyToCreate) || 0)) + '" /></td>' +
           "</tr>"
         );
@@ -453,11 +449,19 @@
       "      </tbody>" +
       "    </table>" +
       "  </div>" +
-      '  <div class="pc-modal-footer">' +
-      '    <button class="btn btn-outline" type="button" id="productionNeedPreviewCancelBtn">Отмена</button>' +
-      '    <button class="btn btn-primary" type="button" id="productionNeedPreviewConfirmBtn">Подтвердить</button>' +
+      '  <div class="pc-modal-footer pc-production-need-preview-footer">' +
+      '    <button class="btn pc-production-need-preview-action pc-production-need-preview-cancel" type="button" id="productionNeedPreviewCancelBtn">Отмена</button>' +
+      '    <button class="btn pc-production-need-preview-action pc-production-need-preview-confirm" type="button" id="productionNeedPreviewConfirmBtn">Создать заказ</button>' +
       "  </div>" +
-      "</div>";
+      "</div>"
+    );
+  }
+
+  function openProductionNeedPreviewModal(rows, onConfirm, onCancel) {
+    var modal = document.createElement("div");
+    var confirmed = false;
+    modal.className = "pc-modal";
+    modal.innerHTML = renderProductionNeedPreviewModalContent(rows);
     document.body.appendChild(modal);
 
     function close() {
@@ -580,36 +584,7 @@
     function openProductionNeedPreviewModal(rows, onConfirm) {
       var modal = document.createElement("div");
       modal.className = "pc-modal";
-      modal.innerHTML =
-        '<div class="pc-modal-card pc-order-modal-card">' +
-        '  <div class="pc-modal-header">' +
-        '    <div class="pc-modal-title">Предпросмотр производственного заказа</div>' +
-        '    <button class="btn btn-outline" type="button" id="productionNeedPreviewCloseBtn">Закрыть</button>' +
-        "  </div>" +
-        '  <div class="pc-status">Количество можно изменить. Строки с 0 не будут созданы.</div>' +
-        '  <div class="pc-table-scroll">' +
-        '    <table class="pc-table">' +
-        "      <thead><tr><th>Номенклатура</th><th>GTIN</th><th>Причина</th><th class=\"pc-num\">Количество</th></tr></thead>" +
-        '      <tbody>' +
-        rows.map(function (row, index) {
-          var previewIndex = String(index);
-          return (
-            "<tr>" +
-            "<td>" + escapeHtml(row.itemName || "-") + "</td>" +
-            "<td>" + escapeHtml(row.gtin || "-") + "</td>" +
-            "<td>" + escapeHtml(row.reason || "Пополнение склада до минимума") + "</td>" +
-            '<td class="pc-num"><input class="form-input pc-production-need-qty-input" type="number" min="0" step="0.001" data-preview-index="' + previewIndex + '" value="' + escapeHtml(String(Number(row.qtyToCreate) || 0)) + '" /></td>' +
-            "</tr>"
-          );
-        }).join("") +
-        "      </tbody>" +
-        "    </table>" +
-        "  </div>" +
-        '  <div class="pc-modal-footer">' +
-        '    <button class="btn btn-outline" type="button" id="productionNeedPreviewCancelBtn">Отмена</button>' +
-        '    <button class="btn btn-primary" type="button" id="productionNeedPreviewConfirmBtn">Подтвердить</button>' +
-        "  </div>" +
-        "</div>";
+      modal.innerHTML = renderProductionNeedPreviewModalContent(rows);
       document.body.appendChild(modal);
 
       function close() {
@@ -3680,6 +3655,7 @@
     window.FlowStockPcTestHooks.getProductionNeedCreateOrdersRefreshUrl = getProductionNeedCreateOrdersRefreshUrl;
     window.FlowStockPcTestHooks.mapProductionNeedRow = mapProductionNeedRow;
     window.FlowStockPcTestHooks.renderProductionNeedTable = renderProductionNeedTable;
+    window.FlowStockPcTestHooks.renderProductionNeedPreviewModalContent = renderProductionNeedPreviewModalContent;
     window.FlowStockPcTestHooks.openProductionNeedPreviewModal = openProductionNeedPreviewModal;
     window.FlowStockPcTestHooks.trimOrdersPage = trimOrdersPage;
     window.FlowStockPcTestHooks.getOrderModalContentUpdates = getOrderModalContentUpdates;

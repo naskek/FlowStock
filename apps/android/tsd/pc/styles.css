@@ -1163,6 +1163,94 @@ body.pc-body::before {
   max-width: 988px;
 }
 
+.pc-production-need-preview-close {
+  display: inline-flex;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--pc-ink);
+  font: inherit;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pc-production-need-preview-close:hover {
+  background: #f1f5f9;
+}
+
+.pc-production-need-preview-table-wrap {
+  width: 100%;
+}
+
+.pc-production-need-preview-table {
+  width: 100%;
+  min-width: 560px;
+  table-layout: fixed;
+}
+
+.pc-production-need-preview-table th:nth-child(1),
+.pc-production-need-preview-table td:nth-child(1) {
+  width: 55%;
+}
+
+.pc-production-need-preview-table th:nth-child(2),
+.pc-production-need-preview-table td:nth-child(2) {
+  width: 27%;
+}
+
+.pc-production-need-preview-table th:nth-child(3),
+.pc-production-need-preview-table td:nth-child(3) {
+  width: 18%;
+}
+
+.pc-production-need-preview-table td {
+  vertical-align: middle;
+}
+
+.pc-production-need-preview-table td:first-child {
+  overflow-wrap: anywhere;
+}
+
+.pc-production-need-preview-table .pc-production-need-qty-input {
+  width: 100%;
+  min-width: 96px;
+}
+
+.pc-modal-footer.pc-production-need-preview-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--pc-border);
+}
+
+.btn.pc-production-need-preview-action {
+  min-height: 36px;
+  padding: 7px 14px;
+  white-space: nowrap;
+}
+
+.pc-modal-footer .btn.pc-production-need-preview-cancel {
+  border-color: #dc2626;
+  background: transparent;
+  color: #dc2626;
+}
+
+.pc-modal-footer .btn.pc-production-need-preview-confirm {
+  border-color: var(--pc-accent);
+  background: var(--pc-accent);
+  color: #ffffff;
+}
+
 .pc-order-lines-table-wrap {
   width: 100%;
   overflow-x: auto;

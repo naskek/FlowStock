@@ -103,8 +103,8 @@ vm.runInContext(fs.readFileSync(appPath, "utf8"), context, { filename: appPath }
 const source = fs.readFileSync(appPath, "utf8");
 assert.strictEqual(
   (source.match(/data-preview-index="' \+ previewIndex \+ '"/g) || []).length,
-  2,
-  "both production need preview modal blocks must use a safe numeric previewIndex"
+  1,
+  "shared production need preview renderer must use a safe numeric previewIndex"
 );
 assert.doesNotMatch(source, /data-preview-index="' \+ escapeHtml\(index\) \+ '"/);
 
@@ -125,6 +125,11 @@ hooks.openProductionNeedPreviewModal(
 );
 
 assert.ok(lastModal);
+assert.match(lastModal.innerHTML, /Предпросмотр внутреннего заказа/);
+assert.doesNotMatch(lastModal.innerHTML, /Причина/);
+assert.match(lastModal.innerHTML, />Создать заказ<\/button>/);
+assert.doesNotMatch(lastModal.innerHTML, />Подтвердить<\/button>/);
+assert.match(lastModal.innerHTML, />×<\/button>/);
 assert.match(lastModal.innerHTML, /data-preview-index="0"/);
 assert.strictEqual(lastModal.inputs["0"].value, "5472");
 lastModal.buttons.productionNeedPreviewConfirmBtn.click();
@@ -133,5 +138,26 @@ assert.strictEqual(confirmedRows.length, 1);
 assert.strictEqual(confirmedRows[0].item_id, 34);
 assert.strictEqual(confirmedRows[0].qty_ordered, 5472);
 assert.strictEqual(lastAlert, "");
+
+let cancelCount = 0;
+hooks.openProductionNeedPreviewModal(
+  [{ itemId: 34, itemName: "Горчица 200 гр", gtin: "04607186951520", qtyToCreate: 1 }],
+  function () {},
+  function () { cancelCount += 1; }
+);
+const cancelModal = lastModal;
+cancelModal.buttons.productionNeedPreviewCancelBtn.click();
+assert.strictEqual(cancelModal.parentNode, null);
+assert.strictEqual(cancelCount, 1, "cancel button must use the existing cancel flow");
+
+hooks.openProductionNeedPreviewModal(
+  [{ itemId: 34, itemName: "Горчица 200 гр", gtin: "04607186951520", qtyToCreate: 1 }],
+  function () {},
+  function () { cancelCount += 1; }
+);
+const closeModal = lastModal;
+closeModal.buttons.productionNeedPreviewCloseBtn.click();
+assert.strictEqual(closeModal.parentNode, null);
+assert.strictEqual(cancelCount, 2, "close icon must use the existing cancel flow");
 
 console.log("app.production-need-preview.test.js: ok");
