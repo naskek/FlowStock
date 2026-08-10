@@ -53,7 +53,6 @@ public partial class OrderDetailsWindow : Window
     private long _orderLinesGridColumnWidthRestoreGeneration;
     private long _orderLinesGridSortingGeneration;
     private readonly IDisposable _liveRefreshSubscription;
-    private long _huFateDisplayLoadGeneration;
     private WpfSelectedCoveragePlanRequest? _pendingSelectedCoveragePlanRequest;
     private readonly CustomerOrderHuBindingCoordinator _huBinding;
 
@@ -362,12 +361,11 @@ public partial class OrderDetailsWindow : Window
         UpdatePalletButtons();
         SyncHuBindingLines();
         _huBinding.EndLoad();
-        ApplyProductionHuCodesFromStore(_order.Id, includeFate: false);
+        ApplyProductionHuCodesFromStore(_order.Id);
         ForceOrderLinesGridRefresh();
         EndLoad();
         RestoreSelectedOrderLineByIdDeferred(selectedLineId);
         RestoreOrderLinesGridColumnWidthsDeferred(columnWidths);
-        ScheduleDeferredHuFateDisplayLoad(_order.Id);
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -2890,23 +2888,17 @@ public partial class OrderDetailsWindow : Window
                || string.Equals(status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
     }
 
-    private void ApplyProductionHuCodesFromStore(long orderId, bool includeFate)
+    private void ApplyProductionHuCodesFromStore(long orderId)
     {
         try
         {
             var huByLine = ProductionOrderLineHuCodes.BuildByOrder(_services.DataStore, orderId);
             var productionDisplayByLine = ProductionOrderLineHuCodes.BuildProductionDisplayByOrder(_services.DataStore, orderId);
-            var fateDisplayByLine = includeFate
-                ? OrderLineHuFateDisplayBuilder.BuildByOrder(_services.DataStore, orderId)
-                : new Dictionary<long, OrderLineHuDisplayEntry[]>();
 
             foreach (var line in _lines)
             {
                 productionDisplayByLine.TryGetValue(line.Id, out var displayEntries);
                 line.ProductionHuDisplayEntries = displayEntries ?? Array.Empty<OrderLineHuDisplayEntry>();
-
-                fateDisplayByLine.TryGetValue(line.Id, out var fateEntries);
-                line.HuFateDisplayEntries = fateEntries ?? Array.Empty<OrderLineHuDisplayEntry>();
 
                 if (!huByLine.TryGetValue(line.Id, out var codes) || codes.Length == 0)
                 {
@@ -2924,43 +2916,6 @@ public partial class OrderDetailsWindow : Window
         catch (Exception ex)
         {
             _services.AppLogger.Error($"Apply production HU codes for order_id={orderId} failed", ex);
-        }
-    }
-
-    private void ScheduleDeferredHuFateDisplayLoad(long orderId)
-    {
-        var generation = ++_huFateDisplayLoadGeneration;
-
-        Dispatcher.BeginInvoke(
-            new Action(() => _ = LoadHuFateDisplayAsync(orderId, generation)),
-            System.Windows.Threading.DispatcherPriority.ContextIdle);
-    }
-
-    private async Task LoadHuFateDisplayAsync(long orderId, long generation)
-    {
-        try
-        {
-            var fateDisplayByLine = await Task.Run(() =>
-                OrderLineHuFateDisplayBuilder.BuildByOrder(_services.DataStore, orderId)).ConfigureAwait(true);
-
-            if (generation != _huFateDisplayLoadGeneration
-                || !_orderId.HasValue
-                || _orderId.Value != orderId)
-            {
-                return;
-            }
-
-            foreach (var line in _lines)
-            {
-                fateDisplayByLine.TryGetValue(line.Id, out var fateEntries);
-                line.HuFateDisplayEntries = fateEntries ?? Array.Empty<OrderLineHuDisplayEntry>();
-            }
-
-            RefreshOrderLinesGridPreservingSelection();
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error($"Deferred HU fate display load for order_id={orderId} failed", ex);
         }
     }
 

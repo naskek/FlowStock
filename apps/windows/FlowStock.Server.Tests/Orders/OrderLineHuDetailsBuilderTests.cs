@@ -1,4 +1,5 @@
 using System.Text.Json;
+using FlowStock.App;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
@@ -250,7 +251,158 @@ public sealed class OrderLineHuDetailsBuilderTests
     }
 
     [Fact]
-    public async Task SingleEndpoint_InternalProducedHuIncludesLaterCustomerShipmentFateWithoutChangingLineShipment()
+    public async Task SingleEndpoint_ProjectsReservationFateForSourceAndTargetOrders()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
+        harness.SeedItem(new Item { Id = 5, Name = "Товар", BaseUom = "шт" });
+        harness.SeedOrder(new Order
+        {
+            Id = 3,
+            OrderRef = "003",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 6, 10, 8, 0, 0)
+        });
+        harness.SeedOrderLine(new OrderLine { Id = 30, OrderId = 3, ItemId = 5, QtyOrdered = 378 });
+        harness.SeedOrder(new Order
+        {
+            Id = 4,
+            OrderRef = "004",
+            Type = OrderType.Customer,
+            Status = OrderStatus.Accepted,
+            CreatedAt = new DateTime(2026, 6, 10, 9, 0, 0)
+        });
+        harness.SeedOrderLine(new OrderLine { Id = 40, OrderId = 4, ItemId = 5, QtyOrdered = 378 });
+        harness.SeedDoc(new Doc
+        {
+            Id = 100,
+            DocRef = "PRD-2026-000012",
+            Type = DocType.ProductionReceipt,
+            Status = DocStatus.Closed,
+            OrderId = 3,
+            CreatedAt = new DateTime(2026, 6, 10, 10, 0, 0),
+            ClosedAt = new DateTime(2026, 6, 10, 11, 0, 0)
+        });
+        harness.SeedProductionPallet(new ProductionPallet
+        {
+            Id = 101,
+            PrdDocId = 100,
+            OrderId = 3,
+            OrderLineId = 30,
+            ItemId = 5,
+            HuCode = "HU-0000766",
+            PlannedQty = 378,
+            Status = ProductionPalletStatus.Filled,
+            CreatedAt = new DateTime(2026, 6, 10, 10, 0, 0),
+            FilledAt = new DateTime(2026, 6, 10, 11, 0, 0)
+        });
+        harness.SeedLedgerEntry(100, 5, 1, 378, "HU-0000766");
+        harness.SeedOrderReceiptPlanLines(4, new OrderReceiptPlanLine
+        {
+            Id = 401,
+            OrderId = 4,
+            OrderLineId = 40,
+            ItemId = 5,
+            QtyPlanned = 378,
+            ToHu = "hu-0000766",
+            ToLocationId = 1
+        });
+        harness.SeedHuOperatorFactsForOrder(4,
+        [
+            new HuOperatorFacts
+            {
+                HuCode = "HU-0000766",
+                Stock =
+                [
+                    new HuOperatorStockFact
+                    {
+                        ItemId = 5,
+                        ItemName = "Товар",
+                        Uom = "шт",
+                        LocationId = 1,
+                        LocationCode = "MAIN",
+                        LocationName = "Основной склад",
+                        Qty = 378
+                    }
+                ],
+                ProductionPallets =
+                [
+                    new HuOperatorProductionPalletFact
+                    {
+                        PalletId = 101,
+                        Status = ProductionPalletStatus.Filled,
+                        OwnerOrderId = 3,
+                        OwnerOrderRef = "003",
+                        OwnerOrderType = "INTERNAL",
+                        OwnerOrderStatus = "IN_PROGRESS",
+                        Components =
+                        [
+                            new HuOperatorComponentFact
+                            {
+                                OrderLineId = 30,
+                                OrderLineOrderId = 3,
+                                ItemId = 5,
+                                ItemName = "Товар",
+                                Uom = "шт",
+                                PlannedQty = 378,
+                                FilledQty = 378
+                            }
+                        ]
+                    }
+                ],
+                Reservations =
+                [
+                    new HuOperatorReservationFact
+                    {
+                        OrderId = 4,
+                        OrderRef = "004",
+                        OrderType = "CUSTOMER",
+                        OrderStatus = "ACCEPTED",
+                        OrderLineId = 40,
+                        ItemId = 5,
+                        Qty = 378
+                    }
+                ]
+            }
+        ]);
+
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+        using var sourceResponse = await host.Client.GetAsync("/api/orders/3/lines");
+        sourceResponse.EnsureSuccessStatusCode();
+        using var sourceJson = JsonDocument.Parse(await sourceResponse.Content.ReadAsStringAsync());
+        var sourceLine = Assert.Single(sourceJson.RootElement.EnumerateArray());
+        var sourceProduction = Assert.Single(sourceLine.GetProperty("production_hu_rows").EnumerateArray());
+        Assert.Equal(OrderLineHuFateDisplayBuilder.ReservedFateCode, sourceProduction.GetProperty("fate_code").GetString());
+        Assert.Equal("→ резерв заказ 004", sourceProduction.GetProperty("fate_label").GetString());
+        Assert.Equal(4, sourceProduction.GetProperty("fate_order_id").GetInt64());
+
+        using var targetResponse = await host.Client.GetAsync("/api/orders/4/lines");
+        targetResponse.EnsureSuccessStatusCode();
+        using var targetJson = JsonDocument.Parse(await targetResponse.Content.ReadAsStringAsync());
+        var targetLine = Assert.Single(targetJson.RootElement.EnumerateArray());
+        var targetOperational = Assert.Single(targetLine
+            .GetProperty("hu_presentation")
+            .GetProperty("operational_hus")
+            .EnumerateArray());
+        Assert.Equal(OperationalHuSemanticCode.Reserved, targetOperational.GetProperty("state").GetProperty("code").GetString());
+        Assert.Equal(3, targetOperational.GetProperty("source_production_order").GetProperty("order_id").GetInt64());
+        Assert.Equal("003", targetOperational.GetProperty("source_production_order").GetProperty("order_ref").GetString());
+
+        var targetWpfRow = Assert.Single(WpfReadApiService.MapOrderLineView(targetLine).HuFateDisplayEntries);
+        Assert.Equal("резерв", targetWpfRow.Label);
+        Assert.Equal(378, targetWpfRow.Qty, 3);
+        Assert.Equal("← выпуск заказ 003", targetWpfRow.FateSuffix);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.ReservedFateCode, targetWpfRow.FateCode);
+
+        harness.VerifyNoGlobalHuFateReads();
+        harness.VerifyScopedHuFateLookup(Moq.Times.Once());
+        harness.VerifyHuOperatorFactsForOrder(3, Moq.Times.Once());
+        harness.VerifyHuOperatorFactsForOrder(4, Moq.Times.Once());
+    }
+
+    [Fact]
+    public async Task SingleEndpoint_ProjectsShipmentFateForSourceAndTargetOrdersWithoutChangingLineShipment()
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
@@ -297,6 +449,16 @@ public sealed class OrderLineHuDetailsBuilderTests
             FilledAt = new DateTime(2026, 6, 10, 11, 0, 0)
         });
         harness.SeedLedgerEntry(100, 5, 1, 1824, "HU-0002083");
+        harness.SeedOrderReceiptPlanLines(4, new OrderReceiptPlanLine
+        {
+            Id = 401,
+            OrderId = 4,
+            OrderLineId = 40,
+            ItemId = 5,
+            QtyPlanned = 1824,
+            ToHu = "HU-0002083",
+            ToLocationId = 1
+        });
         harness.SeedDoc(new Doc
         {
             Id = 200,
@@ -317,6 +479,102 @@ public sealed class OrderLineHuDetailsBuilderTests
             FromHu = "HU-0002083"
         });
         harness.SeedLedgerEntry(200, 5, 1, -1824, "HU-0002083");
+        harness.SeedHuOperatorFactsForOrder(4,
+        [
+            new HuOperatorFacts
+            {
+                HuCode = "HU-0002083",
+                ProductionPallets =
+                [
+                    new HuOperatorProductionPalletFact
+                    {
+                        PalletId = 101,
+                        Status = ProductionPalletStatus.Filled,
+                        OwnerOrderId = 3,
+                        OwnerOrderRef = "003",
+                        OwnerOrderType = "INTERNAL",
+                        OwnerOrderStatus = "IN_PROGRESS",
+                        Components =
+                        [
+                            new HuOperatorComponentFact
+                            {
+                                OrderLineId = 30,
+                                OrderLineOrderId = 3,
+                                ItemId = 5,
+                                ItemName = "Товар",
+                                Uom = "шт",
+                                PlannedQty = 1824,
+                                FilledQty = 1824
+                            }
+                        ]
+                    }
+                ],
+                Reservations =
+                [
+                    new HuOperatorReservationFact
+                    {
+                        OrderId = 4,
+                        OrderRef = "004",
+                        OrderType = "CUSTOMER",
+                        OrderStatus = "SHIPPED",
+                        OrderLineId = 40,
+                        ItemId = 5,
+                        Qty = 1824
+                    }
+                ],
+                Outbound =
+                [
+                    new HuOperatorOutboundFact
+                    {
+                        DocumentId = 200,
+                        DocumentRef = "OUT-2026-000004",
+                        DocumentStatus = "CLOSED",
+                        OrderId = 4,
+                        OrderRef = "004",
+                        OrderType = "CUSTOMER",
+                        OrderStatus = "SHIPPED",
+                        OrderLineId = 40,
+                        ItemId = 5,
+                        ItemName = "Товар",
+                        Uom = "шт",
+                        Qty = 1824
+                    }
+                ],
+                LedgerMovements =
+                [
+                    new HuOperatorLedgerMovementFact
+                    {
+                        LedgerId = 1,
+                        Timestamp = new DateTime(2026, 6, 10, 11, 0, 0),
+                        DocumentId = 100,
+                        DocumentRef = "PRD-2026-000012",
+                        DocumentType = "PRODUCTION_RECEIPT",
+                        DocumentStatus = "CLOSED",
+                        ItemId = 5,
+                        ItemName = "Товар",
+                        Uom = "шт",
+                        LocationId = 1,
+                        LocationCode = "MAIN",
+                        QtyDelta = 1824
+                    },
+                    new HuOperatorLedgerMovementFact
+                    {
+                        LedgerId = 2,
+                        Timestamp = new DateTime(2026, 6, 11, 9, 0, 0),
+                        DocumentId = 200,
+                        DocumentRef = "OUT-2026-000004",
+                        DocumentType = "OUTBOUND",
+                        DocumentStatus = "CLOSED",
+                        ItemId = 5,
+                        ItemName = "Товар",
+                        Uom = "шт",
+                        LocationId = 1,
+                        LocationCode = "MAIN",
+                        QtyDelta = -1824
+                    }
+                ]
+            }
+        ]);
 
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
         using var response = await host.Client.GetAsync("/api/orders/3/lines");
@@ -328,6 +586,7 @@ public sealed class OrderLineHuDetailsBuilderTests
         Assert.Equal("HU-0002083", productionHu.GetProperty("hu_code").GetString());
         Assert.Equal("SHIPPED", productionHu.GetProperty("fate_code").GetString());
         Assert.Equal("→ отгружено заказ 004", productionHu.GetProperty("fate_label").GetString());
+        Assert.Equal(4, productionHu.GetProperty("fate_order_id").GetInt64());
         Assert.Equal("004", productionHu.GetProperty("fate_order_ref").GetString());
         Assert.Equal("OUT-2026-000004", productionHu.GetProperty("fate_doc_ref").GetString());
         Assert.Equal(1824, productionHu.GetProperty("fate_qty").GetDouble(), 3);
@@ -335,8 +594,29 @@ public sealed class OrderLineHuDetailsBuilderTests
         Assert.Equal(0, line.GetProperty("coverage").GetProperty("shipped_qty").GetDouble(), 3);
         Assert.Equal(1824, line.GetProperty("coverage").GetProperty("covered_qty").GetDouble(), 3);
         Assert.Equal(0, line.GetProperty("coverage").GetProperty("missing_qty").GetDouble(), 3);
+
+        using var targetResponse = await host.Client.GetAsync("/api/orders/4/lines");
+        targetResponse.EnsureSuccessStatusCode();
+        using var targetJson = JsonDocument.Parse(await targetResponse.Content.ReadAsStringAsync());
+        var targetLine = Assert.Single(targetJson.RootElement.EnumerateArray());
+        var targetShipment = Assert.Single(targetLine.GetProperty("shipped_hu_rows").EnumerateArray());
+        Assert.Equal("HU-0002083", targetShipment.GetProperty("hu_code").GetString());
+        Assert.Equal(3, targetShipment.GetProperty("source_order_id").GetInt64());
+        Assert.Equal("003", targetShipment.GetProperty("source_order_ref").GetString());
+        var targetOperational = Assert.Single(targetLine
+            .GetProperty("hu_presentation")
+            .GetProperty("operational_hus")
+            .EnumerateArray());
+        Assert.Equal(OperationalHuSemanticCode.Shipped, targetOperational.GetProperty("state").GetProperty("code").GetString());
+        var targetWpfRows = WpfReadApiService.MapOrderLineView(targetLine).HuFateDisplayEntries;
+        var targetWpfRow = Assert.Single(targetWpfRows);
+        Assert.Equal(OrderLineHuFateDisplayBuilder.ShippedFateCode, targetWpfRow.FateCode);
+        Assert.Equal("отгружено", targetWpfRow.Label);
+        Assert.Equal("← выпуск заказ 003", targetWpfRow.FateSuffix);
         harness.VerifyNoGlobalHuFateReads();
         harness.VerifyScopedHuFateLookup(Moq.Times.Once());
+        harness.VerifyHuOperatorFactsForOrder(3, Moq.Times.Once());
+        harness.VerifyHuOperatorFactsForOrder(4, Moq.Times.Once());
     }
 
     [Fact]

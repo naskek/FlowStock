@@ -44,10 +44,13 @@ public sealed class WpfLiveRefreshSourceTests
         Assert.True(loadEnd > loadStart);
         var loadMethod = orderCode[loadStart..loadEnd];
 
-        Assert.Contains("ApplyProductionHuCodesFromStore(_order.Id, includeFate: false);", loadMethod, StringComparison.Ordinal);
+        Assert.Contains("_services.WpfReadApi.TryGetOrderLines(_order.Id", loadMethod, StringComparison.Ordinal);
+        Assert.Contains("ApplyProductionHuCodesFromStore(_order.Id);", loadMethod, StringComparison.Ordinal);
         Assert.Contains("_huBinding.EndLoad();", loadMethod, StringComparison.Ordinal);
         Assert.Contains("SyncHuBindingLines();", loadMethod, StringComparison.Ordinal);
-        Assert.Contains("ScheduleDeferredHuFateDisplayLoad(_order.Id);", loadMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("ScheduleDeferredHuFateDisplayLoad", orderCode, StringComparison.Ordinal);
+        Assert.DoesNotContain("OrderLineHuFateDisplayBuilder.BuildByOrder", orderCode, StringComparison.Ordinal);
+        Assert.DoesNotContain("_huFateDisplayLoadGeneration", orderCode, StringComparison.Ordinal);
         Assert.DoesNotContain("EndLoadWithoutCandidateRefresh", loadMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("TryApplyHuReservations", loadMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("TryApplyHuReservationLines", loadMethod, StringComparison.Ordinal);

@@ -290,7 +290,7 @@ public static class OrderLinesEndpoint
             line.PalletFillTitle,
             details?.WarehouseHuRows.Select(MapWarehouseHuRow).ToArray(),
             details?.ProductionHuRows.Select(MapProductionHuRow).ToArray(),
-            details?.ShippedHuRows.Select(MapShippedHuRow).ToArray(),
+            details?.ShippedHuRows.Select(row => MapShippedHuRow(row, huPresentation)).ToArray(),
             details?.Coverage is { } coverage ? MapCoverage(coverage) : null,
             huPresentation == null ? null : MapHuPresentation(huPresentation));
     }
@@ -317,6 +317,7 @@ public static class OrderLinesEndpoint
                     : new HuLocationResponse(row.Location.Id, row.Location.Code, row.Location.Name),
                 MapOrderReference(row.ReservationTarget),
                 MapOrderReference(row.ShipmentTarget),
+                MapOrderReference(row.SourceProductionOrder),
                 row.IsMixed,
                 row.Diagnostics == null
                     ? null
@@ -345,12 +346,32 @@ public static class OrderLinesEndpoint
             row.PrdRef,
             row.FateCode,
             row.FateLabel,
+            row.FateOrderId,
             row.FateOrderRef,
             row.FateDocRef,
             row.FateQty);
 
-    private static ShippedHuRowResponse MapShippedHuRow(OrderLineShippedHuRow row) =>
-        new(row.HuCode, row.Qty);
+    private static ShippedHuRowResponse MapShippedHuRow(
+        OrderLineShippedHuRow row,
+        OrderLineHuPresentation? huPresentation)
+    {
+        var normalizedHu = NormalizeHu(row.HuCode);
+        var sourceOrder = huPresentation?.OperationalHus
+            .Where(candidate => string.Equals(
+                NormalizeHu(candidate.HuCode),
+                normalizedHu,
+                StringComparison.Ordinal))
+            .Select(candidate => candidate.SourceProductionOrder)
+            .FirstOrDefault(candidate => candidate != null);
+        return new ShippedHuRowResponse(
+            row.HuCode,
+            row.Qty,
+            sourceOrder?.OrderId,
+            sourceOrder?.OrderRef);
+    }
+
+    private static string NormalizeHu(string? huCode) =>
+        string.IsNullOrWhiteSpace(huCode) ? string.Empty : huCode.Trim().ToUpperInvariant();
 
     private static CoverageResponse MapCoverage(OrderLineCoverage coverage) =>
         new(
@@ -460,6 +481,8 @@ public static class OrderLinesEndpoint
         string? FateCode,
         [property: JsonPropertyName("fate_label"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         string? FateLabel,
+        [property: JsonPropertyName("fate_order_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        long? FateOrderId,
         [property: JsonPropertyName("fate_order_ref"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         string? FateOrderRef,
         [property: JsonPropertyName("fate_doc_ref"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -469,7 +492,11 @@ public static class OrderLinesEndpoint
 
     private sealed record ShippedHuRowResponse(
         [property: JsonPropertyName("hu_code")] string HuCode,
-        [property: JsonPropertyName("qty")] double Qty);
+        [property: JsonPropertyName("qty")] double Qty,
+        [property: JsonPropertyName("source_order_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        long? SourceOrderId,
+        [property: JsonPropertyName("source_order_ref"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? SourceOrderRef);
 
     private sealed record CoverageResponse(
         [property: JsonPropertyName("ordered_qty")] double OrderedQty,
@@ -502,6 +529,8 @@ public static class OrderLinesEndpoint
         HuOrderReferenceResponse? ReservationTarget,
         [property: JsonPropertyName("shipment_target"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         HuOrderReferenceResponse? ShipmentTarget,
+        [property: JsonPropertyName("source_production_order"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        HuOrderReferenceResponse? SourceProductionOrder,
         [property: JsonPropertyName("is_mixed")] bool IsMixed,
         [property: JsonPropertyName("diagnostics"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         HuDiagnosticsResponse? Diagnostics);

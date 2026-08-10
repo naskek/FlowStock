@@ -237,9 +237,50 @@ public sealed class HuOperatorReadModelService
             Location = location,
             ReservationTarget = classification.ReservationTarget,
             ShipmentTarget = classification.ShipmentTarget,
+            SourceProductionOrder = ResolveSourceProductionOrder(facts, currentOrderId),
             IsMixed = components.Select(component => component.ItemId).Distinct().Take(2).Count() > 1,
             Diagnostics = classification.DiagnosticReasons
         };
+    }
+
+    private static HuOperatorOrderReference? ResolveSourceProductionOrder(
+        HuOperatorFacts facts,
+        long? currentOrderId)
+    {
+        var candidates = facts.ProductionPallets
+            .Where(pallet => string.Equals(
+                pallet.Status,
+                ProductionPalletStatus.Filled,
+                StringComparison.OrdinalIgnoreCase))
+            .Select(pallet =>
+            {
+                var componentOrderIds = pallet.Components
+                    .Where(component => component.OrderLineOrderId.HasValue)
+                    .Select(component => component.OrderLineOrderId!.Value)
+                    .Distinct()
+                    .Take(2)
+                    .ToArray();
+                var sourceOrderId = pallet.OwnerOrderId
+                                    ?? (componentOrderIds.Length == 1 ? componentOrderIds[0] : null);
+                return sourceOrderId.HasValue
+                    ? new HuOperatorOrderReference(
+                        sourceOrderId.Value,
+                        string.IsNullOrWhiteSpace(pallet.OwnerOrderRef)
+                            ? sourceOrderId.Value.ToString()
+                            : pallet.OwnerOrderRef.Trim())
+                    : null;
+            })
+            .Where(reference => reference != null)
+            .Cast<HuOperatorOrderReference>()
+            .GroupBy(reference => reference.OrderId)
+            .Select(group => group.First())
+            .Take(2)
+            .ToArray();
+
+        return candidates.Length == 1
+               && candidates[0].OrderId != currentOrderId
+            ? candidates[0]
+            : null;
     }
 
     private static Dictionary<long, (double? Qty, string? Uom)> ResolveOrderLineQuantities(

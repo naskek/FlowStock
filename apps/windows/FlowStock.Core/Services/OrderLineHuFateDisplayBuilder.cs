@@ -122,6 +122,7 @@ public static class OrderLineHuFateDisplayBuilder
                     sameOrder ? null : fateLabel,
                     FateCode: ShippedFateCode,
                     FateLabel: fateLabel,
+                    FateOrderId: shipment.TargetOrderId,
                     FateOrderRef: targetOrderRef,
                     FateDocRef: shipment.DocRef,
                     FateQty: shipment.Qty));
@@ -140,6 +141,7 @@ public static class OrderLineHuFateDisplayBuilder
                     sameOrder ? null : fateLabel,
                     FateCode: ReservedFateCode,
                     FateLabel: fateLabel,
+                    FateOrderId: reservation.TargetOrderId,
                     FateOrderRef: targetOrderRef,
                     FateQty: reservation.Qty));
             }
@@ -189,6 +191,7 @@ public static class OrderLineHuFateDisplayBuilder
                 source == null || source.SourceOrderId == shipment.TargetOrderId ? null : fateLabel,
                 FateCode: ShippedFateCode,
                 FateLabel: fateLabel,
+                FateOrderId: shipment.TargetOrderId,
                 FateOrderRef: OrderRef(orders, shipment.TargetOrderId),
                 FateDocRef: shipment.DocRef,
                 FateQty: shipment.Qty));
@@ -216,6 +219,7 @@ public static class OrderLineHuFateDisplayBuilder
                 source == null || sameOrder ? null : fateLabel,
                 FateCode: ReservedFateCode,
                 FateLabel: fateLabel,
+                FateOrderId: reservation.TargetOrderId,
                 FateOrderRef: OrderRef(orders, reservation.TargetOrderId),
                 FateQty: reservation.Qty));
         }

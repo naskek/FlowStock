@@ -263,7 +263,8 @@ public sealed record OrderLineHuDisplayEntry(
     string? FateLabel = null,
     string? FateOrderRef = null,
     string? FateDocRef = null,
-    double? FateQty = null);
+    double? FateQty = null,
+    long? FateOrderId = null);
 
 public sealed record OrderLineHuDisplayRow(
     string HuCode,

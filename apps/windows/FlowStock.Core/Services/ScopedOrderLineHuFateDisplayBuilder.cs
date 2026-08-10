@@ -165,6 +165,7 @@ public static class ScopedOrderLineHuFateDisplayBuilder
                     sameOrder ? null : fateLabel,
                     FateCode: OrderLineHuFateDisplayBuilder.ShippedFateCode,
                     FateLabel: fateLabel,
+                    FateOrderId: shipment.TargetOrderId,
                     FateOrderRef: targetOrderRef,
                     FateDocRef: shipment.DocRef,
                     FateQty: shipment.Qty));
@@ -185,6 +186,7 @@ public static class ScopedOrderLineHuFateDisplayBuilder
                     sameOrder ? null : fateLabel,
                     FateCode: OrderLineHuFateDisplayBuilder.ReservedFateCode,
                     FateLabel: fateLabel,
+                    FateOrderId: reservation.TargetOrderId,
                     FateOrderRef: targetOrderRef,
                     FateQty: reservation.Qty));
             }

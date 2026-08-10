@@ -32,7 +32,7 @@ public sealed class HuOperatorReadModelServiceTests
     }
 
     [Fact]
-    public void OrderProjection_UsesCompactReservationLabelForCurrentOrder()
+    public void TargetReservationProjection_UsesCompactLabelAndSuppressesUnknownSource()
     {
         var store = new FakeFactsStore
         {
@@ -78,6 +78,7 @@ public sealed class HuOperatorReadModelServiceTests
         Assert.Equal("Зарезервирован", row.State.Label);
         Assert.Equal("MAIN", row.Location?.Code);
         Assert.Equal(77, row.ReservationTarget?.OrderId);
+        Assert.Null(row.SourceProductionOrder);
     }
 
     [Fact]
@@ -146,17 +147,162 @@ public sealed class HuOperatorReadModelServiceTests
             ]
         };
 
-        var result = new HuOperatorReadModelService(store).GetForOrder(77);
+        var service = new HuOperatorReadModelService(store);
+        var result = service.GetForOrder(77);
+        var targetResult = service.GetForOrder(88);
 
         var row = Assert.Single(result[701].OperationalHus);
+        var targetRow = Assert.Single(targetResult[801].OperationalHus);
         Assert.Equal(OperationalHuSemanticCode.Reserved, row.State.Code);
         Assert.Equal("Зарезервирован для заказа ORD-88", row.State.Label);
         Assert.Equal(100, row.Qty!.Value, 3);
+        Assert.Null(row.SourceProductionOrder);
+        Assert.Equal(77, targetRow.SourceProductionOrder?.OrderId);
+        Assert.Equal("ORD-77", targetRow.SourceProductionOrder?.OrderRef);
 
         var global = HuOperatorReadModelService.ProjectGlobal(store.OrderFacts.Single());
         Assert.Equal(
             row.State.Code,
             Assert.IsType<OperationalHuPresentation>(global.OperatorPresentation.OperationalHu).State.Code);
+    }
+
+    [Fact]
+    public void TargetReservationProjection_SuppressesOwnProductionSource()
+    {
+        var facts = new HuOperatorFacts
+        {
+            HuCode = "HU-OWN-RESERVED",
+            Stock =
+            [
+                new HuOperatorStockFact
+                {
+                    ItemId = 1,
+                    ItemName = "Товар",
+                    Uom = "шт",
+                    LocationId = 5,
+                    LocationCode = "MAIN",
+                    Qty = 100
+                }
+            ],
+            ProductionPallets =
+            [
+                new HuOperatorProductionPalletFact
+                {
+                    PalletId = 10,
+                    Status = ProductionPalletStatus.Filled,
+                    OwnerOrderId = 88,
+                    OwnerOrderRef = "ORD-88",
+                    Components =
+                    [
+                        new HuOperatorComponentFact
+                        {
+                            OrderLineId = 801,
+                            OrderLineOrderId = 88,
+                            ItemId = 1,
+                            ItemName = "Товар",
+                            Uom = "шт",
+                            PlannedQty = 100,
+                            FilledQty = 100
+                        }
+                    ]
+                }
+            ],
+            Reservations =
+            [
+                new HuOperatorReservationFact
+                {
+                    OrderId = 88,
+                    OrderRef = "ORD-88",
+                    OrderType = "CUSTOMER",
+                    OrderStatus = "ACCEPTED",
+                    OrderLineId = 801,
+                    ItemId = 1,
+                    Qty = 100
+                }
+            ]
+        };
+
+        var row = Assert.Single(new HuOperatorReadModelService(
+            new FakeFactsStore { OrderFacts = [facts] }).GetForOrder(88)[801].OperationalHus);
+
+        Assert.Equal(OperationalHuSemanticCode.Reserved, row.State.Code);
+        Assert.Null(row.SourceProductionOrder);
+    }
+
+    [Fact]
+    public void TargetMixedReservationProjection_SuppressesAmbiguousProductionSource()
+    {
+        var facts = new HuOperatorFacts
+        {
+            HuCode = "HU-MIXED-AMBIGUOUS",
+            Stock =
+            [
+                new HuOperatorStockFact { ItemId = 1, ItemName = "Товар 1", Uom = "шт", LocationId = 5, LocationCode = "MAIN", Qty = 100 },
+                new HuOperatorStockFact { ItemId = 2, ItemName = "Товар 2", Uom = "шт", LocationId = 5, LocationCode = "MAIN", Qty = 50 }
+            ],
+            ProductionPallets =
+            [
+                new HuOperatorProductionPalletFact
+                {
+                    PalletId = 10,
+                    Status = ProductionPalletStatus.Filled,
+                    Components =
+                    [
+                        new HuOperatorComponentFact
+                        {
+                            OrderLineId = 701,
+                            OrderLineOrderId = 77,
+                            ItemId = 1,
+                            ItemName = "Товар 1",
+                            Uom = "шт",
+                            PlannedQty = 100,
+                            FilledQty = 100
+                        },
+                        new HuOperatorComponentFact
+                        {
+                            OrderLineId = 601,
+                            OrderLineOrderId = 66,
+                            ItemId = 2,
+                            ItemName = "Товар 2",
+                            Uom = "шт",
+                            PlannedQty = 50,
+                            FilledQty = 50
+                        }
+                    ]
+                }
+            ],
+            Reservations =
+            [
+                new HuOperatorReservationFact
+                {
+                    OrderId = 88,
+                    OrderRef = "ORD-88",
+                    OrderType = "CUSTOMER",
+                    OrderStatus = "ACCEPTED",
+                    OrderLineId = 801,
+                    ItemId = 1,
+                    Qty = 100
+                },
+                new HuOperatorReservationFact
+                {
+                    OrderId = 88,
+                    OrderRef = "ORD-88",
+                    OrderType = "CUSTOMER",
+                    OrderStatus = "ACCEPTED",
+                    OrderLineId = 802,
+                    ItemId = 2,
+                    Qty = 50
+                }
+            ]
+        };
+
+        var rows = new HuOperatorReadModelService(
+            new FakeFactsStore { OrderFacts = [facts] }).GetForOrder(88);
+
+        Assert.Equal(OperationalHuSemanticCode.Reserved, Assert.Single(rows[801].OperationalHus).State.Code);
+        Assert.True(Assert.Single(rows[801].OperationalHus).IsMixed);
+        Assert.Null(Assert.Single(rows[801].OperationalHus).SourceProductionOrder);
+        Assert.Null(Assert.Single(rows[802].OperationalHus).SourceProductionOrder);
     }
 
     [Fact]
@@ -216,10 +362,14 @@ public sealed class HuOperatorReadModelServiceTests
         var service = new HuOperatorReadModelService(store);
 
         var orderRow = Assert.Single(service.GetForOrder(77)[701].OperationalHus);
+        var targetOrderRow = Assert.Single(service.GetForOrder(88)[801].OperationalHus);
         var globalRow = Assert.IsType<OperationalHuPresentation>(
             service.GetForHu(source.HuCode).OperatorPresentation.OperationalHu);
 
         Assert.Equal(OperationalHuSemanticCode.Shipped, orderRow.State.Code);
+        Assert.Null(orderRow.SourceProductionOrder);
+        Assert.Equal(77, targetOrderRow.SourceProductionOrder?.OrderId);
+        Assert.Equal("ORD-77", targetOrderRow.SourceProductionOrder?.OrderRef);
         Assert.Equal(orderRow.State.Code, globalRow.State.Code);
         Assert.Equal(88, globalRow.ShipmentTarget?.OrderId);
     }
@@ -370,6 +520,7 @@ public sealed class HuOperatorReadModelServiceTests
         Assert.Equal(OperationalHuSemanticCode.Shipped, presentation.State.Code);
         Assert.Equal(100, presentation.Qty!.Value, 3);
         Assert.Equal(100, Assert.Single(presentation.Components).Qty, 3);
+        Assert.Null(presentation.SourceProductionOrder);
     }
 
     [Fact]
@@ -426,6 +577,7 @@ public sealed class HuOperatorReadModelServiceTests
         Assert.Empty(sourceOrder);
         Assert.Equal(OperationalHuSemanticCode.Shipped, currentOrderRow.State.Code);
         Assert.Equal(100, currentOrderRow.Qty!.Value, 3);
+        Assert.Null(currentOrderRow.SourceProductionOrder);
         Assert.Equal(100, global.Qty!.Value, 3);
         Assert.Equal(88, global.ShipmentTarget?.OrderId);
     }

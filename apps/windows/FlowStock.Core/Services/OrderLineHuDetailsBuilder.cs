@@ -272,6 +272,7 @@ public static class OrderLineHuDetailsBuilder
                         PrdRef = row.PrdRef,
                         FateCode = fate?.FateCode,
                         FateLabel = fate?.FateLabel,
+                        FateOrderId = fate?.FateOrderId,
                         FateOrderRef = fate?.FateOrderRef,
                         FateDocRef = fate?.FateDocRef,
                         FateQty = fate?.FateQty

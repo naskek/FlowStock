@@ -83,6 +83,12 @@ internal sealed class CloseDocumentHarness
                 times);
     }
 
+    public void VerifyHuOperatorFactsForOrder(long orderId, Times times)
+    {
+        _store.As<IHuOperatorFactsStore>()
+            .Verify(store => store.GetForOrder(orderId), times);
+    }
+
     public void SeedHuOperatorFactsForOrder(long orderId, IReadOnlyList<HuOperatorFacts> facts)
     {
         var store = _store.As<IHuOperatorFactsStore>();

@@ -185,6 +185,7 @@ public sealed class OperationalHuPresentation
     public HuLocationPresentation? Location { get; init; }
     public HuOperatorOrderReference? ReservationTarget { get; init; }
     public HuOperatorOrderReference? ShipmentTarget { get; init; }
+    public HuOperatorOrderReference? SourceProductionOrder { get; init; }
     public bool IsMixed { get; init; }
     public IReadOnlyList<HuOperatorDiagnosticReason>? Diagnostics { get; init; }
 }

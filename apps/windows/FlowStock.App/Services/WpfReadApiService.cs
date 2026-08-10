@@ -1565,7 +1565,7 @@ public sealed class WpfReadApiService
         };
     }
 
-    private static OrderLineView MapOrderLineView(JsonElement element)
+    internal static OrderLineView MapOrderLineView(JsonElement element)
     {
         return new OrderLineView
         {
@@ -1593,9 +1593,221 @@ public sealed class WpfReadApiService
             PlannedPalletCount = ReadInt32(element, "planned_pallet_count"),
             FilledPalletCount = ReadInt32(element, "filled_pallet_count"),
             PlannedPalletQty = ReadDouble(element, "pallet_planned_qty"),
-            FilledPalletQty = ReadDouble(element, "pallet_filled_qty")
+            FilledPalletQty = ReadDouble(element, "pallet_filled_qty"),
+            HuFateDisplayEntries = MapOrderLineHuFateDisplayEntries(element)
         };
     }
+
+    private static IReadOnlyList<OrderLineHuDisplayEntry> MapOrderLineHuFateDisplayEntries(JsonElement element)
+    {
+        var currentOrderId = ReadInt64(element, "order_id");
+        var entriesByHu = new Dictionary<string, OrderLineHuDisplayEntry>(StringComparer.OrdinalIgnoreCase);
+        if (element.TryGetProperty("production_hu_rows", out var productionRows)
+            && productionRows.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var productionRow in productionRows.EnumerateArray())
+            {
+                var entry = MapProductionHuFateDisplayEntry(productionRow, currentOrderId);
+                var normalizedHu = NormalizeHuCode(entry?.HuCode);
+                if (entry != null && normalizedHu != null)
+                {
+                    entriesByHu[normalizedHu] = entry;
+                }
+            }
+        }
+
+        if (element.TryGetProperty("shipped_hu_rows", out var shippedRows)
+            && shippedRows.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var shippedRow in shippedRows.EnumerateArray())
+            {
+                var huCode = TrimToNull(ReadString(shippedRow, "hu_code"));
+                var normalizedHu = NormalizeHuCode(huCode);
+                if (huCode == null || normalizedHu == null || entriesByHu.ContainsKey(normalizedHu))
+                {
+                    continue;
+                }
+
+                var qty = ReadDouble(shippedRow, "qty");
+                var sourceOrderId = ReadNullableInt64(shippedRow, "source_order_id");
+                var sourceOrderRef = TrimToNull(ReadString(shippedRow, "source_order_ref"));
+                var hasOtherSource = sourceOrderRef != null
+                                     && (!sourceOrderId.HasValue
+                                         || currentOrderId <= 0
+                                         || sourceOrderId.Value != currentOrderId);
+                var fateLabel = hasOtherSource
+                    ? $"← выпуск заказ {sourceOrderRef}"
+                    : "отгружено";
+                entriesByHu[normalizedHu] = new OrderLineHuDisplayEntry(
+                    huCode,
+                    "отгружено",
+                    qty,
+                    IsWarehouseBound: false,
+                    SortOrder: OrderLineHuFateDisplayBuilder.ShippedSortOrder,
+                    FateSuffix: hasOtherSource ? fateLabel : null,
+                    FateCode: OrderLineHuFateDisplayBuilder.ShippedFateCode,
+                    FateLabel: fateLabel,
+                    FateQty: qty);
+            }
+        }
+
+        MapTargetReservationHuFateDisplayEntries(element, entriesByHu);
+
+        return entriesByHu.Values
+            .OrderBy(entry => entry.SortOrder)
+            .ThenBy(entry => entry.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static void MapTargetReservationHuFateDisplayEntries(
+        JsonElement element,
+        IDictionary<string, OrderLineHuDisplayEntry> entriesByHu)
+    {
+        if (!element.TryGetProperty("hu_presentation", out var huPresentation)
+            || huPresentation.ValueKind != JsonValueKind.Object
+            || !huPresentation.TryGetProperty("operational_hus", out var operationalRows)
+            || operationalRows.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var operationalRow in operationalRows.EnumerateArray())
+        {
+            if (!operationalRow.TryGetProperty("state", out var state)
+                || state.ValueKind != JsonValueKind.Object
+                || !string.Equals(
+                    TrimToNull(ReadString(state, "code")),
+                    OperationalHuSemanticCode.Reserved,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var huCode = TrimToNull(ReadString(operationalRow, "hu_code"));
+            var normalizedHu = NormalizeHuCode(huCode);
+            if (huCode == null || normalizedHu == null || entriesByHu.ContainsKey(normalizedHu))
+            {
+                continue;
+            }
+
+            var qty = ReadNullableDouble(operationalRow, "qty") ?? 0d;
+            var reservationTarget = operationalRow.TryGetProperty("reservation_target", out var target)
+                                    && target.ValueKind == JsonValueKind.Object
+                ? target
+                : default;
+            var sourceOrder = operationalRow.TryGetProperty("source_production_order", out var source)
+                              && source.ValueKind == JsonValueKind.Object
+                ? source
+                : default;
+            var sourceOrderRef = sourceOrder.ValueKind == JsonValueKind.Object
+                ? TrimToNull(ReadString(sourceOrder, "order_ref"))
+                : null;
+            var fateLabel = sourceOrderRef == null
+                ? "резерв этого заказа"
+                : $"← выпуск заказ {sourceOrderRef}";
+
+            entriesByHu[normalizedHu] = new OrderLineHuDisplayEntry(
+                huCode,
+                "резерв",
+                qty,
+                IsWarehouseBound: false,
+                SortOrder: OrderLineHuFateDisplayBuilder.ReservedSortOrder,
+                FateSuffix: sourceOrderRef == null ? null : fateLabel,
+                FateCode: OrderLineHuFateDisplayBuilder.ReservedFateCode,
+                FateLabel: fateLabel,
+                FateOrderRef: reservationTarget.ValueKind == JsonValueKind.Object
+                    ? TrimToNull(ReadString(reservationTarget, "order_ref"))
+                    : null,
+                FateQty: qty,
+                FateOrderId: reservationTarget.ValueKind == JsonValueKind.Object
+                    ? ReadNullableInt64(reservationTarget, "order_id")
+                    : null);
+        }
+    }
+
+    private static OrderLineHuDisplayEntry? MapProductionHuFateDisplayEntry(
+        JsonElement element,
+        long currentOrderId)
+    {
+        var huCode = TrimToNull(ReadString(element, "hu_code"));
+        if (huCode == null)
+        {
+            return null;
+        }
+
+        var fateCode = TrimToNull(ReadString(element, "fate_code"));
+        var fateLabel = TrimToNull(ReadString(element, "fate_label"));
+        if (fateCode == null && fateLabel == null)
+        {
+            return null;
+        }
+
+        var normalizedFateCode = fateCode?.ToUpperInvariant();
+        var sourceQty = ReadDouble(element, "filled_qty");
+        if (sourceQty <= StockQuantityRules.QtyTolerance)
+        {
+            sourceQty = ReadDouble(element, "planned_qty");
+        }
+
+        var fateQty = ReadNullableDouble(element, "fate_qty");
+        var fateOrderId = ReadNullableInt64(element, "fate_order_id");
+        var targetsOtherOrder = fateOrderId.HasValue && currentOrderId > 0
+            ? fateOrderId.Value != currentOrderId
+            : StartsWithLegacyOutgoingArrow(fateLabel);
+        var label = fateLabel ?? fateCode ?? string.Empty;
+        var qty = fateQty ?? sourceQty;
+        var sortOrder = OrderLineHuFateDisplayBuilder.FilledSortOrder;
+        string? fateSuffix = null;
+
+        switch (normalizedFateCode)
+        {
+            case OrderLineHuFateDisplayBuilder.ShippedFateCode:
+                label = targetsOtherOrder ? "наполнено" : "отгружено";
+                qty = targetsOtherOrder ? sourceQty : fateQty ?? sourceQty;
+                sortOrder = OrderLineHuFateDisplayBuilder.ShippedSortOrder;
+                fateSuffix = targetsOtherOrder ? fateLabel : null;
+                break;
+            case OrderLineHuFateDisplayBuilder.ReservedFateCode:
+                label = "наполнено";
+                qty = sourceQty;
+                sortOrder = targetsOtherOrder
+                    ? OrderLineHuFateDisplayBuilder.ReservedSortOrder
+                    : OrderLineHuFateDisplayBuilder.FilledSortOrder;
+                fateSuffix = targetsOtherOrder ? fateLabel : null;
+                break;
+            case OrderLineHuFateDisplayBuilder.AwaitingShipmentFateCode:
+                label = fateLabel ?? OrderLineHuFateDisplayBuilder.AwaitingShipmentFateLabel;
+                qty = sourceQty;
+                sortOrder = OrderLineHuFateDisplayBuilder.AwaitingShipmentSortOrder;
+                break;
+            case OrderLineHuFateDisplayBuilder.OnStockFateCode:
+                label = "наполнено";
+                qty = sourceQty;
+                sortOrder = OrderLineHuFateDisplayBuilder.FilledSortOrder;
+                break;
+        }
+
+        return new OrderLineHuDisplayEntry(
+            huCode,
+            label,
+            qty,
+            IsWarehouseBound: false,
+            sortOrder,
+            fateSuffix,
+            fateCode,
+            fateLabel,
+            TrimToNull(ReadString(element, "fate_order_ref")),
+            TrimToNull(ReadString(element, "fate_doc_ref")),
+            fateQty,
+            fateOrderId);
+    }
+
+    private static bool StartsWithLegacyOutgoingArrow(string? value) =>
+        !string.IsNullOrWhiteSpace(value)
+        && value.StartsWith('→');
+
+    private static string? TrimToNull(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private static Item MapItem(JsonElement element)
     {

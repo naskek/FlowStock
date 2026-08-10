@@ -33,6 +33,7 @@ public sealed class OrderLineProductionHuRow
     public string? PrdRef { get; init; }
     public string? FateCode { get; init; }
     public string? FateLabel { get; init; }
+    public long? FateOrderId { get; init; }
     public string? FateOrderRef { get; init; }
     public string? FateDocRef { get; init; }
     public double? FateQty { get; init; }
