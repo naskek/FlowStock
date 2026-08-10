@@ -2298,6 +2298,7 @@ public sealed class ProductionPalletService
         var ordersById = LoadOrdersById(candidateOrderIds);
         var palletsByOrderId = LoadPalletsByOrderId(candidateOrderIds);
         var orderLinesByOrderId = LoadOrderLinesByOrderId(candidateOrderIds);
+        var shipmentProgressByOrderId = LoadShipmentProgressByOrderId(candidateOrderIds, orderLinesByOrderId);
         var completions = LoadFillingCompletions(candidateOrderIds);
 
         var rows = new Dictionary<long, ProductionFillingOrder>();
@@ -2315,7 +2316,8 @@ public sealed class ProductionPalletService
                 group.ToList(),
                 palletsByOrderId,
                 orderLinesByOrderId,
-                completions);
+                completions,
+                shipmentProgressByOrderId.GetValueOrDefault(order.Id));
             if (row != null && !ShouldExcludeFromFillingList(row))
             {
                 rows[row.OrderId] = row;
@@ -2331,7 +2333,12 @@ public sealed class ProductionPalletService
                 continue;
             }
 
-            var row = BuildReadyFillingOrderFromPreloaded(order, palletsByOrderId, orderLinesByOrderId, completions);
+            var row = BuildReadyFillingOrderFromPreloaded(
+                order,
+                palletsByOrderId,
+                orderLinesByOrderId,
+                completions,
+                shipmentProgressByOrderId.GetValueOrDefault(order.Id));
             if (row != null && !ShouldExcludeFromFillingList(row))
             {
                 rows[row.OrderId] = row;
@@ -2877,7 +2884,20 @@ public sealed class ProductionPalletService
         };
     }
 
-    public ProductionPalletFillResult Fill(string? huCode, string? deviceId, long? orderId = null, long? prdDocId = null)
+    public ProductionPalletFillResult Fill(
+        string? huCode,
+        string? deviceId,
+        long? orderId = null,
+        long? prdDocId = null) =>
+        FillWholePallet(huCode, deviceId, orderId, prdDocId, null, requireMixedCompatibility: false);
+
+    private ProductionPalletFillResult FillWholePallet(
+        string? huCode,
+        string? deviceId,
+        long? orderId,
+        long? prdDocId,
+        IReadOnlySet<long>? requestedComponentLineIds,
+        bool requireMixedCompatibility)
     {
         var normalizedHu = NormalizeHu(huCode);
         if (string.IsNullOrWhiteSpace(normalizedHu))
@@ -2973,29 +2993,61 @@ public sealed class ProductionPalletService
                     return;
                 }
 
-                if (string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
-                {
-                    result = ApplyAutoCloseAfterFillInTransaction(store, new ProductionPalletFillResult
-                    {
-                        Success = true,
-                        Error = ProductionFillingErrorCodes.PalletAlreadyFilled,
-                        ErrorMessage = "Паллета уже наполнена.",
-                        AlreadyFilled = true,
-                        Pallet = pallet,
-                        Document = BuildFillingDocument(doc.Id, store.GetProductionPalletsByDoc(doc.Id), pallet.OrderId)
-                    });
-                    return;
-                }
-
-                if (pallet.IsMixedPallet)
+                var palletLines = GetPalletLines(pallet);
+                var hasComponentProgress = palletLines.Any(line => line.FilledQty > QtyTolerance);
+                var hasCompleteFilledComposition = palletLines.Count > 0
+                                                   && palletLines.All(line =>
+                                                       line.PlannedQty > QtyTolerance
+                                                       && Math.Abs(line.FilledQty - line.PlannedQty) <= QtyTolerance);
+                if (hasComponentProgress
+                    && (!string.Equals(
+                            pallet.Status,
+                            ProductionPalletStatus.Filled,
+                            StringComparison.OrdinalIgnoreCase)
+                        || !hasCompleteFilledComposition))
                 {
                     result = ProductionPalletFillResult.Failure(
-                        ProductionFillingErrorCodes.MixedComponentSelectionRequired,
-                        "Выберите хотя бы один незаполненный компонент микс-паллеты.");
+                        ProductionFillingErrorCodes.PalletPartialFillInconsistent,
+                        "По паллете найден исторический частичный component progress. Требуется контролируемая корректировка.");
                     return;
                 }
 
-                var palletLines = GetPalletLines(pallet);
+                if (requireMixedCompatibility)
+                {
+                    if (!pallet.IsMixedPallet)
+                    {
+                        result = ProductionPalletFillResult.Failure(
+                            "PALLET_NOT_MIXED", "Эта паллета не является микс-паллетой.");
+                        return;
+                    }
+
+                    var allComponentIds = palletLines.Select(line => line.Id).Where(id => id > 0).ToHashSet();
+                    if (requestedComponentLineIds == null
+                        || !allComponentIds.SetEquals(requestedComponentLineIds))
+                    {
+                        result = ProductionPalletFillResult.Failure(
+                            ProductionFillingErrorCodes.PartialComponentFillNotAllowed,
+                            "Микс-паллета должна быть подтверждена целиком; частичное наполнение запрещено.");
+                        return;
+                    }
+                }
+
+                if (string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+                {
+                    result = ProductionPalletFillResult.Failure(
+                        ProductionFillingErrorCodes.PalletPlanInvalid,
+                        "Паллета отмечена FILLED, но выпуск не проведён. Используйте контролируемый recovery flow.");
+                    return;
+                }
+
+                if (_fillClose == null || !_fillClose.AutoCloseEnabled)
+                {
+                    result = ProductionPalletFillResult.Failure(
+                        ProductionFillingErrorCodes.ProductionAutoCloseRequired,
+                        "Наполнение production pallet требует включённого атомарного проведения выпуска.");
+                    return;
+                }
+
                 var docLinesById = store.GetDocLines(doc.Id).ToDictionary(line => line.Id, line => line);
                 foreach (var palletLine in palletLines)
                 {
@@ -3069,164 +3121,24 @@ public sealed class ProductionPalletService
         long? orderId = null,
         long? prdDocId = null)
     {
-        var normalizedHu = NormalizeHu(huCode);
         var requestedIds = (componentLineIds ?? Array.Empty<long>())
             .Where(id => id > 0)
             .Distinct()
-            .ToArray();
-        if (string.IsNullOrWhiteSpace(normalizedHu))
+            .ToHashSet();
+        if (requestedIds.Count == 0)
         {
             return ProductionPalletFillResult.Failure(
-                ProductionFillingErrorCodes.HuRequired, "Укажите код паллеты.");
+                "COMPONENT_LINE_IDS_REQUIRED",
+                "Передайте полный состав микс-паллеты для compatibility-подтверждения.");
         }
 
-        if (requestedIds.Length == 0)
-        {
-            return ProductionPalletFillResult.Failure(
-                "COMPONENT_LINE_IDS_REQUIRED", "Выберите хотя бы один незаполненный компонент микс-паллеты.");
-        }
-
-        if (_fillClose == null || !_fillClose.AutoCloseEnabled)
-        {
-            return ProductionPalletFillResult.Failure(
-                "PRODUCTION_AUTO_CLOSE_REQUIRED",
-                "Частичное наполнение микс-паллеты требует включённого автоматического проведения выпуска.");
-        }
-
-        ProductionPalletFillResult? result = null;
-        try
-        {
-            _data.ExecuteInTransaction(store =>
-            {
-                var initialPallet = store.GetProductionPalletByHu(normalizedHu);
-                if (store is IHuTransactionLockStore lockStore && initialPallet?.OrderId is long lockOrderId)
-                {
-                    if (!store.LockOrdersForUpdate(new[] { lockOrderId }))
-                    {
-                        result = ProductionPalletFillResult.Failure(
-                            ProductionFillingErrorCodes.PalletNotFound, "Заказ паллеты не найден.");
-                        return;
-                    }
-                    lockStore.LockNormalizedHus(new[] { normalizedHu });
-                }
-                var pallet = store.GetProductionPalletByHuForUpdate(normalizedHu);
-                if (pallet == null)
-                {
-                    result = ProductionPalletFillResult.Failure(
-                        ProductionFillingErrorCodes.PalletNotFound, "Паллета не найдена в плане выпуска.");
-                    return;
-                }
-
-                // Same unified classification/priority as Scan and Fill.
-                var classification = ClassifyPalletForFilling(store, orderId, pallet, out _);
-                if (classification.HasValue)
-                {
-                    result = ProductionPalletFillResult.Failure(classification.Value.Code, classification.Value.Message);
-                    return;
-                }
-
-                var doc = store.GetDoc(pallet.PrdDocId);
-                if (doc == null || doc.Type != DocType.ProductionReceipt)
-                {
-                    result = ProductionPalletFillResult.Failure(
-                        ProductionFillingErrorCodes.PalletPlanInvalid, "Документ выпуска не найден.");
-                    return;
-                }
-
-                if (string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
-                {
-                    result = ApplyAutoCloseAfterFillInTransaction(store, BuildMixedFillResult(
-                        pallet,
-                        alreadyFilled: true,
-                        ledgerWritten: doc.Status == DocStatus.Closed,
-                        message: "Микс-паллета уже наполнена."));
-                    return;
-                }
-
-                if (doc.Status == DocStatus.Closed)
-                {
-                    result = ProductionPalletFillResult.Failure(
-                        ProductionFillingErrorCodes.PrdAlreadyClosed, "Документ выпуска уже закрыт.");
-                    return;
-                }
-
-                if (IsCancelledPallet(pallet))
-                {
-                    result = ProductionPalletFillResult.Failure(
-                        ProductionFillingErrorCodes.PalletCancelled, "Паллета отменена и не может быть наполнена.");
-                    return;
-                }
-
-                if (!pallet.IsMixedPallet)
-                {
-                    result = ProductionPalletFillResult.Failure(
-                        "PALLET_NOT_MIXED", "Эта паллета не является микс-паллетой.");
-                    return;
-                }
-
-                if (!HasOnlyValidFillingPalletLines(store, pallet))
-                {
-                    result = ProductionPalletFillResult.Failure(
-                        ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
-                    return;
-                }
-
-                if (requestedIds.Any(id => pallet.Lines.All(line => line.Id != id)))
-                {
-                    result = ProductionPalletFillResult.Failure(
-                        "COMPONENT_NOT_IN_PALLET", "Состав паллеты изменился. Отсканируйте HU повторно.");
-                    return;
-                }
-
-                store.MarkProductionPalletComponentsFilled(pallet.Id, requestedIds, DateTime.Now);
-                var updated = store.GetProductionPalletByHu(normalizedHu) ?? pallet;
-                if (!updated.AreAllComponentsFilled)
-                {
-                    result = BuildMixedFillResult(
-                        updated,
-                        alreadyFilled: requestedIds.All(id => pallet.Lines.First(line => line.Id == id).IsCompleted),
-                        ledgerWritten: false,
-                        message: "Компоненты отмечены как наполненные. HU ещё не готов полностью.");
-                    return;
-                }
-
-                store.MarkProductionPalletFilled(updated.Id, DateTime.Now, NormalizeDeviceId(deviceId));
-                var filled = store.GetProductionPalletByHu(normalizedHu) ?? updated;
-                result = ApplyAutoCloseAfterFillInTransaction(store, BuildMixedFillResult(
-                    filled,
-                    alreadyFilled: false,
-                    ledgerWritten: false,
-                    message: "Микс-паллета полностью наполнена и проведена."));
-            });
-        }
-        catch (ProductionPalletFillRollbackException ex)
-        {
-            return ProductionPalletFillResult.Failure(ex.Message);
-        }
-
-        return result ?? ProductionPalletFillResult.Failure(
-            "MIXED_COMPONENT_FILL_FAILED", "Не удалось наполнить компоненты микс-паллеты.");
-    }
-
-    private ProductionPalletFillResult BuildMixedFillResult(
-        ProductionPallet pallet,
-        bool alreadyFilled,
-        bool ledgerWritten,
-        string message)
-    {
-        return new ProductionPalletFillResult
-        {
-            Success = true,
-            Error = alreadyFilled ? ProductionFillingErrorCodes.PalletAlreadyFilled : null,
-            ErrorMessage = alreadyFilled ? "Паллета уже наполнена." : null,
-            AlreadyFilled = alreadyFilled,
-            Pallet = pallet,
-            EffectiveStatus = pallet.EffectiveStatus,
-            FilledComponentCount = pallet.FilledComponentCount,
-            TotalComponentCount = pallet.TotalComponentCount,
-            LedgerWritten = ledgerWritten,
-            Message = message
-        };
+        return FillWholePallet(
+            huCode,
+            deviceId,
+            orderId,
+            prdDocId,
+            requestedIds,
+            requireMixedCompatibility: true);
     }
 
     private static double GetFillGuardFilledQty(
@@ -3372,7 +3284,8 @@ public sealed class ProductionPalletService
         IReadOnlyList<ProductionPalletWorkItem> workItems,
         IReadOnlyDictionary<long, IReadOnlyList<ProductionPallet>> palletsByOrderId,
         IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> orderLinesByOrderId,
-        IReadOnlyList<ProductionFillingCompletion> completions)
+        IReadOnlyList<ProductionFillingCompletion> completions,
+        OrderShipmentProgress? shipmentProgress = null)
     {
         if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
         {
@@ -3420,14 +3333,16 @@ public sealed class ProductionPalletService
             primaryWorkItem.PrdDocId,
             primaryWorkItem.PrdDocRef,
             summary,
-            BuildOperationProgress(order.Id, fillingPallets, completions));
+            BuildOperationProgress(order.Id, fillingPallets, completions),
+            shipmentProgress);
     }
 
     private ProductionFillingOrder? BuildReadyFillingOrderFromPreloaded(
         Order order,
         IReadOnlyDictionary<long, IReadOnlyList<ProductionPallet>> palletsByOrderId,
         IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> orderLinesByOrderId,
-        IReadOnlyList<ProductionFillingCompletion> completions)
+        IReadOnlyList<ProductionFillingCompletion> completions,
+        OrderShipmentProgress? shipmentProgress = null)
     {
         palletsByOrderId.TryGetValue(order.Id, out var rawPallets);
         rawPallets ??= Array.Empty<ProductionPallet>();
@@ -3446,7 +3361,7 @@ public sealed class ProductionPalletService
         var docRef = pallets[0].PrdDocId > 0
             ? TryGetDocRef(docId)
             : null;
-        return MapProductionFillingOrder(order, docId, docRef, BuildSummary(pallets), progress);
+        return MapProductionFillingOrder(order, docId, docRef, BuildSummary(pallets), progress, shipmentProgress);
     }
 
     private string? TryGetDocRef(long docId)
@@ -3466,7 +3381,8 @@ public sealed class ProductionPalletService
         long? prdDocId,
         string? prdDocRef,
         ProductionPalletSummary summary,
-        ProductionOperationProgress progress)
+        ProductionOperationProgress progress,
+        OrderShipmentProgress? shipmentProgress = null)
     {
         return new ProductionFillingOrder
         {
@@ -3476,6 +3392,7 @@ public sealed class ProductionPalletService
             OrderTypeDisplay = OrderStatusMapper.TypeToDisplayName(order.Type),
             OrderStatus = OrderStatusMapper.StatusToString(order.Status),
             OrderStatusDisplay = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
+            OrderStatusPresentation = OrderOperatorStatusResolver.Resolve(order.Status, order.Type, shipmentProgress),
             PartnerName = order.PartnerDisplay,
             PrdDocId = prdDocId,
             PrdDocRef = prdDocRef,
@@ -3547,6 +3464,37 @@ public sealed class ProductionPalletService
         }
     }
 
+    private IReadOnlyDictionary<long, OrderShipmentProgress> LoadShipmentProgressByOrderId(
+        IReadOnlyCollection<long> orderIds,
+        IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> orderLinesByOrderId)
+    {
+        IReadOnlyDictionary<long, IReadOnlyDictionary<long, double>> shippedByOrderId;
+        try
+        {
+            shippedByOrderId = _data.GetShippedTotalsByOrderIds(orderIds);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            shippedByOrderId = new Dictionary<long, IReadOnlyDictionary<long, double>>();
+        }
+
+        return orderIds.ToDictionary(
+            orderId => orderId,
+            orderId =>
+            {
+                var lines = orderLinesByOrderId.GetValueOrDefault(orderId) ?? Array.Empty<OrderLine>();
+                var shipped = shippedByOrderId.GetValueOrDefault(orderId)
+                              ?? new Dictionary<long, double>();
+                return new OrderShipmentProgress
+                {
+                    OrderedQty = lines.Sum(line => Math.Max(0, line.QtyOrdered)),
+                    ShippedQty = lines.Sum(line => Math.Max(0, shipped.GetValueOrDefault(line.Id))),
+                    RemainingQty = lines.Sum(line =>
+                        Math.Max(0, line.QtyOrdered - Math.Max(0, shipped.GetValueOrDefault(line.Id))))
+                };
+            });
+    }
+
     private IReadOnlyList<ProductionFillingCompletion> LoadFillingCompletions(IReadOnlyCollection<long> orderIds)
     {
         try
@@ -3574,6 +3522,10 @@ public sealed class ProductionPalletService
             OrderTypeDisplay = OrderStatusMapper.TypeToDisplayName(order.Type),
             OrderStatus = OrderStatusMapper.StatusToString(order.Status),
             OrderStatusDisplay = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
+            OrderStatusPresentation = OrderOperatorStatusResolver.Resolve(
+                order.Status,
+                order.Type,
+                OrderShipmentProgressService.Get(_data, order.Id)),
             PartnerName = order.PartnerDisplay,
             PrdDocId = doc.Id,
             PrdDocRef = doc.DocRef,

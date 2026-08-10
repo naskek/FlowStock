@@ -153,7 +153,10 @@ public partial class MarkingWindow : Window
         public string OrderRef => string.IsNullOrWhiteSpace(_row.OrderRef) ? SourceDisplay : _row.OrderRef;
         public string PartnerDisplay => string.IsNullOrWhiteSpace(_row.PartnerDisplay) ? SourceDisplay : _row.PartnerDisplay;
         public string SourceDisplay => string.IsNullOrWhiteSpace(_row.DisplaySource) ? "-" : _row.DisplaySource;
-        public string OrderStatusDisplay => OrderStatusMapper.StatusToDisplayName(_row.OrderStatus);
+        public string OrderStatusDisplay => !string.IsNullOrWhiteSpace(_row.OperatorStatusPresentation?.Code)
+                                            && !string.IsNullOrWhiteSpace(_row.OperatorStatusPresentation.Label)
+            ? _row.OperatorStatusPresentation.Label
+            : "Неизвестно";
         public string DueDateDisplay => _row.DueDate?.ToString("dd.MM.yyyy", CultureInfo.CurrentCulture) ?? "-";
         public string MarkingStatusDisplay => !string.IsNullOrWhiteSpace(_row.DisplayStatus)
             ? _row.DisplayStatus

@@ -24,8 +24,7 @@ public sealed class HuOperatorReadModelService
                 continue;
             }
 
-            if (classification is not HuOperatorProductionClassification production
-                || string.Equals(production.StateCode, ProductionTaskSemanticCode.LabelNotPrinted, StringComparison.Ordinal))
+            if (classification is not HuOperatorProductionClassification production)
             {
                 continue;
             }
@@ -85,8 +84,7 @@ public sealed class HuOperatorReadModelService
         var classification = HuOperatorClassifier.Classify(facts);
         ProductionTaskPresentation? productionTask = null;
         OperationalHuPresentation? operationalHu = null;
-        if (classification is HuOperatorProductionClassification production
-            && !string.Equals(production.StateCode, ProductionTaskSemanticCode.LabelNotPrinted, StringComparison.Ordinal))
+        if (classification is HuOperatorProductionClassification production)
         {
             var pallet = facts.ProductionPallets.SingleOrDefault(pallet =>
                 ProductionPalletStatus.IsOperational(pallet.Status));
@@ -232,7 +230,7 @@ public sealed class HuOperatorReadModelService
             Uom = string.IsNullOrEmpty(commonUom) ? null : commonUom,
             State = new HuSemanticStatePresentation(
                 classification.StateCode,
-                OperationalLabel(classification, currentOrderId)),
+                OperationalLabel(classification)),
             Components = components,
             Location = location,
             ReservationTarget = classification.ReservationTarget,
@@ -408,16 +406,10 @@ public sealed class HuOperatorReadModelService
         ?? facts.ProductionPallets.SelectMany(pallet => pallet.Components).FirstOrDefault(row => row.ItemId == itemId)?.Uom
         ?? "шт";
 
-    private static string OperationalLabel(
-        HuOperatorOperationalClassification classification,
-        long? currentOrderId) =>
+    private static string OperationalLabel(HuOperatorOperationalClassification classification) =>
         classification.StateCode switch
         {
             OperationalHuSemanticCode.AwaitingShipment => "Ожидает отгрузки",
-            OperationalHuSemanticCode.Reserved when classification.ReservationTarget?.OrderId == currentOrderId =>
-                "Зарезервирован",
-            OperationalHuSemanticCode.Reserved when classification.ReservationTarget != null =>
-                $"Зарезервирован для заказа {classification.ReservationTarget.OrderRef}",
             OperationalHuSemanticCode.Reserved => "Зарезервирован",
             OperationalHuSemanticCode.OnStock => "На складе",
             OperationalHuSemanticCode.Shipped => "Отгружен",
@@ -428,11 +420,7 @@ public sealed class HuOperatorReadModelService
     private static string ProductionLabel(HuOperatorProductionClassification classification) =>
         classification.StateCode switch
         {
-            ProductionTaskSemanticCode.LabelNotPrinted => "Этикетка не напечатана",
             ProductionTaskSemanticCode.AwaitingFill => "Ожидает наполнения",
-            ProductionTaskSemanticCode.Filling =>
-                $"Наполняется: {classification.CompletedComponents} из {classification.TotalComponents} компонентов",
-            ProductionTaskSemanticCode.ReleaseNotPosted => "Выпуск не проведён",
             _ => "Требует проверки"
         };
 

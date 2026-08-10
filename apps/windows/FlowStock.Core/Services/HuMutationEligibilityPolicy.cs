@@ -28,11 +28,20 @@ public static class HuMutationEligibilityPolicy
                 "Положительный ledger composition физической HU находится в нескольких locations.");
         }
 
-        if (HuOperatorClassifier.Classify(facts) is HuOperatorOperationalClassification
-            {
-                StateCode: OperationalHuSemanticCode.Inconsistent
-            })
+        var consistency = HuFactConsistencyAnalyzer.Analyze(facts);
+        if (consistency.Issues.Count > 0)
         {
+            if (context.Operation == HuMutationOperation.ReleaseProducedStock
+                && consistency.Issues.Count == 1
+                && string.Equals(
+                    consistency.Issues[0].Code,
+                    HuFactConsistencyIssueCode.FilledWithoutLedgerStock,
+                    StringComparison.Ordinal)
+                && IsSupportedProductionOnlyRelease(facts, context))
+            {
+                return HuMutationEligibilityDecision.Allow();
+            }
+
             return Reject(
                 HuMutationEligibilityReasonCode.HuInconsistent,
                 huCode,
@@ -70,12 +79,6 @@ public static class HuMutationEligibilityPolicy
             .ToArray();
         if (positiveStock.Length == 0)
         {
-            if (context.Operation == HuMutationOperation.ReleaseProducedStock
-                && IsSupportedProductionOnlyRelease(facts, context))
-            {
-                return HuMutationEligibilityDecision.Allow();
-            }
-
             return Reject(
                 HuMutationEligibilityReasonCode.HuNotInPhysicalStock,
                 huCode,
@@ -156,18 +159,26 @@ public static class HuMutationEligibilityPolicy
 
         var pallet = activePallets[0];
         if (!string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
-            || (context.SourceOrderId.HasValue && pallet.OwnerOrderId != context.SourceOrderId)
+            || !pallet.OwnerOrderId.HasValue
+            || !context.SourceOrderId.HasValue
+            || pallet.OwnerOrderId != context.SourceOrderId
+            || !string.Equals(pallet.OwnerOrderType, "CUSTOMER", StringComparison.OrdinalIgnoreCase)
+            || !(string.Equals(pallet.OwnerOrderStatus, "IN_PROGRESS", StringComparison.OrdinalIgnoreCase)
+                 || string.Equals(pallet.OwnerOrderStatus, "ACCEPTED", StringComparison.OrdinalIgnoreCase))
             || pallet.Components.Count == 0
             || pallet.Components.Any(component =>
                 component.PlannedQty <= QtyTolerance
-                || Math.Abs(component.FilledQty - component.PlannedQty) > QtyTolerance))
+                || Math.Abs(component.FilledQty - component.PlannedQty) > QtyTolerance
+                || component.OrderLineOrderId != pallet.OwnerOrderId))
         {
             return false;
         }
 
-        if (facts.Outbound.Any(row => row.IsEffective && row.Qty > QtyTolerance)
+        if (facts.Stock.Any(row => Math.Abs(row.Qty) > QtyTolerance)
+            || facts.LedgerMovements.Count > 0
+            || facts.Outbound.Any(row => row.IsEffective && row.Qty > QtyTolerance)
             || facts.Reservations.Any(reservation =>
-                reservation.Qty > QtyTolerance
+                IsActiveCustomerReservation(reservation)
                 && (!context.SourceOrderId.HasValue || reservation.OrderId != context.SourceOrderId.Value)))
         {
             return false;

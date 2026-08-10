@@ -111,12 +111,38 @@ assert.strictEqual(
   "INTERNAL ready qty should use produced qty and cap it by ordered qty"
 );
 
+const buildOrderLineHuRowsBody = extractFunctionBody(appJs, "buildOrderLineHuRows");
+assert(
+  buildOrderLineHuRowsBody.includes("huPresentation") &&
+    buildOrderLineHuRowsBody.includes("productionTasks") &&
+    buildOrderLineHuRowsBody.includes("operationalHus"),
+  "order-line HU rows should use canonical hu_presentation branches"
+);
+assert.doesNotMatch(
+  buildOrderLineHuRowsBody,
+  /warehouseHuRows|warehouse_hu_rows|productionHuRows|production_hu_rows|shippedHuRows|shipped_hu_rows|fate/i,
+  "order-line HU rows should not restore the legacy production/warehouse/shipped merge"
+);
+[
+  "ensureOrderLineHuRow",
+  "addProductionHuRow",
+  "addWarehouseHuRow",
+  "addShippedHuRow",
+  "getOrderLineHuMovementText",
+].forEach(function (legacyHelper) {
+  assert(
+    !appJs.includes("function " + legacyHelper + "("),
+    legacyHelper + " should stay removed after canonical hu_presentation migration"
+  );
+});
+
 const html = hooks.renderOrderDetails(
   {
     number: "001",
     orderType: "CUSTOMER",
     partnerName: "Тестовый клиент",
     status: "IN_PROGRESS",
+    orderStatusPresentation: { code: "IN_PROGRESS", label: "В работе" },
   },
   [
     {
@@ -131,67 +157,65 @@ const html = hooks.renderOrderDetails(
       plannedPalletCount: 4,
       filledPalletCount: 1,
       coverage: { orderedQty: 1134, productionFilledQty: 378, missingQty: 756 },
-      productionHuRows: [
-        {
-          huCode: "HU-0002323",
-          palletStatus: "FILLED",
-          plannedQty: 378,
-          filledQty: 378,
-          prdRef: "PRD-2026-000028",
-        },
-        {
+      huPresentation: {
+        operationalHus: [
+          {
+            huCode: "HU-0002323",
+            qty: 378,
+            uom: "шт",
+            state: { code: "RESERVED", label: "Зарезервирован" },
+            location: { code: "001", name: "Склад ГП" },
+          },
+          {
           huCode: "HU-AWAITING",
-          palletStatus: "FILLED",
-          plannedQty: 300,
-          filledQty: 300,
-          prdRef: "PRD-2026-000029",
-          fateCode: "AWAITING_SHIPMENT",
-          fateLabel: "Ожидает отгрузки",
-          fateQty: 300,
-        },
-        {
+            qty: 300,
+            uom: "шт",
+            state: { code: "AWAITING_SHIPMENT", label: "Ожидает отгрузки" },
+            location: { code: "001", name: "Склад ГП" },
+          },
+          {
+            huCode: "HU-W1",
+            qty: 35,
+            uom: "шт",
+            state: { code: "RESERVED", label: "Зарезервирован" },
+            location: null,
+          },
+          {
+            huCode: "HU-FREE",
+            qty: 15,
+            uom: "шт",
+            state: { code: "ON_STOCK", label: "На складе" },
+            location: { code: "MAIN", name: "" },
+          },
+          {
+            huCode: "HU-S1",
+            qty: 20,
+            uom: "шт",
+            state: { code: "SHIPPED", label: "Отгружен" },
+            location: null,
+          },
+        ],
+        productionTasks: [
+          {
           huCode: "HU-0002324",
-          palletStatus: "PLANNED",
-          plannedQty: 378,
-          filledQty: 0,
-          prdRef: "PRD-2026-000027",
-        },
-        {
+            qty: 378,
+            uom: "шт",
+            state: { code: "AWAITING_FILL", label: "Ожидает наполнения" },
+          },
+          {
           huCode: "HU-PART",
-          palletStatus: "PLANNED",
-          plannedQty: 378,
-          filledQty: 189,
-          prdRef: "PRD-2026-000027",
-        },
-        {
+            qty: 378,
+            uom: "шт",
+            state: { code: "INCONSISTENT", label: "Несогласованное состояние" },
+          },
+          {
           huCode: "HU-BAD",
-          palletStatus: "CANCELLED",
-          plannedQty: 378,
-          filledQty: 0,
-          prdRef: "PRD-2026-000026",
-        },
-      ],
-      warehouseHuRows: [
-        {
-          huCode: "HU-0002323",
-          qty: 378,
-          locationCode: "001",
-          locationName: "Склад ГП",
-          isBoundToOrder: true,
-        },
-        {
-          huCode: "HU-W1",
-          qty: 35,
-          isBoundToOrder: true,
-        },
-        {
-          huCode: "HU-FREE",
-          qty: 15,
-          locationCode: "MAIN",
-          isBoundToOrder: false,
-        },
-      ],
-      shippedHuRows: [{ huCode: "HU-S1", qty: 20 }],
+            qty: 378,
+            uom: "шт",
+            state: { code: "INCONSISTENT", label: "Несогласованное состояние" },
+          },
+        ],
+      },
     },
     {
       orderLineId: 12,
@@ -219,37 +243,30 @@ assert.match(html, /Готово к отгрузке/);
 assert.doesNotMatch(html, /Отгружено/);
 assert.match(html, /data-order-line-toggle="0"/);
 assert.match(html, /order-line-hu-panel/);
-assert.match(html, /Производство \/ план паллет/);
-assert.doesNotMatch(html, /Производственные HU/);
-assert.doesNotMatch(html, /Складские HU по товару/);
-assert.strictEqual((html.match(/HU-0002323/g) || []).length, 1, "production+warehouse HU should render once");
-assert.match(cardFor("HU-0002323"), /Наполнена/);
-assert.match(cardFor("HU-0002323"), /План: 378 · Наполнено: 378/);
-assert.match(cardFor("HU-0002323"), /PRD: PRD-2026-000028/);
-assert.match(cardFor("HU-0002323"), /Движение: 001 — Склад ГП · 378 шт\./);
+assert.match(html, /Операционные HU/);
+assert.match(html, />Производство</);
+assert.strictEqual((html.match(/HU-0002323/g) || []).length, 1, "canonical HU should render once");
+assert.match(cardFor("HU-0002323"), /Зарезервирован/);
+assert.match(cardFor("HU-0002323"), /Кол-во: 378 шт/);
+assert.match(cardFor("HU-0002323"), /Локация: Склад ГП/);
 assert.match(cardFor("HU-AWAITING"), /Ожидает отгрузки/);
-assert.match(cardFor("HU-AWAITING"), /План: 300 · Наполнено: 300/);
-assert.match(cardFor("HU-AWAITING"), /Движение: —/);
 assert.strictEqual(
   (cardFor("HU-AWAITING").match(/Ожидает отгрузки/g) || []).length,
   1,
   "server-derived fate label must be the single primary status"
 );
 assert.match(cardFor("HU-0002324"), /Ожидает/);
-assert.match(cardFor("HU-0002324"), /План: 378 · Наполнено: 0/);
-assert.match(cardFor("HU-0002324"), /Движение: —/);
-assert.match(cardFor("HU-PART"), /Частично/);
-assert.match(cardFor("HU-BAD"), /Проблема/);
+assert.match(cardFor("HU-0002324"), /Ожидает наполнения/);
+assert.match(cardFor("HU-PART"), /Несогласованное состояние/);
+assert.match(cardFor("HU-BAD"), /Несогласованное состояние/);
 assert.match(html, /HU-W1/);
-assert.match(cardFor("HU-W1"), /Зарезервирована/);
-assert.match(cardFor("HU-W1"), /План: —/);
-assert.match(cardFor("HU-W1"), /Привязано к заказу: 35 шт\./);
-assert.doesNotMatch(cardFor("HU-W1"), /Наполнено:/);
+assert.match(cardFor("HU-W1"), /Зарезервирован/);
+assert.match(cardFor("HU-W1"), /Кол-во: 35 шт/);
 assert.match(cardFor("HU-FREE"), /На складе/);
-assert.match(cardFor("HU-FREE"), /На складе: 15 шт\./);
-assert.doesNotMatch(cardFor("HU-FREE"), /Наполнено:/);
-assert.match(cardFor("HU-S1"), /Отгружена/);
-assert.match(cardFor("HU-S1"), /Движение: отгружена · 20 шт\./);
+assert.match(cardFor("HU-FREE"), /Кол-во: 15 шт/);
+assert.match(cardFor("HU-S1"), /Отгружен/);
+assert.match(cardFor("HU-S1"), /Кол-во: 20 шт/);
+assert.doesNotMatch(html, /PRD:|Движение:|Привязано к заказу:|Частично/);
 assert.match(html, /Итог выпуска/);
 assert.match(html, /Заказано[\s\S]*1134/);
 assert.match(html, /Выпущено[\s\S]*378/);
@@ -271,11 +288,10 @@ assert(
   "storage bound HU helper should be read-only and fail-soft"
 );
 assert(
-  storageJs.includes("productionHuRows") &&
-    storageJs.includes("warehouseHuRows") &&
-    storageJs.includes("shippedHuRows") &&
+  storageJs.includes("huPresentation") &&
+    storageJs.includes("normalizeHuPresentation") &&
     storageJs.includes("coverage: normalizeCoverage"),
-  "TSD order line normalizer should preserve detailed HU rows from the single order-lines endpoint"
+  "TSD order line normalizer should preserve canonical HU presentation from the order-lines endpoint"
 );
 
 // --- Unified orders list presentation tests (no show-ready/show-done buttons) ---
@@ -307,7 +323,8 @@ const cardInWork = hooks.buildOrderListItemHtml({
   partnerId: 1,
   partnerName: "ООО «Ромашка»",
   status: "IN_PROGRESS",
-  statusDisplay: "В работе",
+  statusDisplay: "legacy-in-progress",
+  orderStatusPresentation: { code: "IN_PROGRESS", label: "В работе" },
   plannedDate: "2026-07-02",
 });
 assert(
@@ -341,11 +358,12 @@ const cardPartial = hooks.buildOrderListItemHtml({
   partnerId: 2,
   partnerName: "АО «Северный Альянс»",
   status: "IN_PROGRESS",
-  statusDisplay: "Частично отгружено",
+  statusDisplay: "legacy-partial",
+  orderStatusPresentation: { code: "PARTIALLY_SHIPPED", label: "Частично отгружен" },
   plannedDate: "2026-06-30",
 });
-assert(cardPartial.includes("Частично отгружено"), "partial-shipped card shows server status_display");
-assert(cardPartial.includes("order-status-progress"), "partial-shipped tone follows IN_PROGRESS code");
+assert(cardPartial.includes("Частично отгружен"), "partial-shipped card shows canonical server label");
+assert(cardPartial.includes("order-status-progress"), "partial-shipped tone follows canonical code");
 assert(!cardPartial.includes("В работе"), "partial-shipped must not be flattened to 'В работе'");
 
 const cardReady = hooks.buildOrderListItemHtml({
@@ -355,10 +373,11 @@ const cardReady = hooks.buildOrderListItemHtml({
   partnerId: 3,
   partnerName: "ИП Кузнецов",
   status: "ACCEPTED",
-  statusDisplay: "Готов",
+  statusDisplay: "legacy-ready",
+  orderStatusPresentation: { code: "ACCEPTED", label: "Готов к отгрузке" },
   plannedDate: "2026-06-29",
 });
-assert(cardReady.includes("order-status-accepted") && cardReady.includes("Готов"), "ACCEPTED renders accepted-tone pill");
+assert(cardReady.includes("order-status-accepted") && cardReady.includes("Готов к отгрузке"), "ACCEPTED renders canonical accepted presentation");
 
 const cardDone = hooks.buildOrderListItemHtml({
   orderId: 1019,
@@ -367,7 +386,8 @@ const cardDone = hooks.buildOrderListItemHtml({
   partnerId: 4,
   partnerName: "ООО «Балтийская ТГ»",
   status: "SHIPPED",
-  statusDisplay: "Выполнен",
+  statusDisplay: "legacy-shipped",
+  orderStatusPresentation: { code: "SHIPPED", label: "Выполнен" },
   plannedDate: "2026-06-24",
 });
 assert(cardDone.includes("order-status-shipped") && cardDone.includes("Выполнен"), "SHIPPED renders shipped-tone pill");
@@ -377,7 +397,8 @@ const cardInternal = hooks.buildOrderListItemHtml({
   number: "1031",
   orderType: "INTERNAL",
   status: "IN_PROGRESS",
-  statusDisplay: "В работе",
+  statusDisplay: "legacy-internal",
+  orderStatusPresentation: { code: "IN_PROGRESS", label: "В работе" },
   plannedDate: "2026-06-27",
 });
 assert(
@@ -394,7 +415,7 @@ const cardLong = hooks.buildOrderListItemHtml({
   partnerId: 5,
   partnerName: longName,
   status: "IN_PROGRESS",
-  statusDisplay: "В работе",
+  orderStatusPresentation: { code: "IN_PROGRESS", label: "В работе" },
   plannedDate: "2026-06-28",
 });
 assert(cardLong.includes(longName), "long partner name is rendered in full (wrapping handled by CSS)");
@@ -406,7 +427,7 @@ const cardCustomerNoPartner = hooks.buildOrderListItemHtml({
   orderType: "CUSTOMER",
   partnerName: "",
   status: "ACCEPTED",
-  statusDisplay: "Готов",
+  orderStatusPresentation: { code: "ACCEPTED", label: "Готов к отгрузке" },
   plannedDate: null,
 });
 assert(cardCustomerNoPartner.includes("order-type-customer") && cardCustomerNoPartner.includes("Клиентский"),
@@ -423,7 +444,7 @@ const cardInternalNoPartner = hooks.buildOrderListItemHtml({
   orderType: "INTERNAL",
   partnerName: "",
   status: "IN_PROGRESS",
-  statusDisplay: "В работе",
+  orderStatusPresentation: { code: "IN_PROGRESS", label: "В работе" },
   plannedDate: "2026-06-20",
 });
 assert(cardInternalNoPartner.includes("order-type-internal") && cardInternalNoPartner.includes("Внутренний заказ"),
@@ -454,43 +475,51 @@ assert.strictEqual(
   "typeless order with a partner falls back to customer"
 );
 
-// Shared status helper — regression for all three consumers (list, order details, filling list).
-const sInProgress = hooks.getOrderStatusInfoForOrder({ status: "IN_PROGRESS" });
-assert.strictEqual(sInProgress.label, "В работе", "IN_PROGRESS without display falls back to 'В работе'");
+// Shared status helper — all main consumers use only server-owned presentation.
+const sInProgress = hooks.getOrderStatusInfoForOrder({
+  status: "SHIPPED",
+  statusDisplay: "legacy-wrong",
+  orderStatusPresentation: { code: "IN_PROGRESS", label: "В работе" },
+});
+assert.strictEqual(sInProgress.label, "В работе", "canonical label wins over raw/legacy fields");
 assert(sInProgress.className.includes("order-status-progress"));
 
-const sPartial = hooks.getOrderStatusInfoForOrder({ status: "IN_PROGRESS", statusDisplay: "Частично отгружено" });
-assert.strictEqual(sPartial.label, "Частично отгружено", "IN_PROGRESS uses server display when present");
+const sPartial = hooks.getOrderStatusInfoForOrder({
+  orderStatusPresentation: { code: "PARTIALLY_SHIPPED", label: "Частично отгружен" },
+});
+assert.strictEqual(sPartial.label, "Частично отгружен");
 assert(sPartial.className.includes("order-status-progress"));
 
-const sAccepted = hooks.getOrderStatusInfoForOrder({ status: "ACCEPTED", statusDisplay: "Готов" });
-assert.strictEqual(sAccepted.label, "Готов");
+const sAccepted = hooks.getOrderStatusInfoForOrder({
+  orderStatusPresentation: { code: "ACCEPTED", label: "Готов к отгрузке" },
+});
+assert.strictEqual(sAccepted.label, "Готов к отгрузке");
 assert(sAccepted.className.includes("order-status-accepted"));
 
-const sShipped = hooks.getOrderStatusInfoForOrder({ status: "SHIPPED", statusDisplay: "Выполнен" });
+const sShipped = hooks.getOrderStatusInfoForOrder({
+  orderStatusPresentation: { code: "SHIPPED", label: "Выполнен" },
+});
 assert.strictEqual(sShipped.label, "Выполнен");
 assert(sShipped.className.includes("order-status-shipped"));
 
-const sToneByCode = hooks.getOrderStatusInfoForOrder({ status: "ACCEPTED", statusDisplay: "Частично отгружено" });
-assert.strictEqual(sToneByCode.label, "Частично отгружено", "label comes from server display");
-assert(
-  sToneByCode.className.includes("order-status-accepted"),
-  "tone must follow the canonical status code, not the display text"
-);
+const sMissingCanonical = hooks.getOrderStatusInfoForOrder({ status: "ACCEPTED", statusDisplay: "Готов" });
+assert.strictEqual(sMissingCanonical.label, "Неизвестно", "legacy fields are not a main-status fallback");
+assert(sMissingCanonical.className.includes("order-status-neutral"));
 
-// Consumer: read-only order details renders the same server status_display.
+// Consumer: read-only order details renders the same canonical server presentation.
 const detailsPartial = hooks.renderOrderDetails(
   {
     number: "777",
     orderType: "CUSTOMER",
     partnerName: "Клиент",
     status: "IN_PROGRESS",
-    statusDisplay: "Частично отгружено",
+    statusDisplay: "legacy-partial",
+    orderStatusPresentation: { code: "PARTIALLY_SHIPPED", label: "Частично отгружен" },
   },
   [],
   []
 );
-assert(detailsPartial.includes("Частично отгружено"), "order details consumer shows server status_display");
+assert(detailsPartial.includes("Частично отгружен"), "order details consumer shows canonical server label");
 // Consumer: filling list delegates to the same helper (covered by app.filling.test.js status mapping assertion).
 
 console.log("TSD order details presentation tests passed.");

@@ -44,6 +44,11 @@ public static class CustomerOrderHuPickerRules
             return "HU…";
         }
 
+        if (IsFullyShipped(line))
+        {
+            return "Отгружено";
+        }
+
         if (selectedHuCount > 0)
         {
             return $"HU ({selectedHuCount})";
@@ -72,6 +77,11 @@ public static class CustomerOrderHuPickerRules
         if (awaitingSave)
         {
             return "Сохраните заказ, чтобы привязать HU.";
+        }
+
+        if (IsFullyShipped(line))
+        {
+            return "Строка полностью отгружена.";
         }
 
         var manualRemaining = ComputeManualBindableRemaining(line, boundHuQty);
@@ -111,7 +121,8 @@ public static class CustomerOrderHuPickerRules
         if (!hasOrderId
             || awaitingSave
             || line.ItemId <= 0
-            || line.QtyOrdered <= QtyTolerance)
+            || line.QtyOrdered <= QtyTolerance
+            || IsFullyShipped(line))
         {
             return false;
         }
@@ -124,6 +135,10 @@ public static class CustomerOrderHuPickerRules
         var manualRemaining = ComputeManualBindableRemaining(line, boundHuQty);
         return manualRemaining > QtyTolerance || boundHuQty > QtyTolerance;
     }
+
+    public static bool IsFullyShipped(OrderLineView line) =>
+        line.QtyOrdered > QtyTolerance
+        && line.QtyShipped + QtyTolerance >= line.QtyOrdered;
 
     private static string FormatQty(double qty) =>
         qty.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);

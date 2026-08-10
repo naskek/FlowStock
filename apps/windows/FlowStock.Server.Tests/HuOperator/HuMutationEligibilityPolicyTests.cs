@@ -117,6 +117,61 @@ public sealed class HuMutationEligibilityPolicyTests
     }
 
     [Fact]
+    public void Reservation_WholeShippedHuWithMatchingHistoricalReservation_IsRejectedWithoutStock()
+    {
+        var decision = HuMutationEligibilityPolicy.Evaluate(
+            new HuOperatorFacts
+            {
+                HuCode = "HU-SHIPPED-HISTORY",
+                Reservations =
+                [
+                    new HuOperatorReservationFact
+                    {
+                        OrderId = 77,
+                        OrderRef = "077",
+                        OrderType = "CUSTOMER",
+                        OrderStatus = "ACCEPTED",
+                        OrderLineId = 701,
+                        ItemId = 10,
+                        Qty = 100
+                    }
+                ],
+                Outbound =
+                [
+                    new HuOperatorOutboundFact
+                    {
+                        DocumentId = 91,
+                        DocumentRef = "OUT-91",
+                        DocumentStatus = "CLOSED",
+                        OrderId = 77,
+                        OrderRef = "077",
+                        OrderType = "CUSTOMER",
+                        OrderLineId = 701,
+                        ItemId = 10,
+                        Qty = 100
+                    }
+                ],
+                LedgerMovements =
+                [
+                    Movement(1, 10, "PRODUCTION_RECEIPT", 100),
+                    Movement(2, 91, "OUTBOUND", -100)
+                ]
+            },
+            new HuMutationEligibilityContext
+            {
+                Operation = HuMutationOperation.ReserveOrBind,
+                TargetOrderId = 77,
+                RequestedComponents = [new HuMutationRequestedComponent(10, 100, 5)]
+            });
+
+        Assert.False(decision.Allowed);
+        Assert.Contains(
+            decision.Reasons,
+            reason => reason.Code == HuMutationEligibilityReasonCode.HuNotInPhysicalStock);
+    }
+
+
+    [Fact]
     public void ReleaseProducedStock_CompleteFilledProductionHuWithoutLedger_IsAllowed()
     {
         var decision = HuMutationEligibilityPolicy.Evaluate(
@@ -130,6 +185,8 @@ public sealed class HuMutationEligibilityPolicyTests
                         PalletId = 10,
                         Status = ProductionPalletStatus.Filled,
                         OwnerOrderId = 77,
+                        OwnerOrderType = "CUSTOMER",
+                        OwnerOrderStatus = "IN_PROGRESS",
                         Components =
                         [
                             new HuOperatorComponentFact
@@ -152,6 +209,95 @@ public sealed class HuMutationEligibilityPolicyTests
             });
 
         Assert.True(decision.Allowed);
+    }
+
+    [Fact]
+    public void ReleaseProducedStock_NonFilledPalletWithComponentProgress_FailsClosed()
+    {
+        var decision = HuMutationEligibilityPolicy.Evaluate(
+            new HuOperatorFacts
+            {
+                HuCode = "HU-STATUS-FILL-MISMATCH",
+                ProductionPallets =
+                [
+                    new HuOperatorProductionPalletFact
+                    {
+                        PalletId = 10,
+                        Status = ProductionPalletStatus.Planned,
+                        OwnerOrderId = 77,
+                        OwnerOrderType = "CUSTOMER",
+                        OwnerOrderStatus = "IN_PROGRESS",
+                        Components =
+                        [
+                            new HuOperatorComponentFact
+                            {
+                                OrderLineOrderId = 77,
+                                ItemId = 10,
+                                PlannedQty = 100,
+                                FilledQty = 100
+                            }
+                        ]
+                    }
+                ]
+            },
+            new HuMutationEligibilityContext
+            {
+                Operation = HuMutationOperation.ReleaseProducedStock,
+                SourceOrderId = 77,
+                RequestedComponents = [new HuMutationRequestedComponent(10, 100)]
+            });
+
+        Assert.False(decision.Allowed);
+        Assert.Contains(
+            decision.Reasons,
+            reason => reason.Code == HuMutationEligibilityReasonCode.HuInconsistent);
+    }
+
+    [Fact]
+    public void ReleaseProducedStock_RecoveryWithAnyAdditionalConflict_FailsClosed()
+    {
+        var secondPallet = BuildRecoveryPallet(palletId: 11);
+        var cases = new (string Name, HuOperatorFacts Facts, HuMutationEligibilityContext Context)[]
+        {
+            ("positive balance", RecoveryFacts(stock:
+                [new HuOperatorStockFact { ItemId = 10, LocationId = 5, Qty = 1 }]), RecoveryContext()),
+            ("negative balance", RecoveryFacts(stock:
+                [new HuOperatorStockFact { ItemId = 10, LocationId = 5, Qty = -1 }]), RecoveryContext()),
+            ("multiple active pallets", RecoveryFacts(pallets: [BuildRecoveryPallet(), secondPallet]), RecoveryContext()),
+            ("ambiguous ownership", RecoveryFacts(componentOwnerOrderId: null), RecoveryContext()),
+            ("non-customer ownership", RecoveryFacts(ownerOrderType: "INTERNAL"), RecoveryContext()),
+            ("incomplete composition", RecoveryFacts(filledQty: 99), RecoveryContext()),
+            ("requested composition mismatch", RecoveryFacts(), RecoveryContext(requestedQty: 99)),
+            ("foreign reservation", RecoveryFacts(reservations:
+                [new HuOperatorReservationFact
+                {
+                    OrderId = 88,
+                    OrderRef = "ORD-88",
+                    OrderType = "CUSTOMER",
+                    OrderStatus = "ACCEPTED",
+                    ItemId = 10,
+                    Qty = 100
+                }]), RecoveryContext()),
+            ("other active draft outbound", RecoveryFacts(outbound:
+                [new HuOperatorOutboundFact
+                {
+                    DocumentId = 91,
+                    DocumentRef = "OUT-91",
+                    DocumentStatus = "DRAFT",
+                    OrderId = 88,
+                    ItemId = 10,
+                    Qty = 100,
+                    IsEffective = true
+                }]), RecoveryContext()),
+            ("ledger lineage ambiguity", RecoveryFacts(movements:
+                [Movement(1, 90, "INVENTORY_CORRECTION", 0)]), RecoveryContext())
+        };
+
+        foreach (var current in cases)
+        {
+            var decision = HuMutationEligibilityPolicy.Evaluate(current.Facts, current.Context);
+            Assert.False(decision.Allowed, current.Name);
+        }
     }
 
     [Fact]
@@ -284,6 +430,61 @@ public sealed class HuMutationEligibilityPolicyTests
                 Qty = component.Qty
             })
             .ToArray()
+    };
+
+    private static HuOperatorFacts RecoveryFacts(
+        IReadOnlyList<HuOperatorStockFact>? stock = null,
+        IReadOnlyList<HuOperatorProductionPalletFact>? pallets = null,
+        IReadOnlyList<HuOperatorReservationFact>? reservations = null,
+        IReadOnlyList<HuOperatorOutboundFact>? outbound = null,
+        IReadOnlyList<HuOperatorLedgerMovementFact>? movements = null,
+        long? componentOwnerOrderId = 77,
+        string ownerOrderType = "CUSTOMER",
+        double filledQty = 100) => new()
+    {
+        HuCode = "HU-RELEASE",
+        Stock = stock ?? Array.Empty<HuOperatorStockFact>(),
+        ProductionPallets = pallets ??
+        [
+            BuildRecoveryPallet(
+                componentOwnerOrderId: componentOwnerOrderId,
+                ownerOrderType: ownerOrderType,
+                filledQty: filledQty)
+        ],
+        Reservations = reservations ?? Array.Empty<HuOperatorReservationFact>(),
+        Outbound = outbound ?? Array.Empty<HuOperatorOutboundFact>(),
+        LedgerMovements = movements ?? Array.Empty<HuOperatorLedgerMovementFact>()
+    };
+
+    private static HuOperatorProductionPalletFact BuildRecoveryPallet(
+        long palletId = 10,
+        long? componentOwnerOrderId = 77,
+        string ownerOrderType = "CUSTOMER",
+        double filledQty = 100) => new()
+    {
+        PalletId = palletId,
+        Status = ProductionPalletStatus.Filled,
+        OwnerOrderId = 77,
+        OwnerOrderType = ownerOrderType,
+        OwnerOrderStatus = "IN_PROGRESS",
+        Components =
+        [
+            new HuOperatorComponentFact
+            {
+                OrderLineId = 701,
+                OrderLineOrderId = componentOwnerOrderId,
+                ItemId = 10,
+                PlannedQty = 100,
+                FilledQty = filledQty
+            }
+        ]
+    };
+
+    private static HuMutationEligibilityContext RecoveryContext(double requestedQty = 100) => new()
+    {
+        Operation = HuMutationOperation.ReleaseProducedStock,
+        SourceOrderId = 77,
+        RequestedComponents = [new HuMutationRequestedComponent(10, requestedQty)]
     };
 
     private static HuOperatorOutboundFact DraftOutbound(long documentId) => new()

@@ -21,6 +21,7 @@ public static class OrderLineCanonicalPresentation
         target.FilledPalletCount = source.FilledPalletCount;
         target.PlannedPalletQty = source.PlannedPalletQty;
         target.FilledPalletQty = source.FilledPalletQty;
+        target.HuPresentation = source.HuPresentation;
         target.LineFullyShipped = source.LineFullyShipped;
         target.HidePalletFillIndicator = source.HidePalletFillIndicator;
         target.ShowPalletCompletedIcon = source.ShowPalletCompletedIcon;

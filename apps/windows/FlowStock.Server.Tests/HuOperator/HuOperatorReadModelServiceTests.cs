@@ -7,7 +7,7 @@ namespace FlowStock.Server.Tests.HuOperator;
 public sealed class HuOperatorReadModelServiceTests
 {
     [Fact]
-    public void OrdinaryOrderProjection_HidesLabelNotPrintedAndShowsAwaitingFill()
+    public void OrdinaryOrderProjection_MapsPlannedAndPrintedToAwaitingFill()
     {
         var store = new FakeFactsStore
         {
@@ -23,10 +23,15 @@ public sealed class HuOperatorReadModelServiceTests
 
         var line = Assert.Single(result);
         Assert.Equal(701, line.Key);
-        var production = Assert.Single(line.Value.ProductionTasks);
-        Assert.Equal("HU-PRINTED", production.HuCode);
-        Assert.Equal(ProductionTaskSemanticCode.AwaitingFill, production.State.Code);
-        Assert.Equal("Ожидает наполнения", production.State.Label);
+        Assert.Equal(2, line.Value.ProductionTasks.Count);
+        Assert.Equal(
+            new[] { "HU-PLANNED", "HU-PRINTED" },
+            line.Value.ProductionTasks.Select(row => row.HuCode).ToArray());
+        Assert.All(line.Value.ProductionTasks, production =>
+        {
+            Assert.Equal(ProductionTaskSemanticCode.AwaitingFill, production.State.Code);
+            Assert.Equal("Ожидает наполнения", production.State.Label);
+        });
         Assert.Empty(line.Value.OperationalHus);
         Assert.Equal(1, store.OrderCalls);
     }
@@ -82,7 +87,7 @@ public sealed class HuOperatorReadModelServiceTests
     }
 
     [Fact]
-    public void SourceOrderProjection_KeepsHuReservedForAnotherOrderWithExplicitTargetLabel()
+    public void SourceOrderProjection_KeepsCanonicalReservedLabelAndExplicitTargetData()
     {
         var production = ProductionFacts("HU-TRANSFERRED", ProductionPalletStatus.Filled, orderLineId: 701);
         var pallet = production.ProductionPallets.Single();
@@ -154,7 +159,7 @@ public sealed class HuOperatorReadModelServiceTests
         var row = Assert.Single(result[701].OperationalHus);
         var targetRow = Assert.Single(targetResult[801].OperationalHus);
         Assert.Equal(OperationalHuSemanticCode.Reserved, row.State.Code);
-        Assert.Equal("Зарезервирован для заказа ORD-88", row.State.Label);
+        Assert.Equal("Зарезервирован", row.State.Label);
         Assert.Equal(100, row.Qty!.Value, 3);
         Assert.Null(row.SourceProductionOrder);
         Assert.Equal(77, targetRow.SourceProductionOrder?.OrderId);
@@ -709,12 +714,12 @@ public sealed class HuOperatorReadModelServiceTests
         Assert.Null(result.OperatorPresentation.ProductionTask);
         var operational = Assert.IsType<OperationalHuPresentation>(result.OperatorPresentation.OperationalHu);
         Assert.Equal(OperationalHuSemanticCode.Reserved, operational.State.Code);
-        Assert.Equal("Зарезервирован для заказа ORD-77", operational.State.Label);
+        Assert.Equal("Зарезервирован", operational.State.Label);
         Assert.True(result.HistoryAvailable);
     }
 
     [Fact]
-    public void ProductionProjection_ExposesLabelNotPrintedFromSameClassification()
+    public void ProductionProjection_UsesSameAwaitingFillClassification()
     {
         var store = new FakeFactsStore
         {
@@ -725,10 +730,11 @@ public sealed class HuOperatorReadModelServiceTests
         var ordinary = service.GetForOrder(77);
         var production = service.GetProductionForOrder(77);
 
-        Assert.Empty(ordinary);
+        var ordinaryTask = Assert.Single(Assert.Single(ordinary).Value.ProductionTasks);
         var task = Assert.Single(production);
-        Assert.Equal(ProductionTaskSemanticCode.LabelNotPrinted, task.State.Code);
-        Assert.Equal("Этикетка не напечатана", task.State.Label);
+        Assert.Equal(ordinaryTask.State, task.State);
+        Assert.Equal(ProductionTaskSemanticCode.AwaitingFill, task.State.Code);
+        Assert.Equal("Ожидает наполнения", task.State.Label);
     }
 
     [Fact]

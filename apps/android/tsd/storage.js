@@ -264,6 +264,43 @@
     };
   }
 
+  function normalizeOperatorStatusPresentation(value) {
+    var row = value && typeof value === "object" ? value : {};
+    return {
+      code: String(row.code || "").trim().toUpperCase(),
+      label: String(row.label || "").trim(),
+    };
+  }
+
+  function normalizeHuPresentation(value) {
+    var row = value && typeof value === "object" ? value : {};
+    var productionRows = row.production_tasks || row.productionTasks;
+    var operationalRows = row.operational_hus || row.operationalHus;
+    return {
+      productionTasks: (Array.isArray(productionRows) ? productionRows : []).map(function (task) {
+        return {
+          huCode: String(task.hu_code || task.huCode || "").trim(),
+          qty: Number(task.qty) || 0,
+          uom: String(task.uom || ""),
+          state: normalizeOperatorStatusPresentation(task.state),
+        };
+      }).filter(function (task) { return !!task.huCode; }),
+      operationalHus: (Array.isArray(operationalRows) ? operationalRows : []).map(function (hu) {
+        var location = hu.location && typeof hu.location === "object" ? hu.location : null;
+        return {
+          huCode: String(hu.hu_code || hu.huCode || "").trim(),
+          qty: hu.qty == null ? null : Number(hu.qty) || 0,
+          uom: String(hu.uom || ""),
+          state: normalizeOperatorStatusPresentation(hu.state),
+          location: location ? {
+            code: String(location.code || ""),
+            name: String(location.name || ""),
+          } : null,
+        };
+      }).filter(function (hu) { return !!hu.huCode; }),
+    };
+  }
+
   function normalizeApiOrder(order) {
     if (!order || order.id == null) {
       return null;
@@ -285,6 +322,9 @@
       shippedAt: order.shipped_at || order.shippedAt || null,
       status: order.order_status || order.orderStatus || order.status || order.status_display || order.statusDisplay || null,
       statusDisplay: order.order_status_display || order.orderStatusDisplay || order.status_display || order.statusDisplay || order.status || null,
+      orderStatusPresentation: normalizeOperatorStatusPresentation(
+        order.order_status_presentation || order.orderStatusPresentation
+      ),
       hasShipmentRemaining: order.has_shipment_remaining === true || order.hasShipmentRemaining === true,
       hasProductionPalletPlan:
         order.has_production_pallet_plan === true || order.hasProductionPalletPlan === true,
@@ -449,6 +489,7 @@
       productionHuRows: normalizeRows(line.production_hu_rows || line.productionHuRows, normalizeProductionHuRow),
       warehouseHuRows: normalizeRows(line.warehouse_hu_rows || line.warehouseHuRows, normalizeWarehouseHuRow),
       shippedHuRows: normalizeRows(line.shipped_hu_rows || line.shippedHuRows, normalizeShippedHuRow),
+      huPresentation: normalizeHuPresentation(line.hu_presentation || line.huPresentation),
       coverage: normalizeCoverage(line.coverage),
     };
   }
@@ -1015,6 +1056,10 @@
       orderRef: String(pickOutboundField(row, "orderRef", "order_ref") || ""),
       partnerName: String(pickOutboundField(row, "partnerName", "partner_name") || ""),
       status: String((row && row.status) || ""),
+      orderStatus: String(pickOutboundField(row, "orderStatus", "order_status") || ""),
+      orderStatusPresentation: normalizeOperatorStatusPresentation(
+        pickOutboundField(row, "orderStatusPresentation", "order_status_presentation")
+      ),
       expectedHuCount: Number(pickOutboundField(row, "expectedHuCount", "expected_hu_count")) || 0,
       pickedHuCount: Number(pickOutboundField(row, "pickedHuCount", "picked_hu_count")) || 0,
       orderedQty: Number(pickOutboundField(row, "orderedQty", "ordered_qty")) || 0,
@@ -1456,6 +1501,9 @@
       orderTypeDisplay: String(row.order_type_display || ""),
       orderStatus: String(row.order_status || ""),
       orderStatusDisplay: String(row.order_status_display || ""),
+      orderStatusPresentation: normalizeOperatorStatusPresentation(
+        row.order_status_presentation || row.orderStatusPresentation
+      ),
       partnerName: String(row.partner_name || ""),
       prdDocId: row.prd_doc_id != null ? Number(row.prd_doc_id) || null : null,
       prdDocRef: String(row.prd_doc_ref || ""),
@@ -1602,6 +1650,9 @@
       orderTypeDisplay: String(value("order_type_display", "orderTypeDisplay") || ""),
       orderStatus: String(value("order_status", "orderStatus") || ""),
       orderStatusDisplay: String(value("order_status_display", "orderStatusDisplay") || ""),
+      orderStatusPresentation: normalizeOperatorStatusPresentation(
+        value("order_status_presentation", "orderStatusPresentation")
+      ),
       partnerName: String(value("partner_name", "partnerName") || ""),
       prdDocId: Number(value("prd_doc_id", "prdDocId")) || 0,
       prdDocRef: String(value("prd_doc_ref", "prdDocRef") || ""),
@@ -2037,6 +2088,7 @@
       state: String(row.state || ""),
       title: String(row.title || ""),
       description: String(row.description || ""),
+      operatorPresentation: row.operator_presentation || row.operatorPresentation || null,
       cardAction: normalizeTsdHuAction(row.card_action || row.cardAction),
       documentActions: Array.isArray(row.document_actions || row.documentActions)
         ? (row.document_actions || row.documentActions).map(normalizeTsdHuAction).filter(Boolean)

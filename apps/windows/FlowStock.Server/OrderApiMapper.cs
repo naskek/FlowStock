@@ -29,6 +29,10 @@ public static class OrderApiMapper
         var statusDisplay = shipmentProgress?.IsPartiallyShipped == true
             ? "Частично отгружено"
             : OrderStatusMapper.StatusToDisplayName(order.Status, order.Type);
+        var statusPresentation = OrderOperatorStatusResolver.Resolve(
+            order.Status,
+            order.Type,
+            shipmentProgress);
 
         return new
         {
@@ -40,6 +44,11 @@ public static class OrderApiMapper
             partner_code = order.PartnerCode,
             due_date = order.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             order_status = OrderStatusMapper.StatusToString(order.Status),
+            order_status_presentation = new
+            {
+                code = statusPresentation.Code,
+                label = statusPresentation.Label
+            },
             order_status_display = statusDisplay,
             status = statusDisplay,
             comment = order.Comment,

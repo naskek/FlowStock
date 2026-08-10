@@ -20,6 +20,7 @@ public sealed class OrderLineView : INotifyPropertyChanged
     private bool _isProductionPalletGroupEditable = true;
     private IReadOnlyList<OrderLineHuDisplayEntry> _productionHuDisplayEntries = Array.Empty<OrderLineHuDisplayEntry>();
     private IReadOnlyList<OrderLineHuDisplayEntry> _huFateDisplayEntries = Array.Empty<OrderLineHuDisplayEntry>();
+    private OrderLineHuPresentation? _huPresentation;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -90,8 +91,25 @@ public sealed class OrderLineView : INotifyPropertyChanged
         }
     }
 
-    public IReadOnlyList<OrderLineHuDisplayRow> HuDisplayRows =>
-        ProductionHuDisplayEntries
+    public OrderLineHuPresentation? HuPresentation
+    {
+        get => _huPresentation;
+        set
+        {
+            _huPresentation = value;
+            OnPropertyChanged(nameof(HuPresentation));
+            OnPropertyChanged(nameof(OperatorHuDisplayRows));
+            OnPropertyChanged(nameof(HuDisplayRows));
+        }
+    }
+
+    public IReadOnlyList<OrderLineHuDisplayRow> OperatorHuDisplayRows => HuPresentation == null
+        ? Array.Empty<OrderLineHuDisplayRow>()
+        : BuildCanonicalHuDisplayRows(HuPresentation);
+
+    public IReadOnlyList<OrderLineHuDisplayRow> HuDisplayRows => HuPresentation != null
+        ? OperatorHuDisplayRows
+        : ProductionHuDisplayEntries
             .Where(entry => string.Equals(entry.Label, "план", StringComparison.OrdinalIgnoreCase)
                             || string.Equals(entry.Label, "напечатано", StringComparison.OrdinalIgnoreCase)
                             || (string.Equals(entry.Label, "наполнено", StringComparison.OrdinalIgnoreCase)
@@ -110,6 +128,49 @@ public sealed class OrderLineView : INotifyPropertyChanged
                 entry.SortOrder <= 0 ? 2 : entry.SortOrder,
                 entry.FateSuffix))
             .ToArray();
+
+    private static IReadOnlyList<OrderLineHuDisplayRow> BuildCanonicalHuDisplayRows(
+        OrderLineHuPresentation presentation) => presentation.OperationalHus
+            .Select(entry => new OrderLineHuDisplayRow(
+                entry.HuCode,
+                GetCanonicalStateLabel(entry.State),
+                entry.Qty ?? 0d,
+                IsBold: false,
+                GetCanonicalHuSortOrder(entry.State.Code),
+                FateSuffix: null,
+                StateCode: GetCanonicalStateCode(entry.State)))
+            .Concat(presentation.ProductionTasks.Select(entry => new OrderLineHuDisplayRow(
+                entry.HuCode,
+                GetCanonicalStateLabel(entry.State),
+                entry.Qty,
+                IsBold: false,
+                GetCanonicalHuSortOrder(entry.State.Code),
+                FateSuffix: null,
+                StateCode: GetCanonicalStateCode(entry.State))))
+            .OrderBy(entry => entry.SortOrder)
+            .ThenBy(entry => entry.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private static string GetCanonicalStateCode(HuSemanticStatePresentation? state) =>
+        string.IsNullOrWhiteSpace(state?.Code) || string.IsNullOrWhiteSpace(state.Label)
+            ? "UNKNOWN"
+            : state.Code;
+
+    private static string GetCanonicalStateLabel(HuSemanticStatePresentation? state) =>
+        string.IsNullOrWhiteSpace(state?.Code) || string.IsNullOrWhiteSpace(state.Label)
+            ? "—"
+            : state.Label;
+
+    private static int GetCanonicalHuSortOrder(string? code) => code?.Trim().ToUpperInvariant() switch
+    {
+        OperationalHuSemanticCode.Inconsistent => 0,
+        ProductionTaskSemanticCode.AwaitingFill => 1,
+        OperationalHuSemanticCode.Reserved => 2,
+        OperationalHuSemanticCode.AwaitingShipment => 3,
+        OperationalHuSemanticCode.OnStock => 4,
+        OperationalHuSemanticCode.Shipped => 5,
+        _ => 6
+    };
 
     public double QtyShipped
     {
@@ -211,6 +272,7 @@ public sealed class OrderLineView : INotifyPropertyChanged
         OnPropertyChanged(nameof(ProductionHuCodes));
         OnPropertyChanged(nameof(ProductionHuDisplayEntries));
         OnPropertyChanged(nameof(HuFateDisplayEntries));
+        OnPropertyChanged(nameof(OperatorHuDisplayRows));
         OnPropertyChanged(nameof(HuDisplayRows));
         OnPropertyChanged(nameof(ProductionPalletGroup));
         OnPropertyChanged(nameof(MixedPalletGroupNumber));
@@ -272,7 +334,8 @@ public sealed record OrderLineHuDisplayRow(
     double Qty,
     bool IsBold,
     int SortOrder,
-    string? FateSuffix = null)
+    string? FateSuffix = null,
+    string? StateCode = null)
 {
     public string DisplayText => string.IsNullOrWhiteSpace(FateSuffix)
         ? $"{HuCode} · {Label} · {Qty:0.###}"

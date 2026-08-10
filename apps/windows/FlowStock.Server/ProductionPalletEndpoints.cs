@@ -926,6 +926,11 @@ public static class ProductionPalletEndpoints
             order_type_display = order.OrderTypeDisplay,
             order_status = order.OrderStatus,
             order_status_display = order.OrderStatusDisplay,
+            order_status_presentation = new
+            {
+                code = order.OrderStatusPresentation.Code,
+                label = order.OrderStatusPresentation.Label
+            },
             partner_name = order.PartnerName,
             prd_doc_id = order.PrdDocId,
             prd_doc_ref = order.PrdDocRef,
@@ -951,6 +956,11 @@ public static class ProductionPalletEndpoints
             order_type_display = context.OrderTypeDisplay,
             order_status = context.OrderStatus,
             order_status_display = context.OrderStatusDisplay,
+            order_status_presentation = new
+            {
+                code = context.OrderStatusPresentation.Code,
+                label = context.OrderStatusPresentation.Label
+            },
             partner_name = context.PartnerName,
             prd_doc_id = context.PrdDocId,
             prd_doc_ref = context.PrdDocRef,

@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FlowStock.Core.Models;
@@ -70,9 +71,8 @@ public sealed class ProductionPalletAutoCloseTests
         var mixed = Assert.Single(plannedPallets.Where(pallet => pallet.IsMixedPallet));
         var single = Assert.Single(plannedPallets.Where(pallet => !pallet.IsMixedPallet));
 
-        var mixedFill = service.FillMixedComponents(
+        var mixedFill = service.Fill(
             mixed.HuCode,
-            mixed.Lines.Select(line => line.Id).ToArray(),
             "TSD-01",
             orderId: 102,
             prdDocId: plan.PrdDocId);
@@ -144,7 +144,7 @@ public sealed class ProductionPalletAutoCloseTests
     }
 
     [Fact]
-    public void FillMixedComponents_PartialProgress_DoesNotWriteLedgerOrFillPallet()
+    public void FillMixedComponents_PartialRequest_IsRejectedWithoutPersistedChanges()
     {
         var harness = CreateCustomerMixedPalletHarness();
         var service = CreatePalletService(harness);
@@ -159,21 +159,42 @@ public sealed class ProductionPalletAutoCloseTests
             orderId: 102,
             prdDocId: plan.PrdDocId);
 
-        Assert.True(result.Success, result.Error);
-        Assert.Equal(ProductionPalletStatus.PartiallyFilled, result.EffectiveStatus);
-        Assert.False(result.LedgerWritten);
-        Assert.False(result.PrdAutoClosed);
+        Assert.False(result.Success);
+        Assert.Equal(ProductionFillingErrorCodes.PartialComponentFillNotAllowed, result.Error);
         Assert.Empty(harness.LedgerEntries);
         Assert.Equal(DocStatus.Draft, harness.GetDoc(plan.PrdDocId).Status);
         var pallet = harness.Store.GetProductionPalletByHu(mixed.HuCode)!;
         Assert.NotEqual(ProductionPalletStatus.Filled, pallet.Status);
-        Assert.True(pallet.Lines.Single(line => line.Id == component.Id).IsCompleted);
-        Assert.NotNull(pallet.Lines.Single(line => line.Id == component.Id).FilledAt);
-        Assert.Contains(pallet.Lines, line => !line.IsCompleted);
+        Assert.All(pallet.Lines, line => Assert.False(line.IsCompleted));
     }
 
     [Fact]
-    public async Task FillMixedComponents_PartialProgress_RemainsInTsdQueueContextAndScan()
+    public void FillPallet_WithPersistedHistoricalPartialProgress_IsRejectedWithoutFurtherChanges()
+    {
+        var harness = CreateCustomerMixedPalletHarness();
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(102);
+        var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
+        var firstComponent = mixed.Lines.OrderBy(line => line.Id).First();
+        harness.Store.MarkProductionPalletComponentsFilled(mixed.Id, [firstComponent.Id], DateTime.UtcNow);
+
+        var result = service.Fill(
+            mixed.HuCode,
+            "TSD-01",
+            orderId: 102,
+            prdDocId: plan.PrdDocId);
+
+        Assert.False(result.Success);
+        Assert.Equal(ProductionFillingErrorCodes.PalletPartialFillInconsistent, result.Error);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(plan.PrdDocId).Status);
+        var unchanged = harness.Store.GetProductionPalletByHu(mixed.HuCode)!;
+        Assert.NotEqual(ProductionPalletStatus.Filled, unchanged.Status);
+        Assert.Single(unchanged.Lines, line => line.IsCompleted);
+    }
+
+    [Fact]
+    public async Task FillMixedComponents_PartialHttpRequest_IsRejectedAndPalletRemainsUnchanged()
     {
         var harness = CreateCustomerThreeComponentMixedPalletHarness();
         var service = CreatePalletService(harness);
@@ -191,54 +212,23 @@ public sealed class ProductionPalletAutoCloseTests
             device_id = "TSD-01",
             component_line_ids = new[] { completedComponent.Id }
         });
-        fillResponse.EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.BadRequest, fillResponse.StatusCode);
         using var fillDocument = JsonDocument.Parse(await fillResponse.Content.ReadAsStringAsync());
         var fillRoot = fillDocument.RootElement;
 
-        Assert.Equal(ProductionPalletStatus.PartiallyFilled, fillRoot.GetProperty("effective_status").GetString());
-        Assert.Equal(1, fillRoot.GetProperty("filled_component_count").GetInt32());
-        Assert.Equal(3, fillRoot.GetProperty("total_component_count").GetInt32());
-        Assert.False(fillRoot.GetProperty("ledger_written").GetBoolean());
+        Assert.Equal(
+            ProductionFillingErrorCodes.PartialComponentFillNotAllowed,
+            fillRoot.GetProperty("error").GetString());
         Assert.Empty(harness.LedgerEntries);
-        Assert.NotEqual(ProductionPalletStatus.Filled, harness.Store.GetProductionPalletByHu(mixed.HuCode)?.Status);
+        var unchanged = harness.Store.GetProductionPalletByHu(mixed.HuCode)!;
+        Assert.NotEqual(ProductionPalletStatus.Filled, unchanged.Status);
+        Assert.All(unchanged.Lines, line => Assert.False(line.IsCompleted));
 
         var fillingOrder = Assert.Single(service.GetFillingOrders(), order => order.OrderId == 103);
         Assert.Equal(1, fillingOrder.Summary.RemainingPalletCount);
         var contextPallet = Assert.Single(service.GetFillingContext(103).Document.Pallets);
-        Assert.Equal(ProductionPalletStatus.PartiallyFilled, contextPallet.EffectiveStatus);
+        Assert.Equal(ProductionPalletStatus.Planned, contextPallet.EffectiveStatus);
         Assert.True(contextPallet.CanFill);
-        var cancelOption = Assert.Single(service.GetCancelPlanOptions(103).Rows);
-        Assert.False(cancelOption.IsSelectable);
-
-        var scan = service.Scan(103, plan.PrdDocId, mixed.HuCode);
-        Assert.True(scan.Success, scan.Error);
-        Assert.Equal(ProductionPalletStatus.PartiallyFilled, scan.EffectiveStatus);
-        Assert.True(scan.CanFill);
-        Assert.Single(scan.Lines, line => line.IsCompleted);
-        Assert.Equal(2, scan.Lines.Count(line => !line.IsCompleted));
-
-        var listJson = await host.Client.GetStringAsync("/api/tsd/production/filling-orders");
-        Assert.Contains("\"order_id\":103", listJson, StringComparison.Ordinal);
-
-        var contextJson = await host.Client.GetStringAsync("/api/tsd/production/orders/103/filling-context");
-        using var contextDocument = JsonDocument.Parse(contextJson);
-        var contextHttpPallet = Assert.Single(
-            contextDocument.RootElement.GetProperty("document").GetProperty("pallets").EnumerateArray().ToArray());
-        Assert.Equal(ProductionPalletStatus.PartiallyFilled, contextHttpPallet.GetProperty("effective_status").GetString());
-        Assert.True(contextHttpPallet.GetProperty("can_fill").GetBoolean());
-
-        var scanResponse = await host.Client.PostAsJsonAsync("/api/tsd/production/scan-pallet", new
-        {
-            order_id = 103,
-            prd_doc_id = plan.PrdDocId,
-            hu_code = mixed.HuCode
-        });
-        scanResponse.EnsureSuccessStatusCode();
-        using var scanDocument = JsonDocument.Parse(await scanResponse.Content.ReadAsStringAsync());
-        Assert.Equal(ProductionPalletStatus.PartiallyFilled, scanDocument.RootElement.GetProperty("effective_status").GetString());
-        Assert.True(scanDocument.RootElement.GetProperty("can_fill").GetBoolean());
-        Assert.Single(scanDocument.RootElement.GetProperty("lines").EnumerateArray(), line => line.GetProperty("is_completed").GetBoolean());
-        Assert.Equal(2, scanDocument.RootElement.GetProperty("lines").EnumerateArray().Count(line => !line.GetProperty("is_completed").GetBoolean()));
     }
 
     [Fact]
@@ -256,13 +246,13 @@ public sealed class ProductionPalletAutoCloseTests
 
         var result = service.FillMixedComponents(
             mixed.HuCode,
-            [mixed.Lines[0].Id],
+            mixed.Lines.Select(line => line.Id).ToArray(),
             "TSD-01",
             orderId: 102,
             prdDocId: plan.PrdDocId);
 
         Assert.False(result.Success);
-        Assert.Equal("PRODUCTION_AUTO_CLOSE_REQUIRED", result.Error);
+        Assert.Equal(ProductionFillingErrorCodes.ProductionAutoCloseRequired, result.Error);
         Assert.All(harness.Store.GetProductionPalletByHu(mixed.HuCode)!.Lines, line => Assert.False(line.IsCompleted));
         Assert.Empty(harness.LedgerEntries);
     }
@@ -275,9 +265,12 @@ public sealed class ProductionPalletAutoCloseTests
         var plan = service.PlanOrder(102);
         var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
         var components = mixed.Lines.OrderBy(line => line.Id).ToArray();
-        Assert.True(service.FillMixedComponents(mixed.HuCode, [components[0].Id], "TSD-01", 102, plan.PrdDocId).Success);
-
-        var result = service.FillMixedComponents(mixed.HuCode, [components[1].Id], "TSD-01", 102, plan.PrdDocId);
+        var result = service.FillMixedComponents(
+            mixed.HuCode,
+            components.Select(line => line.Id).ToArray(),
+            "TSD-01",
+            102,
+            plan.PrdDocId);
 
         Assert.True(result.Success, result.Error);
         Assert.True(result.PrdAutoClosed);
@@ -296,11 +289,9 @@ public sealed class ProductionPalletAutoCloseTests
         var plan = service.PlanOrder(103);
         var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
         var components = mixed.Lines.OrderBy(line => line.Id).ToArray();
-        Assert.True(service.FillMixedComponents(mixed.HuCode, [components[0].Id], "TSD-01", 103, plan.PrdDocId).Success);
-
         var result = service.FillMixedComponents(
             mixed.HuCode,
-            components.Skip(1).Select(line => line.Id).ToArray(),
+            components.Select(line => line.Id).ToArray(),
             "TSD-01",
             103,
             plan.PrdDocId);
@@ -320,24 +311,53 @@ public sealed class ProductionPalletAutoCloseTests
     }
 
     [Fact]
-    public void FillMixedComponents_WhenFinalCloseFails_KeepsPreviouslySavedPartialProgress()
+    public void FillMixedComponents_WhenCloseFails_RollsBackAllComponentProgress()
     {
         var harness = CreateCustomerMixedPalletHarness();
         var service = CreatePalletService(harness);
         var plan = service.PlanOrder(102);
-        var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
+        var sourcePallets = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
+        Assert.True(sourcePallets.Count > 1, "Dedicated PRD создаётся только при нескольких active pallets исходного PRD.");
+        var mixed = Assert.Single(sourcePallets.Where(pallet => pallet.IsMixedPallet));
         var components = mixed.Lines.OrderBy(line => line.Id).ToArray();
-        Assert.True(service.FillMixedComponents(mixed.HuCode, [components[0].Id], "TSD-01", 102, plan.PrdDocId).Success);
+        var componentProgressBefore = components
+            .Select(line => (line.Id, line.FilledQty, line.FilledAt))
+            .ToArray();
+        var docIdsBefore = harness.Store.GetDocsByOrder(102)
+            .Select(doc => doc.Id)
+            .Order()
+            .ToArray();
+        var docCountBefore = harness.DocCount;
         harness.SeedItem(new Item { Id = components[1].ItemId, Name = "Заблокирован", BaseUom = "шт", IsActive = false });
 
-        var result = service.FillMixedComponents(mixed.HuCode, [components[1].Id], "TSD-01", 102, plan.PrdDocId);
+        var result = service.FillMixedComponents(
+            mixed.HuCode,
+            components.Select(line => line.Id).ToArray(),
+            "TSD-01",
+            102,
+            plan.PrdDocId);
 
         Assert.False(result.Success);
+        Assert.Contains("карточка товара заблокирована", result.Error, StringComparison.OrdinalIgnoreCase);
+        var reassignment = Assert.Single(harness.ProductionPalletPrdDocAssignmentAttempts.Where(attempt =>
+            attempt.PalletId == mixed.Id));
+        Assert.NotEqual(plan.PrdDocId, reassignment.PrdDocId);
         var pallet = harness.Store.GetProductionPalletByHu(mixed.HuCode)!;
-        Assert.True(pallet.Lines.Single(line => line.Id == components[0].Id).IsCompleted);
-        Assert.False(pallet.Lines.Single(line => line.Id == components[1].Id).IsCompleted);
+        Assert.Equal(plan.PrdDocId, pallet.PrdDocId);
         Assert.NotEqual(ProductionPalletStatus.Filled, pallet.Status);
+        Assert.Equal(
+            componentProgressBefore,
+            pallet.Lines.OrderBy(line => line.Id)
+                .Select(line => (line.Id, line.FilledQty, line.FilledAt))
+                .ToArray());
         Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(plan.PrdDocId).Status);
+        Assert.Equal(docCountBefore, harness.DocCount);
+        Assert.Equal(
+            docIdsBefore,
+            harness.Store.GetDocsByOrder(102).Select(doc => doc.Id).Order().ToArray());
+        Assert.DoesNotContain(harness.Store.GetDocsByOrder(102), doc =>
+            string.Equals(doc.Comment, "TSD auto-close per pallet", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -347,7 +367,10 @@ public sealed class ProductionPalletAutoCloseTests
         var service = CreatePalletService(harness);
         var plan = service.PlanOrder(102);
         var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
-        Assert.True(service.FillMixedComponents(mixed.HuCode, [mixed.Lines[0].Id], "TSD-01", 102, plan.PrdDocId).Success);
+        Assert.Equal(1, harness.Store.MarkProductionPalletComponentsFilled(
+            mixed.Id,
+            [mixed.Lines[0].Id],
+            DateTime.UtcNow));
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             service.SyncOrderLinePlan(102, mixed.Lines[0].OrderLineId!.Value, orderedQty: 0));
@@ -359,18 +382,14 @@ public sealed class ProductionPalletAutoCloseTests
     }
 
     [Fact]
-    public void LegacyFillMixedPallet_RequiresComponentSelection_ButFilledRepeatIsIdempotent()
+    public void FillMixedPallet_UsesWholePalletCommand_AndRepeatIsIdempotent()
     {
         var harness = CreateCustomerMixedPalletHarness();
         var service = CreatePalletService(harness);
         var plan = service.PlanOrder(102);
         var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Where(pallet => pallet.IsMixedPallet));
 
-        var legacy = service.Fill(mixed.HuCode, "TSD-01", 102, plan.PrdDocId);
-        Assert.False(legacy.Success);
-        Assert.Equal("MIXED_COMPONENT_SELECTION_REQUIRED", legacy.Error);
-
-        var final = service.FillMixedComponents(mixed.HuCode, mixed.Lines.Select(line => line.Id).ToArray(), "TSD-01", 102, plan.PrdDocId);
+        var final = service.Fill(mixed.HuCode, "TSD-01", 102, plan.PrdDocId);
         var repeat = service.Fill(mixed.HuCode, "TSD-01", 102, plan.PrdDocId);
 
         Assert.True(final.Success, final.Error);

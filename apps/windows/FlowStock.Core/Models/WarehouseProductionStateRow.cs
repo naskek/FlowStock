@@ -45,6 +45,7 @@ public sealed class WarehouseProductionStateHuRow
     public long? ReservedCustomerId { get; init; }
     public string? ReservedCustomerName { get; init; }
     public string StockStatus { get; init; } = string.Empty;
+    public GlobalHuOperatorPresentation OperatorPresentation { get; set; } = new();
 }
 
 public sealed class WarehouseProductionStateCustomerOrderRow
@@ -53,6 +54,8 @@ public sealed class WarehouseProductionStateCustomerOrderRow
     public string OrderRef { get; init; } = string.Empty;
     public string? PartnerName { get; init; }
     public string Status { get; init; } = string.Empty;
+    public string OrderStatus { get; init; } = string.Empty;
+    public OrderOperatorStatusPresentation OrderStatusPresentation { get; init; } = new("UNKNOWN", "Неизвестно");
     public double QtyOrdered { get; init; }
     public double ShippedQty { get; init; }
     public double RemainingQty { get; init; }
@@ -63,6 +66,8 @@ public sealed class WarehouseProductionStateInternalOrderRow
     public long OrderId { get; init; }
     public string OrderRef { get; init; } = string.Empty;
     public string Status { get; init; } = string.Empty;
+    public string OrderStatus { get; init; } = string.Empty;
+    public OrderOperatorStatusPresentation OrderStatusPresentation { get; init; } = new("UNKNOWN", "Неизвестно");
     public double QtyOrdered { get; init; }
     public double ProducedQty { get; init; }
     public double RemainingQty { get; init; }
@@ -85,6 +90,7 @@ public sealed class WarehouseProductionStatePalletRow
     public bool IsMixedPallet { get; init; }
     public string Composition { get; init; } = string.Empty;
     public string? Location { get; init; }
+    public GlobalHuOperatorPresentation OperatorPresentation { get; set; } = new();
 }
 
 public sealed class WarehouseProductionStateNeedBreakdownRow

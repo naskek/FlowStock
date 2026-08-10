@@ -92,7 +92,7 @@ public sealed class ReserveProducedHuForCustomerTests
     }
 
     [Fact]
-    public void ReserveProducedHu_FromOpenInternalPrd_CreatesReplacementAndBlocksCloseUntilFilled()
+    public void ReserveProducedHu_FromHistoricallyOpenFilledPrd_CreatesReplacementButNormalFillFailsClosed()
     {
         const long internalOrderId = 10;
         const long customerOrderId = 20;
@@ -147,11 +147,14 @@ public sealed class ReserveProducedHuForCustomerTests
         Assert.False(blockedClose.Success);
         Assert.Contains(blockedClose.Errors, error => error.Contains("ненаполненные паллеты", StringComparison.OrdinalIgnoreCase));
 
-        var fill = new ProductionPalletService(harness.Store).Fill(replacement.HuCode, "TSD-01", internalOrderId, prdDocId);
-        Assert.True(fill.Success);
-
-        var finalClose = documentService.TryCloseDoc(prdDocId, allowNegative: false);
-        Assert.True(finalClose.Success);
+        var fill = harness.CreateAtomicProductionPalletService()
+            .Fill(replacement.HuCode, "TSD-01", internalOrderId, prdDocId);
+        Assert.False(fill.Success);
+        Assert.Contains(
+            "production-plan-consistency",
+            $"{fill.Error}: {fill.ErrorMessage}",
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(prdDocId).Status);
     }
 
     [Fact]

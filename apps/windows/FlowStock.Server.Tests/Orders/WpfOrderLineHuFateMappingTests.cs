@@ -7,6 +7,61 @@ namespace FlowStock.Server.Tests.Orders;
 public sealed class WpfOrderLineHuFateMappingTests
 {
     [Fact]
+    public void MapOrderLineView_CustomerCanonicalPresentation_MapsOperatorRowsWithNullableQtyAndDiagnostics()
+    {
+        using var payload = JsonDocument.Parse("""
+        {
+          "id": 1631,
+          "order_id": 1062,
+          "item_id": 5,
+          "item_name": "Товар",
+          "qty_ordered": 30,
+          "hu_presentation": {
+            "production_tasks": [
+              {
+                "hu_code": "HU-0001739",
+                "qty": 10,
+                "uom": "шт",
+                "state": { "code": "AWAITING_FILL", "label": "Ожидает наполнения" }
+              }
+            ],
+            "operational_hus": [
+              {
+                "hu_code": "HU-0001744",
+                "qty": 10,
+                "uom": "шт",
+                "state": { "code": "SHIPPED", "label": "Отгружен" },
+                "shipment_target": { "order_id": 1062, "order_ref": "012" }
+              },
+              {
+                "hu_code": "HU-0001600",
+                "qty": null,
+                "uom": null,
+                "state": { "code": "INCONSISTENT", "label": "Несогласованное состояние" },
+                "diagnostics": [
+                  { "code": "FILLED_WITHOUT_LEDGER_STOCK", "message": "Нет физического остатка" }
+                ]
+              }
+            ]
+          }
+        }
+        """);
+
+        var line = WpfReadApiService.MapOrderLineView(payload.RootElement);
+
+        Assert.NotNull(line.HuPresentation);
+        var rows = line.OperatorHuDisplayRows.ToDictionary(row => row.HuCode, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(("AWAITING_FILL", "Ожидает наполнения"),
+            (rows["HU-0001739"].StateCode, rows["HU-0001739"].Label));
+        Assert.Equal(("SHIPPED", "Отгружен"),
+            (rows["HU-0001744"].StateCode, rows["HU-0001744"].Label));
+        Assert.Equal(("INCONSISTENT", "Несогласованное состояние"),
+            (rows["HU-0001600"].StateCode, rows["HU-0001600"].Label));
+        Assert.Equal(0, rows["HU-0001600"].Qty, 3);
+    }
+
+    [Fact]
     public void MapOrderLineView_MapsServerFateAndShippedFallbackWithoutDuplicates()
     {
         using var payload = JsonDocument.Parse("""
@@ -219,9 +274,17 @@ public sealed class WpfOrderLineHuFateMappingTests
         }
         """);
 
-        var rows = WpfReadApiService.MapOrderLineView(payload.RootElement)
-            .HuFateDisplayEntries
+        var line = WpfReadApiService.MapOrderLineView(payload.RootElement);
+        var rows = line.HuFateDisplayEntries
             .ToDictionary(row => row.HuCode, StringComparer.OrdinalIgnoreCase);
+
+        Assert.NotNull(line.HuPresentation);
+        var canonicalRows = line.HuDisplayRows.ToDictionary(row => row.HuCode, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal("SHIPPED", canonicalRows["HU-SHIPPED"].StateCode);
+        Assert.Equal("Отгружен", canonicalRows["HU-SHIPPED"].Label);
+        Assert.Equal("RESERVED", canonicalRows["HU-TARGET-RESERVED"].StateCode);
+        Assert.All(line.HuDisplayRows, row => Assert.Null(row.FateSuffix));
+        Assert.Equal("Отгружен", line.OperatorHuDisplayRows.Single(row => row.HuCode == "HU-SHIPPED").Label);
 
         Assert.Equal(4, rows.Count);
         var reserved = rows["HU-TARGET-RESERVED"];
@@ -285,5 +348,31 @@ public sealed class WpfOrderLineHuFateMappingTests
         var line = WpfReadApiService.MapOrderLineView(payload.RootElement);
 
         Assert.Empty(line.HuFateDisplayEntries);
+    }
+
+    [Fact]
+    public void OperatorHuDisplayRows_WithoutCanonicalPresentation_DoNotExposeLegacyFateOrPalletStatus()
+    {
+        var line = new FlowStock.Core.Models.OrderLineView
+        {
+            ProductionHuDisplayEntries =
+            [
+                new FlowStock.Core.Models.OrderLineHuDisplayEntry("HU-PLANNED", "наполнено", 10, false, 1)
+            ],
+            HuFateDisplayEntries =
+            [
+                new FlowStock.Core.Models.OrderLineHuDisplayEntry(
+                    "HU-FATE",
+                    "отгружено",
+                    5,
+                    false,
+                    2,
+                    FateCode: "SHIPPED",
+                    FateLabel: "отгружено")
+            ]
+        };
+
+        Assert.Empty(line.OperatorHuDisplayRows);
+        Assert.NotEmpty(line.HuDisplayRows); // Compatibility data remains available outside the operator view.
     }
 }

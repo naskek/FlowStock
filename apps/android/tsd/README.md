@@ -137,11 +137,11 @@ TSD работает только онлайн через `FlowStock.Server`. С
 - Для списаний обязательно укажите причину.
 - Если штрихкод не найден в каталоге, появится запрос на создание товара.
 
-### Частичное наполнение mixed HU
-- В preview mixed HU незаполненные компоненты выбираются checkbox, завершённые компоненты disabled.
-- Подтверждение части состава сохраняет component progress без PRD/ledger и показывает прогресс вида `1 / 3`.
-- После подтверждения последнего компонента сервер атомарно закрывает dedicated PRD и создаёт складской выпуск по всему составу.
-- Component flow доступен только при включённом `ProductionAutoCloseOnFill`; partial component progress не является finished goods stock.
+### Атомарное наполнение single/mixed HU
+- В preview mixed HU весь component composition показывается read-only. Checkbox и выбор подмножества отсутствуют; оператор подтверждает одну physical HU целиком.
+- Single и mixed flow вызывают authoritative `POST /api/tsd/production/fill-pallet`. Сервер одной транзакцией фиксирует весь composition, переводит pallet в `FILLED`, закрывает dedicated PRD и пишет ledger. Ошибка close/ledger откатывает всю операцию.
+- `ProductionAutoCloseOnFill` обязан быть включён; иначе сервер отклоняет fill как `PRODUCTION_AUTO_CLOSE_REQUIRED` до записи.
+- Normal TSD flow не создаёт partial component progress и не имеет статуса `FILLING`/`PARTIALLY_FILLED`. Исторический partial progress показывается как `INCONSISTENT` и отклоняется `PALLET_PARTIAL_FILL_INCONSISTENT`; он исправляется только controlled correction/maintenance.
 
 ## Контрагенты и локации
 - Справочники выбираются через кнопку `Выбрать...`.
@@ -154,10 +154,23 @@ TSD работает только онлайн через `FlowStock.Server`. С
   серверным списком, показываются единым списком без отдельных кнопок `Показать готовые` /
   `Показать выполненные`. Порядок задаёт сервер (активные заказы выше, выполненные ниже).
 - Карточка заказа в списке показывает только: номер, тип (`Клиентский` / `Внутренний`),
-  контрагента, плановую дату и основной серверный статус. Статус берётся из серверного
-  `status_display` (включая `Частично отгружено`); TSD не вычисляет бизнес-статус сам.
+  контрагента, плановую дату и основной серверный статус. Code/label берутся только из
+  `order_status_presentation`; TSD может выбрать tone по `code`, но не вычисляет label,
+  partial overlay или terminal precedence.
 - Детали наполнения, паллет и HU доступны после открытия заказа (read-only) и в разделе
   `Наполнение`, а не в карточке списка.
+- HU-секции заказа используют `hu_presentation`: production tasks и operational HU не смешиваются,
+  shipped HU остаётся в operational list. Coverage/shortage показывается отдельно от статуса HU.
+
+## Канонический статус HU
+- Глобальная карточка `/hu/{huCode}` использует только `operator_presentation` как основной статус.
+- Экран склада `/stock` использует `operator_presentation` каждой складской HU и production receipt. Legacy `stock_status`, `pallet_status_display` и raw pallet status не являются fallback для операторского статуса; при отсутствующем или неполном canonical presentation показывается нейтральное «—».
+- Production branch содержит только `AWAITING_FILL` / «Ожидает наполнения». Operational branch:
+  `ON_STOCK` / «На складе», `RESERVED` / «Зарезервирован»,
+  `AWAITING_SHIPMENT` / «Ожидает отгрузки», `SHIPPED` / «Отгружен»,
+  `INCONSISTENT` / «Несогласованное состояние».
+- Raw `TsdHuState`, production/document/history поля остаются только technical details и action guards;
+  они не формируют main label и не являются command authorization.
 
 ## Состояние склада
 - Раздел `Состояние склада` показывает данные с сервера.

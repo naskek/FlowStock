@@ -18,7 +18,6 @@ public partial class OperationDetailsWindow : Window
 {
     private static bool KmUiEnabled => false;
     private readonly AppServices _services;
-    private readonly IMixedPalletComponentFillDialogFactory _mixedPalletComponentFillDialogFactory = new MixedPalletComponentFillDialogFactory();
     private readonly ObservableCollection<Location> _locations = new();
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly List<Partner> _partnersAll = new();
@@ -1808,13 +1807,6 @@ public partial class OperationDetailsWindow : Window
         FillPalletButton.IsEnabled = false;
         try
         {
-            var selectedPallet = _services.DataStore.GetProductionPalletByHu(huCode);
-            if (selectedPallet?.IsMixedPallet == true)
-            {
-                await FillMixedPalletComponentsAsync(huCode, selectedLineId);
-                return;
-            }
-
             var result = await _services.WpfProductionPalletApi.TryFillPalletAsync(
                 _doc.Id,
                 _doc.OrderId,
@@ -1848,89 +1840,6 @@ public partial class OperationDetailsWindow : Window
         {
             UpdateLineButtons();
         }
-    }
-
-    private async Task FillMixedPalletComponentsAsync(string huCode, long selectedLineId)
-    {
-        if (_doc == null)
-        {
-            return;
-        }
-
-        var documentResult = await _services.WpfProductionPalletApi.TryGetProductionPalletDocumentAsync(_doc.Id);
-        if (!documentResult.IsSuccess || documentResult.Document == null)
-        {
-            MessageBox.Show(
-                string.IsNullOrWhiteSpace(documentResult.Message) ? "Не удалось загрузить состав микс-паллеты." : documentResult.Message,
-                "Наполнение микс-паллеты",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return;
-        }
-
-        var pallet = documentResult.Document.Pallets.FirstOrDefault(entry =>
-            string.Equals(NormalizeHuValue(entry.HuCode), huCode, StringComparison.OrdinalIgnoreCase));
-        if (pallet == null)
-        {
-            MessageBox.Show("HU паллеты не найден.", "Наполнение микс-паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (!pallet.IsMixedPallet)
-        {
-            MessageBox.Show("Выбранная паллета не является микс-паллетой.", "Наполнение микс-паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (string.Equals(pallet.EffectiveStatus, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
-        {
-            LoadDoc();
-            ReselectDocLine(selectedLineId);
-            MessageBox.Show($"Микс-паллета {pallet.HuCode} уже была наполнена.", "Наполнение микс-паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (pallet.Lines.Count == 0)
-        {
-            MessageBox.Show("Состав микс-паллеты пуст. Обновите PRD и повторите операцию.", "Наполнение микс-паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (pallet.Lines.All(line => line.IsCompleted))
-        {
-            LoadDoc();
-            ReselectDocLine(selectedLineId);
-            MessageBox.Show("Все компоненты уже отмечены как наполненные. Обновите PRD и повторите операцию, если паллета не финализировалась.", "Наполнение микс-паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (!_mixedPalletComponentFillDialogFactory.TrySelectComponents(this, pallet, out var componentLineIds))
-        {
-            return;
-        }
-
-        var result = await _services.WpfProductionPalletApi.TryFillMixedPalletComponentsAsync(
-            _doc.Id,
-            _doc.OrderId,
-            pallet.HuCode,
-            componentLineIds,
-            $"WPF:{Environment.MachineName}");
-        if (!result.IsSuccess)
-        {
-            MessageBox.Show(
-                string.IsNullOrWhiteSpace(result.Message) ? "Не удалось отметить компоненты микс-паллеты." : result.Message,
-                "Наполнение микс-паллеты",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return;
-        }
-
-        LoadDoc();
-        ReselectDocLine(selectedLineId);
-        var message = result.AlreadyFilled
-            ? $"Микс-паллета {pallet.HuCode} уже была наполнена."
-            : result.Message;
-        MessageBox.Show(message, "Наполнение микс-паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private void ReselectDocLine(long selectedLineId)

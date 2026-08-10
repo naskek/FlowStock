@@ -32,6 +32,9 @@ public static class ProductionFillingErrorCodes
     public const string PalletPlanInvalid = "PALLET_PLAN_INVALID";
     public const string FillExceedsRemaining = "FILL_EXCEEDS_REMAINING";
     public const string MixedComponentSelectionRequired = "MIXED_COMPONENT_SELECTION_REQUIRED";
+    public const string ProductionAutoCloseRequired = "PRODUCTION_AUTO_CLOSE_REQUIRED";
+    public const string PartialComponentFillNotAllowed = "PARTIAL_COMPONENT_FILL_NOT_ALLOWED";
+    public const string PalletPartialFillInconsistent = "PALLET_PARTIAL_FILL_INCONSISTENT";
 }
 
 public sealed class ProductionPallet
@@ -141,6 +144,7 @@ public sealed class ProductionFillingOrder
     public string OrderTypeDisplay { get; init; } = string.Empty;
     public string OrderStatus { get; init; } = string.Empty;
     public string OrderStatusDisplay { get; init; } = string.Empty;
+    public OrderOperatorStatusPresentation OrderStatusPresentation { get; init; } = new("UNKNOWN", "Неизвестно");
     public string? PartnerName { get; init; }
     public long? PrdDocId { get; init; }
     public string? PrdDocRef { get; init; }
@@ -156,6 +160,7 @@ public sealed class ProductionFillingContext
     public string OrderTypeDisplay { get; init; } = string.Empty;
     public string OrderStatus { get; init; } = string.Empty;
     public string OrderStatusDisplay { get; init; } = string.Empty;
+    public OrderOperatorStatusPresentation OrderStatusPresentation { get; init; } = new("UNKNOWN", "Неизвестно");
     public string? PartnerName { get; init; }
     public long PrdDocId { get; init; }
     public string PrdDocRef { get; init; } = string.Empty;

@@ -8,6 +8,7 @@ public sealed class Order
     public long? PartnerId { get; init; }
     public DateTime? DueDate { get; init; }
     public OrderStatus Status { get; init; }
+    public OrderOperatorStatusPresentation? OperatorStatusPresentation { get; init; }
     public string? Comment { get; init; }
     public DateTime CreatedAt { get; init; }
     public DateTime? ShippedAt { get; init; }
@@ -51,6 +52,15 @@ public sealed class Order
     public string StatusDisplay => IsPartiallyShipped
         ? "Частично отгружено"
         : OrderStatusMapper.StatusToDisplayName(Status, Type);
+    public string StatusPresentationCode => HasCompleteOperatorStatusPresentation
+        ? OperatorStatusPresentation!.Code
+        : "UNKNOWN";
+    public string OperatorStatusLabel => HasCompleteOperatorStatusPresentation
+        ? OperatorStatusPresentation!.Label
+        : "Неизвестно";
+    private bool HasCompleteOperatorStatusPresentation =>
+        !string.IsNullOrWhiteSpace(OperatorStatusPresentation?.Code)
+        && !string.IsNullOrWhiteSpace(OperatorStatusPresentation.Label);
     public MarkingStatus EffectiveMarkingStatus
     {
         get

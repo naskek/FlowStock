@@ -1090,8 +1090,13 @@
       return { label: "Ожидает подтверждения", tone: "warning" };
     }
 
-    var statusCode = getOrderStatusCode(order);
-    var label = getOrderStatusDisplay(order, statusCode);
+    var canonical = order && order.order_status_presentation && typeof order.order_status_presentation === "object"
+      ? order.order_status_presentation
+      : null;
+    var statusCode = String((canonical && canonical.code) || "UNKNOWN")
+      .trim()
+      .toUpperCase();
+    var label = String((canonical && canonical.label) || "Неизвестно").trim();
     if (statusCode === "SHIPPED") {
       return { label: label, tone: "completed" };
     }
@@ -1101,8 +1106,11 @@
     if (statusCode === "CANCELLED") {
       return { label: label, tone: "cancelled" };
     }
+    if (statusCode === "PARTIALLY_SHIPPED") {
+      return { label: label, tone: "inprogress" };
+    }
 
-    return { label: label || "В работе", tone: "inprogress" };
+    return { label: label, tone: "inprogress" };
   }
 
   function getOrderStatusCode(order) {
@@ -1114,26 +1122,6 @@
       return raw;
     }
     return toOrderStatusCode(order && order.status);
-  }
-
-  function getOrderStatusDisplay(order, statusCode) {
-    var label = String((order && (order.status || order.order_status_display)) || "").trim();
-    if (!label || label.toUpperCase() === statusCode) {
-      if (statusCode === "DRAFT" && isInternalOrder(order)) {
-        return "Черновик";
-      }
-      if (statusCode === "SHIPPED") {
-        return "Выполнен";
-      }
-      if (statusCode === "ACCEPTED") {
-        return "Готов";
-      }
-      if (statusCode === "CANCELLED") {
-        return "Отменён";
-      }
-      return "В работе";
-    }
-    return label;
   }
 
   function isInternalOrder(order) {

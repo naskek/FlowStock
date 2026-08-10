@@ -6,6 +6,37 @@ namespace FlowStock.Server.Tests.Marking;
 
 public sealed class OrderApiMapperTests
 {
+    [Fact]
+    public void OrderStatusDisplay_AcceptedRemainsLegacyWhenCanonicalPresentationIsLoaded()
+    {
+        var order = new Order
+        {
+            Type = OrderType.Customer,
+            Status = OrderStatus.Accepted,
+            OperatorStatusPresentation = new OrderOperatorStatusPresentation("ACCEPTED", "Готов к отгрузке")
+        };
+
+        Assert.Equal("Готов", order.StatusDisplay);
+        Assert.Equal("Готов к отгрузке", order.OperatorStatusPresentation.Label);
+    }
+
+    [Fact]
+    public void OrderStatusDisplay_PartialShipmentRemainsLegacyWhenCanonicalPresentationIsLoaded()
+    {
+        var order = new Order
+        {
+            Type = OrderType.Customer,
+            Status = OrderStatus.Accepted,
+            IsPartiallyShipped = true,
+            OperatorStatusPresentation = new OrderOperatorStatusPresentation(
+                "PARTIALLY_SHIPPED",
+                "Частично отгружен")
+        };
+
+        Assert.Equal("Частично отгружено", order.StatusDisplay);
+        Assert.Equal("Частично отгружен", order.OperatorStatusPresentation.Label);
+    }
+
     [Theory]
     [InlineData(OrderType.Internal, OrderStatus.InProgress, false)]
     [InlineData(OrderType.Customer, OrderStatus.Draft, false)]
@@ -231,6 +262,32 @@ public sealed class OrderApiMapperTests
     }
 
     [Fact]
+    public void MapOrder_AcceptedKeepsLegacyAliasesAndAddsCanonicalPresentation()
+    {
+        var order = new Order
+        {
+            Id = 57,
+            OrderRef = "057",
+            Type = OrderType.Customer,
+            Status = OrderStatus.Accepted,
+            OperatorStatusPresentation = new OrderOperatorStatusPresentation("ACCEPTED", "Готов к отгрузке"),
+            CreatedAt = new DateTime(2026, 5, 13, 10, 0, 0, DateTimeKind.Utc)
+        };
+
+        var json = JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(order));
+
+        Assert.Equal("ACCEPTED", json.GetProperty("order_status").GetString());
+        Assert.Equal("Готов", json.GetProperty("order_status_display").GetString());
+        Assert.Equal("Готов", json.GetProperty("status").GetString());
+        Assert.Equal(
+            "ACCEPTED",
+            json.GetProperty("order_status_presentation").GetProperty("code").GetString());
+        Assert.Equal(
+            "Готов к отгрузке",
+            json.GetProperty("order_status_presentation").GetProperty("label").GetString());
+    }
+
+    [Fact]
     public void MapOrder_ReturnsDerivedPartiallyShippedDisplay_WithoutChangingPersistedStatus()
     {
         var order = new Order
@@ -254,6 +311,13 @@ public sealed class OrderApiMapperTests
 
         Assert.Equal("ACCEPTED", json.GetProperty("order_status").GetString());
         Assert.Equal("Частично отгружено", json.GetProperty("order_status_display").GetString());
+        Assert.Equal("Частично отгружено", json.GetProperty("status").GetString());
+        Assert.Equal(
+            "PARTIALLY_SHIPPED",
+            json.GetProperty("order_status_presentation").GetProperty("code").GetString());
+        Assert.Equal(
+            "Частично отгружен",
+            json.GetProperty("order_status_presentation").GetProperty("label").GetString());
         Assert.True(json.GetProperty("is_partially_shipped").GetBoolean());
         Assert.Equal(10, json.GetProperty("shipment_remaining_qty").GetDouble());
     }

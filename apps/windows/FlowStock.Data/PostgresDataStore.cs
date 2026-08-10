@@ -490,6 +490,7 @@ SELECT co.id,
            WHEN co.persisted_status = @merged_order_status THEN @merged_status_display
            ELSE co.persisted_status
        END AS status_display,
+       co.persisted_status,
        COALESCE(expected.expected_hu_count, 0)::int AS expected_hu_count,
        COALESCE(picked.picked_hu_count, 0)::int AS picked_hu_count,
        progress.ordered_qty,
@@ -5720,15 +5721,25 @@ orders_read_model.created_at DESC,
                     OrderRef = reader.GetString(1),
                     PartnerName = reader.GetString(2),
                     Status = reader.GetString(3),
-                    ExpectedHuCount = reader.GetInt32(4),
-                    PickedHuCount = reader.GetInt32(5),
-                    OrderedQty = reader.GetDouble(6),
-                    ShippedQty = reader.GetDouble(7),
-                    RemainingQty = reader.GetDouble(8),
-                    ScannedQty = reader.GetDouble(9),
-                    IsClosed = reader.GetBoolean(10),
-                    AllowPartialOutbound = reader.GetBoolean(11),
-                    OperationFingerprint = BuildTsdOutboundOperationFingerprint(reader.GetString(12))
+                    OrderStatus = reader.GetString(4),
+                    OrderStatusPresentation = OrderOperatorStatusResolver.Resolve(
+                        OrderStatusMapper.StatusFromString(reader.GetString(4)) ?? (OrderStatus)999,
+                        OrderType.Customer,
+                        new OrderShipmentProgress
+                        {
+                            OrderedQty = reader.GetDouble(7),
+                            ShippedQty = reader.GetDouble(8),
+                            RemainingQty = reader.GetDouble(9)
+                        }),
+                    ExpectedHuCount = reader.GetInt32(5),
+                    PickedHuCount = reader.GetInt32(6),
+                    OrderedQty = reader.GetDouble(7),
+                    ShippedQty = reader.GetDouble(8),
+                    RemainingQty = reader.GetDouble(9),
+                    ScannedQty = reader.GetDouble(10),
+                    IsClosed = reader.GetBoolean(11),
+                    AllowPartialOutbound = reader.GetBoolean(12),
+                    OperationFingerprint = BuildTsdOutboundOperationFingerprint(reader.GetString(13))
                 });
             }
 
@@ -10026,6 +10037,16 @@ ORDER BY col.item_id,
                     OrderRef = reader.GetString(2),
                     PartnerName = reader.IsDBNull(3) ? null : reader.GetString(3),
                     Status = OrderStatusMapper.StatusToDisplayName(status, OrderType.Customer),
+                    OrderStatus = OrderStatusMapper.StatusToString(status),
+                    OrderStatusPresentation = OrderOperatorStatusResolver.Resolve(
+                        status,
+                        OrderType.Customer,
+                        new OrderShipmentProgress
+                        {
+                            OrderedQty = reader.GetDouble(5),
+                            ShippedQty = reader.GetDouble(6),
+                            RemainingQty = reader.GetDouble(7)
+                        }),
                     QtyOrdered = reader.GetDouble(5),
                     ShippedQty = reader.GetDouble(6),
                     RemainingQty = reader.GetDouble(7)
@@ -10203,6 +10224,8 @@ ORDER BY item_id,
                     OrderId = reader.GetInt64(1),
                     OrderRef = reader.GetString(2),
                     Status = OrderStatusMapper.StatusToDisplayName(status, OrderType.Internal),
+                    OrderStatus = OrderStatusMapper.StatusToString(status),
+                    OrderStatusPresentation = OrderOperatorStatusResolver.Resolve(status, OrderType.Internal, null),
                     QtyOrdered = reader.GetDouble(4),
                     ProducedQty = reader.GetDouble(5),
                     RemainingQty = reader.GetDouble(6)

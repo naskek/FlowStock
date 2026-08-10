@@ -1532,6 +1532,7 @@ public sealed class WpfReadApiService
             PartnerCode = ReadString(element, "partner_code"),
             DueDate = ReadDateOnly(element, "due_date"),
             Status = status,
+            OperatorStatusPresentation = MapOrderOperatorStatusPresentation(element),
             Comment = ReadString(element, "comment"),
             UseReservedStock = ReadBool(element, "bind_reserved_stock"),
             AllowPartialOutbound = status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged
@@ -1594,6 +1595,7 @@ public sealed class WpfReadApiService
             FilledPalletCount = ReadInt32(element, "filled_pallet_count"),
             PlannedPalletQty = ReadDouble(element, "pallet_planned_qty"),
             FilledPalletQty = ReadDouble(element, "pallet_filled_qty"),
+            HuPresentation = MapOrderLineHuPresentation(element),
             HuFateDisplayEntries = MapOrderLineHuFateDisplayEntries(element)
         };
     }
@@ -1976,7 +1978,8 @@ public sealed class WpfReadApiService
             ReservedCustomerOrderRef = ReadString(element, "reserved_customer_order_ref"),
             ReservedCustomerId = ReadNullableInt64(element, "reserved_customer_id"),
             ReservedCustomerName = ReadString(element, "reserved_customer_name"),
-            StockStatus = ReadString(element, "stock_status") ?? string.Empty
+            StockStatus = ReadString(element, "stock_status") ?? string.Empty,
+            OperatorPresentation = MapGlobalHuOperatorPresentation(element)
         };
     }
 
@@ -1988,6 +1991,9 @@ public sealed class WpfReadApiService
             OrderRef = ReadString(element, "order_ref") ?? string.Empty,
             PartnerName = ReadString(element, "partner_name"),
             Status = ReadString(element, "status") ?? string.Empty,
+            OrderStatus = ReadString(element, "order_status") ?? string.Empty,
+            OrderStatusPresentation = MapOrderOperatorStatusPresentation(element)
+                                      ?? new OrderOperatorStatusPresentation("UNKNOWN", "Неизвестно"),
             QtyOrdered = ReadDouble(element, "qty_ordered"),
             ShippedQty = ReadDouble(element, "shipped_qty"),
             RemainingQty = ReadDouble(element, "remaining_qty")
@@ -2001,6 +2007,9 @@ public sealed class WpfReadApiService
             OrderId = ReadInt64(element, "order_id"),
             OrderRef = ReadString(element, "order_ref") ?? string.Empty,
             Status = ReadString(element, "status") ?? string.Empty,
+            OrderStatus = ReadString(element, "order_status") ?? string.Empty,
+            OrderStatusPresentation = MapOrderOperatorStatusPresentation(element)
+                                      ?? new OrderOperatorStatusPresentation("UNKNOWN", "Неизвестно"),
             QtyOrdered = ReadDouble(element, "qty_ordered"),
             ProducedQty = ReadDouble(element, "produced_qty"),
             RemainingQty = ReadDouble(element, "remaining_qty")
@@ -2025,8 +2034,126 @@ public sealed class WpfReadApiService
             StatusNote = ReadString(element, "status_note") ?? string.Empty,
             IsMixedPallet = ReadBool(element, "is_mixed_pallet"),
             Composition = ReadString(element, "composition") ?? string.Empty,
-            Location = ReadString(element, "location")
+            Location = ReadString(element, "location"),
+            OperatorPresentation = MapGlobalHuOperatorPresentation(element)
         };
+    }
+
+    private static OrderOperatorStatusPresentation? MapOrderOperatorStatusPresentation(JsonElement element)
+    {
+        if (!element.TryGetProperty("order_status_presentation", out var presentation)
+            || presentation.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var code = TrimToNull(ReadString(presentation, "code"));
+        var label = TrimToNull(ReadString(presentation, "label"));
+        return code == null || label == null
+            ? null
+            : new OrderOperatorStatusPresentation(code, label);
+    }
+
+    private static OrderLineHuPresentation? MapOrderLineHuPresentation(JsonElement element)
+    {
+        if (!element.TryGetProperty("hu_presentation", out var presentation)
+            || presentation.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return new OrderLineHuPresentation
+        {
+            ProductionTasks = ReadArray(presentation, "production_tasks", MapProductionTaskPresentation),
+            OperationalHus = ReadArray(presentation, "operational_hus", MapOperationalHuPresentation)
+        };
+    }
+
+    private static GlobalHuOperatorPresentation MapGlobalHuOperatorPresentation(JsonElement element)
+    {
+        if (!element.TryGetProperty("operator_presentation", out var presentation)
+            || presentation.ValueKind != JsonValueKind.Object)
+        {
+            return new GlobalHuOperatorPresentation();
+        }
+
+        return new GlobalHuOperatorPresentation
+        {
+            ProductionTask = presentation.TryGetProperty("production_task", out var production)
+                             && production.ValueKind == JsonValueKind.Object
+                ? MapProductionTaskPresentation(production)
+                : null,
+            OperationalHu = presentation.TryGetProperty("operational_hu", out var operational)
+                            && operational.ValueKind == JsonValueKind.Object
+                ? MapOperationalHuPresentation(operational)
+                : null
+        };
+    }
+
+    private static ProductionTaskPresentation MapProductionTaskPresentation(JsonElement element)
+    {
+        return new ProductionTaskPresentation
+        {
+            HuCode = ReadString(element, "hu_code") ?? string.Empty,
+            Qty = ReadDouble(element, "qty"),
+            Uom = ReadString(element, "uom") ?? "шт",
+            State = MapHuSemanticState(element),
+            Components = ReadArray(element, "components", MapHuComponentPresentation)
+        };
+    }
+
+    private static OperationalHuPresentation MapOperationalHuPresentation(JsonElement element)
+    {
+        return new OperationalHuPresentation
+        {
+            HuCode = ReadString(element, "hu_code") ?? string.Empty,
+            Qty = ReadNullableDouble(element, "qty"),
+            Uom = ReadString(element, "uom"),
+            State = MapHuSemanticState(element),
+            Components = ReadArray(element, "components", MapHuComponentPresentation),
+            Location = element.TryGetProperty("location", out var location)
+                       && location.ValueKind == JsonValueKind.Object
+                ? new HuLocationPresentation(
+                    ReadInt64(location, "id"),
+                    ReadString(location, "code") ?? string.Empty,
+                    ReadString(location, "name"))
+                : null,
+            ReservationTarget = MapHuOrderReference(element, "reservation_target"),
+            ShipmentTarget = MapHuOrderReference(element, "shipment_target"),
+            SourceProductionOrder = MapHuOrderReference(element, "source_production_order"),
+            IsMixed = ReadBool(element, "is_mixed")
+        };
+    }
+
+    private static HuSemanticStatePresentation MapHuSemanticState(JsonElement element)
+    {
+        if (!element.TryGetProperty("state", out var state) || state.ValueKind != JsonValueKind.Object)
+        {
+            return new HuSemanticStatePresentation(string.Empty, string.Empty);
+        }
+
+        return new HuSemanticStatePresentation(
+            ReadString(state, "code") ?? string.Empty,
+            ReadString(state, "label") ?? string.Empty);
+    }
+
+    private static HuComponentPresentation MapHuComponentPresentation(JsonElement element) => new(
+        ReadInt64(element, "item_id"),
+        ReadString(element, "item_name") ?? string.Empty,
+        ReadDouble(element, "qty"),
+        ReadString(element, "uom") ?? "шт");
+
+    private static HuOperatorOrderReference? MapHuOrderReference(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var reference)
+            || reference.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var orderId = ReadInt64(reference, "order_id");
+        var orderRef = TrimToNull(ReadString(reference, "order_ref"));
+        return orderId <= 0 || orderRef == null ? null : new HuOperatorOrderReference(orderId, orderRef);
     }
 
     private static IReadOnlyList<T> ReadArray<T>(JsonElement element, string propertyName, Func<JsonElement, T> map)

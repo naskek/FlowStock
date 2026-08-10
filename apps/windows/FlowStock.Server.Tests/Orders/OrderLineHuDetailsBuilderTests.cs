@@ -9,7 +9,7 @@ namespace FlowStock.Server.Tests.Orders;
 public sealed class OrderLineHuDetailsBuilderTests
 {
     [Fact]
-    public async Task SingleEndpoint_ReturnsCanonicalHuPresentationAndSuppressesPlannedRows()
+    public async Task SingleEndpoint_ReturnsCanonicalHuPresentationForPlannedAndPrintedRows()
     {
         var harness = new CloseDocumentHarness();
         harness.SeedItem(new Item { Id = 5, Name = "Товар", BaseUom = "шт" });
@@ -35,12 +35,18 @@ public sealed class OrderLineHuDetailsBuilderTests
 
         var line = Assert.Single(json.RootElement.EnumerateArray());
         var presentation = line.GetProperty("hu_presentation");
-        var production = Assert.Single(presentation.GetProperty("production_tasks").EnumerateArray());
-        Assert.Equal("HU-PRINTED", production.GetProperty("hu_code").GetString());
-        Assert.Equal("AWAITING_FILL", production.GetProperty("state").GetProperty("code").GetString());
-        Assert.False(production.TryGetProperty("components", out _));
-        Assert.False(production.TryGetProperty("planned_qty", out _));
-        Assert.False(production.TryGetProperty("filled_qty", out _));
+        var production = presentation.GetProperty("production_tasks").EnumerateArray().ToArray();
+        Assert.Equal(2, production.Length);
+        Assert.Equal(
+            new[] { "HU-PLANNED", "HU-PRINTED" },
+            production.Select(row => row.GetProperty("hu_code").GetString()).ToArray());
+        Assert.All(production, row =>
+        {
+            Assert.Equal("AWAITING_FILL", row.GetProperty("state").GetProperty("code").GetString());
+            Assert.False(row.TryGetProperty("components", out _));
+            Assert.False(row.TryGetProperty("planned_qty", out _));
+            Assert.False(row.TryGetProperty("filled_qty", out _));
+        });
         Assert.Empty(presentation.GetProperty("operational_hus").EnumerateArray());
 
         static HuOperatorFacts OperatorProductionFacts(string huCode, string status) => new()

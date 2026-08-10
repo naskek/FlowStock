@@ -543,6 +543,11 @@ public sealed class CustomerOrderLineHuState : INotifyPropertyChanged
 
     public void MergeExistingReservation(string huCode, double qty)
     {
+        if (CustomerOrderHuPickerRules.IsFullyShipped(_line))
+        {
+            return;
+        }
+
         var normalized = huCode.Trim().ToUpperInvariant();
         if (string.IsNullOrWhiteSpace(normalized))
         {
@@ -847,6 +852,8 @@ public sealed class CustomerOrderLinePresentation : INotifyPropertyChanged
 
     public IReadOnlyList<OrderLineHuDisplayRow> HuDisplayRows => State.HuDisplayRows;
 
+    public IReadOnlyList<OrderLineHuDisplayRow> OperatorHuDisplayRows => State.Line.OperatorHuDisplayRows;
+
     public string RemainingHuDisplay => State.RemainingHuDisplay;
 
     public string HuPickerLabel => State.HuPickerLabel;
@@ -882,6 +889,7 @@ public sealed class CustomerOrderLinePresentation : INotifyPropertyChanged
         OnPropertyChanged(nameof(AvailableHuDisplay));
         OnPropertyChanged(nameof(BoundHuDisplay));
         OnPropertyChanged(nameof(HuDisplayRows));
+        OnPropertyChanged(nameof(OperatorHuDisplayRows));
         OnPropertyChanged(nameof(RemainingHuDisplay));
         OnPropertyChanged(nameof(HuPickerLabel));
         OnPropertyChanged(nameof(HuPickerToolTip));

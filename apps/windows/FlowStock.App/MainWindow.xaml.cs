@@ -1321,7 +1321,12 @@ public partial class MainWindow : Window
             {
                 builder.Append('|').Append(hu.HuCode)
                     .Append(':').Append(hu.Qty.ToString("F3", CultureInfo.InvariantCulture))
-                    .Append(':').Append(hu.StockStatus ?? string.Empty)
+                    .Append(':').Append(hu.OperatorPresentation.OperationalHu?.State.Code
+                                        ?? hu.OperatorPresentation.ProductionTask?.State.Code
+                                        ?? string.Empty)
+                    .Append(':').Append(hu.OperatorPresentation.OperationalHu?.State.Label
+                                        ?? hu.OperatorPresentation.ProductionTask?.State.Label
+                                        ?? string.Empty)
                     .Append(':').Append(hu.ReservedCustomerOrderId?.ToString(CultureInfo.InvariantCulture) ?? string.Empty)
                     .Append(':').Append(hu.ReservedCustomerOrderRef ?? string.Empty)
                     .Append(':').Append(hu.ReservedCustomerName ?? string.Empty);
@@ -1330,7 +1335,13 @@ public partial class MainWindow : Window
             foreach (var prd in row.ProductionReceipts.OrderBy(current => current.HuCode, StringComparer.OrdinalIgnoreCase))
             {
                 builder.Append('|').Append(prd.HuCode)
-                    .Append(':').Append(prd.Qty.ToString("F3", CultureInfo.InvariantCulture));
+                    .Append(':').Append(prd.Qty.ToString("F3", CultureInfo.InvariantCulture))
+                    .Append(':').Append(prd.OperatorPresentation.OperationalHu?.State.Code
+                                        ?? prd.OperatorPresentation.ProductionTask?.State.Code
+                                        ?? string.Empty)
+                    .Append(':').Append(prd.OperatorPresentation.OperationalHu?.State.Label
+                                        ?? prd.OperatorPresentation.ProductionTask?.State.Label
+                                        ?? string.Empty);
             }
 
             builder
@@ -4412,20 +4423,26 @@ public partial class MainWindow : Window
 
         private void LoadDetailRows(WarehouseProductionStateRow row)
         {
-            WarehouseHuRows = row.HuRows.Select(hu => new WarehouseProductionStateHuDisplayRow
+            WarehouseHuRows = row.HuRows.Select(hu =>
             {
-                Location = hu.Location,
-                HuCode = string.IsNullOrWhiteSpace(hu.HuCode) ? "Без HU" : hu.HuCode,
-                QtyDisplay = FormatQtyWithUom(hu.Qty, row.BaseUom),
-                ReservedOrderDisplay = string.IsNullOrWhiteSpace(hu.ReservedCustomerOrderRef) ? "не зарезервировано" : hu.ReservedCustomerOrderRef!,
-                ReservedCustomerDisplay = string.IsNullOrWhiteSpace(hu.ReservedCustomerName) ? "не зарезервировано" : hu.ReservedCustomerName!,
-                StockStatus = hu.StockStatus
+                var state = ResolveCanonicalOperatorState(hu.OperatorPresentation);
+                return new WarehouseProductionStateHuDisplayRow
+                {
+                    Location = hu.Location,
+                    HuCode = string.IsNullOrWhiteSpace(hu.HuCode) ? "Без HU" : hu.HuCode,
+                    QtyDisplay = FormatQtyWithUom(hu.Qty, row.BaseUom),
+                    ReservedOrderDisplay = string.IsNullOrWhiteSpace(hu.ReservedCustomerOrderRef) ? "не зарезервировано" : hu.ReservedCustomerOrderRef!,
+                    ReservedCustomerDisplay = string.IsNullOrWhiteSpace(hu.ReservedCustomerName) ? "не зарезервировано" : hu.ReservedCustomerName!,
+                    StockStatus = state.Label,
+                    StateCode = state.Code
+                };
             }).ToList();
             CustomerOrders = row.CustomerOrders.Select(order => new WarehouseProductionStateCustomerOrderDisplayRow
             {
                 OrderRef = order.OrderRef,
                 PartnerName = string.IsNullOrWhiteSpace(order.PartnerName) ? "—" : order.PartnerName!,
-                Status = order.Status,
+                Status = order.OrderStatusPresentation.Label,
+                StatusCode = order.OrderStatusPresentation.Code,
                 QtyOrderedDisplay = FormatQtyWithUom(order.QtyOrdered, row.BaseUom),
                 ShippedQtyDisplay = FormatQtyWithUom(order.ShippedQty, row.BaseUom),
                 RemainingQtyDisplay = FormatQtyWithUom(order.RemainingQty, row.BaseUom)
@@ -4433,26 +4450,42 @@ public partial class MainWindow : Window
             InternalOrders = row.InternalOrders.Select(order => new WarehouseProductionStateInternalOrderDisplayRow
             {
                 OrderRef = order.OrderRef,
-                Status = order.Status,
+                Status = order.OrderStatusPresentation.Label,
+                StatusCode = order.OrderStatusPresentation.Code,
                 QtyOrderedDisplay = FormatQtyWithUom(order.QtyOrdered, row.BaseUom),
                 ProducedQtyDisplay = FormatQtyWithUom(order.ProducedQty, row.BaseUom),
                 RemainingQtyDisplay = FormatQtyWithUom(order.RemainingQty, row.BaseUom)
             }).ToList();
-            ProductionReceipts = row.ProductionReceipts.Select(prd => new WarehouseProductionStatePalletDisplayRow
+            ProductionReceipts = row.ProductionReceipts.Select(prd =>
             {
-                PrdRef = prd.PrdRef,
-                HuCode = prd.HuCode,
-                PalletStatus = string.IsNullOrWhiteSpace(prd.PalletStatusDisplay)
-                    ? TranslatePalletStatus(prd.PalletStatus)
-                    : prd.PalletStatusDisplay,
-                QtyDisplay = FormatQtyWithUom(prd.Qty > 0 ? prd.Qty : prd.PlannedQty, row.BaseUom),
-                SourceOrderRef = string.IsNullOrWhiteSpace(prd.SourceOrderRef) ? "—" : prd.SourceOrderRef,
-                StatusNote = prd.StatusNote,
-                PlannedQtyDisplay = FormatQtyWithUom(prd.PlannedQty, row.BaseUom),
-                FilledQtyDisplay = FormatQtyWithUom(prd.FilledQty, row.BaseUom),
-                StockEffect = prd.StockEffect,
-                Composition = prd.Composition
+                var state = ResolveCanonicalOperatorState(prd.OperatorPresentation);
+                return new WarehouseProductionStatePalletDisplayRow
+                {
+                    PrdRef = prd.PrdRef,
+                    HuCode = prd.HuCode,
+                    PalletStatus = state.Label,
+                    StateCode = state.Code,
+                    QtyDisplay = FormatQtyWithUom(prd.Qty > 0 ? prd.Qty : prd.PlannedQty, row.BaseUom),
+                    SourceOrderRef = string.IsNullOrWhiteSpace(prd.SourceOrderRef) ? "—" : prd.SourceOrderRef,
+                    StatusNote = prd.StatusNote,
+                    PlannedQtyDisplay = FormatQtyWithUom(prd.PlannedQty, row.BaseUom),
+                    FilledQtyDisplay = FormatQtyWithUom(prd.FilledQty, row.BaseUom),
+                    StockEffect = prd.StockEffect,
+                    Composition = prd.Composition
+                };
             }).ToList();
+        }
+
+        private const string UnknownOperatorStateCode = "UNKNOWN";
+        private const string UnknownOperatorStateLabel = "—";
+
+        private static HuSemanticStatePresentation ResolveCanonicalOperatorState(
+            GlobalHuOperatorPresentation presentation)
+        {
+            var state = presentation.OperationalHu?.State ?? presentation.ProductionTask?.State;
+            return !string.IsNullOrWhiteSpace(state?.Code) && !string.IsNullOrWhiteSpace(state.Label)
+                ? state
+                : new HuSemanticStatePresentation(UnknownOperatorStateCode, UnknownOperatorStateLabel);
         }
 
         private static string BuildSummaryFingerprint(WarehouseProductionStateRow row)
@@ -4474,7 +4507,10 @@ public partial class MainWindow : Window
                 builder.Append(hu.HuCode)
                     .Append('|').Append(hu.Location)
                     .Append('|').Append(hu.Qty.ToString("F3", CultureInfo.InvariantCulture))
-                    .Append('|').Append(hu.StockStatus)
+                    .Append('|').Append(hu.OperatorPresentation.OperationalHu?.State.Code
+                                        ?? hu.OperatorPresentation.ProductionTask?.State.Code)
+                    .Append('|').Append(hu.OperatorPresentation.OperationalHu?.State.Label
+                                        ?? hu.OperatorPresentation.ProductionTask?.State.Label)
                     .Append(';');
             }
 
@@ -4483,7 +4519,10 @@ public partial class MainWindow : Window
             {
                 builder.Append(prd.HuCode)
                     .Append('|').Append(prd.PrdRef)
-                    .Append('|').Append(prd.PalletStatus)
+                    .Append('|').Append(prd.OperatorPresentation.OperationalHu?.State.Code
+                                        ?? prd.OperatorPresentation.ProductionTask?.State.Code)
+                    .Append('|').Append(prd.OperatorPresentation.OperationalHu?.State.Label
+                                        ?? prd.OperatorPresentation.ProductionTask?.State.Label)
                     .Append('|').Append(prd.Qty.ToString("F3", CultureInfo.InvariantCulture))
                     .Append('|').Append(prd.PlannedQty.ToString("F3", CultureInfo.InvariantCulture))
                     .Append(';');
@@ -4643,6 +4682,7 @@ public partial class MainWindow : Window
         public string ReservedOrderDisplay { get; init; } = string.Empty;
         public string ReservedCustomerDisplay { get; init; } = string.Empty;
         public string StockStatus { get; init; } = string.Empty;
+        public string StateCode { get; init; } = string.Empty;
     }
 
     private sealed record WarehouseProductionStateCustomerOrderDisplayRow
@@ -4650,6 +4690,7 @@ public partial class MainWindow : Window
         public string OrderRef { get; init; } = string.Empty;
         public string PartnerName { get; init; } = string.Empty;
         public string Status { get; init; } = string.Empty;
+        public string StatusCode { get; init; } = string.Empty;
         public string QtyOrderedDisplay { get; init; } = string.Empty;
         public string ShippedQtyDisplay { get; init; } = string.Empty;
         public string RemainingQtyDisplay { get; init; } = string.Empty;
@@ -4659,6 +4700,7 @@ public partial class MainWindow : Window
     {
         public string OrderRef { get; init; } = string.Empty;
         public string Status { get; init; } = string.Empty;
+        public string StatusCode { get; init; } = string.Empty;
         public string QtyOrderedDisplay { get; init; } = string.Empty;
         public string ProducedQtyDisplay { get; init; } = string.Empty;
         public string RemainingQtyDisplay { get; init; } = string.Empty;
@@ -4669,6 +4711,7 @@ public partial class MainWindow : Window
         public string PrdRef { get; init; } = string.Empty;
         public string HuCode { get; init; } = string.Empty;
         public string PalletStatus { get; init; } = string.Empty;
+        public string StateCode { get; init; } = string.Empty;
         public string QtyDisplay { get; init; } = string.Empty;
         public string SourceOrderRef { get; init; } = string.Empty;
         public string StatusNote { get; init; } = string.Empty;

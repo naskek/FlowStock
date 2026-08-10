@@ -21,6 +21,7 @@ public sealed class MarkingOrderQueueRow
     public string? EffectiveStatus { get; init; }
     public string? DisplayStatus { get; init; }
     public OrderStatus OrderStatus { get; init; }
+    public OrderOperatorStatusPresentation? OperatorStatusPresentation { get; init; }
     public DateTime? DueDate { get; init; }
     public MarkingStatus MarkingStatus { get; init; }
     public int MarkingLineCount { get; init; }

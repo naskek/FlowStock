@@ -381,12 +381,28 @@ public sealed class WpfMarkingApiService
             EffectiveStatus = ReadString(element, "effective_status"),
             DisplayStatus = ReadString(element, "display_status"),
             OrderStatus = OrderStatusMapper.StatusFromString(ReadString(element, "order_status")) ?? OrderStatus.InProgress,
+            OperatorStatusPresentation = MapOrderStatusPresentation(element),
             DueDate = ReadDateOnly(element, "due_date"),
             MarkingStatus = MarkingStatusMapper.FromString(ReadString(element, "marking_status")),
             MarkingLineCount = ReadInt32(element, "marking_line_count"),
             MarkingCodeCount = ReadDouble(element, "marking_code_count"),
             LastGeneratedAt = ReadDateTime(element, "last_generated_at")
         };
+    }
+
+    private static OrderOperatorStatusPresentation? MapOrderStatusPresentation(JsonElement element)
+    {
+        if (!element.TryGetProperty("order_status_presentation", out var presentation)
+            || presentation.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var code = ReadString(presentation, "code")?.Trim();
+        var label = ReadString(presentation, "label")?.Trim();
+        return string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(label)
+            ? null
+            : new OrderOperatorStatusPresentation(code, label);
     }
 
     private static async Task<string> ReadApiErrorAsync(HttpResponseMessage response)

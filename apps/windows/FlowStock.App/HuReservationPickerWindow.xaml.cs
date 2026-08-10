@@ -242,13 +242,18 @@ public sealed class HuReservationPickerRow : INotifyPropertyChanged
             return $"{candidate.HuCode} | склад | {FormatQty(candidate.Qty)} | можно отгружать";
         }
 
+        if (string.Equals(candidate.Source, "CURRENT_RESERVATION", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{candidate.HuCode} | текущая привязка | {FormatQty(candidate.Qty)} | недоступно для новой отгрузки";
+        }
+
         var internalRef = string.IsNullOrWhiteSpace(candidate.SourceOrderRef)
             ? candidate.SourceOrderId?.ToString() ?? "INTERNAL"
             : candidate.SourceOrderRef;
         var prdRef = string.IsNullOrWhiteSpace(candidate.SourcePrdRef)
             ? candidate.SourcePrdDocId?.ToString() ?? "PRD"
             : candidate.SourcePrdRef;
-        return $"{candidate.HuCode} | {internalRef} | {prdRef} | {FormatQty(candidate.Qty)} | PRD не закрыт";
+        return $"{candidate.HuCode} | история выпуска {internalRef} | {prdRef} | {FormatQty(candidate.Qty)} | недоступно для новой отгрузки";
     }
 
     private static string FormatQty(double qty) =>

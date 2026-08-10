@@ -2,10 +2,7 @@ namespace FlowStock.Core.Models;
 
 public static class ProductionTaskSemanticCode
 {
-    public const string LabelNotPrinted = "LABEL_NOT_PRINTED";
     public const string AwaitingFill = "AWAITING_FILL";
-    public const string Filling = "FILLING";
-    public const string ReleaseNotPosted = "RELEASE_NOT_POSTED";
 }
 
 public static class OperationalHuSemanticCode
@@ -24,6 +21,52 @@ public static class HuOperatorDiagnosticCode
     public const string MixedOperationalTargetConflict = "MIXED_OPERATIONAL_TARGET_CONFLICT";
     public const string ProductionLedgerContradiction = "PRODUCTION_LEDGER_CONTRADICTION";
     public const string CorrectionLineageUncertain = "CORRECTION_LINEAGE_UNCERTAIN";
+}
+
+public static class HuFactConsistencyIssueCode
+{
+    public const string NegativeLedgerBalance = "NEGATIVE_LEDGER_BALANCE";
+    public const string MultipleActiveProductionPallets = "MULTIPLE_ACTIVE_PRODUCTION_PALLETS";
+    public const string ProductionStatusFillMismatch = "PRODUCTION_STATUS_FILL_MISMATCH";
+    public const string PartialComponentFill = "PARTIAL_COMPONENT_FILL";
+    public const string FilledPalletCompositionIncomplete = "FILLED_PALLET_COMPOSITION_INCOMPLETE";
+    public const string FilledWithoutLedgerStock = "FILLED_WITHOUT_LEDGER_STOCK";
+    public const string MultiplePositiveLocations = "MULTIPLE_POSITIVE_LOCATIONS";
+    public const string UnfinishedProductionWithLedger = "UNFINISHED_PRODUCTION_WITH_LEDGER";
+    public const string ShipmentLineageUncertain = "SHIPMENT_LINEAGE_UNCERTAIN";
+    public const string PartialClosedOutboundWithRemainder = "PARTIAL_CLOSED_OUTBOUND_WITH_REMAINDER";
+    public const string ActiveReservationWithoutStock = "ACTIVE_RESERVATION_WITHOUT_STOCK";
+    public const string ConflictingActiveReservations = "CONFLICTING_ACTIVE_RESERVATIONS";
+    public const string OperationalCompositionConflict = "OPERATIONAL_COMPOSITION_CONFLICT";
+    public const string ProductionLedgerCompositionMismatch = "PRODUCTION_LEDGER_COMPOSITION_MISMATCH";
+}
+
+public enum HuShipmentFactKind
+{
+    None,
+    WholeHuShipped,
+    WholeHuThenRestored,
+    PartialHuWithRemainder,
+    Uncertain
+}
+
+public sealed record HuShipmentFactConclusion(
+    HuShipmentFactKind Kind,
+    string Message,
+    long? DocumentId = null);
+
+public sealed record HuFactConsistencyIssue(
+    string Code,
+    string Message,
+    IReadOnlyList<HuOperatorOrderReference>? RelatedOrders = null,
+    IReadOnlyList<HuOperatorDocumentReference>? RelatedDocuments = null);
+
+public sealed class HuFactConsistencyAnalysis
+{
+    public IReadOnlyList<HuFactConsistencyIssue> Issues { get; init; } =
+        Array.Empty<HuFactConsistencyIssue>();
+    public HuShipmentFactConclusion Shipment { get; init; } =
+        new(HuShipmentFactKind.None, string.Empty);
 }
 
 public sealed class HuOperatorFacts

@@ -14,7 +14,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
     public async Task DecreaseWithUnfilledProductionPlan_PersistsQtyAndCancelsObsoletePallets()
     {
         var fixture = CreateCustomerFixture(orderedQty: 1200);
-        var palletService = new ProductionPalletService(fixture.Harness.Store);
+        var palletService = fixture.Harness.CreateAtomicProductionPalletService();
         var plan = palletService.PlanOrder(fixture.OrderId);
         Assert.Equal(2, fixture.Harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).Count);
         await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
@@ -45,14 +45,13 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
     public async Task DecreaseBelowFilledCustomerPallet_ReturnsValidationWithBlockingHu()
     {
         var fixture = CreateCustomerFixture(orderedQty: 1200);
-        var palletService = new ProductionPalletService(fixture.Harness.Store);
+        var palletService = fixture.Harness.CreateAtomicProductionPalletService();
         var plan = palletService.PlanOrder(fixture.OrderId);
         var filledHu = fixture.Harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
             .OrderBy(pallet => pallet.Id)
             .First()
             .HuCode;
         Assert.True(palletService.Fill(filledHu, "TSD-01").Success);
-        fixture.Harness.SeedLedgerEntry(plan.PrdDocId, fixture.ItemId, 1, 600, filledHu);
         await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
 
         using var response = await UpdateOrderHttpApi.PutRawAsync(

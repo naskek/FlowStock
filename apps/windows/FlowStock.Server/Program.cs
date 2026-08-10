@@ -2342,42 +2342,84 @@ app.MapGet("/api/reports/production-need", (HttpRequest request, IDataStore stor
     return Results.Ok(rows);
 });
 
-app.MapGet("/api/marking/orders", (HttpRequest request, MarkingExcelService marking) =>
+app.MapGet("/api/marking/orders", (HttpRequest request, MarkingExcelService marking, IDataStore store) =>
 {
     var includeCompleted = string.Equals(request.Query["include_completed"], "1", StringComparison.OrdinalIgnoreCase)
                            || string.Equals(request.Query["include_completed"], "true", StringComparison.OrdinalIgnoreCase);
-    var rows = marking.GetOrderQueue(includeCompleted)
-        .Select(row => new
+    var queueRows = marking.GetOrderQueue(includeCompleted);
+    var orderIds = queueRows
+        .Where(row => row.OrderId.HasValue)
+        .Select(row => row.OrderId!.Value)
+        .Distinct()
+        .ToArray();
+    IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> linesByOrderId = orderIds.Length == 0
+        ? new Dictionary<long, IReadOnlyList<OrderLine>>()
+        : store.GetOrderLinesByOrderIds(orderIds);
+    IReadOnlyDictionary<long, IReadOnlyDictionary<long, double>> shippedByOrderId = orderIds.Length == 0
+        ? new Dictionary<long, IReadOnlyDictionary<long, double>>()
+        : store.GetShippedTotalsByOrderIds(orderIds);
+    var ordersById = orderIds.Length == 0
+        ? new Dictionary<long, Order>()
+        : store.GetOrdersByIds(orderIds).ToDictionary(order => order.Id);
+    var progressByOrderId = orderIds.ToDictionary(
+        orderId => orderId,
+        orderId =>
         {
-            marking_order_id = row.MarkingOrderId?.ToString("D"),
-            order_id = row.OrderId,
-            order_ref = row.OrderRef,
-            partner_name = row.PartnerName,
-            partner_code = row.PartnerCode,
-            partner_display = row.PartnerDisplay,
-            source_type = row.SourceType,
-            source_order_id = row.SourceOrderId,
-            item_id = row.ItemId,
-            item_name = row.ItemName,
-            gtin = row.Gtin,
-            item_display = row.ItemName,
-            requested_quantity = row.RequestedQuantity,
-            status = row.TaskStatus ?? MarkingStatusMapper.ToString(row.MarkingStatus),
-            codes_total = row.CodesTotal,
-            codes_free = row.CodesFree,
-            codes_bound = row.CodesBound,
-            display_source = row.DisplaySource ?? row.PartnerDisplay,
-            effective_status = row.EffectiveStatus ?? row.TaskStatus ?? MarkingStatusMapper.ToString(row.MarkingStatus),
-            display_status = row.DisplayStatus ?? row.TaskStatus ?? MarkingStatusMapper.ToDisplayName(row.MarkingStatus),
-            order_status = OrderStatusMapper.StatusToString(row.OrderStatus),
-            order_status_display = OrderStatusMapper.StatusToDisplayName(row.OrderStatus),
-            due_date = row.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-            marking_status = MarkingStatusMapper.ToString(row.MarkingStatus),
-            marking_effective_status = MarkingStatusMapper.ToString(row.MarkingStatus),
-            marking_status_display = MarkingStatusMapper.ToDisplayName(row.MarkingStatus),
-            marking_line_count = row.MarkingLineCount,
-            marking_code_count = row.MarkingCodeCount,
-            last_generated_at = row.LastGeneratedAt?.ToString("O", CultureInfo.InvariantCulture)
+            var lines = linesByOrderId.GetValueOrDefault(orderId) ?? Array.Empty<OrderLine>();
+            var shippedByLine = shippedByOrderId.GetValueOrDefault(orderId)
+                                ?? new Dictionary<long, double>();
+            return new OrderShipmentProgress
+            {
+                OrderedQty = lines.Sum(line => Math.Max(0d, line.QtyOrdered)),
+                ShippedQty = lines.Sum(line => shippedByLine.GetValueOrDefault(line.Id)),
+                RemainingQty = lines.Sum(line => Math.Max(
+                    0d,
+                    line.QtyOrdered - shippedByLine.GetValueOrDefault(line.Id)))
+            };
+        });
+    var rows = queueRows
+        .Select(row =>
+        {
+            var orderType = row.OrderId.HasValue
+                            && ordersById.TryGetValue(row.OrderId.Value, out var order)
+                ? order.Type
+                : OrderType.Customer;
+            return new
+            {
+                marking_order_id = row.MarkingOrderId?.ToString("D"),
+                order_id = row.OrderId,
+                order_ref = row.OrderRef,
+                partner_name = row.PartnerName,
+                partner_code = row.PartnerCode,
+                partner_display = row.PartnerDisplay,
+                source_type = row.SourceType,
+                source_order_id = row.SourceOrderId,
+                item_id = row.ItemId,
+                item_name = row.ItemName,
+                gtin = row.Gtin,
+                item_display = row.ItemName,
+                requested_quantity = row.RequestedQuantity,
+                status = row.TaskStatus ?? MarkingStatusMapper.ToString(row.MarkingStatus),
+                codes_total = row.CodesTotal,
+                codes_free = row.CodesFree,
+                codes_bound = row.CodesBound,
+                display_source = row.DisplaySource ?? row.PartnerDisplay,
+                effective_status = row.EffectiveStatus ?? row.TaskStatus ?? MarkingStatusMapper.ToString(row.MarkingStatus),
+                display_status = row.DisplayStatus ?? row.TaskStatus ?? MarkingStatusMapper.ToDisplayName(row.MarkingStatus),
+                order_status = OrderStatusMapper.StatusToString(row.OrderStatus),
+                order_status_display = OrderStatusMapper.StatusToDisplayName(row.OrderStatus),
+                order_status_presentation = OrderOperatorStatusResolver.Resolve(
+                    row.OrderStatus,
+                    orderType,
+                    row.OrderId.HasValue ? progressByOrderId.GetValueOrDefault(row.OrderId.Value) : null),
+                due_date = row.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                marking_status = MarkingStatusMapper.ToString(row.MarkingStatus),
+                marking_effective_status = MarkingStatusMapper.ToString(row.MarkingStatus),
+                marking_status_display = MarkingStatusMapper.ToDisplayName(row.MarkingStatus),
+                marking_line_count = row.MarkingLineCount,
+                marking_code_count = row.MarkingCodeCount,
+                last_generated_at = row.LastGeneratedAt?.ToString("O", CultureInfo.InvariantCulture)
+            };
         })
         .ToList();
     return Results.Ok(rows);

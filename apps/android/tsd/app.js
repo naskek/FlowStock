@@ -1744,55 +1744,22 @@
     return isNaN(date.getTime()) ? 0 : date.getTime();
   }
 
-  function getOrderStatusInfo(status) {
-    var raw = String(status || "").trim();
-    if (!raw) {
-      return { label: "-", className: "order-status-pill order-status-neutral" };
-    }
-    var normalized = raw.toLowerCase();
-    if (
-      normalized.indexOf("принят") !== -1 ||
-      normalized.indexOf("accepted") !== -1 ||
-      normalized.indexOf("new") !== -1
-    ) {
-      return { label: raw, className: "order-status-pill order-status-accepted" };
-    }
-    if (
-      normalized.indexOf("черновик") !== -1 ||
-      normalized.indexOf("draft") !== -1 ||
-      normalized.indexOf("процесс") !== -1 ||
-      normalized.indexOf("в работе") !== -1 ||
-      normalized.indexOf("processing") !== -1 ||
-      normalized.indexOf("picking") !== -1
-    ) {
-      return { label: "В работе", className: "order-status-pill order-status-progress" };
-    }
-    if (
-      normalized.indexOf("отгруж") !== -1 ||
-      normalized.indexOf("shipped") !== -1 ||
-      normalized.indexOf("done") !== -1 ||
-      normalized.indexOf("closed") !== -1
-    ) {
-      return { label: raw, className: "order-status-pill order-status-shipped" };
-    }
-    return { label: raw, className: "order-status-pill order-status-neutral" };
-  }
-
   function getOrderStatusInfoForOrder(order) {
-    var statusCode = order && order.status;
-    var statusDisplay =
-      (order && (order.statusDisplay || order.orderStatusDisplay || order.order_status_display)) || "";
-    var normalized = normalizeOrderStatusCode(statusCode || statusDisplay);
-    if (normalized === "IN_PROGRESS") {
-      return { label: String(statusDisplay || "В работе"), className: "order-status-pill order-status-progress" };
+    var presentation = order && (order.orderStatusPresentation || order.order_status_presentation);
+    var presentationCode = String((presentation && presentation.code) || "").trim().toUpperCase();
+    var presentationLabel = String((presentation && presentation.label) || "").trim();
+    if (presentationCode && presentationLabel) {
+      var canonicalClass = "order-status-pill order-status-neutral";
+      if (presentationCode === "SHIPPED") {
+        canonicalClass = "order-status-pill order-status-shipped";
+      } else if (presentationCode === "ACCEPTED") {
+        canonicalClass = "order-status-pill order-status-accepted";
+      } else if (presentationCode === "IN_PROGRESS" || presentationCode === "PARTIALLY_SHIPPED") {
+        canonicalClass = "order-status-pill order-status-progress";
+      }
+      return { label: presentationLabel, className: canonicalClass };
     }
-    if (normalized === "ACCEPTED") {
-      return { label: String(statusDisplay || "Готов"), className: "order-status-pill order-status-accepted" };
-    }
-    if (normalized === "SHIPPED") {
-      return { label: String(statusDisplay || "Выполнен"), className: "order-status-pill order-status-shipped" };
-    }
-    return getOrderStatusInfo(statusDisplay || statusCode);
+    return { label: "Неизвестно", className: "order-status-pill order-status-neutral" };
   }
 
   function formatPalletCountValue(value) {
@@ -3531,184 +3498,32 @@
     return result;
   }
 
-  function normalizeOrderLineHuCode(value) {
-    return String(value || "").trim().toUpperCase();
-  }
-
-  function readOrderLineArray(source, camel, snake) {
-    if (!source) {
-      return [];
-    }
-    if (Array.isArray(source[camel])) {
-      return source[camel];
-    }
-    if (Array.isArray(source[snake])) {
-      return source[snake];
-    }
-    return [];
-  }
-
-  function formatOrderHuQty(value) {
-    if (value == null) {
-      return "—";
-    }
-    var num = Number(value);
-    if (!isFinite(num)) {
-      return "—";
-    }
-    return formatOrderQtyValue(num) + " шт.";
-  }
-
-  function addUniqueText(values, text) {
-    var value = String(text || "").trim();
-    if (!value) {
-      return;
-    }
-    if (
-      values.some(function (existing) {
-        return String(existing).toUpperCase() === value.toUpperCase();
-      })
-    ) {
-      return;
-    }
-    values.push(value);
-  }
-
-  function ensureOrderLineHuRow(map, rows, huCode) {
-    var code = String(huCode || "").trim();
-    var key = normalizeOrderLineHuCode(code);
-    if (!key) {
-      return null;
-    }
-    if (!map[key]) {
-      map[key] = {
-        huCode: code,
-        production: null,
-        warehouse: null,
-        shipped: null,
-      };
-      rows.push(map[key]);
-    }
-    return map[key];
-  }
-
-  function addProductionHuRow(map, rows, source) {
-    var target = ensureOrderLineHuRow(map, rows, source && (source.huCode || source.hu_code));
-    if (!target) {
-      return;
-    }
-    if (!target.production) {
-      target.production = {
-        plannedQty: 0,
-        filledQty: 0,
-        hasPlannedQty: false,
-        hasFilledQty: false,
-        statuses: [],
-        prdRefs: [],
-        fateCode: "",
-        fateLabel: "",
-        fateQty: null,
-      };
-    }
-    var plannedQty = readOrderLineNumber(source, ["plannedQty", "planned_qty"]);
-    var filledQty = readOrderLineNumber(source, ["filledQty", "filled_qty"]);
-    if (plannedQty != null) {
-      target.production.plannedQty += Math.max(0, plannedQty);
-      target.production.hasPlannedQty = true;
-    }
-    if (filledQty != null) {
-      target.production.filledQty += Math.max(0, filledQty);
-      target.production.hasFilledQty = true;
-    }
-    addUniqueText(target.production.statuses, source && (source.palletStatus || source.pallet_status));
-    addUniqueText(target.production.prdRefs, source && (source.prdRef || source.prd_ref));
-    if (!target.production.fateLabel && source && (source.fateLabel || source.fate_label)) {
-      target.production.fateLabel = String(source.fateLabel || source.fate_label || "");
-      target.production.fateCode = String(source.fateCode || source.fate_code || "");
-      target.production.fateQty = readOrderLineNumber(source, ["fateQty", "fate_qty"]);
-    }
-  }
-
-  function addWarehouseHuRow(map, rows, source) {
-    var target = ensureOrderLineHuRow(map, rows, source && (source.huCode || source.hu_code || source.hu));
-    if (!target) {
-      return;
-    }
-    if (!target.warehouse) {
-      target.warehouse = {
-        qty: 0,
-        hasQty: false,
-        locationCode: "",
-        locationName: "",
-        stockStatus: "",
-        isBoundToOrder: false,
-      };
-    }
-    var qty = readOrderLineNumber(source, ["qty"]);
-    if (qty != null) {
-      target.warehouse.qty += Math.max(0, qty);
-      target.warehouse.hasQty = true;
-    }
-    if (!target.warehouse.locationCode && source && (source.locationCode || source.location_code)) {
-      target.warehouse.locationCode = String(source.locationCode || source.location_code || "");
-    }
-    if (!target.warehouse.locationName && source && (source.locationName || source.location_name)) {
-      target.warehouse.locationName = String(source.locationName || source.location_name || "");
-    }
-    if (!target.warehouse.stockStatus && source && (source.stockStatus || source.stock_status)) {
-      target.warehouse.stockStatus = String(source.stockStatus || source.stock_status || "");
-    }
-    target.warehouse.isBoundToOrder =
-      target.warehouse.isBoundToOrder ||
-      (source && (source.isBoundToOrder === true || source.is_bound_to_order === true));
-  }
-
-  function addShippedHuRow(map, rows, source) {
-    var target = ensureOrderLineHuRow(map, rows, source && (source.huCode || source.hu_code || source.hu));
-    if (!target) {
-      return;
-    }
-    if (!target.shipped) {
-      target.shipped = {
-        qty: 0,
-        hasQty: false,
-      };
-    }
-    var qty = readOrderLineNumber(source, ["qty"]);
-    if (qty != null) {
-      target.shipped.qty += Math.max(0, qty);
-      target.shipped.hasQty = true;
-    }
-  }
-
   function buildOrderLineHuRows(line, boundHuRows) {
-    var map = {};
+    var presentation = line && (line.huPresentation || line.hu_presentation) || {};
+    var productionRows = presentation.productionTasks || presentation.production_tasks || [];
+    var operationalRows = presentation.operationalHus || presentation.operational_hus || [];
     var rows = [];
-    var productionRows = readOrderLineArray(line, "productionHuRows", "production_hu_rows");
-    var warehouseRows = readOrderLineArray(line, "warehouseHuRows", "warehouse_hu_rows");
-    var shippedRows = readOrderLineArray(line, "shippedHuRows", "shipped_hu_rows");
-
-    productionRows.forEach(function (row) {
-      addProductionHuRow(map, rows, row);
-    });
-    if (!productionRows.length) {
-      getOrderLineProductionHuCodes(line).forEach(function (hu) {
-        addProductionHuRow(map, rows, { huCode: hu });
+    (Array.isArray(operationalRows) ? operationalRows : []).forEach(function (row) {
+      rows.push({
+        kind: "operational",
+        huCode: String(row.huCode || row.hu_code || "").trim(),
+        qty: row.qty == null ? null : Number(row.qty) || 0,
+        uom: String(row.uom || "шт"),
+        state: row.state || {},
+        location: row.location || null,
       });
-    }
-    warehouseRows.forEach(function (row) {
-      addWarehouseHuRow(map, rows, row);
     });
-    if (!warehouseRows.length) {
-      (boundHuRows || []).forEach(function (hu) {
-        addWarehouseHuRow(map, rows, { huCode: hu, isBoundToOrder: true });
+    (Array.isArray(productionRows) ? productionRows : []).forEach(function (row) {
+      rows.push({
+        kind: "production",
+        huCode: String(row.huCode || row.hu_code || "").trim(),
+        qty: Number(row.qty) || 0,
+        uom: String(row.uom || "шт"),
+        state: row.state || {},
+        location: null,
       });
-    }
-    shippedRows.forEach(function (row) {
-      addShippedHuRow(map, rows, row);
     });
-
-    return rows.sort(function (left, right) {
+    return rows.filter(function (row) { return !!row.huCode; }).sort(function (left, right) {
       return String(left.huCode).localeCompare(String(right.huCode), "ru-RU", {
         numeric: true,
         sensitivity: "base",
@@ -3717,117 +3532,26 @@
   }
 
   function getOrderLineHuStatus(row) {
-    var production = row && row.production;
-    var warehouse = row && row.warehouse;
-    var shipped = row && row.shipped;
-    if (production) {
-      var hasProblem = production.statuses.some(function (status) {
-        var normalized = normalizeOrderLineHuCode(status);
-        return normalized === "ERROR" || normalized === "PROBLEM" || normalized === "CANCELLED";
-      });
-      if (hasProblem) {
-        return { label: "Проблема", tone: "problem" };
-      }
-      if (
-        normalizeOrderLineHuCode(production.fateCode) === "AWAITING_SHIPMENT" &&
-        String(production.fateLabel || "").trim()
-      ) {
-        return { label: String(production.fateLabel).trim(), tone: "filled" };
-      }
-      var plannedQty = production.hasPlannedQty ? Number(production.plannedQty) || 0 : 0;
-      var filledQty = production.hasFilledQty ? Number(production.filledQty) || 0 : 0;
-      if (plannedQty > 0 && filledQty >= plannedQty) {
-        return { label: "Наполнена", tone: "filled" };
-      }
-      if (filledQty > 0 && filledQty < plannedQty) {
-        return { label: "Частично", tone: "partial" };
-      }
-      return { label: "Ожидает", tone: "waiting" };
-    }
-    if (warehouse) {
-      return warehouse.isBoundToOrder
-        ? { label: "Зарезервирована", tone: "reserved" }
-        : { label: "На складе", tone: "stock" };
-    }
-    if (shipped) {
-      return { label: "Отгружена", tone: "shipped" };
-    }
-    return { label: "Проблема", tone: "problem" };
-  }
-
-  function formatOrderLineHuLocation(warehouse) {
-    if (!warehouse) {
-      return "";
-    }
-    if (warehouse.locationCode && warehouse.locationName) {
-      return warehouse.locationCode + " — " + warehouse.locationName;
-    }
-    if (warehouse.locationCode) {
-      return warehouse.locationCode;
-    }
-    return "на складе";
-  }
-
-  function getOrderLineHuMovementText(row) {
-    var production = row && row.production;
-    var warehouse = row && row.warehouse;
-    var shipped = row && row.shipped;
-    if (warehouse && warehouse.hasQty) {
-      return formatOrderLineHuLocation(warehouse) + " · " + formatOrderHuQty(warehouse.qty);
-    }
-    if (
-      production &&
-      production.fateLabel &&
-      normalizeOrderLineHuCode(production.fateCode) !== "AWAITING_SHIPMENT"
-    ) {
-      return production.fateLabel + (production.fateQty != null ? " · " + formatOrderHuQty(production.fateQty) : "");
-    }
-    if (shipped && shipped.hasQty) {
-      return "отгружена · " + formatOrderHuQty(shipped.qty);
-    }
-    return "—";
+    var state = row && row.state || {};
+    var code = String(state.code || "UNKNOWN").trim().toUpperCase();
+    var tone = "problem";
+    if (code === "AWAITING_FILL" || code === "AWAITING_SHIPMENT") tone = "waiting";
+    if (code === "ON_STOCK") tone = "stock";
+    if (code === "RESERVED") tone = "reserved";
+    if (code === "SHIPPED") tone = "shipped";
+    return { label: String(state.label || "Неизвестно"), tone: tone };
   }
 
   function renderOrderLineHuCard(row) {
     var status = getOrderLineHuStatus(row);
-    var production = row.production;
-    var warehouse = row.warehouse;
-    var shipped = row.shipped;
-    var body = "";
-
-    if (production) {
-      body +=
-        '<div class="order-line-hu-card-meta">План: ' +
-        escapeHtml(production.hasPlannedQty ? formatOrderQtyValue(production.plannedQty) : "—") +
-        " · Наполнено: " +
-        escapeHtml(production.hasFilledQty ? formatOrderQtyValue(production.filledQty) : "0") +
-        "</div>";
-      body +=
-        '<div class="order-line-hu-card-sub">PRD: ' +
-        escapeHtml(production.prdRefs.length ? production.prdRefs.join(", ") : "—") +
-        "</div>";
-      body +=
-        '<div class="order-line-hu-card-sub">Движение: ' +
-        escapeHtml(getOrderLineHuMovementText(row)) +
-        "</div>";
-    } else if (warehouse) {
-      body += '<div class="order-line-hu-card-meta">План: —</div>';
-      body +=
-        '<div class="order-line-hu-card-sub">' +
-        escapeHtml(warehouse.isBoundToOrder ? "Привязано к заказу: " : "На складе: ") +
-        escapeHtml(warehouse.hasQty ? formatOrderHuQty(warehouse.qty) : "—") +
-        "</div>";
-      body +=
-        '<div class="order-line-hu-card-sub">Движение: ' +
-        escapeHtml(getOrderLineHuMovementText(row)) +
-        "</div>";
-    } else if (shipped) {
-      body += '<div class="order-line-hu-card-meta">План: —</div>';
-      body += '<div class="order-line-hu-card-sub">PRD: —</div>';
-      body +=
-        '<div class="order-line-hu-card-sub">Движение: ' +
-        escapeHtml(getOrderLineHuMovementText(row)) +
-        "</div>";
+    var location = row.location || {};
+    var locationText = String(location.name || location.code || "").trim();
+    var body = '<div class="order-line-hu-card-meta">Кол-во: ' +
+      escapeHtml(row.qty == null ? "—" : formatQtyWithUnit(row.qty, row.uom || "шт")) +
+      "</div>";
+    if (row.kind === "operational") {
+      body += '<div class="order-line-hu-card-sub">Локация: ' +
+        escapeHtml(locationText || "—") + "</div>";
     }
 
     return (
@@ -3916,18 +3640,27 @@
     }
 
     var huRows = buildOrderLineHuRows(line, boundHuRows);
-    if (huRows.length) {
+    var operationalRows = huRows.filter(function (row) { return row.kind === "operational"; });
+    var productionRows = huRows.filter(function (row) { return row.kind === "production"; });
+    if (operationalRows.length) {
+      sections +=
+        '<div class="order-line-hu-section">' +
+        '  <div class="order-line-hu-section-title">Операционные HU</div>' +
+        '  <div class="order-line-hu-cards">' +
+        operationalRows.map(renderOrderLineHuCard).join("") +
+        "  </div>" +
+        "</div>";
+    }
+    if (productionRows.length) {
       sections +=
         '<div class="order-line-hu-section order-line-production-plan">' +
-        '  <div class="order-line-hu-section-title">Производство / план паллет</div>' +
+        '  <div class="order-line-hu-section-title">Производство</div>' +
         '  <div class="order-line-hu-cards">' +
-        huRows.map(renderOrderLineHuCard).join("") +
+        productionRows.map(renderOrderLineHuCard).join("") +
         "  </div>" +
-        renderOrderLineProductionSummary(line) +
         "</div>";
-    } else {
-      sections += renderOrderLineProductionSummary(line);
     }
+    sections += renderOrderLineProductionSummary(line);
 
     if (!summaryParts.length && !sections) {
       return '<div class="order-line-hu-empty">HU по строке не найдены в read-model.</div>';
@@ -4410,8 +4143,7 @@
       .map(function (item) {
         var summary = getFillingSummary(item);
         var statusInfo = getOrderStatusInfoForOrder({
-          status: item.orderStatus,
-          statusDisplay: item.orderStatusDisplay || item.order_status_display,
+          orderStatusPresentation: item.orderStatusPresentation || item.order_status_presentation,
         });
         var partnerHtml = item.partnerName
           ? '<div class="filling-doc-meta">Клиент: ' + escapeHtml(item.partnerName) + "</div>"
@@ -4479,6 +4211,7 @@
         orderTypeDisplay: context.orderTypeDisplay,
         orderStatus: context.orderStatus,
         orderStatusDisplay: context.orderStatusDisplay,
+        orderStatusPresentation: context.orderStatusPresentation,
         partnerName: context.partnerName,
         prdDocId: context.prdDocId,
         prdDocRef: context.prdDocRef,
@@ -4575,22 +4308,14 @@
     var compositionHtml = "";
     if (isMixed && preview && Array.isArray(preview.lines) && preview.lines.length) {
       compositionHtml =
-        '<div class="filling-preview-composition-title">Компоненты · ' +
-        escapeHtml(String(preview.filledComponentCount || 0)) + " / " +
-        escapeHtml(String(preview.totalComponentCount || preview.lines.length)) + "</div>" +
+        '<div class="filling-preview-composition-title">Состав паллеты</div>' +
         '<div class="filling-preview-composition">' +
         preview.lines.map(function (line) {
-          var completed = line.isCompleted === true;
-          return '<label class="filling-component-line' + (completed ? " is-completed" : "") + '">' +
-            '<input type="checkbox" class="filling-component-checkbox" value="' +
-            escapeHtml(String(line.componentLineId || 0)) + '"' +
-            (completed ? " checked disabled" : "") + " />" +
-            "<span>" +
+          return '<div class="filling-component-line"><span>' +
             escapeHtml(line.itemName || "-") +
             " — " +
             escapeHtml(formatQtyWithUnit(line.plannedQty || line.qty || 0, line.uom || "шт")) +
-            (completed ? " · наполнено" : "") +
-            "</span></label>";
+            "</span></div>";
         }).join("") +
         "</div>";
     }
@@ -4645,13 +4370,6 @@
     var errorEl = overlay.querySelector("#fillingPreviewError");
     var busy = false;
 
-    function updateMixedConfirmState() {
-      if (!confirmBtn || preview.isMixedPallet !== true || busy) {
-        return;
-      }
-      confirmBtn.disabled = !overlay.querySelector(".filling-component-checkbox:not(:disabled):checked");
-    }
-
     function closeOverlay() {
       unlockOverlayScroll();
       if (overlay.parentNode) {
@@ -4670,13 +4388,6 @@
       }
     }
 
-    if (preview.isMixedPallet === true) {
-      overlay.querySelectorAll(".filling-component-checkbox:not(:disabled)").forEach(function (checkbox) {
-        checkbox.addEventListener("change", updateMixedConfirmState);
-      });
-      updateMixedConfirmState();
-    }
-
     if (confirmBtn) {
       confirmBtn.addEventListener("click", function () {
         if (busy) {
@@ -4693,25 +4404,6 @@
         runTsdCriticalOperation("filling.fill", function () {
           return getFillingDeviceId()
             .then(function (deviceId) {
-              if (preview.isMixedPallet === true) {
-                var selectedComponentIds = Array.from(
-                  overlay.querySelectorAll(".filling-component-checkbox:not(:disabled):checked")
-                ).map(function (checkbox) {
-                  return Number(checkbox.value) || 0;
-                }).filter(function (id) {
-                  return id > 0;
-                });
-                if (!selectedComponentIds.length) {
-                  throw new Error("COMPONENT_LINE_IDS_REQUIRED");
-                }
-                return TsdStorage.apiFillMixedProductionPalletComponents({
-                  huCode: preview.huCode,
-                  orderId: preview.orderId,
-                  prdDocId: preview.prdDocId,
-                  deviceId: deviceId,
-                  componentLineIds: selectedComponentIds,
-                });
-              }
               return TsdStorage.apiFillProductionPallet({
                 huCode: preview.huCode,
                 orderId: preview.orderId,
@@ -4953,6 +4645,11 @@
       orderRef: String(pickOutboundViewValue(normalized, raw, "orderRef", "order_ref") || ""),
       partnerName: String(pickOutboundViewValue(normalized, raw, "partnerName", "partner_name") || ""),
       status: String((normalized && normalized.status) || (raw && raw.status) || ""),
+      orderStatus: String(
+        pickOutboundViewValue(normalized, raw, "orderStatus", "order_status") || ""
+      ),
+      orderStatusPresentation:
+        pickOutboundViewValue(normalized, raw, "orderStatusPresentation", "order_status_presentation") || null,
       expectedHuCount:
         Number(pickOutboundViewValue(normalized, raw, "expectedHuCount", "expected_hu_count")) || 0,
       pickedHuCount:
@@ -5701,6 +5398,23 @@
     );
   }
 
+  function getWarehouseHuOperatorState(operatorPresentation) {
+    var presentation = operatorPresentation && typeof operatorPresentation === "object"
+      ? operatorPresentation
+      : {};
+    var dominant = presentation.operational_hu ||
+      presentation.operationalHu ||
+      presentation.production_task ||
+      presentation.productionTask ||
+      {};
+    var state = dominant.state && typeof dominant.state === "object" ? dominant.state : {};
+    var code = String(state.code || "").trim().toUpperCase();
+    var label = String(state.label || "").trim();
+    return code && label
+      ? { code: code, label: label }
+      : { code: "UNKNOWN", label: "—" };
+  }
+
   function mapWarehouseProductionStateRow(row, itemsById) {
     var itemId = Number(row && row.item_id) || 0;
     var item = (itemsById && itemsById[itemId]) || {};
@@ -5745,13 +5459,17 @@
       ? row.hu_rows.map(function (hu) {
           var location = String((hu && hu.location) || "").trim();
           var huCode = String((hu && hu.hu_code) || "").trim();
+          var state = getWarehouseHuOperatorState(
+            hu && (hu.operator_presentation || hu.operatorPresentation)
+          );
           return {
             location: location || "—",
             locationKey: location,
             huCode: huCode || "—",
             huCodeKey: huCode,
             qtyDisplay: fmt(Number(hu && hu.qty) || 0),
-            stockStatus: String((hu && hu.stock_status) || "На складе").trim() || "На складе",
+            stockStatus: state.label,
+            stateCode: state.code,
           };
         })
       : [];
@@ -5764,11 +5482,14 @@
           if (!isFinite(qty) || qty <= 0) {
             qty = filledQty > 0.000001 ? filledQty : plannedQty;
           }
+          var state = getWarehouseHuOperatorState(
+            pallet && (pallet.operator_presentation || pallet.operatorPresentation)
+          );
           return {
             huCode: String((pallet && pallet.hu_code) || "").trim() || "—",
             prdRef: String((pallet && pallet.prd_ref) || "").trim() || "—",
-            palletStatus:
-              String((pallet && (pallet.pallet_status_display || pallet.pallet_status)) || "").trim() || "—",
+            palletStatus: state.label,
+            stateCode: state.code,
             sourceOrderRef: String((pallet && pallet.source_order_ref) || "").trim() || "—",
             qtyDisplay: fmt(qty),
           };
@@ -6502,7 +6223,7 @@
 
   function getTsdHuStatusTone(state) {
     var normalized = normalizeTsdHuCodeValue(state);
-    if (normalized === "AWAITING_SHIPMENT") {
+    if (normalized === "AWAITING_FILL" || normalized === "AWAITING_SHIPMENT") {
       return "waiting";
     }
     if (normalized === "FILLED_PRODUCTION_PALLET" || normalized === "FILLED") {
@@ -6517,16 +6238,16 @@
     if (normalized === "OUTBOUND_PICKED") {
       return "partial";
     }
-    if (normalized === "WAREHOUSE_RESERVED") {
+    if (normalized === "WAREHOUSE_RESERVED" || normalized === "RESERVED") {
       return "reserved";
     }
-    if (normalized === "WAREHOUSE_FREE" || normalized === "HISTORY_ONLY") {
+    if (normalized === "WAREHOUSE_FREE" || normalized === "ON_STOCK" || normalized === "HISTORY_ONLY") {
       return "stock";
     }
     if (normalized === "SHIPPED") {
       return "shipped";
     }
-    if (normalized === "AMBIGUOUS" || normalized === "UNKNOWN") {
+    if (normalized === "INCONSISTENT" || normalized === "AMBIGUOUS" || normalized === "UNKNOWN") {
       return "problem";
     }
     return "problem";
@@ -6735,7 +6456,7 @@
     });
     if (!positiveStock.length) {
       return '<div class="hu-detail-muted">' +
-        escapeHtml(normalizeTsdHuCodeValue(state) === "PLANNED_PRODUCTION" ? "Еще не на складе" : "Нет на складе") +
+        escapeHtml(normalizeTsdHuCodeValue(state) === "AWAITING_FILL" ? "Еще не на складе" : "Нет на складе") +
         "</div>";
     }
     var seen = {};
@@ -6825,8 +6546,16 @@
     var reservations = Array.isArray(card.reservations) ? card.reservations : [];
     var documents = Array.isArray(card.documents) ? card.documents : [];
     var actions = Array.isArray(card.documentActions) ? card.documentActions : [];
+    var operatorPresentation = card.operatorPresentation || card.operator_presentation || {};
+    var dominantPresentation = operatorPresentation.operational_hu ||
+      operatorPresentation.operationalHu ||
+      operatorPresentation.production_task ||
+      operatorPresentation.productionTask || {};
+    var operatorState = dominantPresentation.state || {};
+    var operatorStateCode = String(operatorState.code || "UNKNOWN").trim().toUpperCase();
+    var operatorStateLabel = String(operatorState.label || "Неизвестно").trim();
     var contentHtml = renderTsdHuContentRows(buildTsdHuContentRows(stock, pallets, reservations, documents));
-    var locationHtml = renderTsdHuLocationRows(stock, card.state);
+    var locationHtml = renderTsdHuLocationRows(stock, operatorStateCode);
     var orderHtml = renderTsdHuOrderRows(reservations, pallets, documents);
     var technicalRows = buildTsdHuTechnicalRows(card, pallets, documents);
     var technicalHtml = technicalRows.length
@@ -6846,7 +6575,7 @@
         renderTsdHuIcon(getTsdHuActionIconName(action), "hu-action-icon") +
         '<span>' + escapeHtml(getTsdHuActionLabel(action, documents)) + "</span></button>";
     }).join("");
-    var statusTone = getTsdHuStatusTone(card.state);
+    var statusTone = getTsdHuStatusTone(operatorStateCode);
     var statusIconName = getTsdHuStatusIconName(statusTone);
 
     return '<section class="hu-card-screen"><div class="hu-card-container">' +
@@ -6860,7 +6589,7 @@
       '    <div class="hu-detail-section-title">Статус</div>' +
       '    <div class="hu-status-panel hu-status-panel--' + escapeHtml(statusTone) + '">' +
       renderTsdHuIcon(statusIconName, "hu-status-icon") +
-      '      <span>' + escapeHtml(getTsdHuStatusLabel(card.state || card.title)) + "</span>" +
+      '      <span>' + escapeHtml(operatorStateLabel) + "</span>" +
       "    </div>" +
       "  </section>" +
       '  <section class="hu-detail-section">' +
@@ -8909,7 +8638,11 @@
       case "COMPONENT_LINE_IDS_REQUIRED":
         return "Выберите хотя бы один незаполненный компонент микс-паллеты.";
       case "PRODUCTION_AUTO_CLOSE_REQUIRED":
-        return "Частичное наполнение mixed HU требует включённого автоматического проведения выпуска.";
+        return "Наполнение недоступно: автоматическое проведение выпуска выключено.";
+      case "PARTIAL_COMPONENT_FILL_NOT_ALLOWED":
+        return "Микс-паллета наполняется только целиком.";
+      case "PALLET_PARTIAL_FILL_INCONSISTENT":
+        return "Обнаружено несогласованное частичное наполнение. Требуется контролируемое исправление.";
       case "COMPONENT_NOT_IN_PALLET":
         return "Состав паллеты изменился. Отсканируйте HU повторно.";
       case "SERVER_ERROR":

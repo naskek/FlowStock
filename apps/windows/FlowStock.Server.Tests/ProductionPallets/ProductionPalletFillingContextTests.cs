@@ -242,8 +242,8 @@ public sealed class ProductionPalletFillingContextTests
             .GetProperty("pallets")
             .EnumerateArray());
         var presentation = pallet.GetProperty("production_presentation");
-        Assert.Equal("LABEL_NOT_PRINTED", presentation.GetProperty("state").GetProperty("code").GetString());
-        Assert.Equal("Этикетка не напечатана", presentation.GetProperty("state").GetProperty("label").GetString());
+        Assert.Equal("AWAITING_FILL", presentation.GetProperty("state").GetProperty("code").GetString());
+        Assert.Equal("Ожидает наполнения", presentation.GetProperty("state").GetProperty("label").GetString());
         Assert.Equal(JsonValueKind.Null, presentation.GetProperty("progress").ValueKind);
     }
 

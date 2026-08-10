@@ -155,7 +155,9 @@ public sealed class HuResolverTests
 
         Assert.Equal(TsdHuState.PlannedProduction, result.State);
         Assert.Contains(result.DocumentActions, action => action.Type == TsdHuActionType.OpenFilling && action.OrderId == 20);
-        Assert.Null(result.OperatorReadModel.OperatorPresentation.ProductionTask);
+        Assert.Equal(
+            ProductionTaskSemanticCode.AwaitingFill,
+            result.OperatorReadModel.OperatorPresentation.ProductionTask?.State.Code);
         Assert.Null(result.OperatorReadModel.OperatorPresentation.OperationalHu);
     }
 
@@ -547,7 +549,7 @@ public sealed class HuResolverTests
         var globalFactsCtes = method[globalFactsStart..globalFactsEnd];
 
         Assert.Contains("WITH target_hus AS", method);
-        Assert.Contains("SELECT @hu_code::text AS hu_code", method);
+        Assert.Contains("FROM UNNEST(@hu_codes::text[]) AS candidate(hu_code)", method);
         Assert.Contains("INNER JOIN target_hus target", method);
         Assert.Contains("FROM stock row", method);
         Assert.Contains("FROM production row", method);

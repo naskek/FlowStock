@@ -38,13 +38,20 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
                         stockQty - first.ReservedCustomerOrderQty);
                 });
 
-        var huRowsByItem = BuildHuRowsByItem(huRows, huContextByKey, locationsById);
         var customerOrdersByItem = optimizedStore?.GetWarehouseProductionStateCustomerOrdersByItem()
                                    ?? BuildCustomerOrdersByItem();
         var internalOrdersByItem = optimizedStore?.GetWarehouseProductionStateInternalOrdersByItem()
                                    ?? BuildInternalOrdersByItem();
         var palletByItem = optimizedStore?.GetWarehouseProductionStatePalletsByItem()
                            ?? BuildPalletRowsByItem();
+        var huPresentations = LoadHuPresentations(
+            huRows.Select(row => row.HuCode)
+                .Concat(palletByItem.Values.SelectMany(value => value.Rows).Select(row => row.HuCode)));
+        var huRowsByItem = BuildHuRowsByItem(huRows, huContextByKey, locationsById, huPresentations);
+        foreach (var palletRow in palletByItem.Values.SelectMany(value => value.Rows))
+        {
+            palletRow.OperatorPresentation = huPresentations.GetValueOrDefault(NormalizeHu(palletRow.HuCode)) ?? new();
+        }
 
         var itemIds = new HashSet<long>(itemsById.Keys);
         itemIds.UnionWith(stockByItem.Keys);
@@ -164,7 +171,8 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
     private Dictionary<long, IReadOnlyList<WarehouseProductionStateHuRow>> BuildHuRowsByItem(
         IReadOnlyList<HuStockRow> huRows,
         IReadOnlyDictionary<string, HuOrderContextRow> huContextByKey,
-        IReadOnlyDictionary<long, Location> locationsById)
+        IReadOnlyDictionary<long, Location> locationsById,
+        IReadOnlyDictionary<string, GlobalHuOperatorPresentation> huPresentations)
     {
         return huRows
             .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
@@ -197,7 +205,8 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
                             StockStatus = WarehouseProductionStatePresentation.BuildWarehouseHuStatus(
                                 row.Qty,
                                 context?.ReservedCustomerOrderRef,
-                                context?.ReservedCustomerName)
+                                context?.ReservedCustomerName),
+                            OperatorPresentation = huPresentations.GetValueOrDefault(NormalizeHu(row.HuCode)) ?? new()
                         };
                     })
                     .ToList());
@@ -208,12 +217,21 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
         var result = new Dictionary<long, List<WarehouseProductionStateCustomerOrderRow>>();
         var activeOrders = _dataStore.GetOrders()
             .Where(order => order.Type == OrderType.Customer
-                            && order.Status is not (OrderStatus.Draft or OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged));
+                            && order.Status is not (OrderStatus.Draft or OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged))
+            .ToArray();
+        var orderIds = activeOrders.Select(order => order.Id).ToArray();
+        var linesByOrderId = orderIds.Length == 0
+            ? new Dictionary<long, IReadOnlyList<OrderLine>>()
+            : _dataStore.GetOrderLinesByOrderIds(orderIds);
+        var shippedByOrderId = orderIds.Length == 0
+            ? new Dictionary<long, IReadOnlyDictionary<long, double>>()
+            : _dataStore.GetShippedTotalsByOrderIds(orderIds);
 
         foreach (var order in activeOrders)
         {
-            var lines = _dataStore.GetOrderLines(order.Id);
-            var shippedByLine = _dataStore.GetShippedTotalsByOrderLine(order.Id);
+            var lines = linesByOrderId.GetValueOrDefault(order.Id) ?? Array.Empty<OrderLine>();
+            var shippedByLine = shippedByOrderId.GetValueOrDefault(order.Id)
+                                ?? new Dictionary<long, double>();
 
             foreach (var lineGroup in lines.GroupBy(line => line.ItemId))
             {
@@ -237,6 +255,16 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
                     OrderRef = order.OrderRef,
                     PartnerName = order.PartnerName,
                     Status = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
+                    OrderStatus = OrderStatusMapper.StatusToString(order.Status),
+                    OrderStatusPresentation = OrderOperatorStatusResolver.Resolve(
+                        order.Status,
+                        order.Type,
+                        new OrderShipmentProgress
+                        {
+                            OrderedQty = qtyOrdered,
+                            ShippedQty = shippedQty,
+                            RemainingQty = remainingQty
+                        }),
                     QtyOrdered = qtyOrdered,
                     ShippedQty = shippedQty,
                     RemainingQty = remainingQty
@@ -289,6 +317,8 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
                     OrderId = order.Id,
                     OrderRef = order.OrderRef,
                     Status = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
+                    OrderStatus = OrderStatusMapper.StatusToString(order.Status),
+                    OrderStatusPresentation = OrderOperatorStatusResolver.Resolve(order.Status, order.Type, null),
                     QtyOrdered = qtyOrdered,
                     ProducedQty = Math.Max(0d, qtyOrdered - remainingQty),
                     RemainingQty = remainingQty
@@ -571,6 +601,35 @@ public sealed class WarehouseProductionStateService(IDataStore dataStore)
             .GroupBy(row => BuildHuItemKey(row.ItemId, row.HuCode), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
     }
+
+    private IReadOnlyDictionary<string, GlobalHuOperatorPresentation> LoadHuPresentations(
+        IEnumerable<string?> huCodes)
+    {
+        if (_dataStore is not IHuOperatorFactsStore factsStore)
+        {
+            return new Dictionary<string, GlobalHuOperatorPresentation>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var normalized = huCodes
+            .Select(NormalizeHu)
+            .Where(code => code.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (normalized.Length == 0)
+        {
+            return new Dictionary<string, GlobalHuOperatorPresentation>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return factsStore.GetForHus(normalized)
+            .Select(HuOperatorReadModelService.ProjectGlobal)
+            .ToDictionary(
+                row => NormalizeHu(row.HuCode),
+                row => row.OperatorPresentation,
+                StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeHu(string? huCode) =>
+        string.IsNullOrWhiteSpace(huCode) ? string.Empty : huCode.Trim().ToUpperInvariant();
 
     private static string BuildHuItemKey(long itemId, string huCode)
     {

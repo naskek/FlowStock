@@ -6,6 +6,8 @@ public sealed class OutboundPickingOrderRow
     public string OrderRef { get; init; } = string.Empty;
     public string PartnerName { get; init; } = string.Empty;
     public string Status { get; init; } = string.Empty;
+    public string OrderStatus { get; init; } = string.Empty;
+    public OrderOperatorStatusPresentation OrderStatusPresentation { get; init; } = new("UNKNOWN", "Неизвестно");
     public int ExpectedHuCount { get; init; }
     public int PickedHuCount { get; init; }
     public double OrderedQty { get; init; }
@@ -28,6 +30,8 @@ public sealed class OutboundPickingOrderDetails
     public string OrderRef { get; init; } = string.Empty;
     public string PartnerName { get; init; } = string.Empty;
     public string Status { get; init; } = string.Empty;
+    public string OrderStatus { get; init; } = string.Empty;
+    public OrderOperatorStatusPresentation OrderStatusPresentation { get; init; } = new("UNKNOWN", "Неизвестно");
     public long? DraftOutboundDocId { get; init; }
     public string? DraftOutboundDocRef { get; init; }
     public int ExpectedHuCount { get; init; }

@@ -257,18 +257,12 @@ public sealed class CustomerOutboundBoundHuTests
     public void CustomerOutboundLifecycle_InternalFillBindShipThenClosePrd_NoDuplicateReceiptLedger()
     {
         var harness = CreateLifecycleHarness();
-        var palletService = new ProductionPalletService(harness.Store);
+        var palletService = harness.CreateAtomicProductionPalletService();
         var documentService = harness.CreateService();
 
         var plan = palletService.PlanOrder(66);
         var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
         Assert.True(palletService.Fill(pallet.HuCode, "TSD-01").Success);
-        harness.SeedLedgerEntry(
-            plan.PrdDocId,
-            100,
-            1,
-            600,
-            pallet.HuCode);
 
         harness.SeedOrderReceiptPlanLines(78, new OrderReceiptPlanLine
         {
@@ -296,8 +290,6 @@ public sealed class CustomerOutboundBoundHuTests
         Assert.Single(harness.GetDocLines(outDocId), line => string.Equals(line.FromHu, pallet.HuCode, StringComparison.OrdinalIgnoreCase));
         Assert.True(documentService.TryCloseDoc(outDocId, allowNegative: false).Success);
 
-        var closePrd = documentService.TryCloseDoc(plan.PrdDocId, allowNegative: false);
-        Assert.True(closePrd.Success);
         Assert.Equal(DocStatus.Closed, harness.GetDoc(plan.PrdDocId).Status);
         Assert.Equal(OrderStatus.Shipped, harness.GetOrder(66).Status);
 
@@ -308,6 +300,79 @@ public sealed class CustomerOutboundBoundHuTests
         Assert.Equal(600, inbound[0].QtyDelta, 3);
         Assert.Equal(-600, outbound[0].QtyDelta, 3);
         Assert.Equal(0, harness.Store.GetLedgerBalance(100, 1, pallet.HuCode), 3);
+
+        var closedOutbound = harness.GetDoc(outDocId);
+        var closedOutboundLine = Assert.Single(harness.GetDocLines(outDocId));
+        var lifecycleFacts = new HuOperatorFacts
+        {
+            HuCode = pallet.HuCode,
+            Reservations =
+            [
+                new HuOperatorReservationFact
+                {
+                    OrderId = 78,
+                    OrderRef = "078",
+                    OrderType = "CUSTOMER",
+                    OrderStatus = "ACCEPTED",
+                    OrderLineId = 172,
+                    ItemId = 100,
+                    Qty = 600
+                }
+            ],
+            Outbound =
+            [
+                new HuOperatorOutboundFact
+                {
+                    DocumentId = outDocId,
+                    DocumentRef = closedOutbound.DocRef,
+                    DocumentStatus = "CLOSED",
+                    OrderId = 78,
+                    OrderRef = "078",
+                    OrderType = "CUSTOMER",
+                    OrderStatus = "SHIPPED",
+                    OrderLineId = closedOutboundLine.OrderLineId,
+                    ItemId = closedOutboundLine.ItemId,
+                    Qty = closedOutboundLine.Qty
+                }
+            ],
+            LedgerMovements = harness.LedgerEntries
+                .Where(entry => string.Equals(entry.HuCode, pallet.HuCode, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(entry => entry.Id)
+                .Select(entry => new HuOperatorLedgerMovementFact
+                {
+                    LedgerId = entry.Id,
+                    Timestamp = entry.Timestamp,
+                    DocumentId = entry.DocId,
+                    DocumentRef = harness.GetDoc(entry.DocId).DocRef,
+                    DocumentType = entry.DocId == outDocId ? "OUTBOUND" : "PRODUCTION_RECEIPT",
+                    DocumentStatus = "CLOSED",
+                    ItemId = entry.ItemId,
+                    LocationId = entry.LocationId,
+                    LocationCode = "MAIN",
+                    QtyDelta = entry.QtyDelta
+                })
+                .ToArray()
+        };
+
+        var classification = Assert.IsType<HuOperatorOperationalClassification>(
+            HuOperatorClassifier.Classify(lifecycleFacts));
+        Assert.Equal(OperationalHuSemanticCode.Shipped, classification.StateCode);
+        Assert.DoesNotContain(
+            classification.DiagnosticReasons ?? [],
+            reason => reason.Code == HuOperatorDiagnosticCode.ProductionLedgerContradiction);
+
+        var repeatBinding = HuMutationEligibilityPolicy.Evaluate(
+            lifecycleFacts,
+            new HuMutationEligibilityContext
+            {
+                Operation = HuMutationOperation.ReserveOrBind,
+                TargetOrderId = 78,
+                RequestedComponents = [new HuMutationRequestedComponent(100, 600, 1)]
+            });
+        Assert.False(repeatBinding.Allowed);
+        Assert.Contains(
+            repeatBinding.Reasons,
+            reason => reason.Code == HuMutationEligibilityReasonCode.HuNotInPhysicalStock);
     }
 
     private static CloseDocumentHarness CreateOrder080PalletizedHarness()

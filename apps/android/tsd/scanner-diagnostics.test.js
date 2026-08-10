@@ -1843,7 +1843,7 @@ function testShellIntegration() {
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-manifest.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-store.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics.js"'));
-  assert(appVersionJs.includes('var version = "71"'));
+  assert(appVersionJs.includes('var version = "76"'));
   assert(appJs.includes('id="scannerDiagnosticsBtn"'));
   assert(appJs.includes('navigate("/scanner-diagnostics")'));
   assert(appJs.includes('route.name === "scannerDiagnostics"'));

@@ -60,15 +60,15 @@
                             <Setter Property="Background" Value="#FDEACC" />
                             <Setter Property="BorderBrush" Value="#F5B14C" />
                             <Style.Triggers>
-                                <DataTrigger Binding="{Binding Text, ElementName=OrderStatusText}" Value="Готов">
+                                <DataTrigger Binding="{Binding Tag, ElementName=OrderStatusBadge}" Value="ACCEPTED">
                                     <Setter Property="Background" Value="#E8F7EC" />
                                     <Setter Property="BorderBrush" Value="#9EDDB0" />
                                 </DataTrigger>
-                                <DataTrigger Binding="{Binding Text, ElementName=OrderStatusText}" Value="Выполнен">
+                                <DataTrigger Binding="{Binding Tag, ElementName=OrderStatusBadge}" Value="SHIPPED">
                                     <Setter Property="Background" Value="#1F7A3E" />
                                     <Setter Property="BorderBrush" Value="#166330" />
                                 </DataTrigger>
-                                <DataTrigger Binding="{Binding Text, ElementName=OrderStatusText}" Value="Отменён">
+                                <DataTrigger Binding="{Binding Tag, ElementName=OrderStatusBadge}" Value="CANCELLED">
                                     <Setter Property="Background" Value="#F2F4F7" />
                                     <Setter Property="BorderBrush" Value="#98A2B3" />
                                 </DataTrigger>
@@ -80,13 +80,13 @@
                             <Style TargetType="TextBlock">
                                 <Setter Property="Foreground" Value="#8A4B00" />
                                 <Style.Triggers>
-                                    <DataTrigger Binding="{Binding Text, ElementName=OrderStatusText}" Value="Готов">
+                                    <DataTrigger Binding="{Binding Tag, ElementName=OrderStatusBadge}" Value="ACCEPTED">
                                         <Setter Property="Foreground" Value="#2D6A3D" />
                                     </DataTrigger>
-                                    <DataTrigger Binding="{Binding Text, ElementName=OrderStatusText}" Value="Выполнен">
+                                    <DataTrigger Binding="{Binding Tag, ElementName=OrderStatusBadge}" Value="SHIPPED">
                                         <Setter Property="Foreground" Value="White" />
                                     </DataTrigger>
-                                    <DataTrigger Binding="{Binding Text, ElementName=OrderStatusText}" Value="Отменён">
+                                    <DataTrigger Binding="{Binding Tag, ElementName=OrderStatusBadge}" Value="CANCELLED">
                                         <Setter Property="Foreground" Value="#475467" />
                                     </DataTrigger>
                                 </Style.Triggers>
@@ -195,7 +195,7 @@
                         <DataGridTemplateColumn x:Name="HuBoundColumn" Header="HU по строке" Width="460" MinWidth="420">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <ItemsControl ItemsSource="{Binding HuDisplayRows}">
+                                    <ItemsControl ItemsSource="{Binding OperatorHuDisplayRows}">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <TextBlock Text="{Binding DisplayText}" TextWrapping="Wrap">

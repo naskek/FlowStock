@@ -258,9 +258,14 @@ assert(
   indexHtml.indexOf('src="compat.js"') < indexHtml.indexOf('href="styles.css"'),
   "index.html should load compat.js before styles.css"
 );
-assert.strictEqual(countScript(pcIndexHtml, "../compat.js"), 1, "pc/index.html should load compat.js once");
+assert.strictEqual(
+  countScript(pcIndexHtml, "../compat.js?v=__FLOWSTOCK_PC_WEB_VERSION__"),
+  1,
+  "pc/index.html should load compat.js once"
+);
 assert(
-  pcIndexHtml.indexOf('src="../compat.js"') < pcIndexHtml.indexOf('src="./pc-core.js"'),
+  pcIndexHtml.indexOf('src="../compat.js?v=__FLOWSTOCK_PC_WEB_VERSION__"') <
+    pcIndexHtml.indexOf('src="./pc-core.js?v=__FLOWSTOCK_PC_WEB_VERSION__"'),
   "pc/index.html should load compat.js before pc-core.js"
 );
 assert(/\bvar version = "\d+";/.test(appVersionJs), "TSD shell version should be defined");
@@ -690,9 +695,28 @@ const stockStateRow = hooks.mapWarehouseProductionStateRow(
       already_planned_internal: 3600,
       remaining_to_create: 1200,
     },
-    hu_rows: [{ hu_code: "HU-1", location: "A-01", qty: 600, stock_status: "На складе" }],
+    hu_rows: [
+      {
+        hu_code: "HU-1",
+        location: "A-01",
+        qty: 600,
+        stock_status: "Legacy reservation",
+        operator_presentation: {
+          operational_hu: { state: { code: "ON_STOCK", label: "На складе" } },
+        },
+      },
+    ],
     production_receipts: [
-      { hu_code: "HU-9", prd_ref: "PRD-1", pallet_status_display: "Печать", qty: 0, source_order_ref: "149" },
+      {
+        hu_code: "HU-9",
+        prd_ref: "PRD-1",
+        pallet_status_display: "Печать",
+        qty: 0,
+        source_order_ref: "149",
+        operator_presentation: {
+          production_task: { state: { code: "AWAITING_FILL", label: "Ожидает наполнения" } },
+        },
+      },
     ],
   },
   {}
@@ -700,7 +724,76 @@ const stockStateRow = hooks.mapWarehouseProductionStateRow(
 assert.strictEqual(stockStateRow.status, "below", "below-minimum stock should map to below status");
 assert.strictEqual(stockStateRow.itemTypeName, "Готовая продукция", "item type should be mapped from report row");
 assert.strictEqual(stockStateRow.huRows.length, 1, "warehouse HU rows should be mapped");
+assert.strictEqual(
+  stockStateRow.huRows[0].stockStatus,
+  "На складе",
+  "canonical ON_STOCK label should override conflicting legacy stock_status"
+);
+assert.strictEqual(stockStateRow.huRows[0].stateCode, "ON_STOCK", "canonical HU state code should be preserved");
 assert.strictEqual(stockStateRow.productionReceipts.length, 1, "production receipts should be mapped");
+assert.strictEqual(
+  stockStateRow.productionReceipts[0].palletStatus,
+  "Ожидает наполнения",
+  "production receipt should use canonical production_task label instead of legacy pallet status"
+);
+assert.strictEqual(
+  stockStateRow.productionReceipts[0].stateCode,
+  "AWAITING_FILL",
+  "production receipt should preserve canonical state code"
+);
+
+const canonicalWarehousePresentationRow = hooks.mapWarehouseProductionStateRow(
+  {
+    item_id: 99,
+    item_name: "Canonical HU checks",
+    hu_rows: [
+      {
+        hu_code: "HU-RESERVED",
+        stock_status: "На складе",
+        operator_presentation: {
+          operational_hu: { state: { code: "RESERVED", label: "Зарезервирован" } },
+        },
+      },
+      {
+        hu_code: "HU-INCONSISTENT",
+        stock_status: "На складе",
+        operator_presentation: {
+          operational_hu: { state: { code: "INCONSISTENT", label: "Несогласованное состояние" } },
+        },
+      },
+      { hu_code: "HU-UNKNOWN", stock_status: "На складе" },
+    ],
+    production_receipts: [
+      {
+        hu_code: "HU-OPERATIONAL",
+        pallet_status_display: "Наполнена",
+        operator_presentation: {
+          operational_hu: { state: { code: "SHIPPED", label: "Отгружен" } },
+        },
+      },
+    ],
+  },
+  {}
+);
+assert.deepStrictEqual(
+  Array.from(canonicalWarehousePresentationRow.huRows, function (hu) {
+    return [hu.stateCode, hu.stockStatus];
+  }),
+  [
+    ["RESERVED", "Зарезервирован"],
+    ["INCONSISTENT", "Несогласованное состояние"],
+    ["UNKNOWN", "—"],
+  ],
+  "warehouse HU statuses should use exact server presentation and neutral unknown fallback"
+);
+assert.deepStrictEqual(
+  [
+    canonicalWarehousePresentationRow.productionReceipts[0].stateCode,
+    canonicalWarehousePresentationRow.productionReceipts[0].palletStatus,
+  ],
+  ["SHIPPED", "Отгружен"],
+  "production receipt should also support canonical operational_hu presentation"
+);
 
 const stockCardHtml = hooks.renderStockStateCard(stockStateRow);
 assert.match(stockCardHtml, /stock-state-item--below/, "below card should carry below status class");

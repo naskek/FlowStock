@@ -64,6 +64,48 @@ public sealed class OrderLineCanonicalPresentationTests
     }
 
     [Fact]
+    public void ApplyPersistedLine_RefreshesCanonicalHuPresentationAndOperatorRows()
+    {
+        var target = new OrderLineView
+        {
+            Id = 1631,
+            OrderId = 1062,
+            ItemId = 5,
+            ItemName = "Товар",
+            QtyOrdered = 30
+        };
+        var source = new OrderLineView
+        {
+            Id = 1631,
+            OrderId = 1062,
+            ItemId = 5,
+            ItemName = "Товар",
+            QtyOrdered = 30,
+            HuPresentation = new OrderLineHuPresentation
+            {
+                OperationalHus =
+                [
+                    new OperationalHuPresentation
+                    {
+                        HuCode = "HU-0001744",
+                        Qty = 10,
+                        State = new HuSemanticStatePresentation("SHIPPED", "Отгружен")
+                    }
+                ]
+            }
+        };
+        var operatorRowsChanged = false;
+        target.PropertyChanged += (_, args) =>
+            operatorRowsChanged |= args.PropertyName == nameof(OrderLineView.OperatorHuDisplayRows);
+
+        OrderLineCanonicalPresentation.ApplyPersistedLine(target, source, OrderType.Customer);
+
+        Assert.Same(source.HuPresentation, target.HuPresentation);
+        Assert.Equal("HU-0001744", Assert.Single(target.OperatorHuDisplayRows).HuCode);
+        Assert.True(operatorRowsChanged);
+    }
+
+    [Fact]
     public void InternalOrderLine_HuDisplayRows_ExposeProductionHuEntries()
     {
         var line = new OrderLineView

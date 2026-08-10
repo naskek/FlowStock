@@ -306,6 +306,18 @@
     return Number(value) > 0.000001 ? formatWarehouseStateQty(value, baseUom) : "";
   }
 
+  function getCanonicalHuState(operatorPresentation) {
+    var presentation = operatorPresentation && typeof operatorPresentation === "object"
+      ? operatorPresentation
+      : {};
+    var row = presentation.operational_hu || presentation.production_task;
+    var state = row && row.state && typeof row.state === "object" ? row.state : {};
+    return {
+      code: String(state.code || "").trim().toUpperCase(),
+      label: String(state.label || "").trim() || "—",
+    };
+  }
+
   function mapWarehouseProductionStateRow(row) {
     var itemId = Number(row && row.item_id) || 0;
     var cachedItem = cachedItemsById[itemId] || {};
@@ -332,14 +344,16 @@
     if (!isFinite(remainingToCreate)) remainingToCreate = remainingNeedQty;
 
     var warehouseHuRows = Array.isArray(row && row.hu_rows)
-      ? row.hu_rows.map(function (hu) {
+        ? row.hu_rows.map(function (hu) {
           var qty = Number(hu && hu.qty) || 0;
+          var state = getCanonicalHuState(hu && hu.operator_presentation);
           return {
             location: String((hu && hu.location) || "").trim(),
             huCode: String((hu && hu.hu_code) || "").trim(),
             qty: qty,
             qtyDisplay: formatWarehouseStateQty(qty, baseUom),
-            stockStatus: String((hu && hu.stock_status) || "На складе").trim() || "На складе",
+            stockStatus: state.label,
+            stateCode: state.code,
           };
         })
       : [];
@@ -351,11 +365,12 @@
           if (!isFinite(qty) || qty <= 0) {
             qty = filledQty > 0.000001 ? filledQty : plannedQty;
           }
-          var statusDisplay = String((pallet && pallet.pallet_status_display) || "").trim();
+          var state = getCanonicalHuState(pallet && pallet.operator_presentation);
           return {
             huCode: String((pallet && pallet.hu_code) || "").trim() || "—",
             prdRef: String((pallet && pallet.prd_ref) || "").trim() || "—",
-            palletStatus: statusDisplay || deps.translatePalletStatus((pallet && pallet.pallet_status) || ""),
+            palletStatus: state.label,
+            stateCode: state.code,
             sourceOrderRef: String((pallet && pallet.source_order_ref) || "").trim() || "—",
             statusNote: String((pallet && pallet.status_note) || "").trim(),
             plannedQty: plannedQty,

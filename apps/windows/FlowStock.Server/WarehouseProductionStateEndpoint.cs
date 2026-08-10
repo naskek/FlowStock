@@ -74,7 +74,8 @@ public static class WarehouseProductionStateEndpoint
                 reserved_customer_order_ref = hu.ReservedCustomerOrderRef,
                 reserved_customer_id = hu.ReservedCustomerId,
                 reserved_customer_name = hu.ReservedCustomerName,
-                stock_status = hu.StockStatus
+                stock_status = hu.StockStatus,
+                operator_presentation = MapOperatorPresentation(hu.OperatorPresentation)
             }),
             customer_orders = row.CustomerOrders.Select(order => new
             {
@@ -82,6 +83,12 @@ public static class WarehouseProductionStateEndpoint
                 order_ref = order.OrderRef,
                 partner_name = order.PartnerName,
                 status = order.Status,
+                order_status = order.OrderStatus,
+                order_status_presentation = new
+                {
+                    code = order.OrderStatusPresentation.Code,
+                    label = order.OrderStatusPresentation.Label
+                },
                 qty_ordered = order.QtyOrdered,
                 shipped_qty = order.ShippedQty,
                 remaining_qty = order.RemainingQty
@@ -91,6 +98,12 @@ public static class WarehouseProductionStateEndpoint
                 order_id = order.OrderId,
                 order_ref = order.OrderRef,
                 status = order.Status,
+                order_status = order.OrderStatus,
+                order_status_presentation = new
+                {
+                    code = order.OrderStatusPresentation.Code,
+                    label = order.OrderStatusPresentation.Label
+                },
                 qty_ordered = order.QtyOrdered,
                 produced_qty = order.ProducedQty,
                 remaining_qty = order.RemainingQty
@@ -111,8 +124,41 @@ public static class WarehouseProductionStateEndpoint
                 status_note = prd.StatusNote,
                 is_mixed_pallet = prd.IsMixedPallet,
                 composition = prd.Composition,
-                location = prd.Location
+                location = prd.Location,
+                operator_presentation = MapOperatorPresentation(prd.OperatorPresentation)
             })
         };
     }
+
+    private static object MapOperatorPresentation(GlobalHuOperatorPresentation presentation) => new
+    {
+        production_task = presentation.ProductionTask == null ? null : new
+        {
+            hu_code = presentation.ProductionTask.HuCode,
+            qty = presentation.ProductionTask.Qty,
+            uom = presentation.ProductionTask.Uom,
+            state = new
+            {
+                code = presentation.ProductionTask.State.Code,
+                label = presentation.ProductionTask.State.Label
+            }
+        },
+        operational_hu = presentation.OperationalHu == null ? null : new
+        {
+            hu_code = presentation.OperationalHu.HuCode,
+            qty = presentation.OperationalHu.Qty,
+            uom = presentation.OperationalHu.Uom,
+            state = new
+            {
+                code = presentation.OperationalHu.State.Code,
+                label = presentation.OperationalHu.State.Label
+            },
+            location = presentation.OperationalHu.Location == null ? null : new
+            {
+                id = presentation.OperationalHu.Location.Id,
+                code = presentation.OperationalHu.Location.Code,
+                name = presentation.OperationalHu.Location.Name
+            }
+        }
+    };
 }

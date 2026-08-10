@@ -654,42 +654,43 @@
                                                     <Setter Property="Background" Value="#FDEACC" />
                                                     <Setter Property="BorderBrush" Value="#F5B14C" />
                                                     <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding StatusDisplay}" Value="Готов">
+                                                        <DataTrigger Binding="{Binding StatusPresentationCode}" Value="ACCEPTED">
                                                             <Setter Property="Background" Value="#E8F7EC" />
                                                             <Setter Property="BorderBrush" Value="#9EDDB0" />
                                                         </DataTrigger>
-                                                        <DataTrigger Binding="{Binding StatusDisplay}" Value="Выполнен">
+                                                        <DataTrigger Binding="{Binding StatusPresentationCode}" Value="SHIPPED">
                                                             <Setter Property="Background" Value="#1F7A3E" />
                                                             <Setter Property="BorderBrush" Value="#166330" />
                                                         </DataTrigger>
-                                                        <DataTrigger Binding="{Binding StatusDisplay}" Value="Отменён">
+                                                        <DataTrigger Binding="{Binding StatusPresentationCode}" Value="CANCELLED">
                                                             <Setter Property="Background" Value="#F2F4F7" />
                                                             <Setter Property="BorderBrush" Value="#98A2B3" />
                                                         </DataTrigger>
-                                                        <DataTrigger Binding="{Binding StatusDisplay}" Value="Объединён">
+                                                        <DataTrigger Binding="{Binding StatusPresentationCode}" Value="MERGED">
                                                             <Setter Property="Background" Value="#EEF2F6" />
                                                             <Setter Property="BorderBrush" Value="#98A2B3" />
                                                         </DataTrigger>
                                                     </Style.Triggers>
                                                 </Style>
                                             </Border.Style>
-                                            <TextBlock Text="{Binding StatusDisplay}"
+                                            <TextBlock Text="{Binding OperatorStatusLabel}"
+                                                       ToolTip="{Binding OperatorStatusLabel}"
                                                        FontWeight="SemiBold"
                                                        TextTrimming="CharacterEllipsis">
                                                 <TextBlock.Style>
                                                     <Style TargetType="TextBlock">
                                                         <Setter Property="Foreground" Value="#8A4B00" />
                                                         <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding StatusDisplay}" Value="Готов">
+                                                            <DataTrigger Binding="{Binding StatusPresentationCode}" Value="ACCEPTED">
                                                                 <Setter Property="Foreground" Value="#2D6A3D" />
                                                             </DataTrigger>
-                                                            <DataTrigger Binding="{Binding StatusDisplay}" Value="Выполнен">
+                                                            <DataTrigger Binding="{Binding StatusPresentationCode}" Value="SHIPPED">
                                                                 <Setter Property="Foreground" Value="White" />
                                                             </DataTrigger>
-                                                            <DataTrigger Binding="{Binding StatusDisplay}" Value="Отменён">
+                                                            <DataTrigger Binding="{Binding StatusPresentationCode}" Value="CANCELLED">
                                                                 <Setter Property="Foreground" Value="#475467" />
                                                             </DataTrigger>
-                                                            <DataTrigger Binding="{Binding StatusDisplay}" Value="Объединён">
+                                                            <DataTrigger Binding="{Binding StatusPresentationCode}" Value="MERGED">
                                                                 <Setter Property="Foreground" Value="#475467" />
                                                             </DataTrigger>
                                                         </Style.Triggers>

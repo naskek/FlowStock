@@ -7,6 +7,57 @@ namespace FlowStock.Server.Tests.Orders;
 public sealed class CustomerOrderHuBindingCoordinatorTests
 {
     [Fact]
+    public void CustomerGridRow_ExposesCanonicalOperatorRowsFromAttachedOrderLine()
+    {
+        using var context = new WpfServiceTestContext();
+        using var coordinator = new CustomerOrderHuBindingCoordinator(
+            context.ReadApi,
+            _ => Array.Empty<OrderReceiptPlanLine>());
+        var line = new OrderLineView
+        {
+            Id = 1631,
+            OrderId = 1062,
+            ItemId = 5,
+            ItemName = "Товар",
+            QtyOrdered = 30,
+            HuPresentation = new OrderLineHuPresentation
+            {
+                ProductionTasks =
+                [
+                    new ProductionTaskPresentation
+                    {
+                        HuCode = "HU-0001739",
+                        Qty = 10,
+                        State = new HuSemanticStatePresentation("AWAITING_FILL", "Ожидает наполнения")
+                    }
+                ],
+                OperationalHus =
+                [
+                    new OperationalHuPresentation
+                    {
+                        HuCode = "HU-0001744",
+                        Qty = 10,
+                        State = new HuSemanticStatePresentation("SHIPPED", "Отгружен")
+                    }
+                ]
+            }
+        };
+
+        coordinator.BeginLoad();
+        coordinator.SetOrderContext(1062, OrderType.Customer, [line]);
+        coordinator.EndLoadWithoutCandidateRefresh();
+
+        var gridRow = Assert.Single(coordinator.Lines);
+        Assert.Same(line, gridRow.Line);
+        Assert.Equal(2, line.OperatorHuDisplayRows.Count);
+        var bindingProperty = gridRow.GetType().GetProperty(nameof(OrderLineView.OperatorHuDisplayRows));
+        Assert.NotNull(bindingProperty);
+        var rows = Assert.IsAssignableFrom<IReadOnlyList<OrderLineHuDisplayRow>>(
+            bindingProperty!.GetValue(gridRow));
+        Assert.Equal(new[] { "HU-0001739", "HU-0001744" }, rows.Select(row => row.HuCode).ToArray());
+    }
+
+    [Fact]
     public void NotifyLineChanged_WithMissingLineData_DoesNotThrow()
     {
         using var context = new WpfServiceTestContext();

@@ -189,7 +189,7 @@ function scriptSrcs(file) {
   let match;
   while ((match = re.exec(html))) {
     const srcMatch = /\bsrc=["']([^"']+)["']/i.exec(match[1]);
-    result.push(srcMatch ? srcMatch[1] : null);
+    result.push(srcMatch ? srcMatch[1].split("?")[0] : null);
   }
   return result;
 }
@@ -352,7 +352,7 @@ function testScriptLoadOrder() {
   assertBefore(mainScripts, "compat.js", "app.js", "index.html");
 
   const pcHtml = read(path.join(rootDir, "pc", "index.html"));
-  const pcCompatMatches = pcHtml.match(/<script\b[^>]*\bsrc=["']\.\.\/compat\.js["'][^>]*>/g) || [];
+  const pcCompatMatches = pcHtml.match(/<script\b[^>]*\bsrc=["']\.\.\/compat\.js(?:\?[^"']*)?["'][^>]*>/g) || [];
   assert.strictEqual(pcCompatMatches.length, 1, "pc/index.html should load compat.js exactly once");
 
   const pcScripts = scriptSrcs(path.join(rootDir, "pc", "index.html"));

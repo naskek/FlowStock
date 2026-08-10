@@ -279,7 +279,9 @@ public partial class OrderDetailsWindow : Window
         _canonicalPartialOutboundStatus = OrderStatus.Draft;
         _canonicalPartialOutboundIsCustomer = true;
         ApplyPartialOutboundPermissionState();
-        OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft, OrderType.Customer);
+        SetOrderStatusPresentation(
+            OrderStatusMapper.StatusToString(OrderStatus.Draft),
+            OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft, OrderType.Customer));
         _lines.Clear();
         _productionPalletHuLocked = false;
         _huBinding.ResetForNewOrder();
@@ -340,7 +342,7 @@ public partial class OrderDetailsWindow : Window
         ApplyPartialOutboundPermissionState();
 
         var isFinalStatus = _order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged;
-        OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(_order.Status, _order.Type);
+        SetOrderStatusPresentation(_order.OperatorStatusPresentation);
 
         _lines.Clear();
         var lines = _services.WpfReadApi.TryGetOrderLines(_order.Id, out var apiLines)
@@ -3030,15 +3032,32 @@ public partial class OrderDetailsWindow : Window
     {
         if (_order == null)
         {
-            OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft, GetSelectedOrderType());
+            SetOrderStatusPresentation(
+                OrderStatusMapper.StatusToString(OrderStatus.Draft),
+                OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft, GetSelectedOrderType()));
         }
         else
         {
-            OrderStatusText.Text = OrderStatusMapper.StatusToDisplayName(_order.Status, GetSelectedOrderType());
+            SetOrderStatusPresentation(_order.OperatorStatusPresentation);
         }
         UpdateTypeUi();
         RefreshLineMetrics();
         MarkDirty();
+    }
+
+    private void SetOrderStatusPresentation(string code, string label)
+    {
+        OrderStatusBadge.Tag = code;
+        OrderStatusText.Text = label;
+    }
+
+    private void SetOrderStatusPresentation(OrderOperatorStatusPresentation? presentation)
+    {
+        var isComplete = !string.IsNullOrWhiteSpace(presentation?.Code)
+                         && !string.IsNullOrWhiteSpace(presentation.Label);
+        SetOrderStatusPresentation(
+            isComplete ? presentation!.Code : "UNKNOWN",
+            isComplete ? presentation!.Label : "Неизвестно");
     }
 
     private void ApplyPartialOutboundPermissionState()

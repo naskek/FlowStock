@@ -216,7 +216,7 @@ public sealed class WpfHuReservationApiGuardTests
 
         Assert.NotEqual(first, second);
         Assert.Contains("На складе", first);
-        Assert.Contains("Зарезервирован: заказ 004", second);
+        Assert.Contains("Зарезервирован", second);
         Assert.Contains("004", second);
     }
 
@@ -500,7 +500,7 @@ public sealed class WpfHuReservationApiGuardTests
         var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml");
 
         Assert.Contains("Header=\"HU по строке\" Width=\"460\" MinWidth=\"420\"", xaml);
-        Assert.Contains("ItemsSource=\"{Binding HuDisplayRows}\"", xaml);
+        Assert.Contains("ItemsSource=\"{Binding OperatorHuDisplayRows}\"", xaml);
     }
 
     [Fact]
@@ -510,6 +510,7 @@ public sealed class WpfHuReservationApiGuardTests
         var model = ReadRepoFile("apps", "windows", "FlowStock.Core", "Models", "OrderLineView.cs");
 
         Assert.Contains("public IReadOnlyList<OrderLineHuDisplayRow> HuDisplayRows", model);
+        Assert.Contains("public IReadOnlyList<OrderLineHuDisplayRow> OperatorHuDisplayRows", model);
         Assert.Contains("ProductionHuDisplayEntries", model);
 
         var methodStart = codeBehind.IndexOf("private void UpdateTypeUi()", StringComparison.Ordinal);
@@ -592,7 +593,17 @@ public sealed class WpfHuReservationApiGuardTests
                     ReservedCustomerOrderId = reservedOrderRef == null ? null : 4,
                     ReservedCustomerOrderRef = reservedOrderRef,
                     ReservedCustomerName = reservedOrderRef == null ? null : "Клиент",
-                    StockStatus = reservedOrderRef == null ? "На складе" : $"Зарезервирован: заказ {reservedOrderRef}"
+                    StockStatus = reservedOrderRef == null ? "legacy stock" : $"legacy reserved {reservedOrderRef}",
+                    OperatorPresentation = new GlobalHuOperatorPresentation
+                    {
+                        OperationalHu = new OperationalHuPresentation
+                        {
+                            HuCode = "HU-0000661",
+                            State = reservedOrderRef == null
+                                ? new HuSemanticStatePresentation("ON_STOCK", "На складе")
+                                : new HuSemanticStatePresentation("RESERVED", "Зарезервирован")
+                        }
+                    }
                 }
             ]
         };

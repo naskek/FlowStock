@@ -300,40 +300,32 @@
   }
 
   function renderOrderLineDetails(line, order) {
-    var warehouseRows = Array.isArray(line && line.warehouse_hu_rows) ? line.warehouse_hu_rows : [];
-    var productionRows = Array.isArray(line && line.production_hu_rows) ? line.production_hu_rows : [];
-    var shippedRows = Array.isArray(line && line.shipped_hu_rows) ? line.shipped_hu_rows : [];
-    var hasHuRows = warehouseRows.length || productionRows.length || shippedRows.length;
+    var huPresentation = line && line.hu_presentation && typeof line.hu_presentation === "object"
+      ? line.hu_presentation
+      : {};
+    var operationalRows = Array.isArray(huPresentation.operational_hus)
+      ? huPresentation.operational_hus
+      : [];
+    var productionRows = Array.isArray(huPresentation.production_tasks)
+      ? huPresentation.production_tasks
+      : [];
+    var hasHuRows = operationalRows.length || productionRows.length;
     var isInternal = isInternalOrder(order);
-    var customerHuRows = warehouseRows.concat(
-      shippedRows.map(function (row) {
-        return {
-          hu_code: row.hu_code,
-          qty: row.qty,
-          display_status: "Отгружен",
-        };
-      })
-    );
-    var customerHuColumns = [
+    var operationalHuColumns = [
       { label: "HU", value: function (row) { return row.hu_code || "-"; } },
       { label: "Кол-во", value: function (row) { return formatQuantity(row.qty || 0); } },
       {
+        label: "Состояние",
+        value: function (row) {
+          return row && row.state && row.state.label ? row.state.label : "-";
+        },
+      },
+      {
         label: "Локация",
         value: function (row) {
-          return row.location_name || row.location_code || "-";
-        },
-      },
-      {
-        label: "Статус",
-        value: function (row) {
-          return row.display_status ||
-            (row.stock_status === "LEDGER_STOCK" ? "На складе" : row.stock_status || "-");
-        },
-      },
-      {
-        label: "Привязка",
-        value: function (row) {
-          return row.is_bound_to_order ? "Резерв этого заказа" : "-";
+          return row && row.location
+            ? row.location.name || row.location.code || "-"
+            : "-";
         },
       },
     ];
@@ -341,50 +333,24 @@
     return (
       '<div class="pc-order-line-detail-block">' +
       (isInternal && !hasHuRows ? '<div class="pc-order-line-no-hu">HU не привязаны</div>' : "") +
-      (!isInternal
-        ? '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">HU по строке заказа</div>' +
-          renderOrderHuRowsTable(customerHuRows, customerHuColumns, "HU не привязаны") +
-          "</section>"
-        : "") +
-      '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Производство / план паллет</div>' +
-      renderOrderHuRowsTable(
-        productionRows,
-        [
-          { label: "HU", value: function (row) { return row.hu_code || "-"; } },
-          { label: "Статус", value: function (row) { return formatProductionHuStatus(row); } },
-          { label: "План", value: function (row) { return formatQuantity(row.planned_qty || 0); } },
-          { label: "Наполнено", value: function (row) { return formatQuantity(row.filled_qty || 0); } },
-          { label: "PRD", value: function (row) { return row.prd_ref || "-"; } },
-          {
-            label: "Движение HU",
-            value: function (row) {
-              return formatProductionHuFate(row, order);
-            },
-          },
-        ],
-        "Производственные HU отсутствуют"
-      ) +
+      '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">HU по строке заказа</div>' +
+      renderOrderHuRowsTable(operationalRows, operationalHuColumns, "Операционные HU отсутствуют") +
       "</section>" +
-      (!isInternal
-        ? '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Отгрузка этой строки заказа</div>' +
-          '<div class="pc-order-line-shipped-summary">Отгружено по строке: ' +
-          escapeHtml(
-            formatQuantity(
-              line && line.coverage && line.coverage.shipped_qty != null
-                ? line.coverage.shipped_qty
-                : line && line.qty_shipped != null
-                  ? line.qty_shipped
-                  : 0
-            )
-          ) +
-          "</div>" +
+      (productionRows.length
+        ? '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Производство</div>' +
           renderOrderHuRowsTable(
-            shippedRows,
+            productionRows,
             [
               { label: "HU", value: function (row) { return row.hu_code || "-"; } },
-              { label: "Отгружено", value: function (row) { return formatQuantity(row.qty || 0); } },
+              { label: "Кол-во", value: function (row) { return formatQuantity(row.qty || 0); } },
+              {
+                label: "Состояние",
+                value: function (row) {
+                  return row && row.state && row.state.label ? row.state.label : "-";
+                },
+              },
             ],
-            "По этой строке заказа отгрузки нет"
+            ""
           ) +
           "</section>"
         : "") +

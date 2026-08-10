@@ -785,6 +785,9 @@ async function main() {
     state: "WAREHOUSE_FREE",
     title: "HU на складе",
     description: "Свободная HU. Не привязана к активному заказу.",
+    operatorPresentation: {
+      operational_hu: { state: { code: "ON_STOCK", label: "На складе" } },
+    },
     stock: [{ item_name: "Товар", location_code: "MAIN", qty: 600, uom: "шт" }],
     productionPallets: [],
     reservations: [],
@@ -804,7 +807,10 @@ async function main() {
     known: true,
     huCode: "HU-000555",
     state: "FILLED_PRODUCTION_PALLET",
-    stock: [],
+    operatorPresentation: {
+      operational_hu: { state: { code: "ON_STOCK", label: "На складе" } },
+    },
+    stock: [{ item_name: "Аджика 500 мл", location_code: "MAIN", qty: 378, uom: "шт" }],
     productionPallets: [
       {
         pallet_no: 1,
@@ -831,8 +837,8 @@ async function main() {
     latestMovement: { doc_ref: "PRD-1490", timestamp: "2026-01-02T03:04:05Z" },
     documentActions: [{ type: "OPEN_DOCUMENT", docId: 1490, label: "PRD-1490" }],
   });
-  assert.match(filledCardHtml, /hu-status-panel--filled/);
-  assert.match(filledCardHtml, /Наполнена/);
+  assert.match(filledCardHtml, /hu-status-panel--stock/);
+  assert.match(filledCardHtml, /На складе/);
   assert.match(filledCardHtml, /hu-content-row/);
   assert.strictEqual((filledCardHtml.match(/378 шт/g) || []).length, 1, "filled HU main content should show qty once");
   assert.doesNotMatch(filledCardHtml, /read-only/);
@@ -851,6 +857,9 @@ async function main() {
     state: "AWAITING_SHIPMENT",
     title: "Ожидает отгрузки",
     description: "HU наполнена и ожидает отгрузки по клиентскому заказу. Заказ 217.",
+    operatorPresentation: {
+      operational_hu: { state: { code: "AWAITING_SHIPMENT", label: "Ожидает отгрузки" } },
+    },
     stock: [{ item_name: "Товар", location_code: "MAIN", qty: 600, uom: "шт" }],
     productionPallets: [
       {
@@ -872,6 +881,9 @@ async function main() {
     known: true,
     huCode: "HU-000556",
     state: "PLANNED_PRODUCTION",
+    operatorPresentation: {
+      production_task: { state: { code: "AWAITING_FILL", label: "Ожидает наполнения" } },
+    },
     stock: [],
     productionPallets: [
       {
@@ -888,7 +900,7 @@ async function main() {
     ],
   });
   assert.match(plannedCardHtml, /hu-status-panel--waiting/);
-  assert.match(plannedCardHtml, /Запланирована к наполнению/);
+  assert.match(plannedCardHtml, /Ожидает наполнения/);
   assert.doesNotMatch(plannedCardHtml, /PLANNED/);
   assert.match(plannedCardHtml, /Еще не на складе/);
   assert.match(plannedCardHtml, /Открыть наполнение заказа 006/);
@@ -900,6 +912,9 @@ async function main() {
     known: true,
     huCode: "HU-000557",
     state: "FILLED_PRODUCTION_PALLET",
+    operatorPresentation: {
+      operational_hu: { state: { code: "ON_STOCK", label: "На складе" } },
+    },
     stock: [],
     productionPallets: [
       {
@@ -920,27 +935,25 @@ async function main() {
   assert.match(mixedCardHtml, /378 шт/);
 
   const toneCases = [
-    ["WAREHOUSE_FREE", "stock"],
-    ["WAREHOUSE_RESERVED", "reserved"],
-    ["FILLED_PRODUCTION_PALLET", "filled"],
-    ["AWAITING_SHIPMENT", "waiting"],
-    ["PLANNED_PRODUCTION", "waiting"],
-    ["OUTBOUND_PICKED", "partial"],
-    ["SHIPPED", "shipped"],
-    ["AMBIGUOUS", "problem"],
-    ["UNKNOWN", "problem"],
-    ["HISTORY_ONLY", "stock"],
-    ["", "problem"],
-    ["CLOSED", "problem"],
+    ["AWAITING_FILL", "waiting", "Ожидает наполнения"],
+    ["ON_STOCK", "stock", "На складе"],
+    ["RESERVED", "reserved", "Зарезервирован"],
+    ["AWAITING_SHIPMENT", "waiting", "Ожидает отгрузки"],
+    ["SHIPPED", "shipped", "Отгружен"],
+    ["INCONSISTENT", "problem", "Несогласованное состояние"],
   ];
   toneCases.forEach(function (entry) {
     const state = entry[0];
     const tone = entry[1];
+    const label = entry[2];
     assert.strictEqual(hooks.getTsdHuStatusTone(state), tone, "tone for " + (state || "(empty)"));
     const html = hooks.renderTsdHuCard({
       known: true,
       huCode: "HU-TONE",
       state: state,
+      operatorPresentation: state === "AWAITING_FILL"
+        ? { production_task: { state: { code: state, label: label } } }
+        : { operational_hu: { state: { code: state, label: label } } },
       stock: [],
       productionPallets: [],
       reservations: [],

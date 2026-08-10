@@ -342,6 +342,50 @@ public sealed class CustomerOrderHuPickerRulesTests
         Assert.Equal(0, proposal.UncoveredQty, 3);
     }
 
+    [Fact]
+    public void FullyShippedLine_HistoricalReservationIsNotAnActivePickerCandidate()
+    {
+        var state = new CustomerOrderLineHuState("line-1629");
+        state.AttachLine(
+            new OrderLineView
+            {
+                Id = 1629,
+                OrderId = 1062,
+                ItemId = 21,
+                ItemName = "Товар",
+                QtyOrdered = 1824,
+                QtyShipped = 1824,
+                QtyRemaining = 0
+            },
+            orderId: 1062);
+
+        state.MergeExistingReservation("HU-0001600", 1824);
+
+        Assert.Empty(state.SelectedHuCodes);
+        Assert.Empty(state.GetPickerCandidates());
+        Assert.False(state.IsHuPickerEnabled);
+        Assert.Equal("Отгружено", state.HuPickerLabel);
+        Assert.Equal("Строка полностью отгружена.", state.HuPickerToolTip);
+        Assert.False(state.ShouldSendOnApply);
+    }
+
+    [Fact]
+    public void HistoricalReservationPickerRow_DoesNotClaimThatPrdIsOpen()
+    {
+        var row = new HuReservationPickerRow(
+            new WpfHuReservationCandidateRow
+            {
+                HuCode = "HU-HISTORY",
+                Source = "CURRENT_RESERVATION",
+                Qty = 1824,
+                Note = "Текущий резерв строки"
+            },
+            isSelected: true);
+
+        Assert.DoesNotContain("PRD не закрыт", row.DisplayText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("текущая привязка", row.DisplayText, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static HuReservationPickerRow CreateRow(string huCode, double qty, bool selected)
     {
         var row = new HuReservationPickerRow(

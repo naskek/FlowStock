@@ -119,8 +119,9 @@ assert(
 );
 assert(
   appJs.includes("getOrderStatusInfoForOrder(order)") &&
-    appJs.includes("statusDisplay || order.orderStatusDisplay || order.order_status_display"),
-  "TSD order and filling lists should render status labels from the same status/display mapping"
+    appJs.includes("order.orderStatusPresentation || order.order_status_presentation") &&
+    !extractFunctionBody(appJs, "getOrderStatusInfoForOrder").includes("order_status_display"),
+  "TSD order and filling lists should render only the canonical server status presentation"
 );
 assert(
   storageJs.includes("hasProductionPalletPlan") &&
@@ -493,11 +494,11 @@ assert.strictEqual(
 assert.strictEqual(
   hooks.isProductionFillFinal({
     ok: true,
-    effectiveStatus: "PARTIALLY_FILLED",
+    effectiveStatus: "FILLED",
     document: { summary: { remainingPalletCount: 1 } },
   }),
   false,
-  "partial mixed fill should not be treated as final while pallets remain"
+  "whole-pallet fill should not be treated as final while another pallet remains"
 );
 assert.strictEqual(
   hooks.getRemainingPalletCountFromFillResult({
@@ -919,14 +920,15 @@ assert(
   appJs.includes("Микс-паллета") &&
     appJs.includes("preview.lines") &&
     appJs.includes("filling-preview-composition") &&
-    appJs.includes("filling-component-checkbox") &&
-    appJs.includes("TsdStorage.apiFillMixedProductionPalletComponents") &&
+    !appJs.includes("filling-component-checkbox") &&
+    !appJs.includes("TsdStorage.apiFillMixedProductionPalletComponents") &&
+    appJs.includes("TsdStorage.apiFillProductionPallet") &&
     storageJs.includes("/api/tsd/production/fill-mixed-pallet-components"),
-  "mixed pallet preview should select and submit component lines"
+  "mixed pallet preview should show read-only composition and submit the whole physical HU"
 );
 assert(
-  appJs.includes("updateMixedConfirmState") && appJs.includes("result.message"),
-  "mixed component fill should require a selection and show partial-save message"
+  !appJs.includes("updateMixedConfirmState") && appJs.includes("result.message"),
+  "mixed whole-pallet fill should not expose component selection"
 );
 const partialMixedPreviewHtml = hooks.buildFillingPreviewHtml(
   {
@@ -949,15 +951,12 @@ const partialMixedPreviewHtml = hooks.buildFillingPreviewHtml(
 );
 assert.match(
   partialMixedPreviewHtml,
-  /value="1" checked disabled/,
-  "completed mixed component should be checked and disabled"
+  /Состав паллеты/,
+  "mixed preview should identify the immutable whole-pallet composition"
 );
-assert.match(
-  partialMixedPreviewHtml,
-  /value="2" \/>/,
-  "remaining mixed component should stay unchecked and enabled"
-);
-assert.match(partialMixedPreviewHtml, /Хрен 200 гр — 200 шт · наполнено/);
+assert.doesNotMatch(partialMixedPreviewHtml, /checkbox|checked|disabled/);
+assert.match(partialMixedPreviewHtml, /Хрен 200 гр — 200 шт/);
+assert.match(partialMixedPreviewHtml, /Аджика 200 гр — 200 шт/);
 assert.strictEqual(
   hooks.shouldRenderProductionFillCompletion(
     { ok: true, effective_status: "PARTIALLY_FILLED" },
@@ -1445,13 +1444,13 @@ async function runFillSuccessRuntimeTests() {
   partialHarness.resetCalls();
   await partialHarness.hooks.handleProductionFillSuccess(fillContext, preview, {
     ok: true,
-    effectiveStatus: "PARTIALLY_FILLED",
+    effectiveStatus: "FILLED",
     document: { summary: { remainingPalletCount: 1 } },
   });
   assert.strictEqual(
     partialHarness.fillingContextCalls,
     1,
-    "partial mixed fill should reload filling context once"
+    "whole-pallet fill should reload filling context once when another pallet remains"
   );
   assert.match(partialHarness.appEl.innerHTML, /id="fillingScanInput"/);
 
@@ -1461,7 +1460,7 @@ async function runFillSuccessRuntimeTests() {
   reloadFallbackHarness.resetCalls();
   await reloadFallbackHarness.hooks.handleProductionFillSuccess(fillContext, preview, {
     ok: true,
-    effectiveStatus: "PARTIALLY_FILLED",
+    effectiveStatus: "FILLED",
   });
   assert.strictEqual(
     reloadFallbackHarness.fillingContextCalls,
@@ -1577,6 +1576,7 @@ async function runFillingScanGuardTests() {
 
 async function runFinalizeReconciliationTests() {
   const functionNames = [
+    "normalizeOperatorStatusPresentation",
     "normalizeProductionFillingContext",
     "normalizeProductionFillingCompleteResponse",
     "isUncertainNetworkError",

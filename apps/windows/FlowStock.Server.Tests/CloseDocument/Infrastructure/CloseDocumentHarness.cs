@@ -42,6 +42,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<string, HuRecord> _hus = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<(long ItemId, long LocationId, string? HuCode), double> _seedBalances = new();
     private readonly List<LedgerEntry> _postedLedger = new();
+    private readonly List<(long PalletId, long PrdDocId)> _productionPalletPrdDocAssignmentAttempts = new();
     private long _nextDocId = 1;
     private long _nextDocLineId = 1;
     private long _nextOrderId = 1;
@@ -61,6 +62,8 @@ internal sealed class CloseDocumentHarness
     }
 
     public IReadOnlyList<LedgerEntry> LedgerEntries => _postedLedger;
+    public IReadOnlyList<(long PalletId, long PrdDocId)> ProductionPalletPrdDocAssignmentAttempts =>
+        _productionPalletPrdDocAssignmentAttempts;
     public IDataStore Store => _store.Object;
     public int DocCount => _docs.Count;
     public int TotalDocLineCount => _linesByDoc.Values.Sum(lines => lines.Count);
@@ -195,6 +198,16 @@ internal sealed class CloseDocumentHarness
     public DocumentService CreateService()
     {
         return new DocumentService(_store.Object);
+    }
+
+    public ProductionPalletService CreateAtomicProductionPalletService()
+    {
+        var documents = CreateService();
+        var fillClose = new ProductionFillCloseService(
+            _store.Object,
+            documents,
+            new FlowStockLedgerFlowOptions { ProductionAutoCloseOnFill = true });
+        return new ProductionPalletService(_store.Object, fillClose);
     }
 
     public Doc GetDoc(long docId)
@@ -4974,6 +4987,8 @@ internal sealed class CloseDocumentHarness
         {
             throw new InvalidOperationException("Паллета не найдена для переноса в отдельный выпуск.");
         }
+
+        _productionPalletPrdDocAssignmentAttempts.Add((productionPalletId, targetPrdDocId));
 
         if (!_linesByDoc.TryGetValue(targetPrdDocId, out var targetLines))
         {

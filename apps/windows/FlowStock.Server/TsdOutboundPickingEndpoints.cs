@@ -96,6 +96,12 @@ public static class TsdOutboundPickingEndpoints
             order_ref = row.OrderRef,
             partner_name = row.PartnerName,
             status = row.Status,
+            order_status = row.OrderStatus,
+            order_status_presentation = new
+            {
+                code = row.OrderStatusPresentation.Code,
+                label = row.OrderStatusPresentation.Label
+            },
             expected_hu_count = row.ExpectedHuCount,
             picked_hu_count = row.PickedHuCount,
             ordered_qty = row.OrderedQty,
@@ -121,6 +127,12 @@ public static class TsdOutboundPickingEndpoints
             order_ref = details.OrderRef,
             partner_name = details.PartnerName,
             status = details.Status,
+            order_status = details.OrderStatus,
+            order_status_presentation = new
+            {
+                code = details.OrderStatusPresentation.Code,
+                label = details.OrderStatusPresentation.Label
+            },
             draft_outbound_doc_id = details.DraftOutboundDocId,
             draft_outbound_doc_ref = details.DraftOutboundDocRef,
             expected_hu_count = details.ExpectedHuCount,

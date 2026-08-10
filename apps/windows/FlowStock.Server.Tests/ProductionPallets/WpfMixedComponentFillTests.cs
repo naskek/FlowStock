@@ -1,4 +1,5 @@
 using FlowStock.App;
+using FlowStock.Core.Models;
 
 namespace FlowStock.Server.Tests.ProductionPallets;
 
@@ -69,22 +70,15 @@ public sealed class WpfMixedComponentFillTests
     }
 
     [Fact]
-    public void OperationDetailsWindow_RoutesMixedPalletThroughDialogAndKeepsSingleFillPath()
+    public void OperationDetailsWindow_UsesWholePalletEndpointForSingleAndMixedHu()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OperationDetailsWindow.xaml.cs");
-        var clickMethod = SliceMethod(source, "private async void FillPalletButton_Click", "    private async Task FillMixedPalletComponentsAsync");
-        var mixedMethod = SliceMethod(source, "private async Task FillMixedPalletComponentsAsync", "    private void ReselectDocLine");
+        var clickMethod = SliceMethod(source, "private async void FillPalletButton_Click", "    private void ReselectDocLine");
 
-        Assert.Contains("selectedPallet?.IsMixedPallet == true", clickMethod, StringComparison.Ordinal);
-        Assert.Contains("await FillMixedPalletComponentsAsync(huCode, selectedLineId);", clickMethod, StringComparison.Ordinal);
         Assert.Contains("TryFillPalletAsync(", clickMethod, StringComparison.Ordinal);
-
-        Assert.Contains("TryGetProductionPalletDocumentAsync(_doc.Id)", mixedMethod, StringComparison.Ordinal);
-        Assert.Contains("pallet.EffectiveStatus", mixedMethod, StringComparison.Ordinal);
-        Assert.Contains("TrySelectComponents(this, pallet, out var componentLineIds)", mixedMethod, StringComparison.Ordinal);
-        Assert.Contains("TryFillMixedPalletComponentsAsync(", mixedMethod, StringComparison.Ordinal);
-        Assert.Contains("result.AlreadyFilled", mixedMethod, StringComparison.Ordinal);
-        Assert.DoesNotContain("TryFillPalletAsync(", mixedMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsMixedPallet", clickMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("FillMixedPalletComponentsAsync", clickMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("TrySelectComponents", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -101,23 +95,85 @@ public sealed class WpfMixedComponentFillTests
     }
 
     [Fact]
-    public void OrderLineHuDisplayRows_IncludeFilledProductionEntries()
+    public void OrderLineHuDisplayRows_PreferCanonicalPresentation()
     {
-        var source = ReadRepoFile("apps", "windows", "FlowStock.Core", "Models", "OrderLineView.cs");
-        var displayRows = SliceMethod(source, "    public IReadOnlyList<OrderLineHuDisplayRow> HuDisplayRows =>", "    public double QtyShipped");
+        var line = new OrderLineView
+        {
+            ProductionHuDisplayEntries =
+            [
+                new OrderLineHuDisplayEntry("HU-LEGACY-PRODUCTION", "план", 10, false, 1)
+            ],
+            HuFateDisplayEntries =
+            [
+                new OrderLineHuDisplayEntry(
+                    "HU-LEGACY-FATE",
+                    "отгружено",
+                    5,
+                    false,
+                    2,
+                    FateCode: "SHIPPED",
+                    FateLabel: "отгружено")
+            ]
+        };
 
-        Assert.Contains("\"наполнено\"", displayRows, StringComparison.Ordinal);
+        Assert.Empty(line.OperatorHuDisplayRows);
+        Assert.NotEmpty(line.HuDisplayRows); // Legacy compatibility API remains available.
+
+        line.HuPresentation = new OrderLineHuPresentation
+        {
+            OperationalHus =
+            [
+                new OperationalHuPresentation
+                {
+                    HuCode = "HU-CANONICAL-OPERATIONAL",
+                    Qty = 5,
+                    State = new HuSemanticStatePresentation(
+                        OperationalHuSemanticCode.Inconsistent,
+                        "Серверное несогласованное состояние")
+                }
+            ],
+            ProductionTasks =
+            [
+                new ProductionTaskPresentation
+                {
+                    HuCode = "HU-CANONICAL-PRODUCTION",
+                    Qty = 10,
+                    State = new HuSemanticStatePresentation(
+                        ProductionTaskSemanticCode.AwaitingFill,
+                        "Серверное ожидание наполнения")
+                }
+            ]
+        };
+
+        var operatorRows = line.OperatorHuDisplayRows;
+        Assert.Collection(
+            operatorRows,
+            row =>
+            {
+                Assert.Equal("HU-CANONICAL-OPERATIONAL", row.HuCode);
+                Assert.Equal(OperationalHuSemanticCode.Inconsistent, row.StateCode);
+                Assert.Equal("Серверное несогласованное состояние", row.Label);
+            },
+            row =>
+            {
+                Assert.Equal("HU-CANONICAL-PRODUCTION", row.HuCode);
+                Assert.Equal(ProductionTaskSemanticCode.AwaitingFill, row.StateCode);
+                Assert.Equal("Серверное ожидание наполнения", row.Label);
+            });
+        Assert.Equal(operatorRows, line.HuDisplayRows);
+        Assert.DoesNotContain(operatorRows, row => row.HuCode.StartsWith("HU-LEGACY-", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void MixedDialogFactory_IsolatedFromRoutingForTestableWindowCreation()
+    public void MixedDialogFactory_RemainsLegacyButHasNoNormalRuntimeConsumer()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "MixedPalletComponentFillDialogFactory.cs");
         var operationDetails = ReadRepoFile("apps", "windows", "FlowStock.App", "OperationDetailsWindow.xaml.cs");
 
         Assert.Contains("IMixedPalletComponentFillDialogFactory", source, StringComparison.Ordinal);
         Assert.Contains("new MixedPalletComponentFillWindow(pallet)", source, StringComparison.Ordinal);
-        Assert.Contains("IMixedPalletComponentFillDialogFactory _mixedPalletComponentFillDialogFactory", operationDetails, StringComparison.Ordinal);
+        Assert.DoesNotContain("IMixedPalletComponentFillDialogFactory", operationDetails, StringComparison.Ordinal);
+        Assert.DoesNotContain("MixedPalletComponentFillWindow", operationDetails, StringComparison.Ordinal);
     }
 
     [Fact]
