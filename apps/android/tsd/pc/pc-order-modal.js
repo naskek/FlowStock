@@ -238,8 +238,8 @@
     }
 
     var toneClass = missing <= 0.000001 ? " is-covered" : " is-missing";
-    var coveredLabel = isInternalOrder(order) ? "Выпущено" : "Покрыто";
-    var missingLabel = isInternalOrder(order) ? "Осталось выпустить" : "Не хватает";
+    var coveredLabel = "Выпущено";
+    var missingLabel = "Не хватает";
     return (
       '<div class="pc-order-line-coverage-grid">' +
       '<div><span>Заказано</span><strong>' +
@@ -333,7 +333,7 @@
     return (
       '<div class="pc-order-line-detail-block">' +
       (isInternal && !hasHuRows ? '<div class="pc-order-line-no-hu">HU не привязаны</div>' : "") +
-      '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">HU по строке заказа</div>' +
+      '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Паллеты по товару</div>' +
       renderOrderHuRowsTable(operationalRows, operationalHuColumns, "Операционные HU отсутствуют") +
       "</section>" +
       (productionRows.length
@@ -354,9 +354,7 @@
           ) +
           "</section>"
         : "") +
-      '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">' +
-      (isInternal ? "Итог выпуска" : "Итог") +
-      "</div>" +
+      '<section class="pc-order-line-detail-section pc-order-line-summary-section"><div class="pc-order-line-detail-title">Итог</div>' +
       renderOrderLineCoverage(line, order) +
       "</section>" +
       "</div>"

@@ -12,6 +12,21 @@ namespace FlowStock.Server.Tests.Pc;
 public sealed class PcWebStaticFilesTests
 {
     [Fact]
+    public void OrderModalUsesOperatorTerminologyAndSecondarySummaryStyles()
+    {
+        var modal = ReadRepoFile("apps", "android", "tsd", "pc", "pc-order-modal.js");
+        var styles = ReadRepoFile("apps", "android", "tsd", "pc", "styles.css");
+
+        Assert.Contains("Паллеты по товару", modal, StringComparison.Ordinal);
+        Assert.DoesNotContain("HU по строке заказа", modal, StringComparison.Ordinal);
+        Assert.Contains("Выпущено", modal, StringComparison.Ordinal);
+        Assert.DoesNotContain("Покрыто", modal, StringComparison.Ordinal);
+        Assert.Contains("pc-order-line-summary-section", modal, StringComparison.Ordinal);
+        Assert.Contains(".pc-order-line-summary-section .pc-order-line-detail-title", styles, StringComparison.Ordinal);
+        Assert.Contains(".pc-order-line-summary-section .pc-order-line-coverage-grid > div", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FingerprintIsDeterministicAndUsesCanonicalPathsAndBytes()
     {
         var template = Input("pc/index.html", "template");
@@ -196,6 +211,24 @@ public sealed class PcWebStaticFilesTests
     private static int CountOccurrences(string value, string expected)
     {
         return value.Split(expected, StringSplitOptions.None).Length - 1;
+    }
+
+    private static string ReadRepoFile(params string[] parts)
+    {
+        var current = AppContext.BaseDirectory;
+        for (var i = 0; i < 8; i++)
+        {
+            var candidate = Path.GetFullPath(Path.Combine(
+                current,
+                string.Concat(Enumerable.Repeat("..\\", i)),
+                Path.Combine(parts)));
+            if (File.Exists(candidate))
+            {
+                return File.ReadAllText(candidate);
+            }
+        }
+
+        throw new FileNotFoundException("Не удалось найти файл в репозитории.", Path.Combine(parts));
     }
 
     private sealed class PcWebFiles : IDisposable
