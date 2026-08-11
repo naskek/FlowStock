@@ -2097,6 +2097,7 @@ public sealed class WpfReadApiService
             HuCode = ReadString(element, "hu_code") ?? string.Empty,
             Qty = ReadDouble(element, "qty"),
             Uom = ReadString(element, "uom") ?? "шт",
+            IsLabelPrinted = ReadBool(element, "is_label_printed"),
             State = MapHuSemanticState(element),
             Components = ReadArray(element, "components", MapHuComponentPresentation)
         };

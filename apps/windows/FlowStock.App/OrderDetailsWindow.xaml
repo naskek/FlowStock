@@ -198,13 +198,17 @@
                                     <ItemsControl ItemsSource="{Binding OperatorHuDisplayRows}">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
-                                                <TextBlock Text="{Binding DisplayText}" TextWrapping="Wrap">
+                                                <TextBlock Text="{Binding DisplayText}" TextWrapping="Wrap" ToolTip="{Binding ToolTip}">
                                                     <TextBlock.Style>
                                                         <Style TargetType="TextBlock">
                                                             <Setter Property="FontWeight" Value="Normal" />
+                                                            <Setter Property="FontStyle" Value="Normal" />
                                                             <Style.Triggers>
                                                                 <DataTrigger Binding="{Binding IsBold}" Value="True">
                                                                     <Setter Property="FontWeight" Value="Bold" />
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding IsItalic}" Value="True">
+                                                                    <Setter Property="FontStyle" Value="Italic" />
                                                                 </DataTrigger>
                                                             </Style.Triggers>
                                                         </Style>

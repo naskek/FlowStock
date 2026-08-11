@@ -146,7 +146,9 @@ public sealed class OrderLineView : INotifyPropertyChanged
                 IsBold: false,
                 GetCanonicalHuSortOrder(entry.State.Code),
                 FateSuffix: null,
-                StateCode: GetCanonicalStateCode(entry.State))))
+                StateCode: GetCanonicalStateCode(entry.State),
+                IsItalic: !entry.IsLabelPrinted,
+                ToolTip: entry.IsLabelPrinted ? null : "Паллетная этикетка ещё не печаталась")))
             .OrderBy(entry => entry.SortOrder)
             .ThenBy(entry => entry.HuCode, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -335,7 +337,9 @@ public sealed record OrderLineHuDisplayRow(
     bool IsBold,
     int SortOrder,
     string? FateSuffix = null,
-    string? StateCode = null)
+    string? StateCode = null,
+    bool IsItalic = false,
+    string? ToolTip = null)
 {
     public string DisplayText => string.IsNullOrWhiteSpace(FateSuffix)
         ? $"{HuCode} · {Label} · {Qty:0.###}"

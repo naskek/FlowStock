@@ -1326,6 +1326,7 @@ public static class ProductionPalletEndpoints
             ? null
             : new
             {
+                is_label_printed = presentation.IsLabelPrinted,
                 state = new
                 {
                     code = presentation.State.Code,

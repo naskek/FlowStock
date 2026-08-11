@@ -301,6 +301,7 @@ public static class OrderLinesEndpoint
                 row.HuCode,
                 row.Qty,
                 row.Uom,
+                row.IsLabelPrinted,
                 new HuStateResponse(row.State.Code, row.State.Label),
                 row.Progress == null
                     ? null
@@ -514,6 +515,7 @@ public static class OrderLinesEndpoint
         [property: JsonPropertyName("hu_code")] string HuCode,
         [property: JsonPropertyName("qty")] double Qty,
         [property: JsonPropertyName("uom")] string Uom,
+        [property: JsonPropertyName("is_label_printed")] bool IsLabelPrinted,
         [property: JsonPropertyName("state")] HuStateResponse State,
         [property: JsonPropertyName("progress"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         HuProgressResponse? Progress);

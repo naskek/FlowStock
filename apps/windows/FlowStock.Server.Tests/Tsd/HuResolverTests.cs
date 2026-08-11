@@ -553,6 +553,8 @@ public sealed class HuResolverTests
         Assert.Contains("INNER JOIN target_hus target", method);
         Assert.Contains("FROM stock row", method);
         Assert.Contains("FROM production row", method);
+        Assert.Contains("pallet.printed_at", method);
+        Assert.Contains("'PrintedAt', row.printed_at", method);
         Assert.Contains("FROM reservations row", method);
         Assert.Contains("FROM outbound row", method);
         Assert.Contains("FROM movements row", method);

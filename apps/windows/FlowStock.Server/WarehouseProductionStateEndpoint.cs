@@ -137,6 +137,7 @@ public static class WarehouseProductionStateEndpoint
             hu_code = presentation.ProductionTask.HuCode,
             qty = presentation.ProductionTask.Qty,
             uom = presentation.ProductionTask.Uom,
+            is_label_printed = presentation.ProductionTask.IsLabelPrinted,
             state = new
             {
                 code = presentation.ProductionTask.State.Code,

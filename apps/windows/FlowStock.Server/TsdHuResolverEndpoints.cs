@@ -123,6 +123,7 @@ public static class TsdHuResolverEndpoints
             hu_code = row.HuCode,
             qty = row.Qty,
             uom = row.Uom,
+            is_label_printed = row.IsLabelPrinted,
             state = new { code = row.State.Code, label = row.State.Label },
             progress = row.Progress == null ? null : new
             {

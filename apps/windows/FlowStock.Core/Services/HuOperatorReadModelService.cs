@@ -46,6 +46,7 @@ public sealed class HuOperatorReadModelService
                     HuCode = classification.HuCode,
                     Qty = components.Sum(component => component.PlannedQty),
                     Uom = CommonUom(components),
+                    IsLabelPrinted = IsLabelPrinted(pallet),
                     State = new HuSemanticStatePresentation(
                         production.StateCode,
                         ProductionLabel(production)),
@@ -96,6 +97,7 @@ public sealed class HuOperatorReadModelService
                     HuCode = classification.HuCode,
                     Qty = uom.Length == 0 ? 0 : pallet.Components.Sum(component => component.PlannedQty),
                     Uom = uom,
+                    IsLabelPrinted = IsLabelPrinted(pallet),
                     State = new HuSemanticStatePresentation(production.StateCode, ProductionLabel(production)),
                     Progress = production.CompletedComponents.HasValue && production.TotalComponents.HasValue
                         ? new HuProductionProgressPresentation(
@@ -162,6 +164,7 @@ public sealed class HuOperatorReadModelService
                 HuCode = production.HuCode,
                 Qty = uom.Length == 0 ? 0 : pallet.Components.Sum(component => component.PlannedQty),
                 Uom = uom,
+                IsLabelPrinted = IsLabelPrinted(pallet),
                 State = new HuSemanticStatePresentation(production.StateCode, ProductionLabel(production)),
                 Progress = production.CompletedComponents.HasValue && production.TotalComponents.HasValue
                     ? new HuProductionProgressPresentation(
@@ -423,6 +426,10 @@ public sealed class HuOperatorReadModelService
             ProductionTaskSemanticCode.AwaitingFill => "Ожидает наполнения",
             _ => "Требует проверки"
         };
+
+    private static bool IsLabelPrinted(HuOperatorProductionPalletFact pallet) =>
+        pallet.PrintedAt.HasValue
+        || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase);
 
     private static string CommonUom(IReadOnlyCollection<HuOperatorComponentFact> components)
     {

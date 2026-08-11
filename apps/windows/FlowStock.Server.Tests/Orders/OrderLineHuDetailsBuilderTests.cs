@@ -40,6 +40,10 @@ public sealed class OrderLineHuDetailsBuilderTests
         Assert.Equal(
             new[] { "HU-PLANNED", "HU-PRINTED" },
             production.Select(row => row.GetProperty("hu_code").GetString()).ToArray());
+        Assert.False(production.Single(row => row.GetProperty("hu_code").GetString() == "HU-PLANNED")
+            .GetProperty("is_label_printed").GetBoolean());
+        Assert.True(production.Single(row => row.GetProperty("hu_code").GetString() == "HU-PRINTED")
+            .GetProperty("is_label_printed").GetBoolean());
         Assert.All(production, row =>
         {
             Assert.Equal("AWAITING_FILL", row.GetProperty("state").GetProperty("code").GetString());

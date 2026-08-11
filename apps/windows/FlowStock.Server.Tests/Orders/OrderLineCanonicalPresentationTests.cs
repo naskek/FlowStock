@@ -1,3 +1,5 @@
+using System.Text.Json;
+using FlowStock.App;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 
@@ -103,6 +105,115 @@ public sealed class OrderLineCanonicalPresentationTests
         Assert.Same(source.HuPresentation, target.HuPresentation);
         Assert.Equal("HU-0001744", Assert.Single(target.OperatorHuDisplayRows).HuCode);
         Assert.True(operatorRowsChanged);
+    }
+
+    [Fact]
+    public void AwaitingFillWithoutPrintedLabel_UsesItalicWarningPresentation()
+    {
+        var line = new OrderLineView
+        {
+            HuPresentation = new OrderLineHuPresentation
+            {
+                ProductionTasks =
+                [
+                    new ProductionTaskPresentation
+                    {
+                        HuCode = "HU-0002001",
+                        Qty = 600,
+                        State = new HuSemanticStatePresentation("AWAITING_FILL", "Ожидает наполнения")
+                    }
+                ]
+            }
+        };
+
+        var row = Assert.Single(line.OperatorHuDisplayRows);
+
+        Assert.True(row.IsItalic);
+        Assert.Equal("Паллетная этикетка ещё не печаталась", row.ToolTip);
+        Assert.Equal("HU-0002001 · Ожидает наполнения · 600", row.DisplayText);
+    }
+
+    [Fact]
+    public void AwaitingFillWithPrintedLabel_UsesNormalPresentation()
+    {
+        var line = new OrderLineView
+        {
+            HuPresentation = new OrderLineHuPresentation
+            {
+                ProductionTasks =
+                [
+                    new ProductionTaskPresentation
+                    {
+                        HuCode = "HU-0002002",
+                        Qty = 600,
+                        IsLabelPrinted = true,
+                        State = new HuSemanticStatePresentation("AWAITING_FILL", "Ожидает наполнения")
+                    }
+                ]
+            }
+        };
+
+        var row = Assert.Single(line.OperatorHuDisplayRows);
+
+        Assert.False(row.IsItalic);
+        Assert.Null(row.ToolTip);
+        Assert.Equal("HU-0002002 · Ожидает наполнения · 600", row.DisplayText);
+    }
+
+    [Fact]
+    public void OperationalHu_DoesNotUseProductionPrintWarningPresentation()
+    {
+        var line = new OrderLineView
+        {
+            HuPresentation = new OrderLineHuPresentation
+            {
+                OperationalHus =
+                [
+                    new OperationalHuPresentation
+                    {
+                        HuCode = "HU-0002003",
+                        Qty = 600,
+                        State = new HuSemanticStatePresentation("ON_STOCK", "На складе")
+                    }
+                ]
+            }
+        };
+
+        var row = Assert.Single(line.OperatorHuDisplayRows);
+
+        Assert.False(row.IsItalic);
+        Assert.Null(row.ToolTip);
+    }
+
+    [Fact]
+    public void WpfReadMapper_PreservesProductionLabelPrintedFact()
+    {
+        using var json = JsonDocument.Parse("""
+            {
+              "id": 191,
+              "order_id": 86,
+              "item_id": 6,
+              "item_name": "Товар",
+              "qty_ordered": 600,
+              "hu_presentation": {
+                "production_tasks": [
+                  {
+                    "hu_code": "HU-0002004",
+                    "qty": 600,
+                    "uom": "шт",
+                    "is_label_printed": true,
+                    "state": { "code": "AWAITING_FILL", "label": "Ожидает наполнения" }
+                  }
+                ],
+                "operational_hus": []
+              }
+            }
+            """);
+
+        var line = WpfReadApiService.MapOrderLineView(json.RootElement);
+
+        Assert.True(Assert.Single(line.HuPresentation!.ProductionTasks).IsLabelPrinted);
+        Assert.False(Assert.Single(line.OperatorHuDisplayRows).IsItalic);
     }
 
     [Fact]

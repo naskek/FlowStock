@@ -98,6 +98,7 @@ public sealed class HuOperatorProductionPalletFact
 {
     public long PalletId { get; init; }
     public string Status { get; init; } = string.Empty;
+    public DateTime? PrintedAt { get; init; }
     public long? OwnerOrderId { get; init; }
     public string? OwnerOrderRef { get; init; }
     public string? OwnerOrderType { get; init; }
@@ -211,6 +212,7 @@ public sealed class ProductionTaskPresentation
     public string HuCode { get; init; } = string.Empty;
     public double Qty { get; init; }
     public string Uom { get; init; } = "шт";
+    public bool IsLabelPrinted { get; init; }
     public HuSemanticStatePresentation State { get; init; } = new(string.Empty, string.Empty);
     public HuProductionProgressPresentation? Progress { get; init; }
     public IReadOnlyList<HuComponentPresentation> Components { get; init; } =

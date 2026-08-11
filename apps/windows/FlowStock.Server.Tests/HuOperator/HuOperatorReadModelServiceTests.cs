@@ -32,8 +32,33 @@ public sealed class HuOperatorReadModelServiceTests
             Assert.Equal(ProductionTaskSemanticCode.AwaitingFill, production.State.Code);
             Assert.Equal("Ожидает наполнения", production.State.Label);
         });
+        Assert.False(line.Value.ProductionTasks.Single(row => row.HuCode == "HU-PLANNED").IsLabelPrinted);
+        Assert.True(line.Value.ProductionTasks.Single(row => row.HuCode == "HU-PRINTED").IsLabelPrinted);
         Assert.Empty(line.Value.OperationalHus);
         Assert.Equal(1, store.OrderCalls);
+    }
+
+    [Fact]
+    public void ProductionProjection_UsesPersistedPrintedAtAsSeparateActionFact()
+    {
+        var printedAt = new DateTime(2026, 8, 11, 10, 30, 0, DateTimeKind.Utc);
+        var store = new FakeFactsStore
+        {
+            OrderFacts =
+            [
+                ProductionFacts(
+                    "HU-PRINTED-AT",
+                    ProductionPalletStatus.Printed,
+                    orderLineId: 701,
+                    printedAt)
+            ]
+        };
+
+        var task = Assert.Single(new HuOperatorReadModelService(store).GetForOrder(77)[701].ProductionTasks);
+
+        Assert.True(task.IsLabelPrinted);
+        Assert.Equal(ProductionTaskSemanticCode.AwaitingFill, task.State.Code);
+        Assert.Equal("Ожидает наполнения", task.State.Label);
     }
 
     [Fact]
@@ -761,7 +786,11 @@ public sealed class HuOperatorReadModelServiceTests
         Assert.Null(result.OperatorPresentation.OperationalHu);
     }
 
-    private static HuOperatorFacts ProductionFacts(string huCode, string status, long orderLineId) => new()
+    private static HuOperatorFacts ProductionFacts(
+        string huCode,
+        string status,
+        long orderLineId,
+        DateTime? printedAt = null) => new()
     {
         HuCode = huCode,
         ProductionPallets =
@@ -770,6 +799,7 @@ public sealed class HuOperatorReadModelServiceTests
             {
                 PalletId = orderLineId,
                 Status = status,
+                PrintedAt = printedAt,
                 OwnerOrderId = 77,
                 OwnerOrderRef = "ORD-77",
                 OwnerOrderType = "CUSTOMER",
