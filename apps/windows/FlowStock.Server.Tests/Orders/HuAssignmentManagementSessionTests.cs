@@ -252,6 +252,145 @@ public sealed class HuAssignmentManagementSessionTests
         Assert.Empty(session.BuildApplyRequest().Lines);
     }
 
+    [Fact]
+    public void HiddenReservation_SeedsFutureQtyAndReducesRemainingCapacity()
+    {
+        var session = CreateSession(
+            hus: [],
+            targets:
+            [
+                Target(
+                    orderId: 10,
+                    lineId: 100,
+                    current: ["HU-HIDDEN"],
+                    currentQty: 600,
+                    maxAdditional: 200)
+            ]);
+
+        var line = session.FindTargetLine(100)!;
+        Assert.Equal(600, line.FutureBoundQty, 3);
+        Assert.Equal(200, line.RemainingFutureCapacity, 3);
+        Assert.Equal(["HU-HIDDEN"], line.FutureBoundHuCodes);
+    }
+
+    [Fact]
+    public void HiddenReservation_BlocksBindAboveRealCapacity()
+    {
+        var session = CreateSession(
+            hus: [Hu("HU-FREE", qty: 300)],
+            targets:
+            [
+                Target(
+                    orderId: 10,
+                    lineId: 100,
+                    current: ["HU-HIDDEN"],
+                    currentQty: 600,
+                    maxAdditional: 200)
+            ]);
+
+        Assert.False(session.StageBind(session.FindHu("HU-FREE"), session.FindTargetLine(100), out var message));
+        Assert.Contains("превышает", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(600, session.FindTargetLine(100)!.FutureBoundQty, 3);
+    }
+
+    [Fact]
+    public void DetachVisibleHu_PreservesHiddenCodesAndSubtractsOnlyVisibleQty()
+    {
+        var session = CreateSession(
+            hus: [Hu("HU-VISIBLE", qty: 200, assignment: Assignment(10, 100))],
+            targets:
+            [
+                Target(
+                    orderId: 10,
+                    lineId: 100,
+                    current: ["HU-HIDDEN-1", "HU-VISIBLE", "HU-HIDDEN-2"],
+                    currentQty: 1000)
+            ]);
+
+        Assert.True(session.StageDetach(session.FindHu("HU-VISIBLE"), out var message), message);
+
+        var target = session.FindTargetLine(100)!;
+        Assert.Equal(800, target.FutureBoundQty, 3);
+        Assert.Equal(["HU-HIDDEN-1", "HU-HIDDEN-2"], target.FutureBoundHuCodes);
+        var requestLine = Assert.Single(session.BuildApplyRequest().Lines);
+        Assert.Equal(["HU-HIDDEN-1", "HU-HIDDEN-2", "HU-VISIBLE"], requestLine.ExpectedBoundHuCodes);
+        Assert.Equal(["HU-HIDDEN-1", "HU-HIDDEN-2"], requestLine.FinalHuCodes);
+    }
+
+    [Fact]
+    public void MoveVisibleHu_UpdatesFullFutureQtyForBothLines()
+    {
+        var session = CreateSession(
+            hus: [Hu("HU-MOVE", qty: 200, assignment: Assignment(10, 100))],
+            targets:
+            [
+                Target(10, 100, current: ["HU-MOVE", "HU-SOURCE-HIDDEN"], currentQty: 800),
+                Target(20, 200, current: ["HU-TARGET-HIDDEN"], currentQty: 600, maxAdditional: 200)
+            ]);
+
+        Assert.True(session.StageBind(session.FindHu("HU-MOVE"), session.FindTargetLine(200), out var message), message);
+
+        Assert.Equal(600, session.FindTargetLine(100)!.FutureBoundQty, 3);
+        Assert.Equal(["HU-SOURCE-HIDDEN"], session.FindTargetLine(100)!.FutureBoundHuCodes);
+        Assert.Equal(800, session.FindTargetLine(200)!.FutureBoundQty, 3);
+        Assert.Equal(["HU-MOVE", "HU-TARGET-HIDDEN"], session.FindTargetLine(200)!.FutureBoundHuCodes);
+    }
+
+    [Fact]
+    public void RefreshProjection_DoesNotChangeFullFutureState()
+    {
+        var targets = new[]
+        {
+            Target(10, 100, current: ["HU-HIDDEN"], currentQty: 600, maxAdditional: 200)
+        };
+        var session = CreateSession(hus: [Hu("HU-PAGE-1", qty: 100)], targets: targets);
+
+        Assert.True(session.TryRefreshFrom(
+            Page(Hu("HU-PAGE-2", qty: 100)),
+            targets,
+            discardStagedChanges: true,
+            out var message), message);
+
+        var line = session.FindTargetLine(100)!;
+        Assert.Equal(600, line.FutureBoundQty, 3);
+        Assert.Equal(200, line.RemainingFutureCapacity, 3);
+        Assert.Equal(["HU-HIDDEN"], line.FutureBoundHuCodes);
+        Assert.Empty(session.BuildApplyRequest().Lines);
+    }
+
+    [Fact]
+    public void MarkSaveSuccess_PreservesHiddenSnapshotAndCommitsFullQuantity()
+    {
+        var session = CreateSession(
+            hus: [Hu("HU-NEW", qty: 100)],
+            targets:
+            [
+                Target(10, 100, current: ["HU-HIDDEN"], currentQty: 600, maxAdditional: 100)
+            ]);
+        Assert.True(session.StageBind(session.FindHu("HU-NEW"), session.FindTargetLine(100), out _));
+
+        session.MarkSaveSuccess();
+
+        var line = session.FindTargetLine(100)!;
+        Assert.Equal(["HU-HIDDEN", "HU-NEW"], line.OriginalBoundHuCodes);
+        Assert.Equal(["HU-HIDDEN", "HU-NEW"], line.FutureBoundHuCodes);
+        Assert.Equal(700, line.CurrentBoundQty, 3);
+        Assert.Equal(700, line.FutureBoundQty, 3);
+        Assert.Empty(session.BuildApplyRequest().Lines);
+    }
+
+    [Fact]
+    public void ExistingVisibleHuMissingFromFullSnapshot_FailsClosed()
+    {
+        var session = CreateSession(
+            hus: [Hu("HU-STALE", qty: 100, assignment: Assignment(10, 100))],
+            targets: [Target(10, 100, current: ["HU-OTHER"], currentQty: 100)]);
+
+        Assert.False(session.StageDetach(session.FindHu("HU-STALE"), out var message));
+        Assert.Contains("полном snapshot", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(session.Changes);
+    }
+
     private static HuAssignmentManagementSession CreateSession(
         IReadOnlyList<WpfHuBindingManageHuRow> hus,
         IReadOnlyList<WpfHuBindingManageTargetLine> targets,

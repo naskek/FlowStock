@@ -1331,104 +1331,6 @@ public partial class OrderDetailsWindow : Window
             : string.Join(Environment.NewLine + Environment.NewLine, parts);
     }
 
-    private void HuPickerButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not System.Windows.Controls.Button button || button.DataContext is not CustomerOrderLinePresentation row)
-        {
-            return;
-        }
-
-        if (!EnsureEditable())
-        {
-            return;
-        }
-
-        var state = row.State;
-        var lineId = state.Line.Id;
-        if (!state.IsHuPickerEnabled)
-        {
-            var disabledMessage = string.IsNullOrWhiteSpace(state.HuPickerToolTip)
-                ? "Привязка HU недоступна для этой строки."
-                : state.HuPickerToolTip;
-            MessageBox.Show(
-                disabledMessage,
-                "Привязка HU",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
-        }
-
-        if (!_huBinding.EnsureLineCandidatesLoaded(state.ClientLineKey))
-        {
-            MessageBox.Show(
-                "Не удалось загрузить доступные HU. Проверьте связь с сервером и повторите.",
-                "Привязка HU",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return;
-        }
-
-        var pickerCandidates = state.GetPickerCandidates();
-        if (pickerCandidates.Count == 0)
-        {
-            MessageBox.Show(
-                "Нет доступных HU",
-                "Привязка HU",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
-        }
-
-        var remaining = state.ManualBindingCapacity;
-        var picker = new HuReservationPickerWindow(
-            state.Line.ItemName,
-            state.Line.QtyOrdered,
-            remaining,
-            pickerCandidates,
-            state.SelectedHuCodes,
-            _huBinding.GetSelectedHuCodesOnOtherLines(state.ClientLineKey))
-        {
-            Owner = this
-        };
-        if (picker.ShowDialog() != true)
-        {
-            if (picker.HasFatalError)
-            {
-                LoadOrder(lineId > 0 ? lineId : null);
-            }
-
-            return;
-        }
-
-        try
-        {
-            _huBinding.ApplyPickerSelection(state.ClientLineKey, picker.SelectedHuCodes);
-            if (!TryApplyHuReservationLines(
-                    [
-                        new WpfHuReservationApplyLineRequest
-                        {
-                            OrderLineId = lineId,
-                            SelectedHuCodes = picker.SelectedHuCodes
-                        }
-                    ],
-                    reloadAfterSuccess: true))
-            {
-                _huBinding.RefreshCandidatesForApply();
-                return;
-            }
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(
-                $"Не удалось изменить привязку HU.{Environment.NewLine}{ex.Message}",
-                "Привязка HU",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            LoadOrder(lineId > 0 ? lineId : null);
-            return;
-        }
-    }
-
     private void SyncHuBindingLines(bool reloadReservations = true)
     {
         if (GetSelectedOrderType() != OrderType.Customer)
@@ -2988,10 +2890,7 @@ public partial class OrderDetailsWindow : Window
         var isCustomer = type == OrderType.Customer;
         ApplyPartialOutboundPermissionState();
         SetOrderLinesGridItemsSourcePreservingSelection();
-        HuAvailableColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
         HuBoundColumn.Visibility = Visibility.Visible;
-        HuRemainingColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
-        HuPickerColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
         UnitPriceGrossColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
         VatRateColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;
         if (isCustomer)

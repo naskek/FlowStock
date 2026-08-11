@@ -221,15 +221,18 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
-    public void OrderDetailsWindow_KeepsLegacyExplicitHuBindingFlow()
+    public void OrderDetailsWindow_RemovesInlineHuBindingEntryPointButKeepsCompatibilityHelpers()
     {
+        var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml");
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
 
         Assert.Contains("CustomerOrderHuBindingCoordinator", source);
         Assert.Contains("ConfirmAndApplyCustomerWarehouseHuProposal", source);
         Assert.Contains("TryApplyHuReservationLines", source);
-        Assert.Contains("HuReservationPickerWindow", source);
         Assert.Contains("CustomerHuReservationProposalWindow", source);
+        Assert.DoesNotContain("HuPickerButton_Click", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("HuReservationPickerWindow", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("x:Name=\"HuPickerColumn\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("TryResolveBindReservedStockForSave", source);
         Assert.DoesNotContain("auto-redistribute-from-internal", source, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("reserve-produced-hu", source, StringComparison.OrdinalIgnoreCase);
@@ -407,10 +410,9 @@ public sealed class WpfHuReservationApiGuardTests
     }
 
     [Fact]
-    public void HuReservationPicker_ToggleAndApplyHandlersAreGuarded()
+    public void HuReservationPicker_CompatibilityToggleHandlerRemainsGuarded()
     {
         var picker = ReadRepoFile("apps", "windows", "FlowStock.App", "HuReservationPickerWindow.xaml.cs");
-        var orderDetails = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
 
         var pickerMethodStart = picker.IndexOf("private void PickerRow_PropertyChanged", StringComparison.Ordinal);
         Assert.True(pickerMethodStart >= 0);
@@ -421,17 +423,6 @@ public sealed class WpfHuReservationApiGuardTests
         Assert.Contains("catch (Exception ex)", pickerMethod);
         Assert.Contains("FailAndClose", pickerMethod);
         Assert.Contains("HasFatalError", picker);
-
-        var applyStart = orderDetails.IndexOf("private void HuPickerButton_Click", StringComparison.Ordinal);
-        Assert.True(applyStart >= 0);
-        var applyEnd = orderDetails.IndexOf("private void SyncHuBindingLines", applyStart, StringComparison.Ordinal);
-        Assert.True(applyEnd > applyStart);
-        var applyMethod = orderDetails[applyStart..applyEnd];
-        Assert.Contains("try", applyMethod);
-        Assert.Contains("catch (Exception ex)", applyMethod);
-        Assert.Contains("LoadOrder", applyMethod);
-        Assert.Contains("picker.HasFatalError", applyMethod);
-        Assert.Contains("var lineId = state.Line.Id;", applyMethod);
     }
 
     [Fact]
@@ -499,8 +490,12 @@ public sealed class WpfHuReservationApiGuardTests
     {
         var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml");
 
-        Assert.Contains("Header=\"HU по строке\" Width=\"460\" MinWidth=\"420\"", xaml);
+        Assert.Contains("Header=\"Паллеты\" Width=\"460\" MinWidth=\"420\"", xaml);
         Assert.Contains("ItemsSource=\"{Binding OperatorHuDisplayRows}\"", xaml);
+        Assert.DoesNotContain("Header=\"Доступно HU\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Header=\"Осталось HU\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("x:Name=\"HuPickerColumn\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("HU по строке", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -521,8 +516,9 @@ public sealed class WpfHuReservationApiGuardTests
 
         Assert.Contains("HuBoundColumn.Visibility = Visibility.Visible;", method);
         Assert.DoesNotContain("HuBoundColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed", method, StringComparison.Ordinal);
-        Assert.Contains("HuAvailableColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;", method);
-        Assert.Contains("HuPickerColumn.Visibility = isCustomer ? Visibility.Visible : Visibility.Collapsed;", method);
+        Assert.DoesNotContain("HuAvailableColumn", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("HuRemainingColumn", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("HuPickerColumn", method, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -171,6 +171,60 @@ public sealed class HuAssignmentManagementControllerTests
     }
 
     [Fact]
+    public void OtherPageProjection_PreservesHiddenReservationQtyAndCodes()
+    {
+        var api = new FakeManageApi(
+            hus: [Hu("HU-VISIBLE", qty: 100)],
+            targets: [Target(10, 100, current: ["HU-HIDDEN"], currentQty: 600, maxAdditional: 200)])
+        {
+            Total = 200
+        };
+        var controller = Loaded(api);
+
+        Assert.True(controller.NextPage(out var message), message);
+
+        var line = controller.Session!.FindTargetLine(100)!;
+        Assert.Equal(600, line.FutureBoundQty, 3);
+        Assert.Equal(200, line.RemainingFutureCapacity, 3);
+        Assert.Equal(["HU-HIDDEN"], line.FutureBoundHuCodes);
+    }
+
+    [Fact]
+    public void StateFilterProjection_PreservesHiddenReservationQtyAndCodes()
+    {
+        var api = new FakeManageApi(
+            hus: [Hu("HU-VISIBLE", qty: 100)],
+            targets: [Target(10, 100, current: ["HU-HIDDEN"], currentQty: 600, maxAdditional: 200)]);
+        var controller = Loaded(api);
+        controller.StateFilter = "FREE";
+
+        Assert.True(controller.SearchCurrent(out var message), message);
+
+        var line = controller.Session!.FindTargetLine(100)!;
+        Assert.Equal(600, line.FutureBoundQty, 3);
+        Assert.Equal(["HU-HIDDEN"], line.FutureBoundHuCodes);
+    }
+
+    [Fact]
+    public void SearchProjection_PreservesHiddenReservationAndSaveRemainsNoOp()
+    {
+        var api = new FakeManageApi(
+            hus: [Hu("HU-VISIBLE", qty: 100)],
+            targets: [Target(10, 100, current: ["HU-HIDDEN"], currentQty: 600, maxAdditional: 200)]);
+        var controller = Loaded(api);
+        controller.HuSearch = "VISIBLE";
+
+        Assert.True(controller.SearchCurrent(out var message), message);
+        var saveResult = controller.Save();
+
+        var line = controller.Session!.FindTargetLine(100)!;
+        Assert.Equal(600, line.FutureBoundQty, 3);
+        Assert.Equal(["HU-HIDDEN"], line.FutureBoundHuCodes);
+        Assert.Equal(HuAssignmentManagementSaveOutcome.NoChanges, saveResult.Outcome);
+        Assert.Equal(0, api.ApplyCalls);
+    }
+
+    [Fact]
     public void ResetAllChanges_ReturnsSessionToOriginalState()
     {
         var api = new FakeManageApi(hus: [Hu("HU-FREE", qty: 5)], targets: [Target(10, 100, maxAdditional: 5)]);

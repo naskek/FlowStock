@@ -58,13 +58,15 @@ public sealed class CustomerOrderHuBindingCoordinatorSourceTests
     }
 
     [Fact]
-    public void OrderDetailsWindow_LoadsCandidatesBeforeOpeningPicker()
+    public void OrderDetailsWindow_KeepsCoordinatorForReservedHuReductionWithoutInlinePicker()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
 
-        Assert.Contains("EnsureLineCandidatesLoaded", source);
+        Assert.Contains("SyncHuBindingLines", source);
+        Assert.Contains("TryConfirmCustomerReservedHuReduction", source);
         Assert.Contains("GetPickerCandidates()", source);
-        Assert.Contains("GetSelectedHuCodesOnOtherLines", source);
+        Assert.DoesNotContain("HuPickerButton_Click", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnsureLineCandidatesLoaded", source, StringComparison.Ordinal);
     }
 
     [Fact]

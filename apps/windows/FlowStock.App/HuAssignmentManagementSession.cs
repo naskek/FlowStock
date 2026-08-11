@@ -63,8 +63,33 @@ public sealed class HuAssignmentManagementSession : INotifyPropertyChanged
             return false;
         }
 
-        var futureQtyWithoutHu = CalculateFutureBoundQty(currentLine.OrderLineId, excludeHuCode: currentHu.HuCode);
-        if (futureQtyWithoutHu + currentHu.Qty > currentLine.MaxFutureBoundQty + QtyTolerance)
+        if (!TryValidateMutationContext(currentHu, out message))
+        {
+            return false;
+        }
+
+        var affectedLineIds = new[]
+            {
+                currentHu.OriginalOrderLineId,
+                currentHu.FutureOrderLineId,
+                currentLine.OrderLineId
+            }
+            .Where(lineId => lineId.HasValue)
+            .Select(lineId => lineId!.Value)
+            .Distinct()
+            .ToArray();
+        if (!TryEvaluateProjectedStates(
+                currentHu,
+                currentLine.OrderLineId,
+                affectedLineIds,
+                out var projectedStates,
+                out message))
+        {
+            return false;
+        }
+
+        if (projectedStates[currentLine.OrderLineId].FutureBoundQty
+            > currentLine.MaxFutureBoundQty + QtyTolerance)
         {
             message = "Количество HU превышает доступный остаток строки заказа.";
             return false;
@@ -93,6 +118,26 @@ public sealed class HuAssignmentManagementSession : INotifyPropertyChanged
         if (!currentHu.FutureOrderLineId.HasValue)
         {
             message = "HU уже свободен.";
+            return false;
+        }
+
+        if (!TryValidateMutationContext(currentHu, out message))
+        {
+            return false;
+        }
+
+        var affectedLineIds = new[] { currentHu.OriginalOrderLineId, currentHu.FutureOrderLineId }
+            .Where(lineId => lineId.HasValue)
+            .Select(lineId => lineId!.Value)
+            .Distinct()
+            .ToArray();
+        if (!TryEvaluateProjectedStates(
+                currentHu,
+                projectedFutureOrderLineId: null,
+                affectedLineIds,
+                out _,
+                out message))
+        {
             return false;
         }
 
@@ -174,13 +219,20 @@ public sealed class HuAssignmentManagementSession : INotifyPropertyChanged
             .ToArray();
 
         var lines = affectedLineIds
-            .Select(lineId => _lineById[lineId])
-            .Select(line => new WpfHuBindingManageApplyLineRequest
+            .Select(lineId => _lineById.TryGetValue(lineId, out var line)
+                ? line
+                : throw new InvalidOperationException(
+                    $"Полный snapshot строки {lineId} недоступен. Обновите данные и повторите действие."))
+            .Select(line =>
             {
-                OrderId = line.OrderId,
-                OrderLineId = line.OrderLineId,
-                ExpectedBoundHuCodes = line.OriginalBoundHuCodes.ToArray(),
-                FinalHuCodes = BuildFinalHuCodes(line.OrderLineId)
+                var future = EvaluateFutureLineState(line.OrderLineId);
+                return new WpfHuBindingManageApplyLineRequest
+                {
+                    OrderId = line.OrderId,
+                    OrderLineId = line.OrderLineId,
+                    ExpectedBoundHuCodes = line.OriginalBoundHuCodes.ToArray(),
+                    FinalHuCodes = future.FinalHuCodes
+                };
             })
             .ToArray();
 
@@ -193,6 +245,10 @@ public sealed class HuAssignmentManagementSession : INotifyPropertyChanged
 
     public void MarkSaveSuccess()
     {
+        var committedStates = TargetLines.ToDictionary(
+            line => line.OrderLineId,
+            line => EvaluateFutureLineState(line.OrderLineId));
+
         foreach (var hu in HuRows)
         {
             hu.CommitFutureAsOriginal();
@@ -200,7 +256,8 @@ public sealed class HuAssignmentManagementSession : INotifyPropertyChanged
 
         foreach (var line in TargetLines)
         {
-            line.ReplaceOriginalBoundHuCodes(BuildFinalHuCodes(line.OrderLineId));
+            var committed = committedStates[line.OrderLineId];
+            line.ReplaceOriginalBoundState(committed.FinalHuCodes, committed.FutureBoundQty);
         }
 
         RebuildDerivedState();
@@ -263,9 +320,8 @@ public sealed class HuAssignmentManagementSession : INotifyPropertyChanged
 
         foreach (var line in TargetLines)
         {
-            line.SetFutureBoundState(
-                BuildFinalHuCodes(line.OrderLineId),
-                CalculateFutureBoundQty(line.OrderLineId, excludeHuCode: null));
+            var future = EvaluateFutureLineState(line.OrderLineId);
+            line.SetFutureBoundState(future.FinalHuCodes, future.FutureBoundQty);
         }
 
         OnPropertyChanged(nameof(HuRows));
@@ -275,25 +331,135 @@ public sealed class HuAssignmentManagementSession : INotifyPropertyChanged
         OnPropertyChanged(nameof(Summary));
     }
 
-    private string[] BuildFinalHuCodes(long orderLineId) =>
-        HuRows
-            .Where(hu => hu.FutureOrderLineId == orderLineId)
-            .OrderBy(hu => hu.HuCode, StringComparer.OrdinalIgnoreCase)
-            .Select(hu => hu.HuCode)
-            .ToArray();
+    private HuAssignmentFutureLineState EvaluateFutureLineState(
+        long orderLineId,
+        HuAssignmentManagementHuItem? projectedHu = null,
+        long? projectedFutureOrderLineId = null,
+        bool useProjection = false)
+    {
+        if (!_lineById.TryGetValue(orderLineId, out var line))
+        {
+            throw new InvalidOperationException(
+                $"Полный snapshot строки {orderLineId} недоступен. Обновите данные и повторите действие.");
+        }
 
-    private double CalculateFutureBoundQty(long orderLineId, string? excludeHuCode) =>
-        HuRows
-            .Where(hu => hu.FutureOrderLineId == orderLineId
-                && (string.IsNullOrWhiteSpace(excludeHuCode)
-                    || !string.Equals(hu.HuCode, excludeHuCode, StringComparison.OrdinalIgnoreCase)))
-            .Sum(hu => Math.Max(0, hu.Qty));
+        var finalHuCodes = line.OriginalBoundHuCodes.ToList();
+        var finalHuSet = finalHuCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var futureBoundQty = line.CurrentBoundQty;
+
+        foreach (var hu in HuRows)
+        {
+            var futureOrderLineId = useProjection && ReferenceEquals(hu, projectedHu)
+                ? projectedFutureOrderLineId
+                : hu.FutureOrderLineId;
+            if (hu.OriginalOrderLineId == futureOrderLineId)
+            {
+                continue;
+            }
+
+            if (hu.Qty <= QtyTolerance)
+            {
+                throw new InvalidOperationException(
+                    $"Количество HU '{hu.HuCode}' недоступно. Обновите данные и повторите действие.");
+            }
+
+            if (hu.OriginalOrderLineId == orderLineId)
+            {
+                if (!finalHuSet.Remove(hu.HuCode))
+                {
+                    throw new InvalidOperationException(
+                        $"HU '{hu.HuCode}' отсутствует в полном snapshot строки {orderLineId}. Обновите данные и повторите действие.");
+                }
+
+                finalHuCodes.RemoveAll(code => string.Equals(code, hu.HuCode, StringComparison.OrdinalIgnoreCase));
+                futureBoundQty -= hu.Qty;
+            }
+
+            if (futureOrderLineId == orderLineId)
+            {
+                if (finalHuSet.Add(hu.HuCode))
+                {
+                    finalHuCodes.Add(hu.HuCode);
+                    futureBoundQty += hu.Qty;
+                }
+            }
+        }
+
+        if (futureBoundQty < -QtyTolerance)
+        {
+            throw new InvalidOperationException(
+                $"Количество привязок строки {orderLineId} не согласовано с полным snapshot. Обновите данные и повторите действие.");
+        }
+
+        return new HuAssignmentFutureLineState(
+            finalHuCodes
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            Math.Max(0, futureBoundQty));
+    }
+
+    private bool TryValidateMutationContext(HuAssignmentManagementHuItem hu, out string message)
+    {
+        message = string.Empty;
+        if (hu.Qty <= QtyTolerance)
+        {
+            message = $"Количество HU '{hu.HuCode}' недоступно. Обновите данные и повторите действие.";
+            return false;
+        }
+
+        if (!hu.OriginalOrderLineId.HasValue)
+        {
+            return true;
+        }
+
+        if (!_lineById.TryGetValue(hu.OriginalOrderLineId.Value, out var originalLine)
+            || originalLine.OrderId != hu.OriginalOrderId
+            || !originalLine.OriginalBoundHuCodes.Contains(hu.HuCode, StringComparer.OrdinalIgnoreCase))
+        {
+            message = $"HU '{hu.HuCode}' отсутствует в полном snapshot исходной строки. Обновите данные и повторите действие.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryEvaluateProjectedStates(
+        HuAssignmentManagementHuItem hu,
+        long? projectedFutureOrderLineId,
+        IReadOnlyCollection<long> affectedLineIds,
+        out IReadOnlyDictionary<long, HuAssignmentFutureLineState> states,
+        out string message)
+    {
+        try
+        {
+            states = affectedLineIds.ToDictionary(
+                lineId => lineId,
+                lineId => EvaluateFutureLineState(
+                    lineId,
+                    hu,
+                    projectedFutureOrderLineId,
+                    useProjection: true));
+            message = string.Empty;
+            return true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            states = new Dictionary<long, HuAssignmentFutureLineState>();
+            message = ex.Message;
+            return false;
+        }
+    }
 
     internal static string? NormalizeHu(string? huCode) =>
         string.IsNullOrWhiteSpace(huCode) ? null : huCode.Trim().ToUpperInvariant();
 
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+
+    private sealed record HuAssignmentFutureLineState(
+        IReadOnlyList<string> FinalHuCodes,
+        double FutureBoundQty);
 }
 
 public sealed class HuAssignmentManagementHuItem
@@ -454,10 +620,12 @@ public sealed class HuAssignmentManagementTargetLineItem
         FutureBoundQty = Math.Max(0, futureQty);
     }
 
-    internal void ReplaceOriginalBoundHuCodes(IReadOnlyList<string> huCodes)
+    internal void ReplaceOriginalBoundState(IReadOnlyList<string> huCodes, double boundQty)
     {
         OriginalBoundHuCodes = NormalizeHuCodes(huCodes);
-        CurrentBoundQty = FutureBoundQty;
+        CurrentBoundQty = Math.Max(0, boundQty);
+        FutureBoundHuCodes = OriginalBoundHuCodes;
+        FutureBoundQty = CurrentBoundQty;
         MaxAdditionalBindQty = Math.Max(0, MaxFutureBoundQty - CurrentBoundQty);
     }
 

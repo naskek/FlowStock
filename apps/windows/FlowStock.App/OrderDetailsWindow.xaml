@@ -191,8 +191,7 @@
                                             Binding="{Binding VatRate, StringFormat={}{0:0.####}}"
                                             Width="85"
                                             IsReadOnly="True" />
-                        <DataGridTextColumn x:Name="HuAvailableColumn" Header="Доступно HU" Binding="{Binding AvailableHuDisplay}" Width="120" IsReadOnly="True" />
-                        <DataGridTemplateColumn x:Name="HuBoundColumn" Header="HU по строке" Width="460" MinWidth="420">
+                        <DataGridTemplateColumn x:Name="HuBoundColumn" Header="Паллеты" Width="460" MinWidth="420">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <ItemsControl ItemsSource="{Binding OperatorHuDisplayRows}">
@@ -217,18 +216,6 @@
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-                        <DataGridTextColumn x:Name="HuRemainingColumn" Header="Осталось HU" Binding="{Binding RemainingHuDisplay}" Width="120" IsReadOnly="True" />
-                        <DataGridTemplateColumn x:Name="HuPickerColumn" Header="HU" Width="120">
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <Button Content="{Binding HuPickerLabel}"
-                                            Padding="6,2"
-                                            Click="HuPickerButton_Click"
-                                            IsEnabled="{Binding IsHuPickerEnabled}"
-                                            ToolTip="{Binding HuPickerToolTip}" />
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
