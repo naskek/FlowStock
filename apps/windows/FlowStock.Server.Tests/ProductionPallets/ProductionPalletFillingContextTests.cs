@@ -202,6 +202,7 @@ public sealed class ProductionPalletFillingContextTests
     public async Task FillingContextHttp_ExposesServerOwnedProductionPresentation()
     {
         var fixture = CreateOrderWithValidAndOrphanPallet();
+        const string readyHuCode = "HU-READY-151";
         fixture.Harness.SeedHuOperatorFactsForOrder(fixture.OrderId,
         [
             new HuOperatorFacts
@@ -229,9 +230,40 @@ public sealed class ProductionPalletFillingContextTests
                         ]
                     }
                 ]
+            },
+            new HuOperatorFacts
+            {
+                HuCode = readyHuCode,
+                RegistryKnown = true,
+                Stock =
+                [
+                    new HuOperatorStockFact
+                    {
+                        ItemId = fixture.ValidItemId,
+                        ItemName = "Горчица",
+                        Uom = "шт",
+                        LocationId = 1,
+                        LocationCode = "MAIN",
+                        Qty = 600
+                    }
+                ],
+                Reservations =
+                [
+                    new HuOperatorReservationFact
+                    {
+                        OrderId = fixture.OrderId,
+                        OrderRef = fixture.OrderId.ToString(),
+                        OrderType = "CUSTOMER",
+                        OrderStatus = "IN_PROGRESS",
+                        OrderLineId = fixture.ValidOrderLineId,
+                        ItemId = fixture.ValidItemId,
+                        Qty = 600
+                    }
+                ]
             }
         ]);
-        await using var host = await ProductionPalletTsdHttpHost.StartAsync(fixture.Harness);
+        var service = CreateAutoClosePalletService(fixture.Harness);
+        await using var host = await ProductionPalletTsdHttpHost.StartAsync(fixture.Harness, service);
 
         var response = await host.Client.GetAsync($"/api/tsd/production/orders/{fixture.OrderId}/filling-context");
         response.EnsureSuccessStatusCode();
@@ -245,6 +277,19 @@ public sealed class ProductionPalletFillingContextTests
         Assert.Equal("AWAITING_FILL", presentation.GetProperty("state").GetProperty("code").GetString());
         Assert.Equal("Ожидает наполнения", presentation.GetProperty("state").GetProperty("label").GetString());
         Assert.Equal(JsonValueKind.Null, presentation.GetProperty("progress").ValueKind);
+
+        var orderPresentation = document.RootElement.GetProperty("order_hu_presentation");
+        Assert.Equal(1, orderPresentation.GetProperty("ready_hu_count").GetInt32());
+        Assert.Equal(2, orderPresentation.GetProperty("total_hu_count").GetInt32());
+        var productionTask = Assert.Single(orderPresentation.GetProperty("production_tasks").EnumerateArray());
+        Assert.Equal(fixture.ValidHuCode, productionTask.GetProperty("hu_code").GetString());
+        Assert.Equal("AWAITING_FILL", productionTask.GetProperty("state").GetProperty("code").GetString());
+        Assert.True(productionTask.GetProperty("filling_eligible").GetBoolean());
+        var operationalHu = Assert.Single(orderPresentation.GetProperty("operational_hus").EnumerateArray());
+        Assert.Equal(readyHuCode, operationalHu.GetProperty("hu_code").GetString());
+        Assert.Equal("RESERVED", operationalHu.GetProperty("state").GetProperty("code").GetString());
+        Assert.False(operationalHu.GetProperty("filling_eligible").GetBoolean());
+        fixture.Harness.VerifyHuOperatorFactsForOrder(fixture.OrderId, Moq.Times.Once());
     }
 
     [Fact]
@@ -322,6 +367,24 @@ public sealed class ProductionPalletFillingContextTests
         Assert.Equal(ProductionPalletStatus.Planned, pallet.Status);
         Assert.All(pallet.Lines, line => Assert.Equal(0, line.FilledQty, 3));
         Assert.Empty(fixture.Harness.LedgerEntries);
+    }
+
+    [Theory]
+    [InlineData("invalid_line")]
+    [InlineData("invalid_doc")]
+    [InlineData("missing_location")]
+    [InlineData("overfill")]
+    public void GetFillingContext_EligibilityKeepsExistingGuardSemantics(string guard)
+    {
+        var fixture = CreateEligibilityGuardFixture(guard);
+        var service = CreateAutoClosePalletService(fixture.Harness);
+
+        var context = service.GetFillingContext(fixture.OrderId);
+
+        Assert.Contains(fixture.ControlHuCode, context.FillingEligibleHuCodes);
+        Assert.DoesNotContain(fixture.TargetHuCode, context.FillingEligibleHuCodes);
+        Assert.Single(context.FillingEligibleHuCodes);
+        Assert.Contains(service.GetFillingOrders(), order => order.OrderId == fixture.OrderId);
     }
 
     private static bool ContainsHu(string json, string huCode)
@@ -437,6 +500,105 @@ public sealed class ProductionPalletFillingContextTests
             fullyOrphanMixedHuCode);
     }
 
+    private static EligibilityGuardFixture CreateEligibilityGuardFixture(string guard)
+    {
+        const long orderId = 152;
+        const long controlOrderLineId = 340;
+        const long targetOrderLineId = 341;
+        const long controlItemId = 6;
+        const long targetItemId = 23;
+        const long prdDocId = 1520;
+        const string controlHuCode = "HU-ELIGIBLE-CONTROL";
+        const string targetHuCode = "HU-ELIGIBILITY-GUARD";
+        var harness = CreateBaseFillingHarness(
+            orderId,
+            controlOrderLineId,
+            controlItemId,
+            targetItemId,
+            prdDocId);
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = targetOrderLineId,
+            OrderId = orderId,
+            ItemId = targetItemId,
+            QtyOrdered = 600,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+
+        harness.SeedLine(BuildDocLine(15201, prdDocId, controlOrderLineId, controlItemId, 600, controlHuCode));
+        harness.SeedProductionPallet(BuildPalletForFilling(
+            id: 20,
+            prdDocId,
+            docLineId: 15201,
+            orderId,
+            orderLineId: controlOrderLineId,
+            itemId: controlItemId,
+            itemName: "Горчица",
+            huCode: controlHuCode,
+            plannedQty: 600,
+            lines: [BuildComponentLine(201, 20, 15201, controlOrderLineId, controlItemId, "Горчица", 600)]));
+
+        var targetDocItemId = guard == "invalid_doc" ? controlItemId : targetItemId;
+        long? targetDocOrderLineId = guard == "invalid_line" ? null : targetOrderLineId;
+        long? targetPalletOrderLineId = guard == "invalid_line" ? null : targetOrderLineId;
+        var targetLocationId = guard == "missing_location" ? (long?)null : 1;
+        harness.SeedLine(BuildDocLine(
+            15202,
+            prdDocId,
+            targetDocOrderLineId,
+            targetDocItemId,
+            600,
+            targetHuCode,
+            targetLocationId));
+        harness.SeedProductionPallet(BuildPalletForFilling(
+            id: 21,
+            prdDocId,
+            docLineId: 15202,
+            orderId,
+            orderLineId: targetPalletOrderLineId,
+            itemId: targetItemId,
+            itemName: "Аджика",
+            huCode: targetHuCode,
+            plannedQty: 600,
+            lines:
+            [
+                BuildComponentLine(
+                    211,
+                    21,
+                    15202,
+                    targetPalletOrderLineId,
+                    targetItemId,
+                    "Аджика",
+                    600)
+            ]));
+
+        if (guard == "overfill")
+        {
+            const string filledHuCode = "HU-ALREADY-FILLED";
+            harness.SeedLine(BuildDocLine(
+                15203,
+                prdDocId,
+                targetOrderLineId,
+                targetItemId,
+                600,
+                filledHuCode));
+            harness.SeedProductionPallet(BuildPalletForFilling(
+                id: 22,
+                prdDocId,
+                docLineId: 15203,
+                orderId,
+                orderLineId: targetOrderLineId,
+                itemId: targetItemId,
+                itemName: "Аджика",
+                huCode: filledHuCode,
+                plannedQty: 600,
+                lines: [BuildComponentLine(221, 22, 15203, targetOrderLineId, targetItemId, "Аджика", 600)],
+                status: ProductionPalletStatus.Filled));
+        }
+
+        return new EligibilityGuardFixture(harness, orderId, controlHuCode, targetHuCode);
+    }
+
     private static CloseDocumentHarness CreateBaseFillingHarness(
         long orderId,
         long validOrderLineId,
@@ -484,7 +646,8 @@ public sealed class ProductionPalletFillingContextTests
         long? orderLineId,
         long itemId,
         double qty,
-        string huCode)
+        string huCode,
+        long? toLocationId = 1)
     {
         return new DocLine
         {
@@ -494,7 +657,7 @@ public sealed class ProductionPalletFillingContextTests
             ProductionPurpose = ProductionLinePurpose.CustomerOrder,
             ItemId = itemId,
             Qty = qty,
-            ToLocationId = 1,
+            ToLocationId = toLocationId,
             ToHu = huCode,
             PackSingleHu = true
         };
@@ -535,7 +698,8 @@ public sealed class ProductionPalletFillingContextTests
         string itemName,
         string huCode,
         double plannedQty,
-        IReadOnlyList<ProductionPalletComponentLine>? lines = null)
+        IReadOnlyList<ProductionPalletComponentLine>? lines = null,
+        string status = ProductionPalletStatus.Planned)
     {
         return new ProductionPallet
         {
@@ -550,7 +714,10 @@ public sealed class ProductionPalletFillingContextTests
             PlannedQty = plannedQty,
             ToLocationId = 1,
             ToLocationCode = "MAIN",
-            Status = ProductionPalletStatus.Planned,
+            Status = status,
+            FilledAt = status == ProductionPalletStatus.Filled
+                ? new DateTime(2026, 6, 4, 12, 0, 0)
+                : null,
             CreatedAt = new DateTime(2026, 6, 4, 10, 0, 0),
             Lines = lines ?? Array.Empty<ProductionPalletComponentLine>()
         };
@@ -688,6 +855,16 @@ public sealed class ProductionPalletFillingContextTests
         };
     }
 
+    private static ProductionPalletService CreateAutoClosePalletService(CloseDocumentHarness harness)
+    {
+        var documents = harness.CreateService();
+        var fillClose = new ProductionFillCloseService(
+            harness.Store,
+            documents,
+            new FlowStockLedgerFlowOptions { ProductionAutoCloseOnFill = true });
+        return new ProductionPalletService(harness.Store, fillClose);
+    }
+
     private sealed record FilledOrderWithCancelledFixture(
         CloseDocumentHarness Harness,
         long OrderId,
@@ -714,6 +891,12 @@ public sealed class ProductionPalletFillingContextTests
         long OrphanItemId,
         string PartialMixedHuCode,
         string FullyOrphanMixedHuCode);
+
+    private sealed record EligibilityGuardFixture(
+        CloseDocumentHarness Harness,
+        long OrderId,
+        string ControlHuCode,
+        string TargetHuCode);
 }
 
 internal sealed class ProductionPalletTsdHttpHost : IAsyncDisposable

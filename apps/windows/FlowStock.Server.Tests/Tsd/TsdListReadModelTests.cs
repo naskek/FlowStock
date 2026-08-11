@@ -185,7 +185,7 @@ public sealed class TsdListReadModelTests
     public void FillingList_KeepsInProgressOrderWithRemainingQty()
     {
         var harness = CreateHarnessWithSixPallets(filledCount: 2);
-        var service = new ProductionPalletService(harness.Store);
+        var service = CreateAutoClosePalletService(harness);
 
         var order = Assert.Single(service.GetFillingOrders());
 
@@ -199,7 +199,7 @@ public sealed class TsdListReadModelTests
     public void FillingListEndpointResponse_ContainsTsdFields()
     {
         var harness = CreateHarnessWithSixPallets(filledCount: 2);
-        var payload = ProductionPalletEndpointsTestHelper.MapFillingOrders(new ProductionPalletService(harness.Store).GetFillingOrders());
+        var payload = ProductionPalletEndpointsTestHelper.MapFillingOrders(CreateAutoClosePalletService(harness).GetFillingOrders());
         using var json = JsonDocument.Parse(JsonSerializer.Serialize(payload));
 
         var row = Assert.Single(json.RootElement.EnumerateArray());

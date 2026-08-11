@@ -1568,6 +1568,76 @@
     };
   }
 
+  function normalizeProductionFillingHu(row) {
+    row = row || {};
+    var progress = row.progress && typeof row.progress === "object" ? row.progress : null;
+    var location = row.location && typeof row.location === "object" ? row.location : null;
+    function normalizeOrderReference(value) {
+      if (!value || typeof value !== "object") {
+        return null;
+      }
+      var orderId = Number(value.order_id != null ? value.order_id : value.orderId) || 0;
+      return orderId ? {
+        orderId: orderId,
+        orderRef: String(value.order_ref || value.orderRef || ""),
+      } : null;
+    }
+    return {
+      huCode: String(row.hu_code || row.huCode || "").trim(),
+      orderLineIds: (Array.isArray(row.order_line_ids) ? row.order_line_ids : row.orderLineIds || [])
+        .map(function (value) { return Number(value) || 0; })
+        .filter(function (value) { return value > 0; }),
+      state: normalizeOperatorStatusPresentation(row.state),
+      fillingEligible: row.filling_eligible === true || row.fillingEligible === true,
+      isMixed: row.is_mixed === true || row.isMixed === true,
+      qty: row.qty == null ? null : Number(row.qty) || 0,
+      uom: String(row.uom || ""),
+      components: (Array.isArray(row.components) ? row.components : []).map(function (component) {
+        return {
+          componentLineId: component.component_line_id == null ? null : Number(component.component_line_id) || null,
+          itemId: Number(component.item_id != null ? component.item_id : component.itemId) || 0,
+          itemName: String(component.item_name || component.itemName || ""),
+          qty: Number(component.qty) || 0,
+          plannedQty: Number(component.planned_qty != null ? component.planned_qty : component.qty) || 0,
+          filledQty: Number(component.filled_qty) || 0,
+          isCompleted: component.is_completed === true || component.isCompleted === true,
+          uom: String(component.uom || "шт"),
+        };
+      }),
+      progress: progress ? {
+        completedComponents: Number(progress.completed_components != null
+          ? progress.completed_components
+          : progress.completedComponents) || 0,
+        totalComponents: Number(progress.total_components != null
+          ? progress.total_components
+          : progress.totalComponents) || 0,
+      } : null,
+      location: location ? {
+        id: Number(location.id) || 0,
+        code: String(location.code || ""),
+        name: String(location.name || ""),
+      } : null,
+      reservationTarget: normalizeOrderReference(row.reservation_target || row.reservationTarget),
+      shipmentTarget: normalizeOrderReference(row.shipment_target || row.shipmentTarget),
+      sourceProductionOrder: normalizeOrderReference(row.source_production_order || row.sourceProductionOrder),
+      diagnostics: Array.isArray(row.diagnostics) ? row.diagnostics.slice() : [],
+    };
+  }
+
+  function normalizeProductionFillingOrderHuPresentation(value) {
+    var row = value && typeof value === "object" ? value : {};
+    return {
+      readyHuCount: Number(row.ready_hu_count != null ? row.ready_hu_count : row.readyHuCount) || 0,
+      totalHuCount: Number(row.total_hu_count != null ? row.total_hu_count : row.totalHuCount) || 0,
+      productionTasks: (Array.isArray(row.production_tasks) ? row.production_tasks : row.productionTasks || [])
+        .map(normalizeProductionFillingHu)
+        .filter(function (hu) { return !!hu.huCode; }),
+      operationalHus: (Array.isArray(row.operational_hus) ? row.operational_hus : row.operationalHus || [])
+        .map(normalizeProductionFillingHu)
+        .filter(function (hu) { return !!hu.huCode; }),
+    };
+  }
+
   function normalizeProductionPalletScan(payload) {
     payload = payload || {};
     return {
@@ -1663,6 +1733,9 @@
       isClosed: value("is_closed", "isClosed") === true,
       operationFingerprint: String(value("operation_fingerprint", "operationFingerprint") || ""),
       document: payload.document ? normalizeProductionPalletDocument(payload.document) : null,
+      orderHuPresentation: normalizeProductionFillingOrderHuPresentation(
+        value("order_hu_presentation", "orderHuPresentation")
+      ),
     };
   }
 

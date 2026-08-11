@@ -194,6 +194,72 @@ public sealed class ProductionPalletAutoCloseTests
     }
 
     [Fact]
+    public async Task FillingContextHttp_SeparatesEligibleMixedHuFromPersistedPartialInconsistency()
+    {
+        var harness = CreateCustomerThreeComponentMixedPalletHarness();
+        var service = CreatePalletService(harness);
+        var plan = service.PlanOrder(103);
+        var mixed = Assert.Single(harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
+        Assert.Equal(3, mixed.Lines.Count);
+
+        harness.SeedHuOperatorFactsForOrder(103, [BuildHuOperatorFacts(mixed, 103, "103")]);
+        var eligibleContext = service.GetFillingContext(103);
+        Assert.Contains(mixed.HuCode, eligibleContext.FillingEligibleHuCodes);
+        Assert.Contains(service.GetFillingOrders(), order => order.OrderId == 103);
+
+        await using (var host = await ProductionPalletTsdHttpHost.StartAsync(harness, service))
+        {
+            var response = await host.Client.GetAsync("/api/tsd/production/orders/103/filling-context");
+            response.EnsureSuccessStatusCode();
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var presentation = document.RootElement.GetProperty("order_hu_presentation");
+            Assert.Equal(0, presentation.GetProperty("ready_hu_count").GetInt32());
+            Assert.Equal(1, presentation.GetProperty("total_hu_count").GetInt32());
+            var task = Assert.Single(presentation.GetProperty("production_tasks").EnumerateArray());
+            Assert.Equal(mixed.HuCode, task.GetProperty("hu_code").GetString());
+            Assert.Equal("AWAITING_FILL", task.GetProperty("state").GetProperty("code").GetString());
+            Assert.True(task.GetProperty("filling_eligible").GetBoolean());
+            Assert.Equal(3, task.GetProperty("components").GetArrayLength());
+            Assert.Equal(0, task.GetProperty("progress").GetProperty("completed_components").GetInt32());
+            Assert.Equal(3, task.GetProperty("progress").GetProperty("total_components").GetInt32());
+            Assert.Empty(presentation.GetProperty("operational_hus").EnumerateArray());
+        }
+
+        var firstComponent = mixed.Lines.OrderBy(line => line.Id).First();
+        Assert.Equal(1, harness.Store.MarkProductionPalletComponentsFilled(
+            mixed.Id,
+            [firstComponent.Id],
+            new DateTime(2026, 6, 8, 12, 0, 0)));
+        var partial = harness.Store.GetProductionPalletByHu(mixed.HuCode)!;
+        harness.SeedHuOperatorFactsForOrder(103, [BuildHuOperatorFacts(partial, 103, "103")]);
+
+        var inconsistentContext = service.GetFillingContext(103);
+        Assert.DoesNotContain(mixed.HuCode, inconsistentContext.FillingEligibleHuCodes);
+        Assert.DoesNotContain(service.GetFillingOrders(), order => order.OrderId == 103);
+        Assert.Empty(harness.LedgerEntries);
+
+        await using var inconsistentHost = await ProductionPalletTsdHttpHost.StartAsync(harness, service);
+        var inconsistentResponse = await inconsistentHost.Client.GetAsync(
+            "/api/tsd/production/orders/103/filling-context");
+        inconsistentResponse.EnsureSuccessStatusCode();
+        using var inconsistentDocument = JsonDocument.Parse(await inconsistentResponse.Content.ReadAsStringAsync());
+        var inconsistentPresentation = inconsistentDocument.RootElement.GetProperty("order_hu_presentation");
+        Assert.Equal(0, inconsistentPresentation.GetProperty("ready_hu_count").GetInt32());
+        Assert.Equal(1, inconsistentPresentation.GetProperty("total_hu_count").GetInt32());
+        Assert.Empty(inconsistentPresentation.GetProperty("production_tasks").EnumerateArray());
+        var inconsistentHu = Assert.Single(inconsistentPresentation.GetProperty("operational_hus").EnumerateArray());
+        Assert.Equal(mixed.HuCode, inconsistentHu.GetProperty("hu_code").GetString());
+        Assert.Equal("INCONSISTENT", inconsistentHu.GetProperty("state").GetProperty("code").GetString());
+        Assert.False(inconsistentHu.GetProperty("filling_eligible").GetBoolean());
+        Assert.True(inconsistentHu.GetProperty("is_mixed").GetBoolean());
+        Assert.Equal(1, inconsistentHu.GetProperty("progress").GetProperty("completed_components").GetInt32());
+        Assert.Equal(3, inconsistentHu.GetProperty("progress").GetProperty("total_components").GetInt32());
+        Assert.Equal(3, inconsistentHu.GetProperty("components").GetArrayLength());
+        Assert.NotEmpty(inconsistentHu.GetProperty("diagnostics").EnumerateArray());
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
     public async Task FillMixedComponents_PartialHttpRequest_IsRejectedAndPalletRemainsUnchanged()
     {
         var harness = CreateCustomerThreeComponentMixedPalletHarness();
@@ -583,6 +649,37 @@ public sealed class ProductionPalletAutoCloseTests
         var options = new FlowStockLedgerFlowOptions { ProductionAutoCloseOnFill = true };
         var fillClose = new ProductionFillCloseService(harness.Store, documents, options);
         return new ProductionPalletService(harness.Store, fillClose);
+    }
+
+    private static HuOperatorFacts BuildHuOperatorFacts(ProductionPallet pallet, long orderId, string orderRef)
+    {
+        return new HuOperatorFacts
+        {
+            HuCode = pallet.HuCode,
+            RegistryKnown = true,
+            ProductionPallets =
+            [
+                new HuOperatorProductionPalletFact
+                {
+                    PalletId = pallet.Id,
+                    Status = pallet.Status,
+                    OwnerOrderId = orderId,
+                    OwnerOrderRef = orderRef,
+                    OwnerOrderType = "CUSTOMER",
+                    OwnerOrderStatus = "IN_PROGRESS",
+                    Components = pallet.Lines.Select(line => new HuOperatorComponentFact
+                    {
+                        OrderLineId = line.OrderLineId,
+                        OrderLineOrderId = orderId,
+                        ItemId = line.ItemId,
+                        ItemName = line.ItemName,
+                        Uom = line.Uom,
+                        PlannedQty = line.PlannedQty,
+                        FilledQty = line.FilledQty
+                    }).ToArray()
+                }
+            ]
+        };
     }
 
     private static CloseDocumentHarness CreateHarnessWithOrderOnly(double orderQty, double maxQtyPerHu, bool itemIsActive = true)

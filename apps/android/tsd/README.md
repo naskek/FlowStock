@@ -138,10 +138,14 @@ TSD работает только онлайн через `FlowStock.Server`. С
 - Если штрихкод не найден в каталоге, появится запрос на создание товара.
 
 ### Атомарное наполнение single/mixed HU
+- Экран `/filling/{orderId}` получает от сервера order-wide canonical `order_hu_presentation`, показывает каждую physical HU один раз и счётчик `Готово N / M паллет`. Mixed HU учитывается как одна паллета.
+- `filling_eligible` вычисляет только сервер по текущему order/PRD/active pallet target и действующим filling guards. TSD не выводит право наполнения из canonical state, цвета или raw pallet status.
+- `AWAITING_FILL` с eligibility показывается красной actionable строкой. `ON_STOCK`, `RESERVED`, `AWAITING_SHIPMENT` и `SHIPPED` read-only: их scan не вызывает fill API и показывает inline canonical message. `INCONSISTENT` имеет отдельный янтарный warning style и иконку, блокирует mutation и сохраняет diagnostics.
 - В preview mixed HU весь component composition показывается read-only. Checkbox и выбор подмножества отсутствуют; оператор подтверждает одну physical HU целиком.
 - Single и mixed flow вызывают authoritative `POST /api/tsd/production/fill-pallet`. Сервер одной транзакцией фиксирует весь composition, переводит pallet в `FILLED`, закрывает dedicated PRD и пишет ledger. Ошибка close/ledger откатывает всю операцию.
 - `ProductionAutoCloseOnFill` обязан быть включён; иначе сервер отклоняет fill как `PRODUCTION_AUTO_CLOSE_REQUIRED` до записи.
 - Normal TSD flow не создаёт partial component progress и не имеет статуса `FILLING`/`PARTIALLY_FILLED`. Исторический partial progress показывается как `INCONSISTENT` и отклоняется `PALLET_PARTIAL_FILL_INCONSISTENT`; он исправляется только controlled correction/maintenance.
+- После последнего server-confirmed fill используется существующий terminal screen: `Заказ полностью собран`, scanner выключен, без popup/timeout/автоперехода, единственная кнопка `OK` возвращает к `/filling`.
 
 ## Контрагенты и локации
 - Справочники выбираются через кнопку `Выбрать...`.

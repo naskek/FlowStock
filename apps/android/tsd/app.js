@@ -3890,13 +3890,14 @@
     if (!pallet) {
       return "";
     }
-    if (pallet.isMixedPallet === true) {
+    if (pallet.isMixed === true || pallet.isMixedPallet === true) {
       return "Микс-паллета";
     }
     var itemName = String(pallet.itemName || pallet.item_name || "").trim();
-    if (!itemName && Array.isArray(pallet.lines) && pallet.lines.length) {
+    var components = Array.isArray(pallet.components) ? pallet.components : pallet.lines;
+    if (!itemName && Array.isArray(components) && components.length) {
       itemName = String(
-        (pallet.lines[0] && (pallet.lines[0].itemName || pallet.lines[0].item_name)) || ""
+        (components[0] && (components[0].itemName || components[0].item_name)) || ""
       ).trim();
     }
     return itemName;
@@ -3955,21 +3956,27 @@
 
   function buildFillingPalletGroups(pallets) {
     var grouped = {};
-    var labels = [];
+    var keys = [];
     (Array.isArray(pallets) ? pallets : []).forEach(function (pallet) {
       var label = getFillingPalletGroupLabel(pallet);
-      if (!grouped[label]) {
-        grouped[label] = [];
-        labels.push(label);
+      var orderLineIds = Array.isArray(pallet && pallet.orderLineIds) ? pallet.orderLineIds : [];
+      var key = isMixedFillingPallet(pallet)
+        ? "mixed"
+        : "line:" + String(orderLineIds[0] || 0) + ":" + label;
+      if (!grouped[key]) {
+        grouped[key] = { label: label, pallets: [] };
+        keys.push(key);
       }
-      grouped[label].push(pallet);
+      grouped[key].pallets.push(pallet);
     });
-    return labels
-      .sort(compareFillingPalletGroupLabels)
-      .map(function (label) {
+    return keys
+      .sort(function (left, right) {
+        return compareFillingPalletGroupLabels(grouped[left].label, grouped[right].label);
+      })
+      .map(function (key) {
         return {
-          label: label,
-          pallets: grouped[label].slice().sort(compareFillingPalletHuRows),
+          label: grouped[key].label,
+          pallets: grouped[key].pallets.slice().sort(compareFillingPalletHuRows),
         };
       });
   }
@@ -3977,12 +3984,19 @@
   function isMixedFillingPallet(pallet) {
     return !!(
       pallet &&
-      (pallet.isMixedPallet === true || (Array.isArray(pallet.lines) && pallet.lines.length > 1))
+      (pallet.isMixed === true || pallet.isMixedPallet === true ||
+        (Array.isArray(pallet.components) && pallet.components.length > 1) ||
+        (Array.isArray(pallet.lines) && pallet.lines.length > 1))
     );
   }
 
   function countFillingMixedCompletedLines(pallet) {
-    var lines = Array.isArray(pallet && pallet.lines) ? pallet.lines : [];
+    if (pallet && pallet.progress) {
+      return Number(pallet.progress.completedComponents) || 0;
+    }
+    var lines = Array.isArray(pallet && pallet.components)
+      ? pallet.components
+      : Array.isArray(pallet && pallet.lines) ? pallet.lines : [];
     if (!lines.length) {
       return Number(pallet && pallet.filledComponentCount) || 0;
     }
@@ -3992,9 +4006,15 @@
   }
 
   function getFillingMixedComponentTotal(pallet) {
+    if (pallet && pallet.progress && Number(pallet.progress.totalComponents) > 0) {
+      return Number(pallet.progress.totalComponents);
+    }
     var total = Number(pallet && pallet.totalComponentCount) || 0;
     if (total > 0) {
       return total;
+    }
+    if (Array.isArray(pallet && pallet.components)) {
+      return pallet.components.length;
     }
     return Array.isArray(pallet && pallet.lines) ? pallet.lines.length : 0;
   }
@@ -4021,7 +4041,9 @@
   }
 
   function renderFillingMixedPalletLines(pallet) {
-    var lines = Array.isArray(pallet && pallet.lines) ? pallet.lines : [];
+    var lines = Array.isArray(pallet && pallet.components)
+      ? pallet.components
+      : Array.isArray(pallet && pallet.lines) ? pallet.lines : [];
     var html = lines
       .map(function (line) {
         var completed = line.isCompleted === true;
@@ -4066,19 +4088,26 @@
   }
 
   function renderFillingPalletHuRow(pallet) {
-    var isFilled = isFillingPalletCompleted(pallet);
     var huCode = pallet && pallet.huCode ? pallet.huCode : "-";
+    var state = pallet && pallet.state ? pallet.state : {};
+    var stateCode = String(state.code || "").toUpperCase();
+    var stateLabel = String(state.label || "—");
+    var toneClass = getFillingPalletToneClass(stateCode);
+    var indicator = stateCode === "INCONSISTENT"
+      ? '<span class="filling-pallet-warning" aria-hidden="true">⚠</span>'
+      : '<span class="filling-pallet-dot" aria-hidden="true"></span>';
     if (isMixedFillingPallet(pallet)) {
       var componentLines = renderFillingMixedPalletLines(pallet);
       return (
         '<li class="filling-pallet-item filling-pallet-item--compact filling-mixed-pallet-item outbound-picking-hu-item ' +
-        (isFilled ? "is-filled" : "is-pending") +
+        toneClass +
         '">' +
-        '  <span class="filling-pallet-dot" aria-hidden="true"></span>' +
+        indicator +
         '  <div class="outbound-picking-hu-main">' +
         '    <div class="filling-pallet-code">' +
         escapeHtml(huCode) +
         "</div>" +
+        '    <div class="filling-pallet-state">' + escapeHtml(stateLabel) + "</div>" +
         componentLines +
         "  </div>" +
         "</li>"
@@ -4086,14 +4115,30 @@
     }
     return (
       '<li class="filling-pallet-item filling-pallet-item--compact ' +
-      (isFilled ? "is-filled" : "is-pending") +
+      toneClass +
       '">' +
-      '  <span class="filling-pallet-dot" aria-hidden="true"></span>' +
-      '  <div class="filling-pallet-code">' +
+      indicator +
+      '  <div class="filling-pallet-main"><div class="filling-pallet-code">' +
       escapeHtml(huCode) +
-      "</div>" +
+      '</div><div class="filling-pallet-state">' + escapeHtml(stateLabel) + "</div></div>" +
       "</li>"
     );
+  }
+
+  function getFillingPalletToneClass(stateCode) {
+    if (stateCode === "AWAITING_FILL") {
+      return "is-pending";
+    }
+    if (stateCode === "INCONSISTENT") {
+      return "is-inconsistent";
+    }
+    if (stateCode === "SHIPPED") {
+      return "is-shipped";
+    }
+    if (stateCode === "ON_STOCK" || stateCode === "RESERVED" || stateCode === "AWAITING_SHIPMENT") {
+      return "is-ready";
+    }
+    return "is-neutral";
   }
 
   function isFillingPalletCompleted(pallet) {
@@ -4130,7 +4175,7 @@
 
     return (
       '<div class="filling-pallet-list-card">' +
-      '  <div class="filling-pallet-list-title">Паллеты к наполнению</div>' +
+      '  <div class="filling-pallet-list-title">Паллеты заказа</div>' +
       '  <ul class="filling-pallet-list filling-pallet-list--scroll-breathing">' +
       items +
       "  </ul>" +
@@ -4218,6 +4263,12 @@
         summary: context.document ? context.document.summary : null,
       },
       document: context.document || null,
+      orderHuPresentation: context.orderHuPresentation || {
+        readyHuCount: 0,
+        totalHuCount: 0,
+        productionTasks: [],
+        operationalHus: [],
+      },
       progress: {
         requiredPallets: Number(context.requiredPallets) || 0,
         scannedPallets: Number(context.scannedPallets) || 0,
@@ -4256,28 +4307,33 @@
     return TsdStorage.apiGetProductionFillingContext(orderId).then(buildFillingContext);
   }
 
-  function buildFillingScanSummaryLine(work, summary) {
-    summary = summary || {};
-    return (
-      "Заказ " +
-      getFillingWorkOrderRef(work) +
-      " · " +
-      formatPalletCountValue(summary.filledPalletCount) +
-      " / " +
-      formatPalletCountValue(summary.plannedPalletCount) +
-      " паллет"
-    );
+  function buildFillingScanSummaryLine(work) {
+    return "Заказ " + getFillingWorkOrderRef(work);
   }
 
-  function buildFillingScanHeaderLine(work, summary) {
-    return "Наполнение · " + buildFillingScanSummaryLine(work, summary);
+  function buildFillingScanHeaderLine(work) {
+    return "Наполнение · " + buildFillingScanSummaryLine(work);
+  }
+
+  function getFillingOrderHuRows(context) {
+    var presentation = context && context.orderHuPresentation || {};
+    return (Array.isArray(presentation.productionTasks) ? presentation.productionTasks : [])
+      .concat(Array.isArray(presentation.operationalHus) ? presentation.operationalHus : []);
+  }
+
+  function buildFillingReadySummaryLine(context) {
+    var presentation = context && context.orderHuPresentation || {};
+    return "Готово " +
+      formatPalletCountValue(presentation.readyHuCount || 0) +
+      " / " +
+      formatPalletCountValue(presentation.totalHuCount || 0) +
+      " паллет";
   }
 
   function renderFillingScan(context, state) {
     var work = context.workItem || {};
     var document = context.document || {};
-    var summary = getFillingSummary(document.summary ? document : work);
-    var palletListHtml = renderFillingPalletStatusList(document.pallets);
+    var palletListHtml = renderFillingPalletStatusList(getFillingOrderHuRows(context));
     var message = state && state.message ? String(state.message) : "";
     var messageType = state && state.messageType ? String(state.messageType) : "";
     var messageHtml = message
@@ -4288,8 +4344,9 @@
       '<section class="screen filling-screen filling-screen--scan">' +
       '  <div class="screen-card filling-card filling-card--scan">' +
       '    <div class="filling-scan-header">' +
-      escapeHtml(buildFillingScanHeaderLine(work, summary)) +
+      escapeHtml(buildFillingScanHeaderLine(work)) +
       "</div>" +
+      '    <div class="filling-ready-summary">' + escapeHtml(buildFillingReadySummaryLine(context)) + "</div>" +
       messageHtml +
       '    <div class="filling-scan-card filling-scan-card--compact filling-scan-slot">' +
       '      <input class="form-input filling-scan-input tsd-scan-input-hidden filling-scan-input-hidden" id="fillingScanInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-scan-allow="1" placeholder="HU-000001" />' +
@@ -4826,9 +4883,30 @@
   }
 
   function getFillingVisiblePallets(context) {
+    var canonicalRows = getFillingOrderHuRows(context);
+    if (canonicalRows.length) {
+      return canonicalRows;
+    }
     return context && context.document && Array.isArray(context.document.pallets)
       ? context.document.pallets
       : [];
+  }
+
+  function findFillingDisplayHu(context, huCode) {
+    var normalized = String(huCode || "").trim().toUpperCase();
+    return getFillingOrderHuRows(context).find(function (row) {
+      return String(row && row.huCode || "").trim().toUpperCase() === normalized;
+    }) || null;
+  }
+
+  function buildReadOnlyFillingScanMessage(row) {
+    var state = row && row.state ? row.state : {};
+    var code = String(state.code || "").toUpperCase();
+    var label = String(state.label || "Состояние HU недоступно");
+    if (code === "INCONSISTENT") {
+      return label + ". Наполнение недоступно.";
+    }
+    return label + ". Наполнение не требуется.";
   }
 
   function isProbablyCompleteHuScan(value, context) {
@@ -8536,15 +8614,7 @@
   }
 
   function buildProductionFillCompletionMessage(result, reloadError) {
-    var alreadyFilled = !!(result && (result.alreadyFilled || result.already_filled));
-    var prefix = alreadyFilled ? "Паллета уже наполнена." : "Паллета наполнена.";
-    if (isProductionFillOrderCompleted(result) || isFillingContextUnavailableAfterSuccessfulFill(reloadError)) {
-      return prefix + " Заказ выполнен.";
-    }
-    if (isProductionFillPrdClosed(result)) {
-      return prefix + " Выпуск закрыт.";
-    }
-    return prefix + " Заказ выполнен.";
+    return "Заказ полностью собран";
   }
 
   function renderFillingCompletion(context, result, reloadError) {
@@ -8564,7 +8634,7 @@
       (prdRef ? '      <div>PRD: <strong>' + escapeHtml(prdRef) + "</strong></div>" : "") +
       "    </div>" +
       '    <div class="actions-bar">' +
-      '      <button class="btn primary-btn" id="fillingCompletionListBtn" type="button">К списку наполнения</button>' +
+      '      <button class="btn primary-btn filling-completion-ok-btn" id="fillingCompletionListBtn" type="button">OK</button>' +
       "    </div>" +
       "  </div>" +
       "</section>"
@@ -8727,6 +8797,17 @@
     function handleScannedValue(value) {
       submitFillingScan(value, context, {
         executeScan: function (huCode) {
+          var displayHu = findFillingDisplayHu(context, huCode);
+          if (displayHu && displayHu.fillingEligible !== true) {
+            var stateCode = String(displayHu.state && displayHu.state.code || "").toUpperCase();
+            renderFillingScanScreen(context, {
+              message: buildReadOnlyFillingScanMessage(displayHu),
+              messageType: stateCode === "INCONSISTENT" ? "error" : "info",
+              preview: null,
+            });
+            return Promise.resolve({ readOnly: true, huCode: huCode });
+          }
+
           renderFillingScanScreen(context, {
             message: "Проверяем паллету...",
             messageType: "info",

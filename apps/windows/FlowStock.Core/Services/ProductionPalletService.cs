@@ -2276,20 +2276,7 @@ public sealed class ProductionPalletService
             .Select(item => item.OrderId!.Value)
             .ToHashSet();
 
-        IReadOnlyList<long> readyOrderIds;
-        try
-        {
-            readyOrderIds = _data.GetProductionFillingReadyOrderIds();
-        }
-        catch (Exception ex) when (IsMockStoreException(ex))
-        {
-            readyOrderIds = Array.Empty<long>();
-        }
-
-        var candidateOrderIds = workOrderIds
-            .Concat(readyOrderIds)
-            .Distinct()
-            .ToArray();
+        var candidateOrderIds = workOrderIds.ToArray();
         if (candidateOrderIds.Length == 0)
         {
             return Array.Empty<ProductionFillingOrder>();
@@ -2298,6 +2285,17 @@ public sealed class ProductionPalletService
         var ordersById = LoadOrdersById(candidateOrderIds);
         var palletsByOrderId = LoadPalletsByOrderId(candidateOrderIds);
         var orderLinesByOrderId = LoadOrderLinesByOrderId(candidateOrderIds);
+        var docsByOrderId = LoadDocsByOrderId(candidateOrderIds);
+        var productionDocIds = docsByOrderId.Values
+            .SelectMany(docs => docs)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .Select(doc => doc.Id)
+            .Distinct()
+            .ToArray();
+        var docLinesByDocId = LoadDocLinesByDocId(productionDocIds);
+        var huOrderContextRows = ordersById.Values.Any(order => order.Type == OrderType.Internal)
+            ? LoadHuOrderContextRows()
+            : Array.Empty<HuOrderContextRow>();
         var shipmentProgressByOrderId = LoadShipmentProgressByOrderId(candidateOrderIds, orderLinesByOrderId);
         var completions = LoadFillingCompletions(candidateOrderIds);
 
@@ -2316,27 +2314,9 @@ public sealed class ProductionPalletService
                 group.ToList(),
                 palletsByOrderId,
                 orderLinesByOrderId,
-                completions,
-                shipmentProgressByOrderId.GetValueOrDefault(order.Id));
-            if (row != null && !ShouldExcludeFromFillingList(row))
-            {
-                rows[row.OrderId] = row;
-            }
-        }
-
-        foreach (var orderId in readyOrderIds)
-        {
-            if (rows.ContainsKey(orderId)
-                || !ordersById.TryGetValue(orderId, out var order)
-                || IsTerminalFillingOrder(order))
-            {
-                continue;
-            }
-
-            var row = BuildReadyFillingOrderFromPreloaded(
-                order,
-                palletsByOrderId,
-                orderLinesByOrderId,
+                docsByOrderId,
+                docLinesByDocId,
+                huOrderContextRows,
                 completions,
                 shipmentProgressByOrderId.GetValueOrDefault(order.Id));
             if (row != null && !ShouldExcludeFromFillingList(row))
@@ -2367,15 +2347,48 @@ public sealed class ProductionPalletService
                 : "Заказ недоступен для наполнения.");
         }
 
-        var pallets = GetProductionPalletsByOrder(_data, orderId);
-        var fillingPallets = BuildFillingPalletViews(_data, orderId, pallets);
-        var openDoc = FindPreparedOpenProductionReceiptForFilling(_data, orderId, fillingPallets, requireRemaining: false);
+        var orderIds = new[] { orderId };
+        var pallets = LoadPalletsByOrderId(orderIds).GetValueOrDefault(orderId)
+                      ?? Array.Empty<ProductionPallet>();
+        var orderLines = LoadOrderLinesByOrderId(orderIds).GetValueOrDefault(orderId)
+                         ?? Array.Empty<OrderLine>();
+        var docs = LoadDocsByOrderId(orderIds).GetValueOrDefault(orderId)
+                   ?? Array.Empty<Doc>();
+        var productionDocIds = docs
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .Select(doc => doc.Id)
+            .ToArray();
+        var docLinesByDocId = LoadDocLinesByDocId(productionDocIds);
+        var huOrderContextRows = order.Type == OrderType.Internal
+            ? LoadHuOrderContextRows()
+            : Array.Empty<HuOrderContextRow>();
+        var eligibilitySnapshot = BuildFillingEligibilitySnapshot(
+            order,
+            orderLines,
+            docs,
+            docLinesByDocId,
+            pallets,
+            huOrderContextRows);
+        var fillingPallets = BuildOrderOwnedPalletViews(
+            orderId,
+            pallets,
+            orderLines.ToDictionary(line => line.Id));
+        var openDoc = FindPreparedOpenProductionReceiptForFilling(
+            docs,
+            fillingPallets,
+            requireRemaining: false);
         if (openDoc == null)
         {
             var progress = BuildOperationProgress(_data, orderId, fillingPallets);
             if (progress.CanClose && fillingPallets.Count > 0)
             {
-                return BuildFillingContext(orderId, fillingPallets[0].PrdDocId, fillingPallets);
+                var completedDoc = docs.First(doc => doc.Id == fillingPallets[0].PrdDocId);
+                return BuildFillingContext(
+                    order,
+                    completedDoc,
+                    fillingPallets,
+                    pallets,
+                    eligibilitySnapshot);
             }
 
             if (HasCompletedPalletizedProduction(fillingPallets))
@@ -2386,7 +2399,7 @@ public sealed class ProductionPalletService
             throw new InvalidOperationException("Для заказа не сформирован план паллет. Сформируйте и напечатайте паллетные этикетки перед наполненением.");
         }
 
-        return BuildFillingContext(orderId, openDoc.Id, fillingPallets);
+        return BuildFillingContext(order, openDoc, fillingPallets, pallets, eligibilitySnapshot);
     }
 
     public ProductionFillingCompleteResult CompleteFilling(long orderId, string? deviceId)
@@ -2792,45 +2805,19 @@ public sealed class ProductionPalletService
                 ProductionFillingErrorCodes.PrdAlreadyClosed, "Документ выпуска уже закрыт.");
         }
 
-        if (!HasOnlyValidFillingPalletLines(_data, pallet))
+        var lineGuardFailure = ValidateFillingPalletLineGuards(
+            _data,
+            pallet,
+            doc,
+            requireDestinationLocation: false);
+        if (lineGuardFailure.HasValue)
         {
             return ProductionPalletScanResult.Failure(
-                ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
+                lineGuardFailure.Value.Code,
+                lineGuardFailure.Value.Message);
         }
 
         var palletLines = GetPalletLines(pallet);
-        var docLinesById = _data.GetDocLines(doc.Id).ToDictionary(line => line.Id, line => line);
-        foreach (var palletLine in palletLines)
-        {
-            if (!docLinesById.TryGetValue(palletLine.DocLineId, out var docLine)
-                || docLine.ItemId != palletLine.ItemId
-                || docLine.OrderLineId != palletLine.OrderLineId)
-            {
-                return ProductionPalletScanResult.Failure(
-                    ProductionFillingErrorCodes.PalletPlanInvalid, "План паллеты не совпадает со строкой выпуска.");
-            }
-
-            if (pallet.OrderId.HasValue && palletLine.OrderLineId.HasValue)
-            {
-                var orderLine = _data.GetOrderLines(pallet.OrderId.Value)
-                    .FirstOrDefault(line => line.Id == palletLine.OrderLineId.Value);
-                if (orderLine == null || orderLine.ItemId != palletLine.ItemId)
-                {
-                    return ProductionPalletScanResult.Failure(
-                        ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
-                }
-
-                if (!string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
-                {
-                    var alreadyFilled = GetFillGuardFilledQty(_data, pallet.OrderId.Value, orderLine.Id, pallet.Id);
-                    if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
-                    {
-                        return ProductionPalletScanResult.Failure(
-                            ProductionFillingErrorCodes.FillExceedsRemaining, "Выпуск превышает остаток по строке заказа");
-                    }
-                }
-            }
-        }
 
         var pallets = _data.GetProductionPalletsByDoc(doc.Id);
         var activePallets = BuildFillingPalletViews(_data, pallet.OrderId!.Value, pallets)
@@ -2986,29 +2973,17 @@ public sealed class ProductionPalletService
                     return;
                 }
 
-                if (!HasOnlyValidFillingPalletLines(store, pallet))
-                {
-                    result = ProductionPalletFillResult.Failure(
-                        ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
-                    return;
-                }
-
                 var palletLines = GetPalletLines(pallet);
-                var hasComponentProgress = palletLines.Any(line => line.FilledQty > QtyTolerance);
-                var hasCompleteFilledComposition = palletLines.Count > 0
-                                                   && palletLines.All(line =>
-                                                       line.PlannedQty > QtyTolerance
-                                                       && Math.Abs(line.FilledQty - line.PlannedQty) <= QtyTolerance);
-                if (hasComponentProgress
-                    && (!string.Equals(
-                            pallet.Status,
-                            ProductionPalletStatus.Filled,
-                            StringComparison.OrdinalIgnoreCase)
-                        || !hasCompleteFilledComposition))
+                var lineGuardFailure = ValidateFillingPalletLineGuards(
+                    store,
+                    pallet,
+                    doc,
+                    requireDestinationLocation: true);
+                if (lineGuardFailure.HasValue)
                 {
                     result = ProductionPalletFillResult.Failure(
-                        ProductionFillingErrorCodes.PalletPartialFillInconsistent,
-                        "По паллете найден исторический частичный component progress. Требуется контролируемая корректировка.");
+                        lineGuardFailure.Value.Code,
+                        lineGuardFailure.Value.Message);
                     return;
                 }
 
@@ -3046,51 +3021,6 @@ public sealed class ProductionPalletService
                         ProductionFillingErrorCodes.ProductionAutoCloseRequired,
                         "Наполнение production pallet требует включённого атомарного проведения выпуска.");
                     return;
-                }
-
-                var docLinesById = store.GetDocLines(doc.Id).ToDictionary(line => line.Id, line => line);
-                foreach (var palletLine in palletLines)
-                {
-                    if (!docLinesById.TryGetValue(palletLine.DocLineId, out var docLine))
-                    {
-                        result = ProductionPalletFillResult.Failure(
-                            ProductionFillingErrorCodes.PalletPlanInvalid, "Строка паллеты не найдена в документе выпуска.");
-                        return;
-                    }
-
-                    if (docLine.ItemId != palletLine.ItemId || docLine.OrderLineId != palletLine.OrderLineId)
-                    {
-                        result = ProductionPalletFillResult.Failure(
-                            ProductionFillingErrorCodes.PalletPlanInvalid, "План паллеты не совпадает со строкой выпуска.");
-                        return;
-                    }
-
-                    if (!docLine.ToLocationId.HasValue)
-                    {
-                        result = ProductionPalletFillResult.Failure(
-                            ProductionFillingErrorCodes.PalletPlanInvalid, "Для паллеты не указано место хранения.");
-                        return;
-                    }
-
-                    if (pallet.OrderId.HasValue && palletLine.OrderLineId.HasValue)
-                    {
-                        var orderLine = store.GetOrderLines(pallet.OrderId.Value)
-                            .FirstOrDefault(line => line.Id == palletLine.OrderLineId.Value);
-                        if (orderLine == null || orderLine.ItemId != palletLine.ItemId)
-                        {
-                            result = ProductionPalletFillResult.Failure(
-                                ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
-                            return;
-                        }
-
-                        var alreadyFilled = GetFillGuardFilledQty(store, pallet.OrderId.Value, orderLine.Id, pallet.Id);
-                        if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
-                        {
-                            result = ProductionPalletFillResult.Failure(
-                                ProductionFillingErrorCodes.FillExceedsRemaining, "Выпуск превышает остаток по строке заказа");
-                            return;
-                        }
-                    }
                 }
 
                 var filledAt = DateTime.Now;
@@ -3275,8 +3205,26 @@ public sealed class ProductionPalletService
 
         var palletsByOrderId = LoadPalletsByOrderId(new[] { orderId });
         var orderLinesByOrderId = LoadOrderLinesByOrderId(new[] { orderId });
+        var docsByOrderId = LoadDocsByOrderId(new[] { orderId });
+        var productionDocIds = docsByOrderId.Values
+            .SelectMany(docs => docs)
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .Select(doc => doc.Id)
+            .ToArray();
+        var docLinesByDocId = LoadDocLinesByDocId(productionDocIds);
+        var huOrderContextRows = order.Type == OrderType.Internal
+            ? LoadHuOrderContextRows()
+            : Array.Empty<HuOrderContextRow>();
         var completions = LoadFillingCompletions(new[] { orderId });
-        return BuildFillingOrderFromPreloaded(order, workItems, palletsByOrderId, orderLinesByOrderId, completions);
+        return BuildFillingOrderFromPreloaded(
+            order,
+            workItems,
+            palletsByOrderId,
+            orderLinesByOrderId,
+            docsByOrderId,
+            docLinesByDocId,
+            huOrderContextRows,
+            completions);
     }
 
     private ProductionFillingOrder? BuildFillingOrderFromPreloaded(
@@ -3284,6 +3232,9 @@ public sealed class ProductionPalletService
         IReadOnlyList<ProductionPalletWorkItem> workItems,
         IReadOnlyDictionary<long, IReadOnlyList<ProductionPallet>> palletsByOrderId,
         IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> orderLinesByOrderId,
+        IReadOnlyDictionary<long, IReadOnlyList<Doc>> docsByOrderId,
+        IReadOnlyDictionary<long, IReadOnlyList<DocLine>> docLinesByDocId,
+        IReadOnlyList<HuOrderContextRow> huOrderContextRows,
         IReadOnlyList<ProductionFillingCompletion> completions,
         OrderShipmentProgress? shipmentProgress = null)
     {
@@ -3296,9 +3247,27 @@ public sealed class ProductionPalletService
         rawPallets ??= Array.Empty<ProductionPallet>();
         orderLinesByOrderId.TryGetValue(order.Id, out var orderLines);
         orderLines ??= Array.Empty<OrderLine>();
+        docsByOrderId.TryGetValue(order.Id, out var docs);
+        docs ??= Array.Empty<Doc>();
         var orderLinesById = orderLines.ToDictionary(line => line.Id);
 
         var fillingPallets = BuildOrderOwnedPalletViews(order.Id, rawPallets, orderLinesById);
+        var eligibilitySnapshot = BuildFillingEligibilitySnapshot(
+            order,
+            orderLines,
+            docs,
+            docLinesByDocId,
+            rawPallets,
+            huOrderContextRows);
+        if (BuildFillingEligibleHuCodes(
+                order.Id,
+                fillingPallets,
+                rawPallets,
+                eligibilitySnapshot).Count == 0)
+        {
+            return null;
+        }
+
         var activeItems = fillingPallets
             .GroupBy(pallet => pallet.PrdDocId)
             .Select(group =>
@@ -3464,6 +3433,52 @@ public sealed class ProductionPalletService
         }
     }
 
+    private IReadOnlyDictionary<long, IReadOnlyList<Doc>> LoadDocsByOrderId(IReadOnlyCollection<long> orderIds)
+    {
+        try
+        {
+            return _data.GetDocsByOrderIds(orderIds);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return orderIds.ToDictionary(
+                orderId => orderId,
+                orderId => (IReadOnlyList<Doc>)_data.GetDocsByOrder(orderId));
+        }
+    }
+
+    private IReadOnlyDictionary<long, IReadOnlyList<DocLine>> LoadDocLinesByDocId(
+        IReadOnlyCollection<long> docIds)
+    {
+        if (docIds.Count == 0)
+        {
+            return new Dictionary<long, IReadOnlyList<DocLine>>();
+        }
+
+        try
+        {
+            return _data.GetDocLinesByDocIds(docIds);
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return docIds.ToDictionary(
+                docId => docId,
+                docId => (IReadOnlyList<DocLine>)_data.GetDocLines(docId));
+        }
+    }
+
+    private IReadOnlyList<HuOrderContextRow> LoadHuOrderContextRows()
+    {
+        try
+        {
+            return _data.GetHuOrderContextRows();
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            return Array.Empty<HuOrderContextRow>();
+        }
+    }
+
     private IReadOnlyDictionary<long, OrderShipmentProgress> LoadShipmentProgressByOrderId(
         IReadOnlyCollection<long> orderIds,
         IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> orderLinesByOrderId)
@@ -3508,12 +3523,12 @@ public sealed class ProductionPalletService
     }
 
     private ProductionFillingContext BuildFillingContext(
-        long orderId,
-        long prdDocId,
-        IReadOnlyList<ProductionPallet> pallets)
+        Order order,
+        Doc doc,
+        IReadOnlyList<ProductionPallet> pallets,
+        IReadOnlyList<ProductionPallet> rawPallets,
+        FillingEligibilitySnapshot eligibilitySnapshot)
     {
-        var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
-        var doc = _data.GetDoc(prdDocId) ?? throw new InvalidOperationException("Документ выпуска не найден.");
         return new ProductionFillingContext
         {
             OrderId = order.Id,
@@ -3530,9 +3545,166 @@ public sealed class ProductionPalletService
             PrdDocId = doc.Id,
             PrdDocRef = doc.DocRef,
             Document = BuildFillingDocument(doc.Id, pallets),
-            Progress = BuildOperationProgress(_data, orderId, pallets)
+            Progress = BuildOperationProgress(_data, order.Id, pallets),
+            FillingEligibleHuCodes = BuildFillingEligibleHuCodes(
+                order.Id,
+                pallets,
+                rawPallets,
+                eligibilitySnapshot)
         };
     }
+
+    private IReadOnlySet<string> BuildFillingEligibleHuCodes(
+        long orderId,
+        IReadOnlyList<ProductionPallet> fillingPallets,
+        IReadOnlyList<ProductionPallet> rawPallets,
+        FillingEligibilitySnapshot snapshot)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (_fillClose?.AutoCloseEnabled != true || fillingPallets.Count == 0)
+        {
+            return result;
+        }
+
+        var rawById = rawPallets.ToDictionary(pallet => pallet.Id);
+
+        foreach (var view in fillingPallets)
+        {
+            if (!rawById.TryGetValue(view.Id, out var pallet))
+            {
+                continue;
+            }
+
+            if (pallet.OrderId != orderId
+                || !pallet.CanFill
+                || !snapshot.ProductionDocsById.TryGetValue(pallet.PrdDocId, out var doc)
+                || doc.Status == DocStatus.Closed
+                || !snapshot.DocLinesByDocId.TryGetValue(pallet.PrdDocId, out var docLinesById)
+                || ValidateFillingPalletLineGuards(
+                    pallet,
+                    snapshot.OrderLinesById,
+                    docLinesById,
+                    snapshot.FilledQtyByOrderLineId,
+                    requireDestinationLocation: true).HasValue)
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(pallet.HuCode))
+            {
+                result.Add(pallet.HuCode.Trim());
+            }
+        }
+
+        return result;
+    }
+
+    private static FillingEligibilitySnapshot BuildFillingEligibilitySnapshot(
+        Order order,
+        IReadOnlyList<OrderLine> orderLines,
+        IReadOnlyList<Doc> docs,
+        IReadOnlyDictionary<long, IReadOnlyList<DocLine>> docLinesByDocId,
+        IReadOnlyList<ProductionPallet> rawPallets,
+        IReadOnlyList<HuOrderContextRow> huOrderContextRows)
+    {
+        var productionDocsById = docs
+            .Where(doc => doc.Type == DocType.ProductionReceipt)
+            .ToDictionary(doc => doc.Id);
+        var activeDocLinesByDocId = productionDocsById.Keys.ToDictionary(
+            docId => docId,
+            docId => (IReadOnlyDictionary<long, DocLine>)(docLinesByDocId.TryGetValue(docId, out var lines)
+                ? lines.ToDictionary(line => line.Id)
+                : new Dictionary<long, DocLine>()));
+        var orderLinesById = orderLines.ToDictionary(line => line.Id);
+        var filledQtyByOrderLineId = BuildFillGuardFilledQtyByOrderLine(
+            order,
+            orderLinesById.Keys,
+            productionDocsById,
+            activeDocLinesByDocId,
+            rawPallets,
+            huOrderContextRows);
+        return new FillingEligibilitySnapshot(
+            orderLinesById,
+            productionDocsById,
+            activeDocLinesByDocId,
+            filledQtyByOrderLineId);
+    }
+
+    private static IReadOnlyDictionary<long, double> BuildFillGuardFilledQtyByOrderLine(
+        Order order,
+        IEnumerable<long> orderLineIds,
+        IReadOnlyDictionary<long, Doc> productionDocsById,
+        IReadOnlyDictionary<long, IReadOnlyDictionary<long, DocLine>> docLinesByDocId,
+        IReadOnlyList<ProductionPallet> rawPallets,
+        IReadOnlyList<HuOrderContextRow> huOrderContextRows)
+    {
+        var result = orderLineIds.Distinct().ToDictionary(orderLineId => orderLineId, _ => 0d);
+        var reservedHuByItem = order.Type == OrderType.Internal
+            ? huOrderContextRows
+                .Where(row => row.ReservedCustomerOrderId.HasValue && !string.IsNullOrWhiteSpace(row.HuCode))
+                .GroupBy(row => row.ItemId)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(row => NormalizeHu(row.HuCode))
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Cast<string>()
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase))
+            : new Dictionary<long, HashSet<string>>();
+
+        foreach (var pallet in rawPallets)
+        {
+            if (!string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (order.Type == OrderType.Internal)
+            {
+                if (!productionDocsById.ContainsKey(pallet.PrdDocId))
+                {
+                    continue;
+                }
+
+                var supersededDocLineIds = docLinesByDocId.TryGetValue(pallet.PrdDocId, out var docLines)
+                    ? docLines.Values
+                        .Where(line => line.ReplacesLineId.HasValue)
+                        .Select(line => line.ReplacesLineId!.Value)
+                        .ToHashSet()
+                    : new HashSet<long>();
+                if (supersededDocLineIds.Contains(pallet.DocLineId))
+                {
+                    continue;
+                }
+
+                var normalizedHu = NormalizeHu(pallet.HuCode);
+                if (!string.IsNullOrWhiteSpace(normalizedHu)
+                    && reservedHuByItem.TryGetValue(pallet.ItemId, out var reservedHu)
+                    && reservedHu.Contains(normalizedHu))
+                {
+                    continue;
+                }
+            }
+
+            foreach (var orderLineId in GetPalletLines(pallet)
+                         .Where(line => line.OrderLineId.HasValue)
+                         .Select(line => line.OrderLineId!.Value)
+                         .Distinct())
+            {
+                if (result.ContainsKey(orderLineId))
+                {
+                    result[orderLineId] += ResolvePalletQtyForOrderLine(pallet, orderLineId);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private sealed record FillingEligibilitySnapshot(
+        IReadOnlyDictionary<long, OrderLine> OrderLinesById,
+        IReadOnlyDictionary<long, Doc> ProductionDocsById,
+        IReadOnlyDictionary<long, IReadOnlyDictionary<long, DocLine>> DocLinesByDocId,
+        IReadOnlyDictionary<long, double> FilledQtyByOrderLineId);
 
     private static ProductionOperationProgress BuildOperationProgress(IDataStore store, long orderId, IReadOnlyList<ProductionPallet> pallets)
     {
@@ -3681,12 +3853,11 @@ public sealed class ProductionPalletService
     }
 
     private static Doc? FindPreparedOpenProductionReceiptForFilling(
-        IDataStore store,
-        long orderId,
+        IReadOnlyList<Doc> docs,
         IReadOnlyList<ProductionPallet> fillingPallets,
         bool requireRemaining)
     {
-        foreach (var doc in store.GetDocsByOrder(orderId)
+        foreach (var doc in docs
                      .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status != DocStatus.Closed)
                      .OrderByDescending(doc => doc.Id))
         {
@@ -4404,6 +4575,128 @@ public sealed class ProductionPalletService
     private static bool IsCancelledPallet(ProductionPallet pallet)
     {
         return string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static (string Code, string Message)? ValidateFillingPalletLineGuards(
+        IDataStore store,
+        ProductionPallet pallet,
+        Doc doc,
+        bool requireDestinationLocation)
+    {
+        if (!pallet.OrderId.HasValue)
+        {
+            return (ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
+        }
+
+        var docLinesById = store.GetDocLines(doc.Id).ToDictionary(line => line.Id, line => line);
+        var orderLinesById = store.GetOrderLines(pallet.OrderId.Value).ToDictionary(line => line.Id);
+        var filledQtyByOrderLineId = GetPalletLines(pallet)
+            .Where(line => line.OrderLineId.HasValue)
+            .Select(line => line.OrderLineId!.Value)
+            .Distinct()
+            .ToDictionary(
+                orderLineId => orderLineId,
+                orderLineId => GetFillGuardFilledQty(
+                    store,
+                    pallet.OrderId.Value,
+                    orderLineId,
+                    pallet.Id));
+
+        return ValidateFillingPalletLineGuards(
+            pallet,
+            orderLinesById,
+            docLinesById,
+            filledQtyByOrderLineId,
+            requireDestinationLocation);
+    }
+
+    private static (string Code, string Message)? ValidateFillingPalletLineGuards(
+        ProductionPallet pallet,
+        IReadOnlyDictionary<long, OrderLine> orderLinesById,
+        IReadOnlyDictionary<long, DocLine> docLinesById,
+        IReadOnlyDictionary<long, double> filledQtyByOrderLineId,
+        bool requireDestinationLocation)
+    {
+        if (!pallet.OrderId.HasValue || orderLinesById.Count == 0)
+        {
+            return (ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
+        }
+
+        var palletLines = GetPalletLines(pallet);
+        if (palletLines.Count == 0
+            || palletLines.Any(line => !IsValidFillingPalletLine(line, orderLinesById)))
+        {
+            return (ProductionFillingErrorCodes.PalletPlanInvalid, "Строка заказа для паллеты не найдена.");
+        }
+
+        if (HasInconsistentComponentProgress(palletLines, pallet.Status))
+        {
+            return (
+                ProductionFillingErrorCodes.PalletPartialFillInconsistent,
+                "По паллете найден исторический частичный component progress. Требуется контролируемая корректировка.");
+        }
+
+        foreach (var palletLine in palletLines)
+        {
+            if (!docLinesById.TryGetValue(palletLine.DocLineId, out var docLine))
+            {
+                return (
+                    ProductionFillingErrorCodes.PalletPlanInvalid,
+                    "Строка паллеты не найдена в документе выпуска.");
+            }
+
+            if (docLine.ItemId != palletLine.ItemId || docLine.OrderLineId != palletLine.OrderLineId)
+            {
+                return (
+                    ProductionFillingErrorCodes.PalletPlanInvalid,
+                    "План паллеты не совпадает со строкой выпуска.");
+            }
+
+            if (requireDestinationLocation && !docLine.ToLocationId.HasValue)
+            {
+                return (
+                    ProductionFillingErrorCodes.PalletPlanInvalid,
+                    "Для паллеты не указано место хранения.");
+            }
+
+            if (pallet.OrderId.HasValue && palletLine.OrderLineId.HasValue)
+            {
+                if (!orderLinesById.TryGetValue(palletLine.OrderLineId.Value, out var orderLine)
+                    || orderLine.ItemId != palletLine.ItemId)
+                {
+                    return (
+                        ProductionFillingErrorCodes.PalletPlanInvalid,
+                        "Строка заказа для паллеты не найдена.");
+                }
+
+                var alreadyFilled = filledQtyByOrderLineId.GetValueOrDefault(orderLine.Id);
+                if (alreadyFilled + palletLine.PlannedQty > orderLine.QtyOrdered + QtyTolerance)
+                {
+                    return (
+                        ProductionFillingErrorCodes.FillExceedsRemaining,
+                        "Выпуск превышает остаток по строке заказа");
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static bool HasInconsistentComponentProgress(
+        IReadOnlyCollection<ProductionPalletComponentLine> palletLines,
+        string? palletStatus)
+    {
+        if (!palletLines.Any(line => line.FilledQty > QtyTolerance))
+        {
+            return false;
+        }
+
+        var hasCompleteFilledComposition = palletLines.Count > 0
+                                           && palletLines.All(line =>
+                                               line.PlannedQty > QtyTolerance
+                                               && Math.Abs(line.FilledQty - line.PlannedQty) <= QtyTolerance);
+        return !string.Equals(palletStatus, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+               || !hasCompleteFilledComposition;
     }
 
     private static bool IsPendingFillPallet(ProductionPallet pallet)

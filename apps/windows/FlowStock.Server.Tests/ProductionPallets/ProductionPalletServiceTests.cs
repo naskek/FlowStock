@@ -23,7 +23,7 @@ public sealed class ProductionPalletServiceTests
     public void PlanOrder_CreatesProductionPalletsWithServerGeneratedHus_AndNoLedger()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
-        var service = new ProductionPalletService(harness.Store);
+        var service = CreateAutoClosePalletService(harness);
 
         var result = service.PlanOrder(10);
 
@@ -1465,7 +1465,7 @@ public sealed class ProductionPalletServiceTests
     public void GetFillingOrders_ReturnsOrderWithPreparedPallets_WhenHasUnfilledPallets()
     {
         var harness = CreateHarnessWithSixPallets(filledCount: 2);
-        var service = new ProductionPalletService(harness.Store);
+        var service = CreateAutoClosePalletService(harness);
 
         var order = Assert.Single(service.GetFillingOrders());
 
@@ -1476,6 +1476,47 @@ public sealed class ProductionPalletServiceTests
         Assert.Equal(2, order.Summary.FilledPalletCount);
         Assert.Equal(4, order.Summary.RemainingPalletCount);
         Assert.Equal(2400, order.Summary.RemainingQty);
+    }
+
+    [Fact]
+    public void GetFillingContext_EligibilityUsesOrderScopedBatchReads()
+    {
+        var harness = CreateHarnessWithSixPallets(filledCount: 2);
+        var service = CreateAutoClosePalletService(harness);
+
+        var context = service.GetFillingContext(10);
+
+        Assert.Equal(4, context.FillingEligibleHuCodes.Count);
+        var store = Mock.Get(harness.Store);
+        store.Verify(data => data.GetProductionPalletsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Once);
+        store.Verify(data => data.GetOrderLinesByOrderIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Once);
+        store.Verify(data => data.GetDocsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Once);
+        store.Verify(data => data.GetDocLinesByDocIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Once);
+        store.Verify(data => data.GetOrderLines(10), Times.AtMost(3));
+        store.Verify(data => data.GetDocLines(It.IsAny<long>()), Times.Never);
+        store.Verify(
+            data => data.GetFilledProductionPalletQtyByOrderLine(It.IsAny<long>(), It.IsAny<long?>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public void GetFillingOrders_EligibilityReusesPreloadedBatchFacts()
+    {
+        var harness = CreateHarnessWithSixPallets(filledCount: 2);
+        var service = CreateAutoClosePalletService(harness);
+
+        Assert.Single(service.GetFillingOrders());
+
+        var store = Mock.Get(harness.Store);
+        store.Verify(data => data.GetProductionPalletsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Once);
+        store.Verify(data => data.GetOrderLinesByOrderIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Once);
+        store.Verify(data => data.GetDocsByOrderIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Once);
+        store.Verify(data => data.GetDocLinesByDocIds(It.IsAny<IReadOnlyCollection<long>>()), Times.Once);
+        store.Verify(data => data.GetOrderLines(10), Times.Never);
+        store.Verify(data => data.GetDocLines(It.IsAny<long>()), Times.Never);
+        store.Verify(
+            data => data.GetFilledProductionPalletQtyByOrderLine(It.IsAny<long>(), It.IsAny<long?>()),
+            Times.Never);
     }
 
     [Fact]
@@ -1528,7 +1569,7 @@ public sealed class ProductionPalletServiceTests
         var harness = CreateHarnessWithSixPallets(filledCount: 5);
         harness.Store.UpdateOrderStatus(10, OrderStatus.Accepted);
 
-        var row = Assert.Single(new ProductionPalletService(harness.Store).GetFillingOrders());
+        var row = Assert.Single(CreateAutoClosePalletService(harness).GetFillingOrders());
 
         Assert.False(row.Progress.CanClose);
         Assert.False(row.Progress.IsClosed);

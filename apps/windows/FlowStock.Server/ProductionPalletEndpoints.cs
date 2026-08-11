@@ -756,9 +756,10 @@ public static class ProductionPalletEndpoints
     {
         try
         {
+            var context = service.GetFillingContext(orderId);
             return Results.Ok(MapFillingContext(
-                service.GetFillingContext(orderId),
-                GetProductionPresentations(services, orderId)));
+                context,
+                GetOrderHuPresentations(services, orderId)));
         }
         catch (InvalidOperationException ex)
         {
@@ -790,7 +791,7 @@ public static class ProductionPalletEndpoints
                 operation_id = orderId,
                 context = result.Context == null
                     ? null
-                    : MapFillingContext(result.Context, GetProductionPresentations(services, orderId))
+                    : MapFillingContext(result.Context, GetOrderHuPresentations(services, orderId))
             });
         }
         catch (Exception ex)
@@ -946,8 +947,9 @@ public static class ProductionPalletEndpoints
 
     private static object MapFillingContext(
         ProductionFillingContext context,
-        IReadOnlyDictionary<string, ProductionTaskPresentation>? presentations = null)
+        IReadOnlyDictionary<long, OrderLineHuPresentation>? presentations = null)
     {
+        var productionPresentations = BuildProductionPresentationLookup(presentations);
         return new
         {
             order_id = context.OrderId,
@@ -970,7 +972,8 @@ public static class ProductionPalletEndpoints
             can_close = context.Progress.CanClose,
             is_closed = context.Progress.IsClosed,
             operation_fingerprint = context.Progress.OperationFingerprint,
-            document = MapDocument(context.Document, presentations)
+            document = MapDocument(context.Document, productionPresentations),
+            order_hu_presentation = MapOrderHuPresentation(context, presentations)
         };
     }
 
@@ -1297,6 +1300,226 @@ public static class ProductionPalletEndpoints
             filled_by_device_id = pallet.FilledByDeviceId,
             created_at = pallet.CreatedAt
         };
+    }
+
+    private static object MapOrderHuPresentation(
+        ProductionFillingContext context,
+        IReadOnlyDictionary<long, OrderLineHuPresentation>? presentations)
+    {
+        if (presentations == null)
+        {
+            return new
+            {
+                ready_hu_count = 0,
+                total_hu_count = 0,
+                production_tasks = Array.Empty<object>(),
+                operational_hus = Array.Empty<object>()
+            };
+        }
+
+        var palletsByHu = context.Document.Pallets
+            .Where(pallet => !string.IsNullOrWhiteSpace(pallet.HuCode))
+            .GroupBy(pallet => NormalizeHuCode(pallet.HuCode), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var eligibleHuCodes = context.FillingEligibleHuCodes
+            .Select(NormalizeHuCode)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var productionTasks = presentations
+            .SelectMany(pair => pair.Value.ProductionTasks.Select(row => new { OrderLineId = pair.Key, Row = row }))
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.Row.HuCode))
+            .GroupBy(entry => NormalizeHuCode(entry.Row.HuCode), StringComparer.OrdinalIgnoreCase)
+            .Where(group => palletsByHu.ContainsKey(group.Key))
+            .Select(group =>
+            {
+                var row = group.First().Row;
+                var orderLineIds = group.Select(entry => entry.OrderLineId).Distinct().Order().ToArray();
+                palletsByHu.TryGetValue(group.Key, out var pallet);
+                return (object)new
+                {
+                    hu_code = row.HuCode,
+                    order_line_ids = orderLineIds,
+                    state = new { code = row.State.Code, label = row.State.Label },
+                    filling_eligible = eligibleHuCodes.Contains(group.Key),
+                    is_mixed = pallet?.IsMixedPallet == true || row.Components.Count > 1 || orderLineIds.Length > 1,
+                    qty = (double?)row.Qty,
+                    uom = row.Uom,
+                    components = MapFillingComponents(row.Components, pallet),
+                    progress = MapFillingProgress(pallet, row.Progress),
+                    location = (object?)null,
+                    reservation_target = (object?)null,
+                    shipment_target = (object?)null,
+                    source_production_order = (object?)null,
+                    diagnostics = (object?)null
+                };
+            })
+            .OrderBy(row => GetHuCode(row), StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var operationalHus = presentations
+            .SelectMany(pair => pair.Value.OperationalHus.Select(row => new { OrderLineId = pair.Key, Row = row }))
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.Row.HuCode))
+            .GroupBy(entry => NormalizeHuCode(entry.Row.HuCode), StringComparer.OrdinalIgnoreCase)
+            .Where(group =>
+                palletsByHu.ContainsKey(group.Key)
+                || group.Any(entry => entry.Row.ReservationTarget?.OrderId == context.OrderId)
+                || group.Any(entry => entry.Row.ShipmentTarget?.OrderId == context.OrderId))
+            .Select(group =>
+            {
+                var row = group.First().Row;
+                var orderLineIds = group.Select(entry => entry.OrderLineId).Distinct().Order().ToArray();
+                palletsByHu.TryGetValue(group.Key, out var pallet);
+                return (object)new
+                {
+                    hu_code = row.HuCode,
+                    order_line_ids = orderLineIds,
+                    state = new { code = row.State.Code, label = row.State.Label },
+                    filling_eligible = false,
+                    is_mixed = row.IsMixed || pallet?.IsMixedPallet == true || row.Components.Count > 1 || orderLineIds.Length > 1,
+                    qty = row.Qty,
+                    uom = row.Uom,
+                    components = MapFillingComponents(row.Components, pallet),
+                    progress = MapFillingProgress(pallet, fallback: null),
+                    location = row.Location == null
+                        ? null
+                        : new { id = row.Location.Id, code = row.Location.Code, name = row.Location.Name },
+                    reservation_target = MapFillingOrderReference(row.ReservationTarget),
+                    shipment_target = MapFillingOrderReference(row.ShipmentTarget),
+                    source_production_order = MapFillingOrderReference(row.SourceProductionOrder),
+                    diagnostics = row.Diagnostics?.Select(reason => new
+                    {
+                        code = reason.Code,
+                        message = reason.Message,
+                        related_orders = reason.RelatedOrders?.Select(MapFillingOrderReference).ToArray()
+                                         ?? Array.Empty<object?>(),
+                        related_documents = reason.RelatedDocuments?.Select(reference => new
+                        {
+                            document_id = reference.DocumentId,
+                            document_ref = reference.DocumentRef
+                        }).ToArray() ?? Array.Empty<object>()
+                    }).ToArray()
+                };
+            })
+            .OrderBy(row => GetHuCode(row), StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var readyCodes = new HashSet<string>(StringComparer.Ordinal)
+        {
+            OperationalHuSemanticCode.OnStock,
+            OperationalHuSemanticCode.Reserved,
+            OperationalHuSemanticCode.AwaitingShipment,
+            OperationalHuSemanticCode.Shipped
+        };
+        var readyHuCount = operationalHus
+            .Where(row => readyCodes.Contains(GetStateCode(row)))
+            .Select(row => NormalizeHuCode(GetHuCode(row)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        var totalHuCount = productionTasks
+            .Concat(operationalHus)
+            .Select(GetHuCode)
+            .Select(NormalizeHuCode)
+            .Where(code => code.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+
+        return new
+        {
+            ready_hu_count = readyHuCount,
+            total_hu_count = totalHuCount,
+            production_tasks = productionTasks,
+            operational_hus = operationalHus
+        };
+    }
+
+    private static object[] MapFillingComponents(
+        IReadOnlyList<HuComponentPresentation> canonicalComponents,
+        ProductionPallet? pallet)
+    {
+        if (pallet?.Lines.Count > 0)
+        {
+            return pallet.Lines.Select(line => (object)new
+            {
+                component_line_id = (long?)line.Id,
+                item_id = line.ItemId,
+                item_name = line.ItemName,
+                qty = line.PlannedQty,
+                planned_qty = line.PlannedQty,
+                filled_qty = line.FilledQty,
+                is_completed = line.IsCompleted,
+                uom = line.Uom
+            }).ToArray();
+        }
+
+        return canonicalComponents.Select(component => (object)new
+        {
+            component_line_id = (long?)null,
+            item_id = component.ItemId,
+            item_name = component.ItemName,
+            qty = component.Qty,
+            planned_qty = component.Qty,
+            filled_qty = 0d,
+            is_completed = false,
+            uom = component.Uom
+        }).ToArray();
+    }
+
+    private static object? MapFillingProgress(
+        ProductionPallet? pallet,
+        HuProductionProgressPresentation? fallback)
+    {
+        if (pallet?.IsMixedPallet == true)
+        {
+            return new
+            {
+                completed_components = pallet.FilledComponentCount,
+                total_components = pallet.TotalComponentCount
+            };
+        }
+
+        return fallback == null
+            ? null
+            : new
+            {
+                completed_components = fallback.CompletedComponents,
+                total_components = fallback.TotalComponents
+            };
+    }
+
+    private static object? MapFillingOrderReference(HuOperatorOrderReference? reference) =>
+        reference == null ? null : new { order_id = reference.OrderId, order_ref = reference.OrderRef };
+
+    private static string GetHuCode(object row)
+    {
+        var property = row.GetType().GetProperty("hu_code");
+        return property?.GetValue(row)?.ToString() ?? string.Empty;
+    }
+
+    private static string GetStateCode(object row)
+    {
+        var state = row.GetType().GetProperty("state")?.GetValue(row);
+        return state?.GetType().GetProperty("code")?.GetValue(state)?.ToString() ?? string.Empty;
+    }
+
+    private static string NormalizeHuCode(string? huCode) =>
+        string.IsNullOrWhiteSpace(huCode) ? string.Empty : huCode.Trim().ToUpperInvariant();
+
+    private static IReadOnlyDictionary<long, OrderLineHuPresentation>? GetOrderHuPresentations(
+        IServiceProvider services,
+        long orderId)
+    {
+        var readModel = services.GetService<HuOperatorReadModelService>();
+        return readModel?.GetForOrder(orderId);
+    }
+
+    private static IReadOnlyDictionary<string, ProductionTaskPresentation>? BuildProductionPresentationLookup(
+        IReadOnlyDictionary<long, OrderLineHuPresentation>? presentations)
+    {
+        return presentations?
+            .SelectMany(pair => pair.Value.ProductionTasks)
+            .Where(row => !string.IsNullOrWhiteSpace(row.HuCode))
+            .GroupBy(row => row.HuCode.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyDictionary<string, ProductionTaskPresentation>? GetProductionPresentations(

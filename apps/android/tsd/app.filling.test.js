@@ -85,8 +85,9 @@ assert(
 );
 assert(
   appJs.includes("formatPalletCountValue(summary.filledPalletCount)") &&
-    appJs.includes("renderFillingPalletStatusList(document.pallets)") &&
-    appJs.includes('"is-filled"') &&
+    appJs.includes("renderFillingPalletStatusList(getFillingOrderHuRows(context))") &&
+    appJs.includes('"is-ready"') &&
+    appJs.includes('"is-inconsistent"') &&
     appJs.includes('"is-pending"') &&
     appJs.includes("filling-pallet-item--compact") &&
     appJs.includes("getFillingPalletItemLabel") &&
@@ -108,7 +109,8 @@ assert(
 );
 const renderFillingScanBody = extractFunctionBody(appJs, "renderFillingScan");
 assert(
-  appJs.includes("buildFillingScanHeaderLine(work, summary)") &&
+  appJs.includes("buildFillingScanHeaderLine(work)") &&
+    appJs.includes("buildFillingReadySummaryLine(context)") &&
     appJs.includes('class="filling-scan-header"') &&
     appJs.includes("filling-card--scan"),
   "filling scan screen should use a compact single-line header"
@@ -436,8 +438,8 @@ const finalHtml = hooks.renderFillingCompletion(
   { ok: true, prd_auto_closed: true, closed_prd_doc_ref: "PRD-2026-000001" },
   unavailableAfterFill
 );
-assert.match(finalHtml, /Паллета наполнена\. Заказ выполнен\./);
-assert.match(finalHtml, /К списку наполнения/);
+assert.match(finalHtml, /Заказ полностью собран/);
+assert.match(finalHtml, />OK</);
 assert.doesNotMatch(finalHtml, /недоступен для наполнения/i);
 
 assert.strictEqual(
@@ -516,8 +518,8 @@ assert.strictEqual(
 );
 assert.strictEqual(
   hooks.buildProductionFillCompletionMessage({ ok: true, prdAutoClosed: true }, null),
-  "Паллета наполнена. Выпуск закрыт.",
-  "single PRD close without unavailable order should show PRD closed success"
+  "Заказ полностью собран",
+  "terminal completion copy should stay independent from technical PRD details"
 );
 
 const fillingScanHtml = hooks.renderFillingScan(
@@ -526,6 +528,18 @@ const fillingScanHtml = hooks.renderFillingScan(
     document: {
       summary: { filledPalletCount: 0, plannedPalletCount: 10 },
       pallets: [{ huCode: "HU-000001", itemName: "Товар", status: "PENDING" }],
+    },
+    orderHuPresentation: {
+      readyHuCount: 6,
+      totalHuCount: 9,
+      productionTasks: [{
+        huCode: "HU-000001",
+        orderLineIds: [1],
+        state: { code: "AWAITING_FILL", label: "Ожидает наполнения" },
+        fillingEligible: true,
+        components: [{ itemName: "Товар", plannedQty: 10, filledQty: 0, uom: "шт" }],
+      }],
+      operationalHus: [],
     },
   },
   {}
@@ -536,6 +550,12 @@ const fillingScanErrorHtml = hooks.renderFillingScan(
     document: {
       summary: { filledPalletCount: 0, plannedPalletCount: 1 },
       pallets: [{ huCode: "HU-000001", itemName: "Товар", status: "PENDING" }],
+    },
+    orderHuPresentation: {
+      readyHuCount: 0,
+      totalHuCount: 1,
+      productionTasks: [{ huCode: "HU-000001", state: { code: "AWAITING_FILL", label: "Ожидает наполнения" }, fillingEligible: true }],
+      operationalHus: [],
     },
   },
   { message: "Эта паллета относится к другому заказу", messageType: "error" }
@@ -553,9 +573,10 @@ assert(
 );
 assert.match(
   fillingScanHtml,
-  /Наполнение · Заказ 104 · 0 \/ 10 паллет/,
-  "filling scan screen should show compact header with order and pallet progress"
+  /Наполнение · Заказ 104/,
+  "filling scan screen should show compact order header"
 );
+assert.match(fillingScanHtml, /Готово 6 \/ 9 паллет/, "filling screen should show full-lifecycle HU progress");
 assert.doesNotMatch(
   fillingScanHtml,
   /Наполнено паллет:|Сканируйте HU \/ паллетный штрихкод/,
@@ -589,18 +610,12 @@ assert.doesNotMatch(
   "filling scan render should not require transition state before scanner input/list markup is available"
 );
 assert.strictEqual(
-  hooks.buildFillingScanSummaryLine(
-    { orderRef: "104" },
-    { filledPalletCount: 0, plannedPalletCount: 10 }
-  ),
-  "Заказ 104 · 0 / 10 паллет"
+  hooks.buildFillingScanSummaryLine({ orderRef: "104" }),
+  "Заказ 104"
 );
 assert.strictEqual(
-  hooks.buildFillingScanHeaderLine(
-    { orderRef: "007" },
-    { filledPalletCount: 0, plannedPalletCount: 12 }
-  ),
-  "Наполнение · Заказ 007 · 0 / 12 паллет"
+  hooks.buildFillingScanHeaderLine({ orderRef: "007" }),
+  "Наполнение · Заказ 007"
 );
 
 const fillingListItems = [
@@ -673,6 +688,15 @@ const fillingPalletFixtures = [
     status: "PENDING",
   },
 ];
+fillingPalletFixtures.forEach(function (row) {
+  var ready = row.status === "FILLED";
+  row.orderLineIds = [row.itemName && row.itemName.indexOf("Аджика") === 0 ? 10 : row.itemName ? 20 : 30];
+  row.state = ready
+    ? { code: "AWAITING_SHIPMENT", label: "Ожидает отгрузки" }
+    : { code: "AWAITING_FILL", label: "Ожидает наполнения" };
+  row.fillingEligible = !ready;
+  row.components = row.itemName ? [{ itemName: row.itemName, plannedQty: 1, filledQty: ready ? 1 : 0, uom: "шт" }] : [];
+});
 const fillingPalletGroups = hooks.buildFillingPalletGroups(fillingPalletFixtures);
 assert.strictEqual(fillingPalletGroups.length, 3, "filling pallet list should render three product groups");
 assert.ok(
@@ -708,8 +732,8 @@ assert.doesNotMatch(
 );
 assert.match(
   fillingPalletListHtml,
-  /is-filled[\s\S]*HU-0000742|HU-0000742[\s\S]*is-filled/,
-  "filled pallet row should keep is-filled status class"
+  /is-ready[\s\S]*HU-0000742|HU-0000742[\s\S]*is-ready/,
+  "ready pallet row should use canonical ready class"
 );
 assert.match(
   fillingPalletListHtml,
@@ -728,7 +752,7 @@ assert.doesNotMatch(
 );
 assert.match(
   fillingPalletListHtml,
-  /<li class="filling-pallet-item filling-pallet-item--compact (?:is-filled|is-pending)">/,
+  /<li class="filling-pallet-item filling-pallet-item--compact (?:is-ready|is-pending)">/,
   "filling pallet rows should remain compact display-only list items"
 );
 assert.doesNotMatch(
@@ -739,7 +763,7 @@ assert.doesNotMatch(
 const singlePalletRowHtml = hooks.renderFillingPalletHuRow({
   huCode: "HU-0001199",
   itemName: "Горчица, Печагин, 1 кг",
-  status: "PENDING",
+  state: { code: "AWAITING_FILL", label: "Ожидает наполнения" },
 });
 assert.match(singlePalletRowHtml, /HU-0001199/);
 assert.doesNotMatch(
@@ -750,7 +774,10 @@ assert.doesNotMatch(
 
 const mixedFillingPalletFixture = {
   huCode: "HU-0001201",
-  isMixedPallet: true,
+  isMixed: true,
+  state: { code: "INCONSISTENT", label: "Несогласованное состояние" },
+  fillingEligible: false,
+  progress: { completedComponents: 1, totalComponents: 3 },
   status: "PLANNED",
   effectiveStatus: "PARTIALLY_FILLED",
   filledComponentCount: 1,
@@ -779,9 +806,12 @@ const mixedFillingPalletFixture = {
     },
   ],
 };
+mixedFillingPalletFixture.components = mixedFillingPalletFixture.lines;
 const partialMixedPalletHtml = hooks.renderFillingPalletStatusList([mixedFillingPalletFixture]);
 assert.match(partialMixedPalletHtml, /Микс-паллета · 1 \/ 3/);
 assert.match(partialMixedPalletHtml, /HU-0001201/);
+assert.match(partialMixedPalletHtml, /is-inconsistent/);
+assert.match(partialMixedPalletHtml, /Несогласованное состояние/);
 assert.match(partialMixedPalletHtml, /Горчица Печагин, 200 гр/);
 assert.match(partialMixedPalletHtml, /Хрен столовый, Печагин, 200 гр/);
 assert.match(partialMixedPalletHtml, /Аджика, Печагин, 200 гр/);
@@ -800,7 +830,10 @@ assert.match(
 
 const fullMixedFillingPalletFixture = {
   huCode: "HU-0001201",
-  isMixedPallet: true,
+  isMixed: true,
+  state: { code: "AWAITING_SHIPMENT", label: "Ожидает отгрузки" },
+  fillingEligible: false,
+  progress: { completedComponents: 3, totalComponents: 3 },
   status: "FILLED",
   effectiveStatus: "FILLED",
   filledComponentCount: 3,
@@ -815,6 +848,7 @@ const fullMixedFillingPalletFixture = {
     };
   }),
 };
+fullMixedFillingPalletFixture.components = fullMixedFillingPalletFixture.lines;
 const fullMixedPalletHtml = hooks.renderFillingPalletStatusList([fullMixedFillingPalletFixture]);
 assert.match(fullMixedPalletHtml, /Микс-паллета · 3 \/ 3/);
 assert.match(fullMixedPalletHtml, /filling-mixed-component-line is-completed/);
@@ -834,6 +868,10 @@ const partiallyFilledPalletHtml = hooks.renderFillingPalletStatusList([
     filledComponentCount: 1,
     totalComponentCount: 3,
     canFill: true,
+    isMixed: true,
+    state: { code: "INCONSISTENT", label: "Несогласованное состояние" },
+    fillingEligible: false,
+    progress: { completedComponents: 1, totalComponents: 3 },
   },
 ]);
 assert.strictEqual(
@@ -843,12 +881,12 @@ assert.strictEqual(
     canFill: true,
   }),
   false,
-  "partially filled mixed HU should remain available instead of being treated as filled"
+  "partially filled mixed HU should not be treated as completed"
 );
 assert.match(
   partiallyFilledPalletHtml,
-  /is-pending[\s\S]*HU-0000870|HU-0000870[\s\S]*is-pending/,
-  "partially filled mixed HU should render as pending and available"
+  /is-inconsistent[\s\S]*HU-0000870|HU-0000870[\s\S]*is-inconsistent/,
+  "persisted partial mixed HU should render as inconsistent and blocked"
 );
 const adjikaTitleIndex = fillingPalletListHtml.indexOf("Аджика Печагин, 200 гр");
 const mustardTitleIndex = fillingPalletListHtml.indexOf("Горчица Печагин, 200 гр");
@@ -1224,6 +1262,12 @@ function createFillingScanRuntimeHarness(options) {
   const screenContext = {
     workItem: { orderId: 120, orderRef: "120", prdDocId: 55 },
     document: defaultContext.document,
+    orderHuPresentation: options.orderHuPresentation || {
+      readyHuCount: 0,
+      totalHuCount: 0,
+      productionTasks: [],
+      operationalHus: [],
+    },
     progress: { canClose: false, isClosed: false },
   };
   localHooks.renderFillingScanScreen(screenContext, {});
@@ -1245,6 +1289,74 @@ async function runFillingScanRuntimeTests() {
     error.payload = { error: code, message: message || code };
     return error;
   }
+
+  const readyHarness = createFillingScanRuntimeHarness({
+    orderHuPresentation: {
+      readyHuCount: 1,
+      totalHuCount: 1,
+      productionTasks: [],
+      operationalHus: [
+        {
+          huCode: "HU-0001203",
+          fillingEligible: false,
+          state: { code: "ON_STOCK", label: "На складе" },
+        },
+      ],
+    },
+  });
+  readyHarness.hooks.getActiveScanHandler()("HU-0001203");
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(readyHarness.scanCalls.length, 0, "ready HU must not call the fill scan API");
+  assert.match(readyHarness.appEl.innerHTML, /На складе\. Наполнение не требуется\./);
+
+  const inconsistentHarness = createFillingScanRuntimeHarness({
+    orderHuPresentation: {
+      readyHuCount: 0,
+      totalHuCount: 1,
+      productionTasks: [],
+      operationalHus: [
+        {
+          huCode: "HU-0001203",
+          fillingEligible: false,
+          isMixed: true,
+          state: { code: "INCONSISTENT", label: "Несогласованное состояние" },
+          progress: { completedComponents: 1, totalComponents: 3 },
+        },
+      ],
+    },
+  });
+  inconsistentHarness.hooks.getActiveScanHandler()("HU-0001203");
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(
+    inconsistentHarness.scanCalls.length,
+    0,
+    "inconsistent mixed HU must not call the fill scan API"
+  );
+  assert.match(
+    inconsistentHarness.appEl.innerHTML,
+    /filling-message filling-message-error[\s\S]*Несогласованное состояние\. Наполнение недоступно\./
+  );
+
+  const actionableHarness = createFillingScanRuntimeHarness({
+    orderHuPresentation: {
+      readyHuCount: 0,
+      totalHuCount: 1,
+      productionTasks: [
+        {
+          huCode: "HU-0001203",
+          fillingEligible: true,
+          state: { code: "AWAITING_FILL", label: "Ожидает наполнения" },
+        },
+      ],
+      operationalHus: [],
+    },
+  });
+  actionableHarness.hooks.getActiveScanHandler()("HU-0001203");
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(actionableHarness.scanCalls.length, 1, "eligible HU must continue through the existing scan API");
 
   const otherOrderHarness = createFillingScanRuntimeHarness({
     scan: function () {
@@ -1428,7 +1540,7 @@ async function runFillSuccessRuntimeTests() {
     1,
     "explicit order_completed should still reload server progress before finalize UX"
   );
-  assert.match(orderCompletedHarness.appEl.innerHTML, /Паллета наполнена\. Заказ выполнен\./);
+  assert.match(orderCompletedHarness.appEl.innerHTML, /Заказ полностью собран/);
 
   const partialHarness = createFillSuccessHarness(function () {
     return Promise.resolve({
@@ -1469,7 +1581,7 @@ async function runFillSuccessRuntimeTests() {
   );
   assert.match(
     reloadFallbackHarness.appEl.innerHTML,
-    /Паллета наполнена\. Заказ выполнен\./,
+    /Заказ полностью собран/,
     "context reload no-pallets after fill should render completion instead of throwing"
   );
 }
@@ -1577,6 +1689,8 @@ async function runFillingScanGuardTests() {
 async function runFinalizeReconciliationTests() {
   const functionNames = [
     "normalizeOperatorStatusPresentation",
+    "normalizeProductionFillingHu",
+    "normalizeProductionFillingOrderHuPresentation",
     "normalizeProductionFillingContext",
     "normalizeProductionFillingCompleteResponse",
     "isUncertainNetworkError",

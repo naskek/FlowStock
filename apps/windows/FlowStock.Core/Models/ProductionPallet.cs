@@ -166,6 +166,8 @@ public sealed class ProductionFillingContext
     public string PrdDocRef { get; init; } = string.Empty;
     public ProductionPalletDocument Document { get; init; } = new();
     public ProductionOperationProgress Progress { get; init; } = new();
+    public IReadOnlySet<string> FillingEligibleHuCodes { get; init; } =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 }
 
 public sealed class ProductionOperationProgress
