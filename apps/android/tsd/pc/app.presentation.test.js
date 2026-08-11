@@ -615,6 +615,7 @@ const expandedCustomerOrderLineHtml = pc.renderOrderLinesTable(
             hu_code: "HU-PRODUCTION",
             qty: 60,
             state: { code: "AWAITING_FILL", label: "Ожидает наполнения" },
+            pallet_status: "PLANNED",
           },
         ],
       },
@@ -633,14 +634,33 @@ const expandedCustomerOrderLineHtml = pc.renderOrderLinesTable(
 );
 assert.match(expandedCustomerOrderLineHtml, /data-order-line-toggle="501"/);
 assert.match(expandedCustomerOrderLineHtml, /aria-expanded="true"/);
-assert.match(expandedCustomerOrderLineHtml, />HU по строке заказа</);
+assert.strictEqual((expandedCustomerOrderLineHtml.match(/>Паллеты по товару</g) || []).length, 1);
+assert.strictEqual((expandedCustomerOrderLineHtml.match(/pc-order-line-detail-table"/g) || []).length, 1);
+assert.match(
+  expandedCustomerOrderLineHtml,
+  /<th>HU<\/th><th>Кол-во<\/th><th>Состояние<\/th><th>Локация<\/th>/
+);
 assert.strictEqual((expandedCustomerOrderLineHtml.match(/HU-LINE/g) || []).length, 1);
+assert.strictEqual((expandedCustomerOrderLineHtml.match(/HU-PRODUCTION/g) || []).length, 1);
+assert.ok(
+  expandedCustomerOrderLineHtml.indexOf("HU-LINE") <
+    expandedCustomerOrderLineHtml.indexOf("HU-PRODUCTION"),
+  "operational HU must remain before production tasks"
+);
 assert.match(expandedCustomerOrderLineHtml, /Зарезервирован/);
 assert.match(expandedCustomerOrderLineHtml, /Отгружен/);
 assert.match(expandedCustomerOrderLineHtml, /HU-PRODUCTION/);
 assert.match(expandedCustomerOrderLineHtml, /Ожидает наполнения/);
-assert.doesNotMatch(expandedCustomerOrderLineHtml, /Движение HU|Привязка|<th>PRD<\/th>|<th>План<\/th>|<th>Наполнено<\/th>/);
+assert.match(
+  expandedCustomerOrderLineHtml,
+  /HU-PRODUCTION<\/td><td>60<\/td><td>Ожидает наполнения<\/td><td>—<\/td>/
+);
+assert.doesNotMatch(expandedCustomerOrderLineHtml, />Производство</);
+assert.doesNotMatch(expandedCustomerOrderLineHtml, /PLANNED|Движение HU|Привязка|<th>PRD<\/th>|<th>План<\/th>|<th>Наполнено<\/th>/);
 assert.doesNotMatch(expandedCustomerOrderLineHtml, />Отгрузка этой строки заказа</);
+assert.match(expandedCustomerOrderLineHtml, />Итог</);
+assert.match(expandedCustomerOrderLineHtml, />Заказано</);
+assert.match(expandedCustomerOrderLineHtml, />Выпущено</);
 assert.match(expandedCustomerOrderLineHtml, /Не хватает/);
 assert.match(expandedCustomerOrderLineHtml, /is-missing/);
 
@@ -657,7 +677,9 @@ const expandedLineWithoutExactCoverageHtml = pc.renderOrderLinesTable(
   { order_type: "CUSTOMER", order_status: "IN_PROGRESS" },
   { 502: true }
 );
-assert.match(expandedLineWithoutExactCoverageHtml, /Операционные HU отсутствуют/);
+assert.match(expandedLineWithoutExactCoverageHtml, /Паллеты отсутствуют/);
+assert.doesNotMatch(expandedLineWithoutExactCoverageHtml, /Операционные HU отсутствуют/);
+assert.doesNotMatch(expandedLineWithoutExactCoverageHtml, />Производство</);
 assert.doesNotMatch(expandedLineWithoutExactCoverageHtml, />Отгрузка этой строки заказа</);
 assert.match(expandedLineWithoutExactCoverageHtml, /Точный итог покрытия недоступен/);
 assert.match(expandedLineWithoutExactCoverageHtml, /Существующий серверный дефицит: 25/);
@@ -674,7 +696,7 @@ const expandedAwaitingShipmentOrderLineHtml = pc.renderOrderLinesTable(
           hu_code: "HU-AWAITING",
           qty: 60,
           state: { code: "AWAITING_SHIPMENT", label: "Ожидает отгрузки" },
-          location: { code: "FG-01", name: "Основной склад" },
+          location: { code: "FG-01", name: "" },
         }],
         production_tasks: [],
       },
@@ -686,6 +708,8 @@ const expandedAwaitingShipmentOrderLineHtml = pc.renderOrderLinesTable(
 );
 assert.match(expandedAwaitingShipmentOrderLineHtml, /HU-AWAITING/);
 assert.match(expandedAwaitingShipmentOrderLineHtml, /Ожидает отгрузки/);
+assert.match(expandedAwaitingShipmentOrderLineHtml, /<td>FG-01<\/td>/);
+assert.strictEqual((expandedAwaitingShipmentOrderLineHtml.match(/pc-order-line-detail-table"/g) || []).length, 1);
 assert.doesNotMatch(expandedAwaitingShipmentOrderLineHtml, />Наполнена?</);
 assert.strictEqual(
   (expandedAwaitingShipmentOrderLineHtml.match(/Ожидает отгрузки/g) || []).length,
@@ -714,12 +738,12 @@ const expandedCustomerLineWithOnlyShippedHuHtml = pc.renderOrderLinesTable(
   { order_ref: "004", order_type: "CUSTOMER", order_status: "SHIPPED" },
   { 504: true }
 );
-assert.match(expandedCustomerLineWithOnlyShippedHuHtml, />HU по строке заказа</);
+assert.match(expandedCustomerLineWithOnlyShippedHuHtml, />Паллеты по товару</);
 assert.match(expandedCustomerLineWithOnlyShippedHuHtml, /HU-0002083/);
 assert.match(expandedCustomerLineWithOnlyShippedHuHtml, /Отгружен/);
 assert.match(
   expandedCustomerLineWithOnlyShippedHuHtml,
-  /HU-0002083<\/td><td>1824<\/td><td>Отгружен<\/td><td>-/
+  /HU-0002083<\/td><td>1824<\/td><td>Отгружен<\/td><td>—/
 );
 assert.doesNotMatch(expandedCustomerLineWithOnlyShippedHuHtml, /Операционные HU отсутствуют/);
 assert.doesNotMatch(expandedCustomerLineWithOnlyShippedHuHtml, />Отгрузка этой строки заказа</);
@@ -736,6 +760,10 @@ const expandedInternalOrderLineHtml = pc.renderOrderLinesTable(
           hu_code: "HU-INTERNAL",
           qty: 1824,
           state: { code: "AWAITING_FILL", label: "Ожидает наполнения" },
+        }, {
+          hu_code: "HU-INTERNAL-2",
+          qty: 176,
+          state: { code: "AWAITING_FILL", label: "Ожидает наполнения" },
         }],
       },
       coverage: { ordered_qty: 2000, covered_qty: 1824, missing_qty: 176 },
@@ -745,15 +773,27 @@ const expandedInternalOrderLineHtml = pc.renderOrderLinesTable(
   { 503: true }
 );
 assert.match(expandedInternalOrderLineHtml, /HU-INTERNAL/);
+assert.match(expandedInternalOrderLineHtml, /HU-INTERNAL-2/);
+assert.match(
+  expandedInternalOrderLineHtml,
+  /HU-INTERNAL<\/td><td>1824<\/td><td>Ожидает наполнения<\/td><td>—<\/td>/
+);
+assert.strictEqual((expandedInternalOrderLineHtml.match(/pc-order-line-detail-table"/g) || []).length, 1);
+assert.doesNotMatch(expandedInternalOrderLineHtml, /Операционные HU отсутствуют|>Производство</);
 assert.doesNotMatch(expandedInternalOrderLineHtml, /Движение HU|Привязка|PRD/);
-assert.match(expandedInternalOrderLineHtml, />Итог выпуска</);
+assert.match(expandedInternalOrderLineHtml, />Итог</);
+assert.match(expandedInternalOrderLineHtml, />Заказано</);
 assert.match(expandedInternalOrderLineHtml, />Выпущено</);
-assert.match(expandedInternalOrderLineHtml, />Осталось выпустить</);
+assert.match(expandedInternalOrderLineHtml, />Не хватает</);
 assert.doesNotMatch(expandedInternalOrderLineHtml, /Резерв этого заказа/);
-assert.match(expandedInternalOrderLineHtml, />HU по строке заказа</);
+assert.match(expandedInternalOrderLineHtml, />Паллеты по товару</);
 assert.doesNotMatch(expandedInternalOrderLineHtml, />Отгрузка этой строки заказа</);
 assert.doesNotMatch(expandedInternalOrderLineHtml, /Отгружено по строке/);
 assert.doesNotMatch(expandedInternalOrderLineHtml, /По этой строке заказа отгрузки нет/);
+
+const orderModalSource = fs.readFileSync(orderModalPath, "utf8");
+assert.doesNotMatch(orderModalSource, /Операционные HU отсутствуют/);
+assert.doesNotMatch(orderModalSource, /pc-order-line-detail-title">Производство/);
 
 const shippedCustomerStalePalletListHtml = pc.renderOrdersTable([
   {

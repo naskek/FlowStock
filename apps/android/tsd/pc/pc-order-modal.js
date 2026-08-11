@@ -309,51 +309,36 @@
     var productionRows = Array.isArray(huPresentation.production_tasks)
       ? huPresentation.production_tasks
       : [];
-    var hasHuRows = operationalRows.length || productionRows.length;
-    var isInternal = isInternalOrder(order);
-    var operationalHuColumns = [
-      { label: "HU", value: function (row) { return row.hu_code || "-"; } },
-      { label: "Кол-во", value: function (row) { return formatQuantity(row.qty || 0); } },
+    var palletRows = operationalRows.concat(productionRows);
+    var palletColumns = [
+      { label: "HU", value: function (row) { return row.hu_code || "—"; } },
+      {
+        label: "Кол-во",
+        value: function (row) {
+          return row && row.qty != null ? formatQuantity(row.qty) : "—";
+        },
+      },
       {
         label: "Состояние",
         value: function (row) {
-          return row && row.state && row.state.label ? row.state.label : "-";
+          return row && row.state && row.state.label ? row.state.label : "—";
         },
       },
       {
         label: "Локация",
         value: function (row) {
           return row && row.location
-            ? row.location.name || row.location.code || "-"
-            : "-";
+            ? row.location.name || row.location.code || "—"
+            : "—";
         },
       },
     ];
 
     return (
       '<div class="pc-order-line-detail-block">' +
-      (isInternal && !hasHuRows ? '<div class="pc-order-line-no-hu">HU не привязаны</div>' : "") +
       '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Паллеты по товару</div>' +
-      renderOrderHuRowsTable(operationalRows, operationalHuColumns, "Операционные HU отсутствуют") +
+      renderOrderHuRowsTable(palletRows, palletColumns, "Паллеты отсутствуют") +
       "</section>" +
-      (productionRows.length
-        ? '<section class="pc-order-line-detail-section"><div class="pc-order-line-detail-title">Производство</div>' +
-          renderOrderHuRowsTable(
-            productionRows,
-            [
-              { label: "HU", value: function (row) { return row.hu_code || "-"; } },
-              { label: "Кол-во", value: function (row) { return formatQuantity(row.qty || 0); } },
-              {
-                label: "Состояние",
-                value: function (row) {
-                  return row && row.state && row.state.label ? row.state.label : "-";
-                },
-              },
-            ],
-            ""
-          ) +
-          "</section>"
-        : "") +
       '<section class="pc-order-line-detail-section pc-order-line-summary-section"><div class="pc-order-line-detail-title">Итог</div>' +
       renderOrderLineCoverage(line, order) +
       "</section>" +
