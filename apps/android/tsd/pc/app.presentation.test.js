@@ -1032,6 +1032,7 @@ assert.strictEqual(lastPage.rows.length, 20);
 assert.strictEqual(lastPage.hasMore, false);
 
 const stockPageHtml = pc.renderStock();
+assert.match(stockPageHtml, /<section class="pc-card pc-stock-card">/);
 assert.match(stockPageHtml, /stockCreateProductionOrderBtn/);
 assert.match(stockPageHtml, /Пополнение склада/);
 assert.match(stockPageHtml, /Подготовить заказ/);
@@ -1051,26 +1052,45 @@ assert.match(
 );
 assert.doesNotMatch(stockPageHtml, /Показать производственный план/);
 
-const replenishmentReadyHtml = pc.renderStockReplenishmentPreview({ status: "ready", count: 4 });
+const replenishmentReadyHtml = pc.renderStockReplenishmentPreview({ status: "ready", count: 2 });
 assert.match(replenishmentReadyHtml, /pc-stock-replenishment-icon/);
 assert.match(replenishmentReadyHtml, /<svg/);
-assert.match(replenishmentReadyHtml, />4 позиции</);
-assert.doesNotMatch(replenishmentReadyHtml, /требуют пополнения/);
+assert.match(replenishmentReadyHtml, /pc-stock-replenishment-card is-ready/);
+assert.match(replenishmentReadyHtml, /Требуется пополнение · 2 позиции/);
 assert.doesNotMatch(replenishmentReadyHtml, /Рассчитать, какие товары нужно добавить/);
 assert.doesNotMatch(replenishmentReadyHtml, /disabled aria-disabled="true"/);
-assert.match(pc.renderStockReplenishmentPreview({ status: "ready", count: 1 }), />1 позиция</);
+[
+  [1, "1 позиция"],
+  [2, "2 позиции"],
+  [5, "5 позиций"],
+  [11, "11 позиций"],
+  [21, "21 позиция"]
+].forEach(function (sample) {
+  assert.match(pc.renderStockReplenishmentPreview({ status: "ready", count: sample[0] }), new RegExp(sample[1]));
+});
 
 const replenishmentEmptyHtml = pc.renderStockReplenishmentPreview({ status: "empty", count: 0 });
-assert.match(replenishmentEmptyHtml, /Пополнение не требуется/);
+assert.match(replenishmentEmptyHtml, /pc-stock-replenishment-card is-empty/);
+assert.match(replenishmentEmptyHtml, /Дополнительное пополнение не требуется/);
 assert.match(replenishmentEmptyHtml, /disabled aria-disabled="true"/);
+assert.doesNotMatch(replenishmentEmptyHtml, /Требуется пополнение/);
 
 const replenishmentLoadingHtml = pc.renderStockReplenishmentPreview({ status: "loading" });
+assert.match(replenishmentLoadingHtml, /pc-stock-replenishment-card is-loading/);
 assert.match(replenishmentLoadingHtml, />Загрузка…</);
 assert.match(replenishmentLoadingHtml, /disabled aria-disabled="true"/);
 
 const replenishmentErrorHtml = pc.renderStockReplenishmentPreview({ status: "error" });
+assert.match(replenishmentErrorHtml, /pc-stock-replenishment-card is-error/);
 assert.match(replenishmentErrorHtml, /Не удалось загрузить предпросмотр/);
+assert.match(replenishmentErrorHtml, /disabled aria-disabled="true"/);
+assert.doesNotMatch(replenishmentErrorHtml, /Требуется пополнение/);
 assert.doesNotMatch(replenishmentErrorHtml, /пополнение не требуется/);
+assert.match(
+  fs.readFileSync(stockPath, "utf8"),
+  /loadProductionNeedCreateOrdersPreview\(\)[\s\S]*status:\s*rows\.length \? "ready" : "empty"/,
+  "replenishment preview state must remain server-preview-driven"
+);
 assert.ok(
   !pc.getEnabledViews().includes("production-need"),
   "separate production need tab must be hidden from normal PC navigation"
@@ -1086,6 +1106,12 @@ assert.match(
   "warehouse-production-state endpoint error must show readable message"
 );
 
+function operatorPresentation(code, label, productionTask) {
+  const presentation = {};
+  presentation[productionTask ? "production_task" : "operational_hu"] = { state: { code, label } };
+  return presentation;
+}
+
 const warehouseStockRow = pc.mapWarehouseProductionStateRow({
   item_id: 10,
   item_name: "Товар 1",
@@ -1093,149 +1119,366 @@ const warehouseStockRow = pc.mapWarehouseProductionStateRow({
   gtin: "04607186951520",
   base_uom: "шт",
   item_type: "Готовая продукция",
-  stock_qty: 12,
+  stock_qty: 17,
   min_stock_qty: 20,
-  below_min_qty: 8,
-  customer_open_demand_qty: 5,
-  internal_remaining_qty: 6,
-  prd_planned_qty: 4,
-  prd_filled_qty: 2,
-  remaining_need_qty: 3,
-  hu_rows: [{
-    location: "FG-01",
-    hu_code: "HU-000001",
-    qty: 12,
-    operator_presentation: {
-      operational_hu: { state: { code: "ON_STOCK", label: "На складе" } }
-    }
-  }],
-  production_receipts: [
-    {
-      hu_code: "HU-000001",
-      pallet_status: "PLANNED",
-      planned_qty: 4,
-      filled_qty: 0,
-      composition: "Товар 1",
-      operator_presentation: {
-        production_task: { state: { code: "AWAITING_FILL", label: "Ожидает наполнения" } }
-      }
-    },
-    {
-      hu_code: "HU-000002",
-      pallet_status: "PRINTED",
-      planned_qty: 4,
-      filled_qty: 1,
-      composition: "Товар 1",
-      operator_presentation: {
-        operational_hu: { state: { code: "INCONSISTENT", label: "Несогласованное состояние" } }
-      }
-    },
-    {
-      hu_code: "HU-000003",
-      pallet_status: "FILLED",
-      planned_qty: 4,
-      filled_qty: 1,
-      composition: "Товар 1",
-      operator_presentation: {
-        operational_hu: { state: { code: "INCONSISTENT", label: "Несогласованное состояние" } }
-      }
-    },
-    {
-      hu_code: "HU-0000927",
-      pallet_status: "PRINTED",
-      source_order_ref: "143",
-      prd_ref: "PRD-143",
-      planned_qty: 600,
-      filled_qty: 0,
-      composition: "Товар 1",
-      operator_presentation: {
-        production_task: { state: { code: "AWAITING_FILL", label: "Ожидает наполнения" } }
-      }
-    }
+  below_min_qty: 3,
+  customer_remaining_to_ship_qty: 5,
+  hu_rows: [
+    { location: "FG-01", hu_code: " hu-000001 ", qty: 7, reserved_customer_order_ref: "C-100", operator_presentation: operatorPresentation("ON_STOCK", "На складе", false) },
+    { location: "FG-01", hu_code: "HU-000001", qty: 5, reserved_customer_order_ref: "C-100", operator_presentation: operatorPresentation("ON_STOCK", "На складе", false) },
+    { location: "FG-02", hu_code: "HU-000004", qty: 2, reserved_customer_order_ref: "C-200", origin_internal_order_ref: "I-LOWER", operator_presentation: operatorPresentation("RESERVED", "Зарезервирован", false) },
+    { location: "FG-03", hu_code: "hu-000004", qty: 3, reserved_customer_order_ref: "C-201", origin_internal_order_ref: "I-LOWER", operator_presentation: operatorPresentation("RESERVED", "Зарезервирован", false) }
   ],
-  need_breakdown: {
-    demand_to_close_customer_orders: 5,
-    demand_to_min_stock: 8,
-    already_planned_internal: 6,
-    already_planned_prd: 4,
-    remaining_to_create: 3
-  }
+  production_receipts: [
+    { pallet_id: 1, hu_code: "HU-000001", pallet_status: "FILLED", qty: 99, source_order_ref: "P-LOWER", operator_presentation: operatorPresentation("ON_STOCK", "На складе", false) },
+    { pallet_id: 2, hu_code: "HU-000002", pallet_status: "PLANNED", qty: 3, source_order_ref: "P-2", operator_presentation: operatorPresentation("AWAITING_FILL", "Ожидает наполнения", true) },
+    { pallet_id: 2, hu_code: "hu-000002", pallet_status: "PRINTED", qty: 4, source_order_ref: "P-2", operator_presentation: operatorPresentation("AWAITING_FILL", "Ожидает наполнения", true) },
+    { pallet_id: 3, hu_code: "HU-000003", pallet_status: "PLANNED", qty: 5, operator_presentation: operatorPresentation("INCONSISTENT", "Несогласованное состояние", false) },
+    { pallet_id: 4, hu_code: "hu-000003", pallet_status: "FILLED", qty: 6, operator_presentation: operatorPresentation("INCONSISTENT", "Несогласованное состояние", false) }
+  ]
 });
-assert.strictEqual(warehouseStockRow.stockQty, 12);
-assert.strictEqual(warehouseStockRow.internalRemainingQty, 6);
-assert.strictEqual(warehouseStockRow.prdPlannedQty, 4);
-assert.strictEqual(warehouseStockRow.remainingNeedSummary, "Произвести: 3 шт");
+assert.strictEqual(warehouseStockRow.customerRemainingToShipQty, 5);
+assert.strictEqual(warehouseStockRow.palletCount, 4, "pallet count must use normalized HU identities");
+assert.strictEqual(warehouseStockRow.palletSummary, "4 паллеты", "unknown pallet quantity must suppress a partial total");
+const mergedLedgerPallet = warehouseStockRow.palletRows.find(function (row) { return row.huCode === "HU-000001"; });
+assert.strictEqual(mergedLedgerPallet.qty, 12, "ledger item quantities must be summed and win over production quantity");
+assert.strictEqual(mergedLedgerPallet.location, "FG-01");
+assert.strictEqual(mergedLedgerPallet.orderRef, "C-100", "reserved order ref must win over lower-priority sources");
+const multiLocationPallet = warehouseStockRow.palletRows.find(function (row) { return row.huCode === "HU-000004"; });
+assert.strictEqual(multiLocationPallet.qty, 5);
+assert.strictEqual(multiLocationPallet.location, "Несколько локаций");
+assert.strictEqual(multiLocationPallet.orderRef, "—", "ambiguous refs must not fall back to a lower-priority source");
+const samePalletProduction = warehouseStockRow.palletRows.find(function (row) { return row.huCode === "HU-000002"; });
+assert.strictEqual(samePalletProduction.qty, 7, "same pallet item rows may be aggregated");
+const ambiguousProduction = warehouseStockRow.palletRows.find(function (row) { return row.huCode === "HU-000003"; });
+assert.strictEqual(ambiguousProduction.qtyKnown, false, "different pallet ids must not be summed as one physical identity");
+assert.strictEqual(ambiguousProduction.qtyDisplay, "—");
 
-const expandedStockHtml = pc.renderStockTable([warehouseStockRow], { 10: true });
-assert.match(expandedStockHtml, /pc-stock-detail-block/);
-assert.match(expandedStockHtml, /pc-stock-item-meta/);
-assert.match(expandedStockHtml, /Товар/);
-assert.match(expandedStockHtml, /На складе/);
-assert.match(expandedStockHtml, /Минимум/);
-assert.match(expandedStockHtml, /Потребность/);
-assert.match(expandedStockHtml, /План/);
-assert.doesNotMatch(expandedStockHtml, /Выпущено \/ наполнено/);
-assert.doesNotMatch(expandedStockHtml, /Осталось выпустить/);
-assert.match(expandedStockHtml, /<span class="pc-stock-summary-label">Клиенты<\/span><span class="pc-stock-summary-value">5 шт<\/span>/);
-assert.match(expandedStockHtml, /<span class="pc-stock-summary-label">До мин\.<\/span><span class="pc-stock-summary-value">8 шт<\/span>/);
-assert.match(expandedStockHtml, /<span class="pc-stock-summary-label">Внутр\.<\/span><span class="pc-stock-summary-value">6 шт<\/span>/);
-assert.match(expandedStockHtml, /<span class="pc-stock-summary-label">PRD<\/span><span class="pc-stock-summary-value">4 шт<\/span>/);
-assert.doesNotMatch(expandedStockHtml, /Клиенты: 5 шт/);
-assert.match(expandedStockHtml, /2 шт/);
-assert.doesNotMatch(expandedStockHtml, /Произвести: 3 шт/);
-assert.match(expandedStockHtml, /colspan="5" class="pc-stock-detail-cell"/);
-assert.match(expandedStockHtml, />Складские HU</);
-assert.match(expandedStockHtml, />План \/ производство</);
-assert.match(expandedStockHtml, />Расчёт потребности</);
-assert.doesNotMatch(expandedStockHtml, /Реальный склад \/ HU/);
-assert.doesNotMatch(expandedStockHtml, /Клиентские заказы/);
-assert.doesNotMatch(expandedStockHtml, /Внутренние заказы/);
-assert.match(expandedStockHtml, /<th>HU<\/th><th class="pc-num">Кол-во<\/th><th>Статус<\/th><th>Локация<\/th>/);
-assert.match(expandedStockHtml, /<th>HU<\/th><th>Статус<\/th><th class="pc-num">Кол-во<\/th><th>Заказ<\/th><th>PRD<\/th><th>Примечание<\/th>/);
+const expandedStockHtml = pc.renderStockTable([warehouseStockRow], { 10: true }, { status: "loading", rows: [] });
+assert.match(expandedStockHtml, /data-sort-key="itemName"[^>]*>Товар/);
+assert.match(expandedStockHtml, /data-sort-key="stockQty"[^>]*>На складе/);
+assert.match(expandedStockHtml, /data-sort-key="customerRemainingToShipQty"[^>]*>Осталось отгрузить/);
+assert.doesNotMatch(expandedStockHtml, /Заказы клиентов/);
+assert.match(expandedStockHtml, /data-sort-key="palletCount"[^>]*>Паллеты/);
+assert.doesNotMatch(expandedStockHtml, /<button[^>]*>Минимум|<th>Потребность<\/th>|<th>План<\/th>/);
+assert.match(expandedStockHtml, /colspan="4" class="pc-stock-detail-cell"/);
+assert.match(expandedStockHtml, /pc-stock-detail-layout/);
+assert.match(expandedStockHtml, /Минимальный запас: 20 шт/);
+assert.match(expandedStockHtml, /Ниже минимального запаса на 3 шт/);
+assert.match(expandedStockHtml, /pc-stock-below-dot[^>]*aria-label="Ниже минимального запаса"[^>]*title="Ниже минимального запаса"/);
+assert.strictEqual((expandedStockHtml.match(/class="pc-stock-detail-warning is-unknown"/g) || []).length, 1);
+assert.match(expandedStockHtml, /Проверяем необходимость дополнительного пополнения…/);
+assert.ok(warehouseStockRow.belowMinQty > 0, "semantic independence case must retain the current item deficit");
+assert.match(replenishmentEmptyHtml, /Дополнительное пополнение не требуется/);
+assert.match(expandedStockHtml, /<th>Паллета<\/th><th>Статус<\/th><th class="pc-num">Кол-во<\/th><th>Заказ<\/th><th>Локация<\/th>/);
+assert.match(expandedStockHtml, /Несколько локаций/);
 assert.match(expandedStockHtml, /Ожидает наполнения/);
 assert.match(expandedStockHtml, /Несогласованное состояние/);
-assert.doesNotMatch(expandedStockHtml, /Этикетка напечатана|Наполнена/);
-assert.match(expandedStockHtml, /HU-0000927/);
-assert.match(expandedStockHtml, /143/);
-assert.match(expandedStockHtml, /PRD-143/);
-assert.match(expandedStockHtml, /Всего в заказах для клиентов/);
-assert.match(expandedStockHtml, /До минимума/);
-assert.match(expandedStockHtml, /Во внутренних заказах/);
-assert.doesNotMatch(expandedStockHtml, /<th class="pc-num">Выпущено<\/th>/);
-assert.doesNotMatch(expandedStockHtml, /<th class="pc-num">Осталось выпустить<\/th>/);
-assert.match(
-  expandedStockHtml,
-  /pc-stock-plan-cell"><div class="pc-stock-summary-line"><span class="pc-stock-summary-label">Внутр\.<\/span><span class="pc-stock-summary-value">6 шт<\/span><\/div><div class="pc-stock-summary-line"><span class="pc-stock-summary-label">PRD<\/span><span class="pc-stock-summary-value">4 шт<\/span><\/div><\/td>/
+assert.doesNotMatch(expandedStockHtml, /Складские HU|План \/ производство|Расчёт потребности|<th>PRD<\/th>|CUSTOMER|INTERNAL/);
+
+const canonicalStates = [
+  ["AWAITING_FILL", "Ожидает наполнения", true],
+  ["ON_STOCK", "На складе", false],
+  ["RESERVED", "Зарезервирован", false],
+  ["AWAITING_SHIPMENT", "Ожидает отгрузки", false],
+  ["SHIPPED", "Отгружен", false],
+  ["INCONSISTENT", "Несогласованное состояние", false]
+];
+const canonicalStateRow = pc.mapWarehouseProductionStateRow({
+  item_id: 20,
+  item_name: "Статусы",
+  base_uom: "шт",
+  production_receipts: canonicalStates.map(function (state, index) {
+    return {
+      pallet_id: index + 1,
+      hu_code: "HU-STATE-" + index,
+      qty: 1,
+      pallet_status: ["PLANNED", "PRINTED", "FILLED"][index % 3],
+      operator_presentation: operatorPresentation(state[0], state[1], state[2])
+    };
+  })
+});
+const canonicalStateHtml = pc.renderStockTable([canonicalStateRow], { 20: true });
+canonicalStates.forEach(function (state) { assert.match(canonicalStateHtml, new RegExp(state[1])); });
+assert.strictEqual(
+  canonicalStateRow.palletRows.map(function (row) { return row.stateCode; }).join(","),
+  "INCONSISTENT,ON_STOCK,RESERVED,AWAITING_SHIPMENT,AWAITING_FILL,SHIPPED",
+  "canonical state codes must pass through unchanged in presentation display-order"
+);
+assert.doesNotMatch(canonicalStateHtml, />PLANNED<|>PRINTED<|>FILLED</);
+assert.match(canonicalStateHtml, /pc-stock-pallet-state--on-stock[^>]*>На складе/);
+assert.match(canonicalStateHtml, /pc-stock-pallet-state--awaiting-fill[^>]*>Ожидает наполнения/);
+assert.match(canonicalStateHtml, /pc-stock-pallet-state--awaiting-shipment[^>]*>Ожидает отгрузки/);
+assert.match(canonicalStateHtml, /pc-stock-pallet-state--inconsistent[^>]*>Несогласованное состояние/);
+assert.ok(canonicalStateRow.palletStateSummary.indexOf("На складе: 1") < canonicalStateRow.palletStateSummary.indexOf("Ожидает отгрузки: 1"));
+assert.ok(canonicalStateRow.palletStateSummary.indexOf("Ожидает отгрузки: 1") < canonicalStateRow.palletStateSummary.indexOf("Ожидает наполнения: 1"));
+
+const palletDisplayOrderRow = pc.mapWarehouseProductionStateRow({
+  item_id: 28,
+  item_name: "Порядок паллет",
+  base_uom: "шт",
+  production_receipts: [
+    { pallet_id: 1, hu_code: "HU-FILL", qty: 1, operator_presentation: operatorPresentation("AWAITING_FILL", "Ожидает наполнения", true) },
+    { pallet_id: 2, hu_code: "HU-ON-Z", qty: 1, operator_presentation: operatorPresentation("ON_STOCK", "На складе", false) },
+    { pallet_id: 3, hu_code: "HU-SHIP", qty: 1, operator_presentation: operatorPresentation("AWAITING_SHIPMENT", "Ожидает отгрузки", false) },
+    { pallet_id: 4, hu_code: "HU-INCONSISTENT", qty: 1, operator_presentation: operatorPresentation("INCONSISTENT", "Несогласованное состояние", false) },
+    { pallet_id: 5, hu_code: "HU-ON-A", qty: 1, operator_presentation: operatorPresentation("ON_STOCK", "На складе", false) }
+  ]
+});
+assert.strictEqual(
+  palletDisplayOrderRow.palletRows.map(function (row) { return row.huCode; }).join(","),
+  "HU-INCONSISTENT,HU-ON-A,HU-ON-Z,HU-SHIP,HU-FILL",
+  "pallet rows must sort by canonical display-order and then HU"
 );
 
-const coveredStockRow = pc.mapWarehouseProductionStateRow({
-  item_id: 11,
-  item_name: "Покрытый товар",
+const conflictingStateRow = pc.mapWarehouseProductionStateRow({
+  item_id: 21,
+  item_name: "Конфликт статуса",
   base_uom: "шт",
-  stock_qty: 10,
-  internal_remaining_qty: 5,
-  remaining_need_qty: 0,
-  need_breakdown: { already_planned_internal: 5, remaining_to_create: 0 },
+  hu_rows: [{ hu_code: "HU-CONFLICT", qty: 2, operator_presentation: operatorPresentation("ON_STOCK", "На складе", false) }],
+  production_receipts: [{ pallet_id: 21, hu_code: "hu-conflict", qty: 2, operator_presentation: operatorPresentation("RESERVED", "Зарезервирован", false) }]
+});
+assert.strictEqual(conflictingStateRow.palletRows[0].stateCode, "");
+assert.strictEqual(conflictingStateRow.palletRows[0].stateLabel, "—", "client must not arbitrate conflicting canonical states");
+assert.strictEqual(conflictingStateRow.palletCount, 1, "unknown state pallet must remain in the deduplicated count");
+assert.strictEqual(conflictingStateRow.palletStateSummary, "Состояние не определено: 1");
+const conflictingStateHtml = pc.renderStockTable([conflictingStateRow], { 21: true });
+assert.match(conflictingStateHtml, /pc-stock-pallet-state--unknown[^>]*>—/);
+
+const knownAggregateRow = pc.mapWarehouseProductionStateRow({
+  item_id: 22,
+  item_name: "Известный агрегат",
+  base_uom: "кг",
+  production_receipts: [
+    { pallet_id: 1, hu_code: "HU-KG-1", qty: 3, operator_presentation: operatorPresentation("AWAITING_FILL", "Ожидает наполнения", true) },
+    { pallet_id: 2, hu_code: "HU-KG-2", qty: 4, operator_presentation: operatorPresentation("AWAITING_FILL", "Ожидает наполнения", true) }
+  ]
+});
+assert.strictEqual(knownAggregateRow.palletSummary, "2 паллеты");
+assert.strictEqual(knownAggregateRow.palletStateSummary, "Ожидает наполнения: 2");
+assert.strictEqual(pc.mapWarehouseProductionStateRow({ item_id: 23, base_uom: "шт", production_receipts: [
+  { pallet_id: 1, hu_code: "HU-ONE", qty: 1, operator_presentation: operatorPresentation("AWAITING_FILL", "Ожидает наполнения", true) }
+] }).palletSummary, "1 паллета");
+assert.strictEqual(pc.mapWarehouseProductionStateRow({ item_id: 24, base_uom: "шт", production_receipts: [1, 2, 3, 4, 5].map(function (id) {
+  return { pallet_id: id, hu_code: "HU-FIVE-" + id, qty: 1, operator_presentation: operatorPresentation("AWAITING_FILL", "Ожидает наполнения", true) };
+}) }).palletSummary, "5 паллет");
+
+function mappedPalletCount(count) {
+  return pc.mapWarehouseProductionStateRow({
+    item_id: 100 + count,
+    base_uom: "шт",
+    production_receipts: Array.from({ length: count }, function (_, index) {
+      return {
+        pallet_id: index + 1,
+        hu_code: "HU-COUNT-" + count + "-" + index,
+        qty: 1,
+        operator_presentation: operatorPresentation("AWAITING_FILL", "Ожидает наполнения", true)
+      };
+    })
+  });
+}
+
+assert.strictEqual(mappedPalletCount(1).palletSummary, "1 паллета");
+assert.strictEqual(mappedPalletCount(2).palletSummary, "2 паллеты");
+assert.strictEqual(mappedPalletCount(5).palletSummary, "5 паллет");
+assert.strictEqual(mappedPalletCount(11).palletSummary, "11 паллет");
+assert.strictEqual(mappedPalletCount(21).palletSummary, "21 паллета");
+
+const palletBreakdownRow = pc.mapWarehouseProductionStateRow({
+  item_id: 27,
+  item_name: "Сводка паллет",
+  base_uom: "шт",
+  production_receipts: Array.from({ length: 8 }, function (_, index) {
+    const onStock = index === 7;
+    return {
+      pallet_id: index + 1,
+      hu_code: "HU-SUMMARY-" + (index + 1),
+      qty: 1824,
+      operator_presentation: operatorPresentation(
+        onStock ? "ON_STOCK" : "AWAITING_FILL",
+        onStock ? "На складе" : "Ожидает наполнения",
+        !onStock
+      )
+    };
+  })
+});
+assert.strictEqual(palletBreakdownRow.palletSummary, "8 паллет");
+assert.strictEqual(palletBreakdownRow.palletStateSummary, "На складе: 1 · Ожидает наполнения: 7");
+const palletBreakdownHtml = pc.renderStockTable([palletBreakdownRow], {});
+assert.match(palletBreakdownHtml, /<div class="pc-stock-pallet-count">8 паллет<\/div>/);
+assert.match(palletBreakdownHtml, /На складе: 1 · Ожидает наполнения: 7/);
+assert.doesNotMatch(palletBreakdownHtml, /14 592 шт/);
+
+const emptyStockRow = pc.mapWarehouseProductionStateRow({
+  item_id: 25,
+  item_name: "Пустой склад",
+  base_uom: "шт",
+  stock_qty: 0,
+  min_stock_qty: 0,
+  below_min_qty: 0.000001,
+  customer_remaining_to_ship_qty: 0,
+  hu_rows: [],
   production_receipts: []
 });
-assert.strictEqual(coveredStockRow.remainingNeedSummary, "Покрыто");
-const coveredStockHtml = pc.renderStockTable([coveredStockRow], { 11: true });
-assert.doesNotMatch(coveredStockHtml, /Покрыто/);
-assert.match(coveredStockHtml, /План \/ производство не сформирован/);
+const emptyStockHtml = pc.renderStockTable([emptyStockRow], { 25: true });
+assert.match(emptyStockHtml, /Нет на складе/);
+assert.match(emptyStockHtml, /Паллет нет/);
+assert.doesNotMatch(emptyStockHtml, /Ниже минимального запаса/);
+assert.doesNotMatch(emptyStockHtml, /pc-stock-below-dot/);
+assert.doesNotMatch(emptyStockHtml, /Свободный остаток/);
 
-const noNeedStockHtml = pc.renderStockTable([
-  pc.mapWarehouseProductionStateRow({
-    item_id: 12,
-    item_name: "Без потребности",
-    base_uom: "шт",
-    stock_qty: 10,
-    remaining_need_qty: 0,
-    need_breakdown: { remaining_to_create: 0 },
-    production_receipts: []
-  })
-], { 12: true });
-assert.match(noNeedStockHtml, /Потребности нет/);
+const negativeStockRow = pc.mapWarehouseProductionStateRow({
+  item_id: 26,
+  item_name: "Отрицательный остаток",
+  base_uom: "кг",
+  stock_qty: -600,
+  hu_rows: [],
+  production_receipts: []
+});
+assert.strictEqual(negativeStockRow.stockQtyDisplay, "-600 кг");
+const negativeStockHtml = pc.renderStockTable([negativeStockRow], { 26: true });
+assert.match(negativeStockHtml, /-600 кг/);
+assert.doesNotMatch(negativeStockHtml, /Нет на складе/);
 
+const freeStockPresentationRow = pc.mapWarehouseProductionStateRow({
+  item_id: 29,
+  item_name: "Свободный остаток",
+  base_uom: "шт.",
+  stock_qty: 2400,
+  free_qty: 1200,
+  min_stock_qty: 3600,
+  below_min_qty: 2400,
+  hu_rows: [{
+    hu_code: "HU-LONG-LOCATION",
+    qty: 2400,
+    location: "СКЛАД-ГОТОВОЙ-ПРОДУКЦИИ-ОЧЕНЬ-ДЛИННАЯ-ЛОКАЦИЯ",
+    operator_presentation: operatorPresentation("ON_STOCK", "На складе", false)
+  }],
+  production_receipts: []
+});
+assert.strictEqual(freeStockPresentationRow.stockQtyDisplay, "2\u00a0400 шт.");
+assert.strictEqual(freeStockPresentationRow.freeQtyDisplay, "1\u00a0200 шт.");
+assert.strictEqual(freeStockPresentationRow.minStockQtyDisplay, "3\u00a0600 шт.");
+assert.strictEqual(freeStockPresentationRow.belowMinQtyDisplay, "2\u00a0400 шт.");
+const coveredStockHtml = pc.renderStockTable([freeStockPresentationRow], { 29: true }, { status: "success", rows: [] });
+assert.match(coveredStockHtml, /pc-stock-below-dot is-covered/);
+assert.match(coveredStockHtml, /pc-stock-detail-warning is-covered/);
+assert.match(coveredStockHtml, /Свободный остаток:[\s\S]*1\s200 шт\./);
+assert.match(coveredStockHtml, /Ниже минимального запаса на 2\s400 шт\./);
+assert.match(coveredStockHtml, /Пополнение уже запланировано/);
+assert.match(coveredStockHtml, /Дополнительный заказ не требуется/);
+assert.doesNotMatch(coveredStockHtml, /Требуется дополнительное пополнение/);
+assert.match(coveredStockHtml, /pc-stock-pallet-location">СКЛАД-ГОТОВОЙ-ПРОДУКЦИИ-ОЧЕНЬ-ДЛИННАЯ-ЛОКАЦИЯ/);
+
+const actionRequiredStockHtml = pc.renderStockTable([freeStockPresentationRow], { 29: true }, {
+  status: "success",
+  rows: [{ itemId: "29", qtyToCreate: 1800 }]
+});
+assert.match(actionRequiredStockHtml, /pc-stock-below-dot is-action-required/);
+assert.match(actionRequiredStockHtml, /pc-stock-detail-warning is-action-required/);
+assert.match(actionRequiredStockHtml, /Ниже минимального запаса на 2\s400 шт\./);
+assert.match(actionRequiredStockHtml, /Требуется дополнительное пополнение: 1\s800 шт\./);
+assert.doesNotMatch(actionRequiredStockHtml, /Требуется дополнительное пополнение: 2\s400 шт\./);
+assert.doesNotMatch(actionRequiredStockHtml, /Дополнительный заказ не требуется/);
+
+const otherItemPreviewHtml = pc.renderStockTable([freeStockPresentationRow], { 29: true }, {
+  status: "success",
+  rows: [{ itemId: 30, qtyToCreate: 1800 }]
+});
+assert.match(otherItemPreviewHtml, /pc-stock-below-dot is-covered/);
+assert.doesNotMatch(otherItemPreviewHtml, /is-action-required/);
+
+const loadingStockHtml = pc.renderStockTable([freeStockPresentationRow], { 29: true }, { status: "loading", rows: [] });
+assert.match(loadingStockHtml, /pc-stock-below-dot is-unknown/);
+assert.match(loadingStockHtml, /pc-stock-detail-warning is-unknown/);
+assert.match(loadingStockHtml, /Проверяем необходимость дополнительного пополнения…/);
+assert.doesNotMatch(loadingStockHtml, /Пополнение уже запланировано|Требуется дополнительное пополнение:/);
+
+const errorStockHtml = pc.renderStockTable([freeStockPresentationRow], { 29: true }, { status: "error", rows: [] });
+assert.match(errorStockHtml, /pc-stock-below-dot is-unknown/);
+assert.match(errorStockHtml, /Не удалось проверить необходимость дополнительного пополнения/);
+assert.doesNotMatch(errorStockHtml, /Пополнение уже запланировано|Требуется дополнительное пополнение:/);
+
+const normalStockRow = pc.mapWarehouseProductionStateRow({
+  item_id: 31,
+  base_uom: "шт.",
+  stock_qty: 4200,
+  free_qty: 4200,
+  min_stock_qty: 3600,
+  below_min_qty: 0,
+  hu_rows: [],
+  production_receipts: []
+});
+const normalStockHtml = pc.renderStockTable([normalStockRow], { 31: true }, {
+  status: "success",
+  rows: [{ itemId: 31, qtyToCreate: 1800 }]
+});
+assert.doesNotMatch(normalStockHtml, /pc-stock-below-dot|pc-stock-detail-warning/);
+
+const globalReadyForOtherItemHtml = pc.renderStockReplenishmentPreview({ status: "ready", count: 1 });
+assert.match(globalReadyForOtherItemHtml, /Требуется пополнение · 1 позиция/);
+assert.match(otherItemPreviewHtml, /pc-stock-below-dot is-covered/);
+
+const negativeFreeStockRow = pc.mapWarehouseProductionStateRow({
+  item_id: 30,
+  base_uom: "кг",
+  stock_qty: 1,
+  free_qty: -600,
+  min_stock_qty: 600,
+  below_min_qty: 1200,
+  hu_rows: [],
+  production_receipts: []
+});
+assert.strictEqual(negativeFreeStockRow.freeQtyDisplay, "-600 кг");
+assert.doesNotMatch(pc.renderStockTable([negativeFreeStockRow], { 30: true }), /Свободный остаток:[\s\S]*Нет на складе/);
+
+const stockSource = fs.readFileSync(stockPath, "utf8");
+assert.match(stockSource, /renderSortableHeader\("stock", "palletCount", "Паллеты"\)/);
+assert.match(stockSource, /palletCount:\s*\{ type: "number", getValue: function \(row\) \{ return row\.palletCount; \} \}/);
+assert.strictEqual(
+  (stockSource.match(/deps\.loadProductionNeedCreateOrdersPreview\(\)/g) || []).length,
+  1,
+  "item-level attention must reuse the one existing replenishment preview request"
+);
+assert.match(stockSource, /cachedItemReplenishmentContext = createItemReplenishmentContext\(\{ status: "success", rows: rows \}\);[\s\S]*renderRows\(\);/);
+const baseCardCss = styles.match(/\.pc-card\s*\{([^}]*)\}/);
+assert.ok(baseCardCss, "global card CSS must exist");
+assert.match(baseCardCss[1], /width:\s*fit-content/);
+const stockCardCss = styles.match(/\.pc-stock-card\s*\{([^}]*)\}/);
+assert.ok(stockCardCss, "stock-specific card width CSS must exist");
+assert.match(stockCardCss[1], /width:\s*min\(var\(--pc-content-max\),\s*calc\(100vw - \(var\(--pc-page-gutter\) \* 2\)\)\)/);
+assert.match(stockCardCss[1], /max-width:\s*min\(var\(--pc-content-max\),\s*calc\(100vw - \(var\(--pc-page-gutter\) \* 2\)\)\)/);
+assert.doesNotMatch(stockCardCss[1], /fit-content/);
+assert.match(styles, /\.pc-stock-detail-layout\s*\{[^}]*grid-template-columns:\s*minmax\(180px, 240px\) minmax\(0, 1fr\)/s);
+assert.match(styles, /\.pc-stock-detail-layout\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0/s);
+assert.match(styles, /\.pc-stock-pallet-section\s*\{[^}]*min-width:\s*0/s);
+assert.match(styles, /\.pc-stock-pallet-section \.pc-stock-detail-table\s*\{[^}]*width:\s*100%/s);
+assert.match(styles, /\.pc-stock-pallet-section \.pc-stock-detail-table\s*\{[^}]*min-width:\s*0/s);
+assert.match(styles, /\.pc-stock-pallet-location\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+const detailBlockCss = styles.match(/\.pc-stock-detail-block\s*\{([^}]*)\}/);
+assert.ok(detailBlockCss, "expanded detail wrapper CSS must exist");
+assert.match(detailBlockCss[1], /width:\s*100%/);
+assert.match(detailBlockCss[1], /border-left:/);
+assert.match(detailBlockCss[1], /border-right:/);
+assert.match(detailBlockCss[1], /border-bottom:/);
+assert.match(detailBlockCss[1], /border-radius:\s*0 0 [^;]+;/);
+assert.match(styles, /\.pc-stock-detail-layout\s*\{[^}]*grid-template-columns:\s*1fr/s);
+const minStockWarningCss = styles.match(/\.pc-stock-detail-warning\s*\{([^}]*)\}/);
+assert.ok(minStockWarningCss, "min-stock warning CSS must exist");
+assert.match(minStockWarningCss[1], /border:/);
+assert.match(minStockWarningCss[1], /color:/);
+assert.match(minStockWarningCss[1], /background:/);
+["covered", "action-required", "unknown"].forEach(function (variant) {
+  assert.match(styles, new RegExp("\\.pc-stock-below-dot\\.is-" + variant + "\\s*\\{"));
+  assert.match(styles, new RegExp("\\.pc-stock-detail-warning\\.is-" + variant + "\\s*\\{"));
+});
+["ready", "empty", "error"].forEach(function (variant) {
+  assert.match(styles, new RegExp("\\.pc-stock-replenishment-card\\.is-" + variant + "\\s*\\{"));
+  assert.match(styles, new RegExp("\\.pc-stock-replenishment-card\\.is-" + variant + " \\.pc-stock-replenishment-status\\s*\\{"));
+});
+["on-stock", "reserved", "awaiting-shipment", "awaiting-fill", "shipped", "inconsistent", "unknown"].forEach(function (variant) {
+  assert.match(styles, new RegExp("\\.pc-stock-pallet-state--" + variant + "\\s*\\{"));
+});
 assert.strictEqual(pc.translatePalletStatus("Cancelled"), "Отменена");
 assert.strictEqual(pc.translatePalletStatus("CUSTOM"), "CUSTOM");
 

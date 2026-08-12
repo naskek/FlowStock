@@ -1842,6 +1842,12 @@ body {
   gap: 4px;
 }
 
+/* Filling order list: keep the card sized by the full document list. The
+   route-level .app-content remains the vertical scroll owner. */
+.filling-screen:not(.filling-screen--scan):not(.outbound-picking-screen) > .filling-card:not(.filling-card--scan) {
+  flex-shrink: 0;
+}
+
 /* Outbound picking list: keep the white card from being shrunk by the flex
    parent so the order cards stay inside its background; the page scrolls via
    .app-content. Scan screen (--scan) keeps its own internal-scroll layout. */

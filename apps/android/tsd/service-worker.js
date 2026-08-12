@@ -1,4 +1,4 @@
-var TSD_SERVICE_WORKER_VERSION = "77";
+var TSD_SERVICE_WORKER_VERSION = "78";
 importScripts("./app-version.js?v=" + TSD_SERVICE_WORKER_VERSION);
 
 const CACHE_NAME = self.TSD_CACHE_NAME || "flowstock-tsd-v15";

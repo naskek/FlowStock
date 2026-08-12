@@ -10,6 +10,10 @@
   var cachedStockRowsForMin = [];
   var cachedHuRows = [];
   var cachedCombinedRows = [];
+  var cachedItemReplenishmentContext = {
+    status: "loading",
+    rowsByItemId: Object.create(null),
+  };
 
   function init(nextDeps) {
     deps = nextDeps || {};
@@ -64,7 +68,7 @@
 
   function renderStock() {
     return deps.renderPageShell(
-      '<section class="pc-card">' +
+      '<section class="pc-card pc-stock-card">' +
       '  <div class="section-title">Состояние склада</div>' +
       '  <div id="stockReplenishmentWrap">' + renderStockReplenishmentPreview({ status: "loading" }) + "</div>" +
       '  <section class="pc-stock-list-section" data-stock-section="list">' +
@@ -89,9 +93,9 @@
     var count = Math.max(0, Number(source.count) || 0);
     var statusText = "Загрузка…";
     if (status === "ready") {
-      statusText = count + " " + getPositionWord(count);
+      statusText = "Требуется пополнение · " + count + " " + getPositionWord(count);
     } else if (status === "empty") {
-      statusText = "Пополнение не требуется";
+      statusText = "Дополнительное пополнение не требуется";
     } else if (status === "error") {
       statusText = "Не удалось загрузить предпросмотр";
     }
@@ -124,28 +128,102 @@
     return "позиций";
   }
 
-  function renderStockTable(rows, expandedItemIds) {
+  function createItemReplenishmentContext(source) {
+    var input = source || {};
+    var status = String(input.status || "loading");
+    var rowsByItemId = Object.create(null);
+    (Array.isArray(input.rows) ? input.rows : []).forEach(function (previewRow) {
+      var itemId = Number(previewRow && previewRow.itemId) || 0;
+      if (itemId) rowsByItemId[itemId] = previewRow;
+    });
+    return {
+      status: status,
+      rowsByItemId: rowsByItemId,
+    };
+  }
+
+  function resolveItemStockAttention(row, context) {
+    if (!(Number(row && row.belowMinQty) > 0.000001)) {
+      return { state: "normal", dotClass: "", warningClass: "", message: "", previewRow: null };
+    }
+    var source = context || cachedItemReplenishmentContext;
+    if (source.status === "success") {
+      var previewRow = source.rowsByItemId[Number(row.itemId) || 0] || null;
+      if (previewRow) {
+        return {
+          state: "action-required",
+          dotClass: " is-action-required",
+          warningClass: " is-action-required",
+          message: "Требуется дополнительное пополнение: " + formatWarehouseStateQty(previewRow.qtyToCreate, row.baseUom),
+          previewRow: previewRow,
+        };
+      }
+      return {
+        state: "covered",
+        dotClass: " is-covered",
+        warningClass: " is-covered",
+        message: "",
+        previewRow: null,
+      };
+    }
+    return {
+      state: "unknown",
+      dotClass: " is-unknown",
+      warningClass: " is-unknown",
+      message: source.status === "error"
+        ? "Не удалось проверить необходимость дополнительного пополнения"
+        : "Проверяем необходимость дополнительного пополнения…",
+      previewRow: null,
+    };
+  }
+
+  function renderStockBelowMinWarning(row, attention) {
+    if (!attention || attention.state === "normal") return "";
+    var conclusion = "";
+    if (attention.state === "covered") {
+      conclusion =
+        '<div class="pc-stock-detail-warning-conclusion">Пополнение уже запланировано</div>' +
+        '<div class="pc-stock-detail-warning-note">Дополнительный заказ не требуется</div>';
+    } else {
+      conclusion = '<div class="pc-stock-detail-warning-conclusion">' + deps.escapeHtml(attention.message) + "</div>";
+    }
+    return (
+      '<div class="pc-stock-detail-warning' + attention.warningClass + '">' +
+      '<div class="pc-stock-detail-warning-free">Свободный остаток: <strong>' + deps.escapeHtml(row.freeQtyDisplay) + "</strong></div>" +
+      '<div class="pc-stock-detail-warning-deficit">Ниже минимального запаса на ' + deps.escapeHtml(row.belowMinQtyDisplay) + "</div>" +
+      conclusion + "</div>"
+    );
+  }
+
+  function renderStockTable(rows, expandedItemIds, itemReplenishmentSource) {
     if (!rows || !rows.length) {
       return '<div class="empty-state">Нет данных по остаткам.</div>';
     }
+    var itemReplenishmentContext = itemReplenishmentSource
+      ? createItemReplenishmentContext(itemReplenishmentSource)
+      : cachedItemReplenishmentContext;
     var body = rows
       .map(function (row) {
         var itemId = Number(row.itemId) || 0;
         var isExpanded = !!(expandedItemIds && expandedItemIds[itemId]);
+        var stockAttention = resolveItemStockAttention(row, itemReplenishmentContext);
+        var belowMinIndicator = stockAttention.state !== "normal"
+          ? '<span class="pc-stock-below-dot' + stockAttention.dotClass + '" role="img" aria-label="Ниже минимального запаса" title="Ниже минимального запаса"></span>'
+          : "";
         var detailRow = "";
         if (isExpanded) {
           detailRow =
-            '<tr class="pc-stock-detail-row"><td colspan="5" class="pc-stock-detail-cell">' +
-            '<div class="pc-stock-detail-block">' +
-            '<section class="pc-stock-detail-section"><div class="pc-stock-detail-title">Складские HU</div>' +
-            renderWarehouseStateWarehouseHus(row.warehouseHuRows || row.huRows || []) +
-            "</section>" +
-            '<section class="pc-stock-detail-section"><div class="pc-stock-detail-title">План / производство</div>' +
-            renderWarehouseStatePallets(row.productionReceipts || []) +
-            "</section>" +
-            '<section class="pc-stock-detail-section"><div class="pc-stock-detail-title">Расчёт потребности</div>' +
-            renderWarehouseStateNeedBreakdown(row) +
-            "</section></div></td></tr>";
+            '<tr class="pc-stock-detail-row"><td colspan="4" class="pc-stock-detail-cell">' +
+            '<div class="pc-stock-detail-block"><div class="pc-stock-detail-layout">' +
+            '<aside class="pc-stock-detail-summary">' +
+            '<div class="pc-stock-detail-summary-title">На складе</div>' +
+            '<div class="pc-stock-detail-summary-qty">' + deps.escapeHtml(row.stockQtyDisplay || "Нет на складе") + "</div>" +
+            '<div class="pc-stock-detail-min">Минимальный запас: ' + deps.escapeHtml(row.minStockQtyDisplay || "—") + "</div>" +
+            renderStockBelowMinWarning(row, stockAttention) +
+            "</aside>" +
+            '<section class="pc-stock-detail-section pc-stock-pallet-section"><div class="pc-stock-detail-title">Паллеты</div>' +
+            renderWarehouseStatePallets(row.palletRows || []) +
+            "</section></div></div></td></tr>";
         }
         return (
           '<tr class="pc-stock-parent-row" data-stock-toggle-item="' +
@@ -161,16 +239,15 @@
           (row.productMeta ? '<span class="pc-stock-item-meta">' + deps.escapeHtml(row.productMeta) + "</span>" : "") +
           "</div></div></td>" +
           '<td class="pc-num"><span class="pc-qty pc-stock-parent-qty">' +
-          (row.belowMinQty > 0 ? '<span class="pc-stock-below-dot" aria-hidden="true"></span>' : "") +
-          deps.escapeHtml(row.stockQtyDisplay || "—") +
-          '</span></td><td class="pc-num ' +
-          (row.belowMinQty > 0 ? "pc-stock-below-min" : "") +
-          '">' +
-          deps.escapeHtml(row.minStockSummary || "—") +
-          "</td><td>" +
-          renderSummaryPairs(row.needSummaryPairs) +
-          '</td><td class="pc-stock-plan-cell">' +
-          renderSummaryPairs(row.planSummaryPairs) +
+          belowMinIndicator +
+          deps.escapeHtml(row.stockQtyDisplay || "Нет на складе") +
+          "</span></td>" +
+          '<td class="pc-num">' + deps.escapeHtml(row.customerRemainingToShipDisplay || "—") + "</td>" +
+          '<td class="pc-stock-pallet-summary"><div class="pc-stock-pallet-count">' +
+          deps.escapeHtml(row.palletSummary || "Паллет нет") + "</div>" +
+          (row.palletStateSummary
+            ? '<div class="pc-stock-pallet-breakdown">' + deps.escapeHtml(row.palletStateSummary) + "</div>"
+            : "") +
           "</td></tr>" +
           detailRow
         );
@@ -179,91 +256,52 @@
     return (
       '<table class="pc-table pc-stock-table"><colgroup>' +
       '<col class="pc-stock-col-nomenclature" /><col class="pc-stock-col-qty" />' +
-      '<col class="pc-stock-col-min" /><col class="pc-stock-col-need" /><col class="pc-stock-col-plan" />' +
+      '<col class="pc-stock-col-customer" /><col class="pc-stock-col-pallets" />' +
       "</colgroup><thead><tr>" +
       deps.renderSortableHeader("stock", "itemName", "Товар") +
       deps.renderSortableHeader("stock", "stockQty", "На складе", "pc-num") +
-      deps.renderSortableHeader("stock", "minStockQty", "Минимум", "pc-num") +
-      "<th>Потребность</th><th>План</th></tr></thead><tbody>" +
+      deps.renderSortableHeader("stock", "customerRemainingToShipQty", "Осталось отгрузить", "pc-num") +
+      deps.renderSortableHeader("stock", "palletCount", "Паллеты") +
+      "</tr></thead><tbody>" +
       body +
       "</tbody></table>"
     );
   }
 
-  function renderSummaryPairs(pairs) {
-    var source = Array.isArray(pairs) ? pairs.filter(Boolean) : [];
-    if (!source.length) {
-      return "—";
-    }
-    return source
-      .map(function (pair) {
-        return (
-          '<div class="pc-stock-summary-line">' +
-          '<span class="pc-stock-summary-label">' + deps.escapeHtml(pair.label) + "</span>" +
-          '<span class="pc-stock-summary-value">' + deps.escapeHtml(pair.value) + "</span>" +
-          "</div>"
-        );
-      })
-      .join("");
-  }
-
-  function renderWarehouseStateWarehouseHus(huRows) {
-    if (!Array.isArray(huRows) || !huRows.length) {
-      return '<div class="pc-stock-details-empty">Складские HU отсутствуют.</div>';
-    }
-    var body = huRows
-      .map(function (hu) {
-        return (
-          "<tr><td>" + deps.escapeHtml(hu.huCode || "—") + "</td>" +
-          '<td class="pc-num">' + deps.escapeHtml(hu.qtyDisplay || "—") + "</td>" +
-          "<td>" + deps.escapeHtml(hu.stockStatus || "—") + "</td>" +
-          "<td>" + deps.escapeHtml(hu.location || "—") + "</td></tr>"
-        );
-      })
-      .join("");
-    return (
-      '<div class="pc-stock-detail-table-wrap"><table class="pc-table pc-stock-detail-table">' +
-      '<thead><tr><th>HU</th><th class="pc-num">Кол-во</th><th>Статус</th><th>Локация</th></tr></thead>' +
-      "<tbody>" + body + "</tbody></table></div>"
-    );
-  }
-
   function renderWarehouseStatePallets(pallets) {
     if (!Array.isArray(pallets) || !pallets.length) {
-      return '<div class="pc-stock-details-empty">План / производство не сформирован.</div>';
+      return '<div class="pc-stock-details-empty">Паллет нет</div>';
     }
     var body = pallets
       .map(function (pallet) {
+        var statusClass = getPalletStateBadgeClass(pallet.stateCode);
         return (
           "<tr><td>" + deps.escapeHtml(pallet.huCode || "—") + "</td>" +
-          "<td>" + deps.escapeHtml(pallet.palletStatus || "—") + "</td>" +
+          '<td class="pc-stock-pallet-state"><span class="pc-stock-pallet-state-badge ' + statusClass + '">' +
+          deps.escapeHtml(pallet.stateLabel || "—") + "</span></td>" +
           '<td class="pc-num">' + deps.escapeHtml(pallet.qtyDisplay || "—") + "</td>" +
-          "<td>" + deps.escapeHtml(pallet.sourceOrderRef || "—") + "</td>" +
-          "<td>" + deps.escapeHtml(pallet.prdRef || "—") + "</td>" +
-          "<td>" + deps.escapeHtml(pallet.statusNote || "—") + "</td></tr>"
+          "<td>" + deps.escapeHtml(pallet.orderRef || "—") + "</td>" +
+          '<td class="pc-stock-pallet-location">' + deps.escapeHtml(pallet.location || "—") + "</td></tr>"
         );
       })
       .join("");
     return (
       '<div class="pc-stock-detail-table-wrap"><table class="pc-table pc-stock-detail-table">' +
-      '<thead><tr><th>HU</th><th>Статус</th><th class="pc-num">Кол-во</th><th>Заказ</th><th>PRD</th><th>Примечание</th></tr></thead>' +
+      '<thead><tr><th>Паллета</th><th>Статус</th><th class="pc-num">Кол-во</th><th>Заказ</th><th>Локация</th></tr></thead>' +
       "<tbody>" + body + "</tbody></table></div>"
     );
   }
 
-  function renderWarehouseStateNeedBreakdown(row) {
-    if (!row || row.hasNeedBreakdown === false) {
-      return '<div class="pc-stock-details-empty">Потребности нет.</div>';
+  function getPalletStateBadgeClass(stateCode) {
+    switch (String(stateCode || "").trim().toUpperCase()) {
+      case "ON_STOCK": return "pc-stock-pallet-state--on-stock";
+      case "RESERVED": return "pc-stock-pallet-state--reserved";
+      case "AWAITING_SHIPMENT": return "pc-stock-pallet-state--awaiting-shipment";
+      case "AWAITING_FILL": return "pc-stock-pallet-state--awaiting-fill";
+      case "SHIPPED": return "pc-stock-pallet-state--shipped";
+      case "INCONSISTENT": return "pc-stock-pallet-state--inconsistent";
+      default: return "pc-stock-pallet-state--unknown";
     }
-    return (
-      '<div class="pc-stock-detail-table-wrap"><table class="pc-table pc-stock-detail-table">' +
-      '<thead><tr><th class="pc-num">Всего в заказах для клиентов</th><th class="pc-num">До минимума</th>' +
-      '<th class="pc-num">Во внутренних заказах</th></tr></thead><tbody><tr>' +
-      '<td class="pc-num">' + deps.escapeHtml(row.customerDemandDisplay || "—") + "</td>" +
-      '<td class="pc-num">' + deps.escapeHtml(row.minDemandDisplay || "—") + "</td>" +
-      '<td class="pc-num">' + deps.escapeHtml(row.internalPlanDisplay || "—") + "</td>" +
-      "</tr></tbody></table></div>"
-    );
   }
 
   function renderLowStockTable(rows) {
@@ -302,20 +340,207 @@
     return formatted + (unit ? " " + unit : "");
   }
 
-  function formatPositiveWarehouseStateQty(value, baseUom) {
-    return Number(value) > 0.000001 ? formatWarehouseStateQty(value, baseUom) : "";
+  function normalizeWarehouseStateHuCode(value) {
+    return String(value || "").trim().toUpperCase();
   }
 
-  function getCanonicalHuState(operatorPresentation) {
+  function uniqueNonEmptyStrings(values) {
+    var seen = Object.create(null);
+    var result = [];
+    (Array.isArray(values) ? values : []).forEach(function (value) {
+      var normalized = String(value || "").trim();
+      if (!normalized || seen[normalized]) return;
+      seen[normalized] = true;
+      result.push(normalized);
+    });
+    return result;
+  }
+
+  function getCanonicalHuStates(operatorPresentation) {
     var presentation = operatorPresentation && typeof operatorPresentation === "object"
       ? operatorPresentation
       : {};
-    var row = presentation.operational_hu || presentation.production_task;
-    var state = row && row.state && typeof row.state === "object" ? row.state : {};
-    return {
-      code: String(state.code || "").trim().toUpperCase(),
-      label: String(state.label || "").trim() || "—",
-    };
+    return [presentation.operational_hu, presentation.production_task]
+      .map(function (entry) {
+        var state = entry && entry.state && typeof entry.state === "object" ? entry.state : {};
+        return {
+          code: String(state.code || "").trim().toUpperCase(),
+          label: String(state.label || "").trim(),
+        };
+      })
+      .filter(function (state) { return state.code && state.label; });
+  }
+
+  function resolveMergedCanonicalState(states) {
+    var unique = Object.create(null);
+    var resolved = [];
+    (Array.isArray(states) ? states : []).forEach(function (state) {
+      var key = state.code + "\n" + state.label;
+      if (unique[key]) return;
+      unique[key] = true;
+      resolved.push(state);
+    });
+    return resolved.length === 1 ? resolved[0] : { code: "", label: "" };
+  }
+
+  function resolveMergedOrderRef(group) {
+    var sources = [group.reservedOrderRefs, group.sourceOrderRefs, group.originOrderRefs];
+    for (var index = 0; index < sources.length; index += 1) {
+      var refs = uniqueNonEmptyStrings(sources[index]);
+      if (!refs.length) continue;
+      return refs.length === 1 ? refs[0] : "—";
+    }
+    return "—";
+  }
+
+  function formatPalletCount(value) {
+    var count = Math.max(0, Math.floor(Number(value) || 0));
+    var mod100 = count % 100;
+    var mod10 = count % 10;
+    var word = "паллет";
+    if (mod100 < 11 || mod100 > 14) {
+      if (mod10 === 1) word = "паллета";
+      else if (mod10 >= 2 && mod10 <= 4) word = "паллеты";
+    }
+    return count + " " + word;
+  }
+
+  function getPalletStateDisplayRank(stateCode) {
+    switch (String(stateCode || "").trim().toUpperCase()) {
+      case "INCONSISTENT": return 0;
+      case "ON_STOCK": return 1;
+      case "RESERVED": return 2;
+      case "AWAITING_SHIPMENT": return 3;
+      case "AWAITING_FILL": return 4;
+      case "SHIPPED": return 5;
+      default: return 6;
+    }
+  }
+
+  function comparePalletDisplayText(left, right) {
+    return String(left || "").localeCompare(String(right || ""));
+  }
+
+  function sortWarehouseStatePalletsForDisplay(pallets) {
+    return (Array.isArray(pallets) ? pallets : []).slice().sort(function (left, right) {
+      var rankDiff = getPalletStateDisplayRank(left && left.stateCode) - getPalletStateDisplayRank(right && right.stateCode);
+      if (rankDiff) return rankDiff;
+      return comparePalletDisplayText(left && left.huCode, right && right.huCode) ||
+        comparePalletDisplayText(left && left.orderRef, right && right.orderRef) ||
+        comparePalletDisplayText(left && left.location, right && right.location);
+    });
+  }
+
+  function formatPalletStateSummary(pallets) {
+    var countsByLabel = Object.create(null);
+    var labels = [];
+    var unknownCount = 0;
+    (Array.isArray(pallets) ? pallets : []).forEach(function (pallet) {
+      var stateCode = String((pallet && pallet.stateCode) || "").trim();
+      var stateLabel = String((pallet && pallet.stateLabel) || "").trim();
+      if (!stateCode || !stateLabel || stateLabel === "—") {
+        unknownCount += 1;
+        return;
+      }
+      if (!countsByLabel[stateLabel]) {
+        countsByLabel[stateLabel] = 0;
+        labels.push(stateLabel);
+      }
+      countsByLabel[stateLabel] += 1;
+    });
+    var parts = labels.map(function (label) {
+      return label + ": " + countsByLabel[label];
+    });
+    if (unknownCount) parts.push("Состояние не определено: " + unknownCount);
+    return parts.join(" · ");
+  }
+
+  function mergeWarehouseStatePallets(row, baseUom) {
+    var groups = Object.create(null);
+    var keys = [];
+
+    function getGroup(huCode) {
+      var normalizedHu = normalizeWarehouseStateHuCode(huCode);
+      if (!normalizedHu) return null;
+      if (!groups[normalizedHu]) {
+        groups[normalizedHu] = {
+          huCode: normalizedHu,
+          huRows: [],
+          productionRows: [],
+          states: [],
+          reservedOrderRefs: [],
+          sourceOrderRefs: [],
+          originOrderRefs: [],
+        };
+        keys.push(normalizedHu);
+      }
+      return groups[normalizedHu];
+    }
+
+    (Array.isArray(row && row.hu_rows) ? row.hu_rows : []).forEach(function (hu) {
+      var group = getGroup(hu && hu.hu_code);
+      if (!group) return;
+      group.huRows.push(hu || {});
+      group.states = group.states.concat(getCanonicalHuStates(hu && hu.operator_presentation));
+      group.reservedOrderRefs.push(hu && hu.reserved_customer_order_ref);
+      group.originOrderRefs.push(hu && hu.origin_internal_order_ref);
+    });
+
+    (Array.isArray(row && row.production_receipts) ? row.production_receipts : []).forEach(function (pallet) {
+      var group = getGroup(pallet && pallet.hu_code);
+      if (!group) return;
+      group.productionRows.push(pallet || {});
+      group.states = group.states.concat(getCanonicalHuStates(pallet && pallet.operator_presentation));
+      group.sourceOrderRefs.push(pallet && pallet.source_order_ref);
+    });
+
+    return keys.sort(function (left, right) { return left.localeCompare(right); }).map(function (key) {
+      var group = groups[key];
+      var qty = 0;
+      var qtyKnown = true;
+      var location = "—";
+
+      if (group.huRows.length) {
+        group.huRows.forEach(function (hu) {
+          var value = Number(hu && hu.qty);
+          if (!isFinite(value)) {
+            qtyKnown = false;
+            return;
+          }
+          qty += value;
+        });
+        var locations = uniqueNonEmptyStrings(group.huRows.map(function (hu) { return hu && hu.location; }));
+        if (locations.length === 1) location = locations[0];
+        else if (locations.length > 1) location = "Несколько локаций";
+      } else {
+        var palletIds = uniqueNonEmptyStrings(group.productionRows.map(function (pallet) {
+          return pallet && pallet.pallet_id != null ? String(pallet.pallet_id) : "";
+        }));
+        qtyKnown = palletIds.length === 1 || (palletIds.length === 0 && group.productionRows.length === 1);
+        if (qtyKnown) {
+          group.productionRows.forEach(function (pallet) {
+            var value = Number(pallet && pallet.qty);
+            if (!isFinite(value)) {
+              qtyKnown = false;
+              return;
+            }
+            qty += value;
+          });
+        }
+      }
+
+      var state = resolveMergedCanonicalState(group.states);
+      return {
+        huCode: group.huCode,
+        qty: qtyKnown ? qty : null,
+        qtyKnown: qtyKnown,
+        qtyDisplay: qtyKnown ? formatWarehouseStateQty(qty, baseUom) : "—",
+        orderRef: resolveMergedOrderRef(group),
+        location: location,
+        stateCode: state.code,
+        stateLabel: state.label || "—",
+      };
+    });
   }
 
   function mapWarehouseProductionStateRow(row) {
@@ -326,81 +551,21 @@
     var gtin = String((row && row.gtin) || cachedItem.gtin || "").trim();
     var itemTypeName = String((row && (row.item_type || row.item_type_name)) || cachedItem.itemTypeName || "Без типа").trim();
     var stockQty = Number(row && row.stock_qty) || 0;
+    var freeQty = Number(row && row.free_qty) || 0;
     var minStockQty = Number(row && row.min_stock_qty) || 0;
     var belowMinQty = Number(row && row.below_min_qty) || 0;
-    var customerDemandQty = Number(row && row.customer_open_demand_qty) || 0;
-    var internalRemainingQty = Number(row && row.internal_remaining_qty) || 0;
-    var prdPlannedQty = Number(row && row.prd_planned_qty) || 0;
-    var prdFilledQty = Number(row && row.prd_filled_qty) || 0;
-    var remainingNeedQty = Number(row && row.remaining_need_qty) || 0;
-    var needBreakdown = row && row.need_breakdown && typeof row.need_breakdown === "object" ? row.need_breakdown : {};
-    var demandToClose = Number(needBreakdown.demand_to_close_customer_orders);
-    var demandToMin = Number(needBreakdown.demand_to_min_stock);
-    var alreadyPlannedInternal = Number(needBreakdown.already_planned_internal);
-    var remainingToCreate = Number(needBreakdown.remaining_to_create);
-    if (!isFinite(demandToClose)) demandToClose = customerDemandQty;
-    if (!isFinite(demandToMin)) demandToMin = belowMinQty;
-    if (!isFinite(alreadyPlannedInternal)) alreadyPlannedInternal = internalRemainingQty;
-    if (!isFinite(remainingToCreate)) remainingToCreate = remainingNeedQty;
-
-    var warehouseHuRows = Array.isArray(row && row.hu_rows)
-        ? row.hu_rows.map(function (hu) {
-          var qty = Number(hu && hu.qty) || 0;
-          var state = getCanonicalHuState(hu && hu.operator_presentation);
-          return {
-            location: String((hu && hu.location) || "").trim(),
-            huCode: String((hu && hu.hu_code) || "").trim(),
-            qty: qty,
-            qtyDisplay: formatWarehouseStateQty(qty, baseUom),
-            stockStatus: state.label,
-            stateCode: state.code,
-          };
-        })
-      : [];
-    var productionReceipts = Array.isArray(row && row.production_receipts)
-      ? row.production_receipts.map(function (pallet) {
-          var plannedQty = Number(pallet && pallet.planned_qty) || 0;
-          var filledQty = Number(pallet && pallet.filled_qty) || 0;
-          var qty = Number(pallet && pallet.qty);
-          if (!isFinite(qty) || qty <= 0) {
-            qty = filledQty > 0.000001 ? filledQty : plannedQty;
-          }
-          var state = getCanonicalHuState(pallet && pallet.operator_presentation);
-          return {
-            huCode: String((pallet && pallet.hu_code) || "").trim() || "—",
-            prdRef: String((pallet && pallet.prd_ref) || "").trim() || "—",
-            palletStatus: state.label,
-            stateCode: state.code,
-            sourceOrderRef: String((pallet && pallet.source_order_ref) || "").trim() || "—",
-            statusNote: String((pallet && pallet.status_note) || "").trim(),
-            plannedQty: plannedQty,
-            filledQty: filledQty,
-            qty: qty,
-            qtyDisplay: formatWarehouseStateQty(qty, baseUom),
-            plannedQtyDisplay: formatWarehouseStateQty(plannedQty, baseUom),
-            filledQtyDisplay: formatWarehouseStateQty(filledQty, baseUom),
-            composition: String((pallet && pallet.composition) || (row && row.item_name) || cachedItem.name || "—").trim(),
-          };
-        })
-      : [];
+    var customerRemainingToShipQty = Number(row && row.customer_remaining_to_ship_qty) || 0;
+    var palletRows = sortWarehouseStatePalletsForDisplay(mergeWarehouseStatePallets(row, baseUom));
+    var palletQtyKnown = palletRows.every(function (pallet) { return pallet.qtyKnown; });
+    var palletQty = palletRows.reduce(function (sum, pallet) {
+      return sum + (pallet.qtyKnown ? pallet.qty : 0);
+    }, 0);
+    var palletSummary = palletRows.length ? formatPalletCount(palletRows.length) : "Паллет нет";
+    var palletStateSummary = formatPalletStateSummary(palletRows);
     var productMetaParts = [];
     if (barcode) productMetaParts.push("ШК: " + barcode);
     if (gtin && gtin !== barcode) productMetaParts.push("GTIN: " + gtin);
     if (itemTypeName) productMetaParts.push(itemTypeName);
-    var needSummaryPairs = [];
-    var customerDemandDisplay = formatPositiveWarehouseStateQty(demandToClose, baseUom);
-    var minDemandDisplay = formatPositiveWarehouseStateQty(demandToMin, baseUom);
-    if (customerDemandDisplay) needSummaryPairs.push({ label: "Клиенты", value: customerDemandDisplay });
-    if (minDemandDisplay) needSummaryPairs.push({ label: "До мин.", value: minDemandDisplay });
-    var planSummaryPairs = [];
-    var internalPlanDisplay = formatPositiveWarehouseStateQty(alreadyPlannedInternal, baseUom);
-    var prdPlanDisplay = formatPositiveWarehouseStateQty(prdPlannedQty, baseUom);
-    if (internalPlanDisplay) planSummaryPairs.push({ label: "Внутр.", value: internalPlanDisplay });
-    if (prdPlanDisplay) planSummaryPairs.push({ label: "PRD", value: prdPlanDisplay });
-    var filledSummary = formatPositiveWarehouseStateQty(prdFilledQty, baseUom) || "—";
-    var remainingNeedQtyDisplay = formatWarehouseStateQty(remainingToCreate, baseUom);
-    var hasNeedOrPlan = demandToClose > 0.000001 || demandToMin > 0.000001 ||
-      alreadyPlannedInternal > 0.000001 || prdPlannedQty > 0.000001 || prdFilledQty > 0.000001;
     return {
       itemId: itemId,
       itemName: String((row && row.item_name) || cachedItem.name || "-"),
@@ -412,29 +577,24 @@
       volume: String(cachedItem.volume || ""),
       baseUom: baseUom,
       stockQty: stockQty,
+      freeQty: freeQty,
       minStockQty: minStockQty,
       belowMinQty: belowMinQty,
-      customerDemandQty: demandToClose,
-      internalRemainingQty: alreadyPlannedInternal,
-      prdPlannedQty: prdPlannedQty,
-      prdFilledQty: prdFilledQty,
-      remainingNeedQty: remainingToCreate,
-      stockQtyDisplay: formatWarehouseStateQty(stockQty, baseUom),
-      minStockSummary: minStockQty > 0.000001 ? formatWarehouseStateQty(minStockQty, baseUom) : "—",
-      needSummaryPairs: needSummaryPairs,
-      planSummaryPairs: planSummaryPairs,
-      filledSummary: filledSummary,
-      customerDemandDisplay: customerDemandDisplay || "—",
-      minDemandDisplay: minDemandDisplay || "—",
-      internalPlanDisplay: internalPlanDisplay || "—",
-      remainingNeedQtyDisplay: remainingNeedQtyDisplay,
-      remainingNeedSummary: remainingToCreate > 0.000001 ? "Произвести: " + remainingNeedQtyDisplay : (hasNeedOrPlan ? "Покрыто" : "—"),
-      remainingNeedClass: remainingToCreate > 0.000001 ? "pc-stock-remaining-need" : (hasNeedOrPlan ? "pc-stock-covered" : ""),
+      customerRemainingToShipQty: customerRemainingToShipQty,
+      palletCount: palletRows.length,
+      palletQty: palletQtyKnown ? palletQty : null,
+      palletQtyKnown: palletQtyKnown,
+      stockQtyDisplay: Math.abs(stockQty) <= 0.000001
+        ? "Нет на складе"
+        : formatWarehouseStateQty(stockQty, baseUom),
+      freeQtyDisplay: formatWarehouseStateQty(freeQty, baseUom),
+      minStockQtyDisplay: formatWarehouseStateQty(minStockQty, baseUom),
+      belowMinQtyDisplay: formatWarehouseStateQty(belowMinQty, baseUom),
+      customerRemainingToShipDisplay: formatWarehouseStateQty(customerRemainingToShipQty, baseUom),
+      palletSummary: palletSummary,
+      palletStateSummary: palletStateSummary,
       productMeta: productMetaParts.join(" · "),
-      warehouseHuRows: warehouseHuRows,
-      huRows: warehouseHuRows,
-      productionReceipts: productionReceipts,
-      hasNeedBreakdown: hasNeedOrPlan,
+      palletRows: palletRows,
     };
   }
 
@@ -444,9 +604,8 @@
       Math.abs(Number(row.stockQty) || 0) > qtyTolerance ||
       (Number(row.minStockQty) || 0) > qtyTolerance ||
       (Number(row.belowMinQty) || 0) > qtyTolerance ||
-      (Number(row.internalRemainingQty) || 0) > qtyTolerance ||
-      (Number(row.prdPlannedQty) || 0) > qtyTolerance ||
-      (Number(row.prdFilledQty) || 0) > qtyTolerance
+      (Number(row.customerRemainingToShipQty) || 0) > qtyTolerance ||
+      (Number(row.palletCount) || 0) > 0
     );
   }
 
@@ -505,9 +664,8 @@
       rows = deps.sortRows(rows, "stock", {
         itemName: { type: "string", getValue: function (row) { return row.itemName; } },
         stockQty: { type: "number", getValue: function (row) { return row.stockQty; } },
-        minStockQty: { type: "number", getValue: function (row) { return row.minStockQty; } },
-        prdFilledQty: { type: "number", getValue: function (row) { return row.prdFilledQty; } },
-        remainingNeedQty: { type: "number", getValue: function (row) { return row.remainingNeedQty; } },
+        customerRemainingToShipQty: { type: "number", getValue: function (row) { return row.customerRemainingToShipQty; } },
+        palletCount: { type: "number", getValue: function (row) { return row.palletCount; } },
       });
       setStatus("Позиций: " + rows.length);
       if (lowWrap) lowWrap.innerHTML = "";
@@ -542,15 +700,21 @@
       bindReplenishmentAction();
     }
     function loadReplenishmentPreview() {
+      cachedItemReplenishmentContext = createItemReplenishmentContext({ status: "loading", rows: [] });
       setReplenishmentPreview({ status: "loading" });
+      renderRows();
       return deps.loadProductionNeedCreateOrdersPreview().then(function (preview) {
         var rows = Array.isArray(preview && preview.rows) ? preview.rows : [];
+        cachedItemReplenishmentContext = createItemReplenishmentContext({ status: "success", rows: rows });
         setReplenishmentPreview({
           status: rows.length ? "ready" : "empty",
           count: rows.length,
         });
+        renderRows();
       }).catch(function () {
+        cachedItemReplenishmentContext = createItemReplenishmentContext({ status: "error", rows: [] });
         setReplenishmentPreview({ status: "error" });
+        renderRows();
       });
     }
     function refreshStockPage() {
@@ -568,7 +732,9 @@
         deps.runProductionNeedCreateOrdersFlow(function () {
           return refreshStockPage();
         }, function () {
+          cachedItemReplenishmentContext = createItemReplenishmentContext({ status: "success", rows: [] });
           setReplenishmentPreview({ status: "empty" });
+          renderRows();
         }).then(function () {
           if (document.getElementById("stockReplenishmentStatus") === previewStatus &&
               previewStatus.textContent === openingStatusText) {

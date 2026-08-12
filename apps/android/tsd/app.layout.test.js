@@ -425,6 +425,24 @@ assertCssContains(
   ["display: flex", "flex-direction: column", "min-height: 0"],
   "screen cards should be flex parents for inner scroll containers"
 );
+const fillingListCardSelector =
+  ".filling-screen:not(.filling-screen--scan):not(.outbound-picking-screen) > .filling-card:not(.filling-card--scan)";
+assertCssContains(
+  fillingListCardSelector,
+  ["flex-shrink: 0"],
+  "ordinary filling list card should grow with a long document list"
+);
+assert(
+  fillingListCardSelector.includes(":not(.filling-screen--scan)") &&
+    fillingListCardSelector.includes(":not(.filling-card--scan)") &&
+    fillingListCardSelector.includes(":not(.outbound-picking-screen)"),
+  "filling list shrink guard should exclude scan, outbound and order-control surfaces"
+);
+assertCssContains(
+  ".outbound-picking-screen:not(.outbound-picking-screen--scan) .filling-card",
+  ["flex-shrink: 0"],
+  "existing outbound and order-control list shrink guard should remain intact"
+);
 assertCssContains(
   ".doc-screen-card",
   ["flex: 1 1 auto", "min-height: 0"],
