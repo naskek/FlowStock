@@ -12,8 +12,12 @@ public partial class PartnerItemSalePriceWindow : Window
     private readonly long? _initialItemId;
     private readonly ObservableCollection<PartnerItemSalePrice> _prices = new();
     private readonly List<Partner> _partners = new();
+    private readonly ObservableCollection<Partner> _partnerAutocompleteOptions = new();
     private readonly List<Item> _items = new();
     private PartnerItemSalePrice? _selected;
+    private string _partnerAutocompleteQuery = string.Empty;
+    private bool _suppressPartnerAutocomplete;
+    private int _partnerAutocompleteTextGeneration;
     private int _offset;
     private int _totalCount;
 
@@ -23,6 +27,9 @@ public partial class PartnerItemSalePriceWindow : Window
         _initialItemId = itemId;
         InitializeComponent();
         PricesGrid.ItemsSource = _prices;
+        PartnerCombo.AddHandler(
+            System.Windows.Controls.Primitives.TextBoxBase.TextChangedEvent,
+            new System.Windows.Controls.TextChangedEventHandler(PartnerCombo_TextChanged));
         LoadLookups();
         ResetForm();
         Loaded += async (_, _) => await LoadPageAsync().ConfigureAwait(true);
@@ -39,7 +46,8 @@ public partial class PartnerItemSalePriceWindow : Window
             _items.AddRange(items.OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase));
         }
 
-        PartnerCombo.ItemsSource = _partners;
+        PartnerCombo.ItemsSource = _partnerAutocompleteOptions;
+        ApplyPartnerAutocompleteFilter(string.Empty);
         ItemCombo.ItemsSource = _items;
         FilterPartnerCombo.ItemsSource = _partners;
         FilterItemCombo.ItemsSource = _items;
@@ -148,7 +156,7 @@ public partial class PartnerItemSalePriceWindow : Window
         {
             return;
         }
-        PartnerCombo.SelectedItem = _partners.FirstOrDefault(row => row.Id == _selected.PartnerId);
+        SetPartnerSelection(_partners.FirstOrDefault(row => row.Id == _selected.PartnerId));
         ItemCombo.SelectedItem = _items.FirstOrDefault(row => row.Id == _selected.ItemId);
         PriceBox.Text = _selected.UnitPriceGross.ToString("0.####", CultureInfo.CurrentCulture);
         IsActiveCheck.IsChecked = _selected.IsActive;
@@ -160,7 +168,7 @@ public partial class PartnerItemSalePriceWindow : Window
     {
         _selected = null;
         PricesGrid.SelectedItem = null;
-        PartnerCombo.SelectedItem = null;
+        SetPartnerSelection(null);
         ItemCombo.SelectedItem = _initialItemId.HasValue
             ? _items.FirstOrDefault(row => row.Id == _initialItemId.Value)
             : null;
@@ -168,6 +176,116 @@ public partial class PartnerItemSalePriceWindow : Window
         IsActiveCheck.IsChecked = true;
         SaveButton.Content = "Добавить";
         DeleteButton.IsEnabled = false;
+    }
+
+    private void PartnerCombo_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        if (_suppressPartnerAutocomplete || !PartnerCombo.IsKeyboardFocusWithin)
+        {
+            return;
+        }
+
+        var text = PartnerCombo.Text ?? string.Empty;
+        var textGeneration = ++_partnerAutocompleteTextGeneration;
+        if (PartnerCombo.SelectedItem is Partner selectedPartner
+            && string.Equals(text, selectedPartner.DisplayName, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var normalizedQuery = text.Trim();
+        if (PartnerCombo.SelectedItem == null
+            && string.Equals(normalizedQuery, _partnerAutocompleteQuery, StringComparison.Ordinal))
+        {
+            PartnerCombo.IsDropDownOpen = _partnerAutocompleteOptions.Count > 0;
+            return;
+        }
+
+        _suppressPartnerAutocomplete = true;
+        try
+        {
+            PartnerCombo.SelectedItem = null;
+            ApplyPartnerAutocompleteFilter(text);
+            PartnerCombo.IsDropDownOpen = _partnerAutocompleteOptions.Count > 0;
+        }
+        finally
+        {
+            _suppressPartnerAutocomplete = false;
+        }
+
+        RestorePartnerComboText(text, textGeneration);
+    }
+
+    private void ApplyPartnerAutocompleteFilter(string? query)
+    {
+        var normalizedQuery = (query ?? string.Empty).Trim();
+        var previousSuppression = _suppressPartnerAutocomplete;
+        _suppressPartnerAutocomplete = true;
+        try
+        {
+            _partnerAutocompleteOptions.Clear();
+            foreach (var partner in _partners)
+            {
+                if (PartnerMatchesAutocomplete(partner, normalizedQuery))
+                {
+                    _partnerAutocompleteOptions.Add(partner);
+                }
+            }
+
+            _partnerAutocompleteQuery = normalizedQuery;
+        }
+        finally
+        {
+            _suppressPartnerAutocomplete = previousSuppression;
+        }
+    }
+
+    internal static bool PartnerMatchesAutocomplete(Partner partner, string? query)
+    {
+        var normalizedQuery = (query ?? string.Empty).Trim();
+        return normalizedQuery.Length == 0
+               || partner.DisplayName.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SetPartnerSelection(Partner? partner)
+    {
+        _partnerAutocompleteTextGeneration++;
+        _suppressPartnerAutocomplete = true;
+        try
+        {
+            ApplyPartnerAutocompleteFilter(string.Empty);
+            PartnerCombo.SelectedItem = partner;
+            PartnerCombo.Text = partner?.DisplayName ?? string.Empty;
+            PartnerCombo.IsDropDownOpen = false;
+        }
+        finally
+        {
+            _suppressPartnerAutocomplete = false;
+        }
+    }
+
+    private void RestorePartnerComboText(string text, int textGeneration)
+    {
+        PartnerCombo.Dispatcher.BeginInvoke(() =>
+        {
+            if (textGeneration != _partnerAutocompleteTextGeneration)
+            {
+                return;
+            }
+
+            if (PartnerCombo.Template.FindName("PART_EditableTextBox", PartnerCombo)
+                is not System.Windows.Controls.TextBox textBox)
+            {
+                return;
+            }
+
+            if (!string.Equals(textBox.Text, text, StringComparison.Ordinal))
+            {
+                textBox.Text = text;
+            }
+
+            textBox.CaretIndex = textBox.Text.Length;
+        });
     }
 
     private async void New_Click(object sender, RoutedEventArgs e)

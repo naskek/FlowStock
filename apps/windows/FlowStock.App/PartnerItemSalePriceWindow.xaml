@@ -27,7 +27,10 @@
                 </Grid.RowDefinitions>
                 <TextBlock Text="Контрагент" VerticalAlignment="Center" />
                 <ComboBox x:Name="PartnerCombo" Grid.Column="1" Margin="8,0,12,8"
-                          DisplayMemberPath="DisplayName" IsTextSearchEnabled="True" />
+                          DisplayMemberPath="DisplayName"
+                          IsEditable="True"
+                          IsTextSearchEnabled="False"
+                          StaysOpenOnEdit="True" />
                 <TextBlock Grid.Column="2" Text="Товар" VerticalAlignment="Center" />
                 <ComboBox x:Name="ItemCombo" Grid.Column="3" Margin="8,0,0,8"
                           DisplayMemberPath="Name" IsTextSearchEnabled="True" />
