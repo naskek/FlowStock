@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Threading;
+using FlowStock.DesktopUpdate;
 using Application = System.Windows.Application;
 
 namespace FlowStock.App;
@@ -11,10 +12,19 @@ public partial class App : Application
     private FileLogger? _appLogger;
     private string _logPath = Path.Combine(AppPaths.LogsDir, "app.log");
     private AppServices? _services;
+    private Mutex? _instanceMutex;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        _instanceMutex = new Mutex(true, DesktopUpdateConstants.AppMutexName, out var createdNew);
+        if (!createdNew)
+        {
+            MessageBox.Show("FlowStock уже запущен для этого пользователя.", "FlowStock", MessageBoxButton.OK, MessageBoxImage.Information);
+            Shutdown(2);
+            return;
+        }
 
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
@@ -28,6 +38,17 @@ public partial class App : Application
             if (!services.IsDatabaseAvailable)
             {
                 var connectionWindow = new DbConnectionWindow(services, requireConnectionOnStartup: true);
+                var updateReadyHandled = false;
+                connectionWindow.ContentRendered += (_, _) =>
+                {
+                    if (updateReadyHandled)
+                    {
+                        return;
+                    }
+
+                    updateReadyHandled = true;
+                    _ = HandleUpdateReadyAsync(e.Args);
+                };
                 connectionWindow.ShowDialog();
                 Shutdown(0);
                 return;
@@ -37,6 +58,7 @@ public partial class App : Application
             var mainWindow = new MainWindow(services);
             MainWindow = mainWindow;
             mainWindow.Show();
+            _ = HandleUpdateReadyAsync(e.Args);
             services.LiveRefresh.Start(Dispatcher);
         }
         catch (Exception ex)
@@ -50,7 +72,34 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         _services?.LiveRefresh.Dispose();
+        _instanceMutex?.Dispose();
         base.OnExit(e);
+    }
+
+    private Task HandleUpdateReadyAsync(IReadOnlyList<string> args)
+    {
+        var paths = new DesktopUpdatePaths();
+        return UpdateStartupLifecycle.HandleReadyAsync(
+            args,
+            AppRuntimeInfo.Current,
+            paths,
+            result =>
+            {
+                MessageBox.Show(
+                    result.Success
+                        ? $"FlowStock обновлён: {result.Current.ProductVersion} ({result.Current.ShortCommit}) → {result.Target.ProductVersion} ({result.Target.ShortCommit})."
+                        : $"Обновление не завершено: {result.Message}"
+                          + (string.IsNullOrWhiteSpace(result.FallbackError)
+                              ? string.Empty
+                              : $"\nОшибка fallback: {result.FallbackError}")
+                          + $"\nЛог: {result.LogPath}",
+                    "Обновление FlowStock",
+                    MessageBoxButton.OK,
+                    result.Success ? MessageBoxImage.Information : MessageBoxImage.Warning);
+                return Task.CompletedTask;
+            },
+            TimeSpan.FromMilliseconds(250),
+            80);
     }
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)

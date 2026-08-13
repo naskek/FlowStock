@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\FlowStock.Core\FlowStock.Core.csproj" />
     <ProjectReference Include="..\FlowStock.Data\FlowStock.Data.csproj" />
+    <ProjectReference Include="..\FlowStock.DesktopUpdate\FlowStock.DesktopUpdate.csproj" />
   </ItemGroup>
 
   <ItemGroup>

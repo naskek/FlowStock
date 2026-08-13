@@ -2,9 +2,12 @@ ARG FLOWSTOCK_DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:8.0
 ARG FLOWSTOCK_DOTNET_ASPNET_IMAGE=mcr.microsoft.com/dotnet/aspnet:8.0
 
 FROM ${FLOWSTOCK_DOTNET_SDK_IMAGE} AS build
+ARG FLOWSTOCK_SOURCE_COMMIT=INVALID_SOURCE_COMMIT
 WORKDIR /src
 COPY . .
-RUN dotnet publish apps/windows/FlowStock.Server/FlowStock.Server.csproj -c Release -o /out/flowstock /p:UseAppHost=false
+RUN test "${#FLOWSTOCK_SOURCE_COMMIT}" -eq 40 \
+    && case "$FLOWSTOCK_SOURCE_COMMIT" in *[!0-9a-f]*) exit 1 ;; esac \
+    && dotnet publish apps/windows/FlowStock.Server/FlowStock.Server.csproj -c Release -o /out/flowstock /p:UseAppHost=false /p:SourceRevisionId="$FLOWSTOCK_SOURCE_COMMIT"
 RUN dotnet publish apps/windows/FlowStock.DiscoveryRelay/FlowStock.DiscoveryRelay.csproj -c Release -o /out/discovery-relay /p:UseAppHost=false
 
 FROM ${FLOWSTOCK_DOTNET_ASPNET_IMAGE} AS flowstock-runtime

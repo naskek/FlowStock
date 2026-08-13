@@ -79,6 +79,88 @@ ensure_git_repo() {
     git_in_repo rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "git repository not found at $FLOWSTOCK_REPO_DIR"
 }
 
+export_source_commit_from_checkout() {
+    local source_commit
+    source_commit="$(git_in_repo rev-parse --verify 'HEAD^{commit}')" \
+        || fail "cannot resolve exact source commit from $FLOWSTOCK_REPO_DIR"
+    [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] \
+        || fail "source commit must be a full lowercase 40-character SHA"
+    export FLOWSTOCK_SOURCE_COMMIT="$source_commit"
+    log "production source commit: $FLOWSTOCK_SOURCE_COMMIT"
+}
+
+target_supports_source_identity_contract() {
+    local target="${1:-HEAD}"
+    local target_commit
+    local contract_marker="apps/windows/FlowStock.DesktopUpdate/FlowStock.DesktopUpdate.csproj"
+
+    target_commit="$(git_in_repo rev-parse --verify "${target}^{commit}" 2>/dev/null)" \
+        || fail "cannot resolve source identity capability target: $target"
+    git_in_repo cat-file -e "${target_commit}:${contract_marker}" 2>/dev/null
+}
+
+read_deployed_version_payload() {
+    compose exec -T flowstock curl -fsS http://127.0.0.1:8080/api/version
+}
+
+validate_source_identity_payload() {
+    local expected_commit="$1"
+    require_command python3
+    python3 -c '
+import json, re, sys
+expected, repo, branch = sys.argv[1:4]
+data = json.load(sys.stdin)
+server = data.get("server_build") or {}
+desktop = data.get("desktop_update") or {}
+sha = re.compile(r"^[0-9a-f]{40}$")
+ok = (
+    sha.fullmatch(expected) is not None
+    and server.get("source_commit") == expected
+    and desktop.get("target_commit") == expected
+    and desktop.get("policy") == "server_source_commit"
+    and desktop.get("repository_url") == repo
+    and desktop.get("branch") == branch
+)
+if not ok:
+    print("deployed /api/version does not match expected source commit", file=sys.stderr)
+    sys.exit(1)
+' "$expected_commit" "https://github.com/naskek/FlowStock.git" "main"
+}
+
+validate_legacy_version_payload() {
+    require_command python3
+    python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+ok = (
+    isinstance(data, dict)
+    and isinstance(data.get("version"), str)
+    and bool(data["version"].strip())
+    and isinstance(data.get("pc_web_version"), str)
+    and bool(data["pc_web_version"].strip())
+)
+if not ok:
+    print("deployed /api/version is not a valid legacy payload", file=sys.stderr)
+    sys.exit(1)
+'
+}
+
+assert_deployed_source_commit() {
+    local payload
+    payload="$(read_deployed_version_payload)" \
+        || fail "cannot read /api/version from deployed server"
+    printf '%s' "$payload" | validate_source_identity_payload "$FLOWSTOCK_SOURCE_COMMIT" \
+        || fail "post-deploy source identity gate failed"
+}
+
+assert_deployed_legacy_version_payload() {
+    local payload
+    payload="$(read_deployed_version_payload)" \
+        || fail "cannot read /api/version from deployed legacy server"
+    printf '%s' "$payload" | validate_legacy_version_payload \
+        || fail "post-rollback legacy version gate failed"
+}
+
 ensure_git_clean_worktree() {
     if ! git_in_repo diff --quiet --ignore-submodules -- || ! git_in_repo diff --cached --quiet --ignore-submodules --; then
         git_in_repo status --short >&2 || true

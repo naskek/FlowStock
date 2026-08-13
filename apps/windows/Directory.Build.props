@@ -1,5 +1,6 @@
 <Project>
   <PropertyGroup>
     <DefaultItemExcludes>$(DefaultItemExcludes);**\artifacts\**</DefaultItemExcludes>
+    <VersionPrefix>1.0.0</VersionPrefix>
   </PropertyGroup>
 </Project>

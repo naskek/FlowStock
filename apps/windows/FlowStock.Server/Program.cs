@@ -128,6 +128,11 @@ builder.Services.AddSingleton(discoveryOptions);
 builder.Services.AddHostedService<FlowStockDiscoveryUdpService>();
 
 var app = builder.Build();
+var serverVersionPayload = ServerBuildIdentity.CreateVersionPayload(
+    appVersion,
+    pcWebBundle.Version,
+    builder.Configuration["FLOWSTOCK_SOURCE_COMMIT"],
+    message => app.Logger.LogCritical("{Message}", message));
 
 OrderCreateEndpoint.Map(app);
 OrderUpdateEndpoint.Map(app);
@@ -156,7 +161,7 @@ MaintenanceBackfillEndpoints.Map(app);
 app.MapGet("/api/version", (HttpContext context) =>
 {
     PcWebStaticFiles.ApplyVersionCacheHeaders(context.Response);
-    return Results.Ok(new { version = appVersion, pc_web_version = pcWebBundle.Version });
+    return Results.Ok(serverVersionPayload);
 });
 FlowStockDiscoveryEndpoints.Map(app);
 

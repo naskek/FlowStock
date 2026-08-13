@@ -48,6 +48,7 @@ current_commit=""
 current_branch=""
 target_commit=""
 target_ref=""
+target_supports_source_identity="false"
 recorded_current_backup=""
 recorded_previous_ref=""
 recorded_previous_commit=""
@@ -116,6 +117,13 @@ log "current git revision: $current_commit ($current_branch)"
 log "rollback target ref: $target_ref"
 log "rollback target commit: $target_commit"
 
+if target_supports_source_identity_contract "$target_commit"; then
+    target_supports_source_identity="true"
+    log "rollback target supports source identity contract"
+else
+    log "rollback target predates source identity contract"
+fi
+
 if [[ "$do_restore" == "true" ]]; then
     pre_restore_backup="$(resolve_backup_path "${FLOWSTOCK_BACKUP_OUTPUT_DIR}/rollback_guard/FlowStock_${rollback_stamp}_${current_commit:0:12}.dump")"
 fi
@@ -126,6 +134,7 @@ require_udp_port_free 7155
 
 log "checking out detached rollback revision"
 git_in_repo checkout --detach "$target_commit"
+export_source_commit_from_checkout
 ensure_compose_config
 
 target_compose_config="$(compose config)"
@@ -153,6 +162,12 @@ fi
 log "starting application containers for rollback revision"
 compose up -d --build --no-deps --force-recreate flowstock
 wait_for_flowstock_ready
+if [[ "$target_supports_source_identity" == "true" ]]; then
+    assert_deployed_source_commit
+else
+    assert_deployed_legacy_version_payload
+    log "WARNING: rollback target predates source identity contract; exact running source commit cannot be confirmed through /api/version"
+fi
 
 if [[ "$target_has_relay" == "true" ]]; then
     require_udp_port_free 7155

@@ -1,5 +1,43 @@
 # Спецификация FlowStock Server
 
+## Самообновление операторского WPF
+
+Канонические термины:
+
+- **repository root** — физический Git repository `D:\FlowStock`; `main` — имя ветки, а не каталог или runtime;
+- **source-run bootstrap mode** — запуск WPF из repository root через `dotnet run`, пока active runtime отсутствует;
+- **active runtime** — side-by-side publish-каталог, выбранный `active-runtime.json`;
+- **product version** — вручную изменяемый SemVer;
+- **source commit** — встроенный полный lowercase 40-character Git SHA;
+- **target runtime** — runtime exact source commit фактически запущенного production server;
+- **LKG runtime** — предыдущий runtime с подтверждённым успешным startup handshake.
+
+`/api/version` сохраняет legacy-семантику `version` (`AssemblyVersion-MVID`) и `pc_web_version`. Дополнительно server возвращает `server_build` с `product_version`/`source_commit` и `desktop_update` protocol v1. `desktop_update.target_commit` всегда равен `server_build.source_commit`. Если embedded server identity отсутствует, некорректна или не равна `FLOWSTOCK_SOURCE_COMMIT` runtime deploy, бизнес-API остаётся доступным, но `desktop_update` равен `null` и server пишет critical diagnostic.
+
+Update authority — только exact production server source commit. GitHub `main`, опережающий production, не выбирается. Installed commit читается из фактически запущенной WPF assembly; repository `HEAD` не является installed identity. Client ahead или diverged относительно server target блокируется без downgrade.
+
+Operational API endpoint WPF и trusted desktop-update endpoint — разные конфигурации. `server.base_url`, `FLOWSTOCK_SERVER_BASE_URL`, синхронизация API host с DB host и operational `server.allow_invalid_tls` продолжают управлять обычными WPF API clients, но не участвуют в самообновлении. Desktop update по умолчанию обращается только к `https://flowstock.local:7154`; отдельный override `FLOWSTOCK_UPDATE_SERVER_BASE_URL` принимается после строгой проверки absolute root URI. Non-loopback endpoint обязан использовать HTTPS; HTTP допустим только для loopback automated/local harness. Update HTTP handler всегда использует штатную certificate validation и не поддерживает `AllowInvalidTls` или `DangerousAcceptAnyServerCertificateValidator`.
+
+Canonical Git identity локально зафиксирована updater subsystem: remote `origin`, branch `main`, fetch URL `https://github.com/naskek/FlowStock.git`. Поля `repository_url`/`branch` server manifest используются только для fail-closed сравнения и диагностики. Они никогда не становятся аргументами Git-команд. Все process arguments передаются через `ProcessStartInfo.ArgumentList`.
+
+Проверка выполняется при открытии `AdminWindow` и вручную. Resolver вычисляет trusted update endpoint один раз для конкретного результата проверки; тот же URI переносится через `UpdateRequest` и используется updater-ом для обоих повторных checker calls после закрытия WPF. Повторное чтение environment или operational settings внутри этой transaction не выполняется. Равенство installed/target завершается без Git fetch. Проверки single-flight; закрытие окна отменяет или инвалидирует поздний результат. Обновление запускается после обычного confirmation без admin password. Ошибка сети или TLS на update endpoint явно называет доверенный endpoint и не предлагает ослабить certificate validation.
+
+Source-based v1 выполняет fetch canonical remote, создаёт updater-owned detached worktree exact target, запускает `dotnet publish` с `/p:SourceRevisionId=<target>`, проверяет embedded identities и устанавливает runtime side-by-side в `%LOCALAPPDATA%\FlowStock\Desktop\versions\<commit>`. Atomic active pointer переключается только после повторной сверки server target. Startup ACK и stability window подтверждают candidate; иначе active pointer автоматически возвращается на LKG или в source-run bootstrap mode.
+
+Состояние основного working tree не является gate: tracked/staged/untracked changes, локальная ветка ahead/behind/diverged, detached `HEAD` или другая checkout-ветка допускаются и показываются только в диагностике. Updater не выполняет для repository root `reset`, `restore`, `stash`, `merge`, `rebase`, `pull` или checkout и не строит target из modified working files.
+
+Launcher сначала обрабатывает pending transaction. Recovery выполняет заранее скопированный и хешированный transaction recovery bundle; при его повреждении используется updater validated LKG runtime. Candidate updater не является единственным recovery executable. Если LKG ещё нет, launcher возвращается к source-run bootstrap mode и не запускает unresolved candidate. Фоновый service/watchdog не используется.
+
+При ошибке или отмене live update updater сначала завершает неподтверждённый candidate, восстанавливает active pointer на предыдущий LKG либо удаляет его для source-run bootstrap mode и инициирует запуск fallback с `--update-session`. Только после успешной инициации fallback записывается terminal result и удаляется pending transaction. Ошибка запуска fallback записывается отдельно от исходной ошибки update, а pending сохраняется для следующего recovery.
+
+Crash recovery восстанавливает pointer идемпотентно и переводит pending transaction в terminal-ready фазу: `success-ready` при ранее записанном valid startup ACK либо `fallback-ready` для LKG/source-run. Recovery updater сам runtime не запускает и после успешного recovery автоматически закрывается с process exit code `0`; exception/failure сохраняет pending и даёт ненулевой exit code. Launcher принимает только нулевой outcome, запускает подтверждённый active target либо восстановленный active/LKG/canonical source-run с `--update-session` и удаляет pending только после успешного `Start-Process`. При `success-ready` новый ACK не записывается: предыдущий ACK уже подтвердил target, а session нужен для однократного показа и удаления сохранённого success result.
+
+Startup-ready event одинаков для `MainWindow` и startup `DbConnectionWindow`: сразу после первого отображения окна live candidate записывает ACK, не ожидая подключения БД, затем ожидает terminal update result и показывает/удаляет его один раз. Recovery-success target и fallback runtime получают session id без startup token: они не создают новый ACK, но однократно потребляют соответственно success или failure result.
+
+`FLOWSTOCK.cmd` MAIN запускает launcher; при отсутствии active manifest допустим прежний `dotnet run`. DEV всегда остаётся source-run, а production self-update из `D:\FlowStock-dev` запрещён. Для первого rollout один раз требуется вручную доставить в `D:\FlowStock` commit, уже содержащий updater subsystem и новый launcher. Последующие обновления repository root не изменяют.
+
+Updater не выполняет migrations, не изменяет production DB, ledger или документы и не развёртывает server. Подписанные release artifacts и Authenticode относятся к v2.
+
 ## Область охвата
 - Workflow центрирован на сервере. Сервер является единым источником истины.
 - Desktop WPF-клиент подключается напрямую к PostgreSQL как операторский UI.

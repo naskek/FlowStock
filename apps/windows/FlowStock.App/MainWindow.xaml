@@ -52,6 +52,9 @@
                    Foreground="#B71C1C"
                    FontWeight="SemiBold"
                    Visibility="Collapsed" />
+        <Border DockPanel.Dock="Bottom" Background="#F3F3F3" BorderBrush="#DDDDDD" BorderThickness="0,1,0,0">
+            <TextBlock x:Name="BuildIdentityText" Margin="12,5" Foreground="#555555" FontSize="11" />
+        </Border>
         <Border Margin="12">
             <TabControl x:Name="MainTabs" SelectionChanged="MainTabs_SelectionChanged">
             <TabItem Header="Остатки">
