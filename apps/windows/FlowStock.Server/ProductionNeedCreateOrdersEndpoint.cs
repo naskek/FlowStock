@@ -71,6 +71,10 @@ public static class ProductionNeedCreateOrdersEndpoint
                 DebugSummary = result.DebugSummary
             });
         }
+        catch (OrderItemActivityException ex)
+        {
+            return Results.BadRequest(new ApiErrorResult(false, ex.ErrorCode, ex.Message));
+        }
         catch (InvalidOperationException ex)
         {
             return Results.BadRequest(new ApiResult(false, ex.Message));

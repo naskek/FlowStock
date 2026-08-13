@@ -399,6 +399,63 @@ public sealed class CreateOrdersFromProductionNeedTests
     }
 
     [Fact]
+    public void InactiveDiagnosticRow_RemainsVisible_ButIsExcludedFromDraftPreview()
+    {
+        var (harness, _) = CreateInternalOnlyScenario();
+        harness.SeedItem(new Item
+        {
+            Id = 1002,
+            Name = "Кетчуп",
+            Gtin = "04607186951521",
+            IsActive = false,
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMinStockControl = true,
+            MinStockQty = 500
+        });
+
+        var diagnostic = Assert.Single(
+            new ProductionNeedService(harness.Store).GetRows(includeZeroNeed: false),
+            row => row.ItemId == 1002);
+        var preview = new ProductionNeedOrderCreationService(harness.Store).PreviewDraftOrders();
+
+        Assert.Equal(500, diagnostic.QtyToCreate);
+        Assert.DoesNotContain(preview.Rows, row => row.ItemId == 1002);
+        Assert.Equal(0, harness.OrderCount);
+    }
+
+    [Fact]
+    public async Task ExplicitInactiveSelection_FailsWithStructuredCode_InSingleTransaction()
+    {
+        var (harness, apiStore) = CreateInternalOnlyScenario();
+        harness.SeedItem(new Item
+        {
+            Id = 1002,
+            Name = "Кетчуп",
+            Gtin = "04607186951521",
+            IsActive = false,
+            ItemTypeName = "Готовая продукция",
+            ItemTypeEnableMinStockControl = true,
+            MinStockQty = 500
+        });
+
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+        using var response = await host.Client.PostAsJsonAsync(
+            "/api/production-needs/create-orders",
+            new
+            {
+                rows = new[] { new { item_id = 1002, qty_ordered = 500d } }
+            });
+        var error = await response.Content.ReadFromJsonAsync<ApiErrorResult>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.NotNull(error);
+        Assert.Equal(OrderItemActivityGuard.ItemInactiveForOrder, error.Error);
+        Assert.Equal(1, harness.TransactionExecutionCount);
+        Assert.Equal(0, harness.OrderCount);
+        Assert.Equal(0, harness.TotalOrderLineCount);
+    }
+
+    [Fact]
     public void ProductionNeed_WithOpenPalletWork_PopulatesFilledPalletProgress()
     {
         var harness = CreateBaseHarness();

@@ -844,10 +844,16 @@
     return fetchJson(buildOrdersUrl(query, ORDERS_FETCH_LIMIT, offset || 0)).then(trimOrdersPage);
   }
 
+  function filterOrderSelectableItems(rows) {
+    return (Array.isArray(rows) ? rows : []).filter(function (item) {
+      return item && item.is_active !== false;
+    });
+  }
+
   function loadOrderReferenceData() {
     return Promise.all([fetchJson("/api/partners?role=customer"), fetchJson("/api/items")]).then(function (payloads) {
       var partners = Array.isArray(payloads[0]) ? payloads[0] : [];
-      var items = Array.isArray(payloads[1]) ? payloads[1] : [];
+      var items = filterOrderSelectableItems(payloads[1]);
       return {
         partners: partners,
         items: items,
@@ -3646,6 +3652,7 @@
     window.FlowStockPcTestHooks.renderProductionNeedPreviewModalContent = renderProductionNeedPreviewModalContent;
     window.FlowStockPcTestHooks.openProductionNeedPreviewModal = openProductionNeedPreviewModal;
     window.FlowStockPcTestHooks.trimOrdersPage = trimOrdersPage;
+    window.FlowStockPcTestHooks.filterOrderSelectableItems = filterOrderSelectableItems;
     window.FlowStockPcTestHooks.getOrderModalContentUpdates = getOrderModalContentUpdates;
     window.FlowStockPcTestHooks.applyOrderModalContentUpdates = applyOrderModalContentUpdates;
     window.FlowStockPcTestHooks.refreshOpenOrderModalIfNeeded = refreshOpenOrderModalIfNeeded;

@@ -316,6 +316,7 @@ public sealed class IncomingRequestOrderApiBridgeService
             "MISSING_ITEM_ID" => "Одна из строк заказа не содержит товара.",
             "INVALID_QTY_ORDERED" => "Количество в строках заказа должно быть больше нуля.",
             "ITEM_NOT_FOUND" => "Сервер не нашел один из товаров заказа.",
+            "ITEM_INACTIVE_FOR_ORDER" => "Товар выведен из оборота и недоступен для нового количества заказа.",
             _ => string.IsNullOrWhiteSpace(errorCode)
                 ? $"Сервер вернул ошибку {(int?)apiCall.StatusCode ?? 0}."
                 : $"Сервер вернул ошибку: {errorCode}"

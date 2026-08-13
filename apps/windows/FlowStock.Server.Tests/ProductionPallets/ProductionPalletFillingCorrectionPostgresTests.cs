@@ -538,10 +538,11 @@ SELECT
         {
             await connection.OpenAsync();
             var itemTypeId = await Fixture.Scalar(connection, @"
-INSERT INTO item_types(name, code, is_active, enable_marking)
-VALUES(@name, @code, TRUE, TRUE) RETURNING id;",
-                ("@name", $"{prefix}-type"),
-                ("@code", $"{prefix}-type"));
+UPDATE item_types
+SET enable_marking = TRUE
+WHERE name = @name
+RETURNING id;",
+                ("@name", $"{prefix}-type"));
             await Fixture.Execute(connection, @"
 UPDATE items SET item_type_id = @item_type_id, gtin = @gtin WHERE id = @item_id;
 INSERT INTO marking_order(
@@ -699,10 +700,11 @@ WHERE marking_order_id = @marking_order_id
         {
             await connection.OpenAsync();
             var itemTypeId = await Fixture.Scalar(connection, @"
-INSERT INTO item_types(name, code, is_active, enable_marking)
-VALUES(@name, @code, TRUE, TRUE) RETURNING id;",
-                ("@name", $"{prefix}-type"),
-                ("@code", $"{prefix}-type"));
+UPDATE item_types
+SET enable_marking = TRUE
+WHERE name = @name
+RETURNING id;",
+                ("@name", $"{prefix}-type"));
             await Fixture.Execute(connection, @"
 UPDATE items SET item_type_id = @item_type_id, gtin = @gtin WHERE id = @item_id;
 UPDATE order_lines SET qty_ordered = 1 WHERE id = @order_line_id;
@@ -1399,13 +1401,13 @@ SELECT
     }
 
     [Fact]
-    public async Task ResetPartial_ConcurrentFinalMixedFill_ReturnsStateChangedWithoutDeadlock()
+    public async Task ResetPartial_ConcurrentNormalMixedFillRejectsInconsistentThenResetSucceedsWithoutDeadlock()
     {
         var connectionString = ResolveRequiredPostgresTestConnectionString();
         await using var fixture = await PartialFixture.Create(
             connectionString,
             $"CONCURRENT-MIXED-FILL-{Guid.NewGuid():N}");
-        long remainingComponentId;
+        var componentIds = new List<long>();
         await using (var lookup = new NpgsqlConnection(connectionString))
         {
             await lookup.OpenAsync();
@@ -1414,11 +1416,13 @@ SELECT
 SELECT id
 FROM production_pallet_lines
 WHERE production_pallet_id = @pallet_id
-  AND filled_qty < planned_qty
-ORDER BY id
-LIMIT 1;";
+ORDER BY id;";
             command.Parameters.AddWithValue("@pallet_id", fixture.PalletId);
-            remainingComponentId = Convert.ToInt64(await command.ExecuteScalarAsync());
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                componentIds.Add(reader.GetInt64(0));
+            }
         }
 
         await using var huBlocker = new NpgsqlConnection(connectionString);
@@ -1441,7 +1445,7 @@ LIMIT 1;";
                     new FlowStockLedgerFlowOptions { ProductionAutoCloseOnFill = true }))
                 .FillMixedComponents(
                     fixture.Hu,
-                    new[] { remainingComponentId },
+                    componentIds,
                     "concurrency-test",
                     fixture.OrderId,
                     fixture.PrdDocId);
@@ -1464,11 +1468,17 @@ LIMIT 1;";
         await huBlockerTx.CommitAsync();
         var fill = await fillTask.WaitAsync(TimeSpan.FromSeconds(10));
         var reset = await resetTask.WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.True(fill.Success, fill.ErrorMessage);
-        Assert.False(reset.Success);
+        Assert.False(fill.Success);
         Assert.Equal(
-            ProductionPalletFillingCorrectionErrorCodes.CorrectionStateChanged,
-            reset.ErrorCode);
+            ProductionFillingErrorCodes.PalletPartialFillInconsistent,
+            fill.Error);
+        Assert.Equal(
+            "По паллете найден исторический частичный component progress. Требуется контролируемая корректировка.",
+            fill.ErrorMessage);
+        Assert.True(reset.Success, reset.Message);
+        Assert.Equal(ProductionPalletFillingCorrectionAction.ResetPartial, reset.Action);
+        Assert.Null(reset.CorDocId);
+        Assert.Null(reset.ReplacementPalletId);
     }
 
     [Theory]
@@ -1615,7 +1625,12 @@ LIMIT 1;";
         setupDocuments.AddDocLine(
             docId,
             fixture.ItemId,
-            docType == DocType.InventoryCorrection ? -1 : 1,
+            docType switch
+            {
+                DocType.InventoryCorrection => -1,
+                DocType.Outbound => 10,
+                _ => 1
+            },
             fromLocationId: docType is DocType.Outbound or DocType.Move or DocType.WriteOff
                 ? fixture.LocationId
                 : null,
@@ -2174,7 +2189,11 @@ WHERE id = @adjustment_id;";
             var hu = $"HU-{prefix}".ToUpperInvariant();
 
             var itemTypeId = await Scalar(connection, @"
-SELECT id FROM item_types WHERE code = 'GENERAL' ORDER BY id LIMIT 1;");
+INSERT INTO item_types(name, code, is_active, enable_marking)
+VALUES(@name, @code, TRUE, FALSE)
+RETURNING id;",
+                ("@name", $"{prefix}-type"),
+                ("@code", $"{prefix}-type"));
             var itemId = await Scalar(connection, @"
 INSERT INTO items(name, barcode, base_uom, item_type_id, is_active)
 VALUES(@name, @barcode, 'шт', @item_type_id, TRUE)
@@ -2350,10 +2369,11 @@ VALUES(
             var markingOrderId = Guid.NewGuid();
             var importId = Guid.NewGuid();
             var itemTypeId = await Scalar(connection, @"
-INSERT INTO item_types(name, code, is_active, enable_marking)
-VALUES(@name, @code, TRUE, TRUE) RETURNING id;",
-                ("@name", $"{_prefix}-type"),
-                ("@code", $"{_prefix}-type"));
+UPDATE item_types
+SET enable_marking = TRUE
+WHERE name = @name
+RETURNING id;",
+                ("@name", $"{_prefix}-type"));
             await Execute(connection, @"
 UPDATE items SET item_type_id = @item_type_id, gtin = @gtin WHERE id = @item_id;
 INSERT INTO marking_order(
@@ -2787,6 +2807,7 @@ SELECT EXISTS(
     {
         private readonly string _connectionString;
         private readonly long[] _itemIds;
+        private readonly long _itemTypeId;
         private readonly long _locationId;
 
         private PartialFixture(
@@ -2796,6 +2817,7 @@ SELECT EXISTS(
             long prdDocId,
             long palletId,
             long[] itemIds,
+            long itemTypeId,
             long locationId)
         {
             _connectionString = connectionString;
@@ -2804,6 +2826,7 @@ SELECT EXISTS(
             PrdDocId = prdDocId;
             PalletId = palletId;
             _itemIds = itemIds;
+            _itemTypeId = itemTypeId;
             _locationId = locationId;
         }
 
@@ -2865,9 +2888,12 @@ VALUES(@now, @doc_id, @item_id, @location_id, 1, @hu, @hu);",
             await connection.OpenAsync();
             var now = DateTime.Now.ToString("O");
             var hu = $"HU-{prefix}".ToUpperInvariant();
-            var itemTypeId = await Fixture.Scalar(
-                connection,
-                "SELECT id FROM item_types WHERE code = 'GENERAL' ORDER BY id LIMIT 1;");
+            var itemTypeId = await Fixture.Scalar(connection, @"
+INSERT INTO item_types(name, code, is_active, enable_marking)
+VALUES(@name, @code, TRUE, FALSE)
+RETURNING id;",
+                ("@name", $"{prefix}-type"),
+                ("@code", $"{prefix}-type"));
             var itemIds = new long[2];
             for (var index = 0; index < itemIds.Length; index++)
             {
@@ -2953,7 +2979,15 @@ VALUES(@pallet_id, @doc_line_id, @order_line_id, @item_id, 5, @filled_qty, @fill
             }
             await Fixture.Execute(connection,
                 "UPDATE client_blocks SET is_enabled = TRUE WHERE block_key = 'pc_hu_correction';");
-            return new PartialFixture(connectionString, hu, orderId, docId, palletId, itemIds, locationId);
+            return new PartialFixture(
+                connectionString,
+                hu,
+                orderId,
+                docId,
+                palletId,
+                itemIds,
+                itemTypeId,
+                locationId);
         }
 
         public async ValueTask DisposeAsync()
@@ -2990,10 +3024,12 @@ DELETE FROM docs WHERE order_id = @order_id;
 DELETE FROM order_lines WHERE order_id = @order_id;
 DELETE FROM orders WHERE id = @order_id;
 DELETE FROM items WHERE id = ANY(@item_ids);
+DELETE FROM item_types WHERE id = @item_type_id;
 DELETE FROM locations WHERE id = @location_id;
 UPDATE client_blocks SET is_enabled = FALSE WHERE block_key = 'pc_hu_correction';",
                 ("@order_id", OrderId),
                 ("@item_ids", _itemIds),
+                ("@item_type_id", _itemTypeId),
                 ("@location_id", _locationId));
         }
     }

@@ -1031,6 +1031,18 @@ const lastPage = pc.trimOrdersPage(Array.from({ length: 20 }, function (_, index
 assert.strictEqual(lastPage.rows.length, 20);
 assert.strictEqual(lastPage.hasMore, false);
 
+const selectableOrderItems = pc.filterOrderSelectableItems([
+  { id: 1, name: "Активный", is_active: true },
+  { id: 2, name: "Legacy без флага" },
+  { id: 3, name: "Неактивный", is_active: false },
+  null,
+]);
+assert.deepStrictEqual(
+  Array.from(selectableOrderItems, function (item) { return item.id; }),
+  [1, 2],
+  "order autocomplete must exclude inactive items without changing the shared items API"
+);
+
 const stockPageHtml = pc.renderStock();
 assert.match(stockPageHtml, /<section class="pc-card pc-stock-card">/);
 assert.match(stockPageHtml, /stockCreateProductionOrderBtn/);

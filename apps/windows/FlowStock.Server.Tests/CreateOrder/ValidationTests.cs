@@ -1,4 +1,7 @@
 using System.Net;
+using System.Net.Http.Json;
+using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 using FlowStock.Server.Tests.CreateOrder.Infrastructure;
 
@@ -7,6 +10,44 @@ namespace FlowStock.Server.Tests.CreateOrder;
 [Collection("CreateOrder")]
 public sealed class ValidationTests
 {
+    [Theory]
+    [InlineData("CUSTOMER", 200L)]
+    [InlineData("INTERNAL", null)]
+    public async Task InactiveItem_FailsForBothOrderTypes(string type, long? partnerId)
+    {
+        var (harness, apiStore) = type == "CUSTOMER"
+            ? CreateOrderHttpScenario.CreateCustomerScenario()
+            : CreateOrderHttpScenario.CreateInternalScenario();
+        harness.SeedItem(new Item
+        {
+            Id = 1001,
+            Name = "Неактивный товар",
+            IsActive = false,
+            DefaultSalePriceGross = 100m,
+            DefaultSaleVatRateId = 1,
+            DefaultSaleVatRate = 22m,
+            DefaultSaleVatRateIsActive = true
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await CreateOrderHttpApi.PostRawAsync(
+            host.Client,
+            $$"""
+            {
+              "type": "{{type}}",
+              "partner_id": {{(partnerId?.ToString() ?? "null")}},
+              "lines": [{ "item_id": 1001, "qty_ordered": 10 }]
+            }
+            """);
+
+        var payload = await response.Content.ReadFromJsonAsync<ApiErrorResult>();
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.NotNull(payload);
+        Assert.Equal(OrderItemActivityGuard.ItemInactiveForOrder, payload.Error);
+        Assert.Equal(0, harness.OrderCount);
+        Assert.Equal(0, harness.TotalOrderLineCount);
+    }
+
     [Fact]
     public async Task CustomerWithoutPartner_Fails()
     {

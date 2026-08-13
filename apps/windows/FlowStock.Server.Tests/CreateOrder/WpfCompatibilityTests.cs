@@ -9,6 +9,38 @@ namespace FlowStock.Server.Tests.CreateOrder;
 public sealed class WpfCompatibilityTests
 {
     [Fact]
+    public async Task WpfCreateOrder_MapsInactiveItemToValidationMessage()
+    {
+        var (harness, apiStore) = CreateOrderHttpScenario.CreateCustomerScenario();
+        harness.SeedItem(new Item
+        {
+            Id = 1001,
+            Name = "Горчица",
+            IsActive = false,
+            DefaultSalePriceGross = 100m,
+            DefaultSaleVatRateId = 1,
+            DefaultSaleVatRate = 22m,
+            DefaultSaleVatRateIsActive = true
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+        using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerCreateOrder: true);
+        var service = new WpfCreateOrderService(new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath));
+
+        var result = await service.CreateOrderAsync(new WpfCreateOrderContext(
+            "001",
+            OrderType.Customer,
+            200,
+            null,
+            OrderStatus.Draft,
+            null,
+            [new OrderLineView { ItemId = 1001, ItemName = "Горчица", QtyOrdered = 1 }]));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WpfCreateOrderResultKind.ValidationFailed, result.Kind);
+        Assert.Contains("выведен из оборота", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task WpfCreateOrder_FeatureFlagRoutesToCanonicalPostApiOrders()
     {
         var (harness, apiStore) = CreateOrderHttpScenario.CreateCustomerScenario();

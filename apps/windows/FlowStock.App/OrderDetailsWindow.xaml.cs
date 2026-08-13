@@ -1361,7 +1361,10 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        var picker = new ItemPickerWindow(_services)
+        var selectableItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems.Where(item => item.IsActive).ToArray()
+            : Array.Empty<Item>();
+        var picker = new ItemPickerWindow(_services, selectableItems)
         {
             Owner = this,
             KeepOpenOnSelect = true

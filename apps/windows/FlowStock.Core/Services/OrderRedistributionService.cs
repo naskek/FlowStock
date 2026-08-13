@@ -17,7 +17,19 @@ public sealed class OrderRedistributionService
         long sourceInternalOrderId,
         long targetCustomerOrderId,
         long itemId,
-        double qty)
+        double qty) => Redistribute(
+            sourceInternalOrderId,
+            targetCustomerOrderId,
+            itemId,
+            qty,
+            enforceTargetOrderActivityOnIncrease: true);
+
+    internal OrderRedistributionResult Redistribute(
+        long sourceInternalOrderId,
+        long targetCustomerOrderId,
+        long itemId,
+        double qty,
+        bool enforceTargetOrderActivityOnIncrease)
     {
         if (qty <= QtyTolerance)
         {
@@ -90,7 +102,13 @@ public sealed class OrderRedistributionService
                 }
             }
 
-            result = RedistributeCore(store, sourceInternalOrderId, targetCustomerOrderId, itemId, qty);
+            result = RedistributeCore(
+                store,
+                sourceInternalOrderId,
+                targetCustomerOrderId,
+                itemId,
+                qty,
+                enforceTargetOrderActivityOnIncrease);
         });
 
         return result ?? throw new InvalidOperationException("Перераспределение не выполнено.");
@@ -101,7 +119,8 @@ public sealed class OrderRedistributionService
         long sourceInternalOrderId,
         long targetCustomerOrderId,
         long itemId,
-        double qty)
+        double qty,
+        bool enforceTargetOrderActivityOnIncrease)
     {
         var sourceOrder = store.GetOrder(sourceInternalOrderId)
                           ?? throw new InvalidOperationException("Внутренний заказ-источник не найден.");
@@ -146,6 +165,11 @@ public sealed class OrderRedistributionService
         var qtyFromProduced = split.QtyFromProduced;
         var qtyFromUnproduced = split.QtyFromUnproduced;
         var produced = split.ProducedQty;
+
+        if (enforceTargetOrderActivityOnIncrease && qtyFromUnproduced > QtyTolerance)
+        {
+            OrderItemActivityGuard.EnsureActiveForAdditionalOrderQuantity(store, [itemId]);
+        }
 
         var newSourceQty = sourceLine.QtyOrdered - qtyFromUnproduced;
         if (newSourceQty + QtyTolerance < produced)

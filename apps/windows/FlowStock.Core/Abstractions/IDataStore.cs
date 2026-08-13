@@ -11,6 +11,7 @@ public interface IDataStore
     Item? FindItemByBarcode(string barcode);
     Item? FindItemByGtin(string gtin);
     Item? FindItemById(long id);
+    void LockItemsForOrderValidation(IReadOnlyCollection<long> itemIds);
     IReadOnlyList<Item> GetItems(string? search);
     long AddItem(Item item);
     void UpdateItemBarcode(long itemId, string barcode);

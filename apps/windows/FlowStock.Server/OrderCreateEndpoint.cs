@@ -166,6 +166,10 @@ public static class OrderCreateEndpoint
                 orderType.Value,
                 createRequest.BindReservedStock);
         }
+        catch (OrderItemActivityException ex)
+        {
+            return Results.BadRequest(new ApiErrorResult(false, ex.ErrorCode, ex.Message));
+        }
         catch (CommercialTermsException ex)
         {
             return Results.BadRequest(new ApiErrorResult(false, ex.ErrorCode, ex.Message));

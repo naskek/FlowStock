@@ -105,6 +105,7 @@ public sealed class HuReservationPlanningTests
         var ledgerEntryCalls = 0;
 
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockItemsForOrderValidation(It.IsAny<IReadOnlyCollection<long>>()));
         store.Setup(s => s.GetPartner(partner.Id)).Returns(partner);
         store.Setup(s => s.FindItemById(itemId))
             .Returns(new Item

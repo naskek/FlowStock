@@ -9,6 +9,38 @@ namespace FlowStock.Server.Tests.Orders;
 public sealed class InternalOrderRedistributionGuardTests
 {
     [Fact]
+    public void ManualRedistribution_InactiveItemWithUnproducedGrowth_IsRejectedAtomically()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedItem(new Item { Id = 6, Name = "Горчица", IsActive = false });
+        harness.SeedOrder(new Order
+        {
+            Id = 67,
+            OrderRef = "067",
+            Type = OrderType.Internal,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 1)
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 77,
+            OrderRef = "077",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            CreatedAt = new DateTime(2026, 5, 3)
+        });
+        harness.SeedOrderLine(new OrderLine { Id = 6701, OrderId = 67, ItemId = 6, QtyOrdered = 1200 });
+        harness.SeedOrderLine(new OrderLine { Id = 7701, OrderId = 77, ItemId = 6, QtyOrdered = 300 });
+
+        var error = Assert.Throws<OrderItemActivityException>(() =>
+            new OrderRedistributionService(harness.Store).Redistribute(67, 77, 6, 600));
+
+        Assert.Equal(OrderItemActivityGuard.ItemInactiveForOrder, error.ErrorCode);
+        Assert.Equal(1200, harness.GetOrderLines(67).Single().QtyOrdered);
+        Assert.Equal(300, harness.GetOrderLines(77).Single().QtyOrdered);
+    }
+
+    [Fact]
     public void Evaluate_BlocksWhenDraftPrdAndActivePalletsExist()
     {
         var harness = new CloseDocumentHarness();

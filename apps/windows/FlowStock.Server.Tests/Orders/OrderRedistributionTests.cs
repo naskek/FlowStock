@@ -56,6 +56,7 @@ public sealed class OrderRedistributionTests
         var store = new Mock<IDataStore>(MockBehavior.Strict);
         store.As<IHuOperatorFactsStore>();
         var lockStore = store.As<IHuTransactionLockStore>();
+        store.Setup(s => s.LockItemsForOrderValidation(It.IsAny<IReadOnlyCollection<long>>()));
         store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
         lockStore.Setup(s => s.LockNormalizedHus(It.IsAny<IReadOnlyCollection<string>>()));
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
@@ -226,6 +227,7 @@ public sealed class OrderRedistributionTests
         var store = new Mock<IDataStore>(MockBehavior.Strict);
         store.As<IHuOperatorFactsStore>();
         var lockStore = store.As<IHuTransactionLockStore>();
+        store.Setup(s => s.LockItemsForOrderValidation(It.IsAny<IReadOnlyCollection<long>>()));
         store.Setup(s => s.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>())).Returns(true);
         lockStore.Setup(s => s.LockNormalizedHus(It.IsAny<IReadOnlyCollection<string>>()));
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))

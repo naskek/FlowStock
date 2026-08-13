@@ -1,5 +1,6 @@
 using FlowStock.App;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 using FlowStock.Server.Tests.IncomingRequestsOrderConvergence.Infrastructure;
 
@@ -54,6 +55,40 @@ public sealed class ValidationAndFailureTests
         Assert.NotNull(storedRequest);
         Assert.Equal(OrderRequestStatus.Approved, storedRequest!.Status);
         Assert.NotNull(storedRequest.ResolvedAt);
+    }
+
+    [Fact]
+    public async Task ItemDeactivatedAfterRequestCreation_ApprovalFailsAndRequestRemainsPending()
+    {
+        var (harness, apiStore, request) = IncomingRequestsOrderConvergenceScenario.CreateCreateOrderApprovalScenario();
+        harness.SeedItem(new Item
+        {
+            Id = 1001,
+            Name = "Горчица",
+            IsActive = false,
+            DefaultSalePriceGross = 100m,
+            DefaultSaleVatRateId = 1,
+            DefaultSaleVatRate = 22m,
+            DefaultSaleVatRateIsActive = true
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+        using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerIncomingRequestOrderApproval: true);
+        var settingsService = new SettingsService(temp.SettingsPath);
+        var logger = new FileLogger(temp.LogPath);
+        var requestsApi = new WpfIncomingRequestsApiService(settingsService, logger);
+        var service = new IncomingRequestOrderApiBridgeService(settingsService, logger, requestsApi);
+
+        var result = await service.ApproveAsync(request, "wpf-operator");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(IncomingRequestOrderApprovalResultKind.ValidationFailed, result.Kind);
+        Assert.Contains("выведен из оборота", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, harness.OrderCount);
+        Assert.Equal(0, harness.TotalOrderLineCount);
+        var storedRequest = Assert.IsType<OrderRequest>(harness.GetOrderRequest(request.Id));
+        Assert.Equal(OrderRequestStatus.Pending, storedRequest.Status);
+        Assert.Null(storedRequest.AppliedOrderId);
+        Assert.Null(storedRequest.ResolvedAt);
     }
 
     private sealed class TempSettingsScope : IDisposable

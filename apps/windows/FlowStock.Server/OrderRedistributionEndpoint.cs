@@ -62,6 +62,10 @@ public static class OrderRedistributionEndpoint
                 TransferredHuCodes = result.TransferredHuCodes
             });
         }
+        catch (OrderItemActivityException ex)
+        {
+            return Results.BadRequest(new ApiErrorResult(false, ex.ErrorCode, ex.Message));
+        }
         catch (ArgumentException)
         {
             return Results.BadRequest(new ApiResult(false, "INVALID_QTY"));

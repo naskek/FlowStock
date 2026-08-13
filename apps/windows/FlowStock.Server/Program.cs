@@ -2153,6 +2153,14 @@ app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStor
             return Results.BadRequest(new ApiResult(false, "ITEM_NOT_FOUND"));
         }
 
+        if (!item.IsActive)
+        {
+            return Results.BadRequest(new ApiErrorResult(
+                false,
+                OrderItemActivityGuard.ItemInactiveForOrder,
+                $"Товар \"{item.Name}\" выведен из оборота и недоступен для нового количества заказа."));
+        }
+
         normalizedLines.Add(new
         {
             item_id = line.ItemId.Value,

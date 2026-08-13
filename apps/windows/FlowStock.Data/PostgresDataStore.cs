@@ -1959,6 +1959,35 @@ ON CONFLICT (notification_id, reader_key) DO NOTHING;");
         });
     }
 
+    public void LockItemsForOrderValidation(IReadOnlyCollection<long> itemIds)
+    {
+        var ids = NormalizePositiveDistinctIds(itemIds)
+            .OrderBy(id => id)
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return;
+        }
+
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id
+FROM items
+WHERE id = ANY(@item_ids)
+ORDER BY id
+FOR SHARE;");
+            command.Parameters.Add("@item_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                // Reading all rows keeps the SHARE locks until the surrounding transaction ends.
+            }
+
+            return 0;
+        });
+    }
+
     public IReadOnlyList<Item> GetItems(string? search)
     {
         return WithConnection(connection =>

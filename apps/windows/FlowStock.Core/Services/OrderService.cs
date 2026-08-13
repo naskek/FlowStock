@@ -369,6 +369,57 @@ public sealed class OrderService
         OrderStatus initialStatus,
         bool? bindReservedStockForCustomer)
     {
+        long orderId = 0;
+        _data.ExecuteInTransaction(store =>
+        {
+            orderId = CreateOrderCoreInTransaction(
+                store,
+                orderRef,
+                partnerId,
+                dueDate,
+                comment,
+                lines,
+                type,
+                initialStatus,
+                bindReservedStockForCustomer);
+        });
+
+        return orderId;
+    }
+
+    internal static long CreateDraftOrderInTransaction(
+        IDataStore store,
+        string orderRef,
+        long? partnerId,
+        DateTime? dueDate,
+        string? comment,
+        IReadOnlyList<OrderLineView> lines,
+        OrderType type = OrderType.Customer,
+        bool? bindReservedStockForCustomer = null)
+    {
+        return CreateOrderCoreInTransaction(
+            store,
+            orderRef,
+            partnerId,
+            dueDate,
+            comment,
+            lines,
+            type,
+            OrderStatus.Draft,
+            bindReservedStockForCustomer);
+    }
+
+    private static long CreateOrderCoreInTransaction(
+        IDataStore store,
+        string orderRef,
+        long? partnerId,
+        DateTime? dueDate,
+        string? comment,
+        IReadOnlyList<OrderLineView> lines,
+        OrderType type,
+        OrderStatus initialStatus,
+        bool? bindReservedStockForCustomer)
+    {
         if (string.IsNullOrWhiteSpace(orderRef))
         {
             throw new ArgumentException("Номер заказа обязателен.", nameof(orderRef));
@@ -381,14 +432,37 @@ public sealed class OrderService
                 throw new ArgumentException("Контрагент обязателен.", nameof(partnerId));
             }
 
-            if (_data.GetPartner(partnerId.Value) == null)
+            if (store.GetPartner(partnerId.Value) == null)
             {
                 throw new ArgumentException("Контрагент не найден.", nameof(partnerId));
             }
         }
 
+        var normalized = NormalizeLines(lines, type);
+        OrderItemActivityGuard.EnsureActiveForAdditionalOrderQuantity(
+            store,
+            normalized.Select(line => line.ItemId));
+
+        var commercialTermsByLine = new Dictionary<OrderLineView, CommercialTermsResolution?>();
+        var resolver = new CommercialTermsResolver(store);
+        foreach (var line in normalized)
+        {
+            if (type == OrderType.Internal)
+            {
+                ValidateInternalCommercialIntent(line);
+                commercialTermsByLine[line] = null;
+                continue;
+            }
+
+            commercialTermsByLine[line] = resolver.ResolveForNewCustomerLine(
+                partnerId!.Value,
+                line.ItemId,
+                line.ChangeUnitPriceGross,
+                line.UnitPriceGross);
+        }
+
         var useReservedStock = type == OrderType.Customer && (bindReservedStockForCustomer ?? false);
-        var order = new Order
+        var orderId = store.AddOrder(new Order
         {
             OrderRef = orderRef.Trim(),
             Type = type,
@@ -398,51 +472,25 @@ public sealed class OrderService
             Comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim(),
             CreatedAt = DateTime.Now,
             UseReservedStock = useReservedStock
-        };
-
-        var normalized = NormalizeLines(lines, type);
-        long orderId = 0;
-
-        _data.ExecuteInTransaction(store =>
-        {
-            var commercialTermsByLine = new Dictionary<OrderLineView, CommercialTermsResolution?>();
-            var resolver = new CommercialTermsResolver(store);
-            foreach (var line in normalized)
-            {
-                if (type == OrderType.Internal)
-                {
-                    ValidateInternalCommercialIntent(line);
-                    commercialTermsByLine[line] = null;
-                    continue;
-                }
-
-                commercialTermsByLine[line] = resolver.ResolveForNewCustomerLine(
-                    partnerId!.Value,
-                    line.ItemId,
-                    line.ChangeUnitPriceGross,
-                    line.UnitPriceGross);
-            }
-
-            orderId = store.AddOrder(order);
-            foreach (var line in normalized)
-            {
-                var terms = commercialTermsByLine[line];
-                store.AddOrderLine(new OrderLine
-                {
-                    OrderId = orderId,
-                    ItemId = line.ItemId,
-                    QtyOrdered = line.QtyOrdered,
-                    ProductionPurpose = ResolveLinePurpose(type, line.ProductionPurpose),
-                    ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup),
-                    UnitPriceGross = terms?.UnitPriceGross,
-                    VatRate = terms?.VatRate
-                });
-            }
-
-            // Создание заказа НЕ строит производственный/receipt план и не выделяет HU.
-            // План появляется только явной ручной командой (ProductionPalletService.PlanOrder).
         });
 
+        foreach (var line in normalized)
+        {
+            var terms = commercialTermsByLine[line];
+            store.AddOrderLine(new OrderLine
+            {
+                OrderId = orderId,
+                ItemId = line.ItemId,
+                QtyOrdered = line.QtyOrdered,
+                ProductionPurpose = ResolveLinePurpose(type, line.ProductionPurpose),
+                ProductionPalletGroup = NormalizePalletGroup(line.ProductionPalletGroup),
+                UnitPriceGross = terms?.UnitPriceGross,
+                VatRate = terms?.VatRate
+            });
+        }
+
+        // Создание заказа НЕ строит производственный/receipt план и не выделяет HU.
+        // План появляется только явной ручной командой (ProductionPalletService.PlanOrder).
         return orderId;
     }
 
@@ -588,11 +636,14 @@ public sealed class OrderService
                 new Dictionary<(long ItemId, ProductionLinePurpose ProductionPurpose), CommercialTermsResolution?>();
             var priceUpdatesByLineId = new Dictionary<long, decimal>();
             var commercialTermsResolver = new CommercialTermsResolver(store);
+            var selectedExistingByIncomingLine = new Dictionary<OrderLineView, OrderLine?>();
+            var itemIdsRequiringActiveState = new HashSet<long>();
 
             foreach (var line in normalized)
             {
                 var linePurpose = ResolveLinePurpose(type, line.ProductionPurpose);
                 var key = (line.ItemId, ProductionPurpose: linePurpose);
+                OrderLine? selectedExisting = null;
                 if (line.Id > 0)
                 {
                     if (!existingById.TryGetValue(line.Id, out var identified)
@@ -603,9 +654,33 @@ public sealed class OrderService
                             "ORDER_LINE_NOT_FOUND",
                             "Строка заказа не найдена или не соответствует переданному товару.");
                     }
+
+                    selectedExisting = identified;
+                }
+                else if (existingByItem.TryGetValue(key, out var legacyMatched) && legacyMatched.Count > 0)
+                {
+                    selectedExisting = legacyMatched[0];
                 }
 
-                if (existingByItem.TryGetValue(key, out var matched) && matched.Count > 0)
+                selectedExistingByIncomingLine[line] = selectedExisting;
+                if (selectedExisting == null
+                    || line.QtyOrdered > selectedExisting.QtyOrdered + QtyTolerance)
+                {
+                    itemIdsRequiringActiveState.Add(line.ItemId);
+                }
+            }
+
+            OrderItemActivityGuard.EnsureActiveForAdditionalOrderQuantity(
+                store,
+                itemIdsRequiringActiveState);
+
+            foreach (var line in normalized)
+            {
+                var linePurpose = ResolveLinePurpose(type, line.ProductionPurpose);
+                var key = (line.ItemId, ProductionPurpose: linePurpose);
+                var selectedExisting = selectedExistingByIncomingLine[line];
+
+                if (selectedExisting != null)
                 {
                     if (!line.ChangeUnitPriceGross)
                     {
@@ -625,22 +700,19 @@ public sealed class OrderService
                     }
 
                     var newPrice = CommercialTermsResolver.ValidateManualPrice(line.UnitPriceGross);
-                    var primary = line.Id > 0
-                        ? matched.First(candidate => candidate.Id == line.Id)
-                        : matched[0];
-                    if (primary.UnitPriceGross == newPrice)
+                    if (selectedExisting.UnitPriceGross == newPrice)
                     {
                         continue;
                     }
 
-                    if (store.HasCommercialShipmentForOrderLine(primary.Id))
+                    if (store.HasCommercialShipmentForOrderLine(selectedExisting.Id))
                     {
                         throw new CommercialTermsException(
                             CommercialTermsResolver.OrderLinePriceLockedByShipment,
                             "Цена строки заказа не может быть изменена после проведённой отгрузки.");
                     }
 
-                    priceUpdatesByLineId[primary.Id] = newPrice;
+                    priceUpdatesByLineId[selectedExisting.Id] = newPrice;
                     continue;
                 }
 
@@ -670,7 +742,11 @@ public sealed class OrderService
                 }
                 else
                 {
-                    foreach (var duplicateLine in entry.Value.Skip(1))
+                    var incomingLine = normalized.First(line =>
+                        line.ItemId == entry.Key.ItemId
+                        && ResolveLinePurpose(type, line.ProductionPurpose) == entry.Key.ProductionPurpose);
+                    var selectedExisting = selectedExistingByIncomingLine[incomingLine];
+                    foreach (var duplicateLine in entry.Value.Where(line => line.Id != selectedExisting?.Id))
                     {
                         ValidateOrderLineCanBeDeleted(store, orderId, duplicateLine);
                     }
@@ -691,9 +767,9 @@ public sealed class OrderService
             {
                 var linePurpose = ResolveLinePurpose(type, line.ProductionPurpose);
                 var key = (line.ItemId, ProductionPurpose: linePurpose);
-                if (existingByItem.TryGetValue(key, out var matched) && matched.Count > 0)
+                var primary = selectedExistingByIncomingLine[line];
+                if (primary != null)
                 {
-                    var primary = matched[0];
                     if (Math.Abs(primary.QtyOrdered - line.QtyOrdered) > QtyTolerance)
                     {
                         var orderedQty = type == OrderType.Customer
@@ -738,15 +814,18 @@ public sealed class OrderService
                     }
 
                     // Legacy cleanup: keep one line per item and purpose, remove accidental duplicates.
-                    for (var i = 1; i < matched.Count; i++)
+                    var duplicates = existingByItem[key]
+                        .Where(candidate => candidate.Id != primary.Id)
+                        .ToArray();
+                    foreach (var duplicate in duplicates)
                     {
-                        ValidateOrderLineCanBeDeleted(store, orderId, matched[i]);
-                        foreach (var affectedLineId in ClearPlannedProductionPalletsForOrderLine(store, orderId, matched[i].Id))
+                        ValidateOrderLineCanBeDeleted(store, orderId, duplicate);
+                        foreach (var affectedLineId in ClearPlannedProductionPalletsForOrderLine(store, orderId, duplicate.Id))
                         {
                             additionallyAffectedPalletLineIds.Add(affectedLineId);
                         }
-                        ClearCustomerReservationsForOrderLine(store, orderId, matched[i].Id, type);
-                        store.DeleteOrderLine(matched[i].Id);
+                        ClearCustomerReservationsForOrderLine(store, orderId, duplicate.Id, type);
+                        store.DeleteOrderLine(duplicate.Id);
                     }
                     continue;
                 }

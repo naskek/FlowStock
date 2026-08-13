@@ -83,5 +83,8 @@ internal static class UpdateOrderHttpApi
 
         [JsonPropertyName("unit_price_gross")]
         public decimal? UnitPriceGross { get; init; }
+
+        [JsonPropertyName("production_pallet_group")]
+        public string? ProductionPalletGroup { get; init; }
     }
 }

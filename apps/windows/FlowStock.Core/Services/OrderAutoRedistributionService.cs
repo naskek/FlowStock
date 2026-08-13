@@ -223,7 +223,8 @@ public sealed class OrderAutoRedistributionService
                         internalOrder.Id,
                         targetCustomerOrderId,
                         customerLine.ItemId,
-                        transferQty);
+                        transferQty,
+                        enforceTargetOrderActivityOnIncrease: false);
 
                     transfers.Add(new OrderAutoRedistributionTransfer
                     {

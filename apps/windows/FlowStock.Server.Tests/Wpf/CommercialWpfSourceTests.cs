@@ -38,6 +38,14 @@ public sealed class CommercialWpfSourceTests
         Assert.Contains("<TabItem Header=\"Статистика\">", MainWindow, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Order_item_picker_filters_inactive_items_without_filtering_shared_read_api()
+    {
+        Assert.Contains("apiItems.Where(item => item.IsActive)", OrderWindow, StringComparison.Ordinal);
+        var readApi = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfReadApiService.cs");
+        Assert.DoesNotContain("Where(item => item.IsActive)", readApi, StringComparison.Ordinal);
+    }
+
     private static string ReadRepoFile(params string[] parts)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

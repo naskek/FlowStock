@@ -54,6 +54,7 @@ internal sealed class CloseDocumentHarness
     private (long PalletId, SelectedAdoptionComponentLineMutation Mutation)? _nextSelectedAdoptionComponentLineMutation;
     private Action? _afterNextLockOrdersForUpdate;
     private bool _failNextUpdateOrder;
+    private int _transactionExecutionCount;
 
     public CloseDocumentHarness()
     {
@@ -69,6 +70,7 @@ internal sealed class CloseDocumentHarness
     public int TotalDocLineCount => _linesByDoc.Values.Sum(lines => lines.Count);
     public int OrderCount => _orders.Count;
     public int TotalOrderLineCount => _orderLinesByOrder.Values.Sum(lines => lines.Count);
+    public int TransactionExecutionCount => _transactionExecutionCount;
     public IReadOnlyList<MarkingOrder> MarkingOrders => _markingOrders.Values.OrderBy(order => order.CreatedAt).ToArray();
     public IReadOnlyList<MarkingCode> MarkingCodes => _markingCodes.Values.OrderBy(code => code.CreatedAt).ToArray();
 
@@ -940,6 +942,8 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.HasActiveOrderControlForOrder(It.IsAny<long>()))
             .Returns<long>(orderId => _ordersWithActiveControl.Contains(orderId));
 
+        _store.Setup(store => store.LockItemsForOrderValidation(It.IsAny<IReadOnlyCollection<long>>()));
+
         _store.Setup(store => store.LockOrdersForUpdate(It.IsAny<IReadOnlyCollection<long>>()))
             .Returns<IReadOnlyCollection<long>>(ids =>
             {
@@ -954,6 +958,7 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work =>
             {
+                _transactionExecutionCount++;
                 var snapshot = CreateTransactionSnapshot();
                 try
                 {

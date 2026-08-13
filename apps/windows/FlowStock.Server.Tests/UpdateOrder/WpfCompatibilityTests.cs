@@ -1,5 +1,6 @@
 using FlowStock.App;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 using FlowStock.Server.Tests.CreateOrder.Infrastructure;
 using FlowStock.Server.Tests.UpdateOrder.Infrastructure;
@@ -16,6 +17,43 @@ namespace FlowStock.Server.Tests.UpdateOrder;
 [Collection("UpdateOrder")]
 public sealed class WpfCompatibilityTests
 {
+    [Fact]
+    public async Task WpfUpdateOrder_MapsInactiveIncreaseToValidationMessage()
+    {
+        var (harness, apiStore, orderId) = UpdateOrderHttpScenario.CreateCustomerScenario();
+        harness.SeedItem(new Item
+        {
+            Id = 1001,
+            Name = "Горчица",
+            IsActive = false,
+            DefaultSalePriceGross = 100m,
+            DefaultSaleVatRateId = 1,
+            DefaultSaleVatRate = 22m,
+            DefaultSaleVatRateIsActive = true
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+        using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerUpdateOrder: true);
+        var service = new WpfUpdateOrderService(new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath));
+
+        var result = await service.UpdateOrderAsync(new WpfUpdateOrderContext(
+            orderId,
+            "001",
+            OrderType.Customer,
+            200,
+            null,
+            OrderStatus.InProgress,
+            null,
+            [
+                new OrderLineView { Id = 101, ItemId = 1001, ItemName = "Горчица", QtyOrdered = 11 },
+                new OrderLineView { Id = 102, ItemId = 1002, ItemName = "Кетчуп", QtyOrdered = 5 }
+            ]));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WpfUpdateOrderResultKind.ValidationFailed, result.Kind);
+        Assert.Equal(OrderItemActivityGuard.ItemInactiveForOrder, result.ErrorCode);
+        Assert.Contains("выведен из оборота", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task WpfUpdateOrder_FeatureFlagRoutesToCanonicalPutApiOrders()
     {

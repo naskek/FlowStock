@@ -184,6 +184,14 @@ public sealed class ReserveProducedHuForCustomerTests
             palletQty,
             huCode1,
             huCode2);
+        harness.SeedItem(new Item
+        {
+            Id = itemId,
+            Name = "Товар",
+            IsActive = false,
+            ItemTypeId = 1,
+            MaxQtyPerHu = palletQty
+        });
 
         var internalQtyBefore = harness.GetOrderLines(internalOrderId).Single().QtyOrdered;
         var producedBefore = harness.Store.GetOrderReceiptRemaining(internalOrderId)

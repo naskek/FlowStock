@@ -168,6 +168,7 @@ public sealed class InternalOrderReceiptPlanRebuildTests
     {
         var currentQtyOrdered = orderLines[0].QtyOrdered;
         var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(s => s.LockItemsForOrderValidation(It.IsAny<IReadOnlyCollection<long>>()));
         store.Setup(s => s.ExecuteInTransaction(It.IsAny<Action<IDataStore>>()))
             .Callback<Action<IDataStore>>(work => work(store.Object));
         store.Setup(s => s.LockOrdersForUpdate(

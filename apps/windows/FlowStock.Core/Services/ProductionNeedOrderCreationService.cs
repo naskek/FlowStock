@@ -29,6 +29,17 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
         IDataStore dataStore,
         IReadOnlyList<ProductionNeedOrderDraftRequestLine>? requestedLines)
     {
+        var explicitItemIds = requestedLines?
+            .Where(line => line.ItemId > 0 && line.QtyOrdered > QtyTolerance)
+            .Select(line => line.ItemId)
+            .ToArray();
+        if (explicitItemIds is { Length: > 0 })
+        {
+            // Early stale-selection feedback. The canonical create helper below still
+            // acquires the PostgreSQL row lock and repeats this validation before writing.
+            OrderItemActivityGuard.ValidateActiveForAdditionalOrderQuantity(dataStore, explicitItemIds);
+        }
+
         var preview = BuildPreview(dataStore);
         var currentRows = new ProductionNeedService(dataStore).GetRows(includeZeroNeed: false);
         var openInternalByItem = BuildDebugOpenInternalProductionByItem(dataStore);
@@ -54,10 +65,16 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
 
     private static ProductionNeedOrderPreviewResult BuildPreview(IDataStore dataStore)
     {
+        var activeItemIds = dataStore.GetItems(null)
+            .Where(item => item.IsActive)
+            .Select(item => item.Id)
+            .ToHashSet();
         var currentRows = new ProductionNeedService(dataStore)
             .GetRows(includeZeroNeed: false);
         var previewRows = currentRows
-            .Where(row => row.CanCreateOrder && row.QtyToCreate > QtyTolerance)
+            .Where(row => activeItemIds.Contains(row.ItemId)
+                          && row.CanCreateOrder
+                          && row.QtyToCreate > QtyTolerance)
             .Select(row => new ProductionNeedOrderPreviewLine
             {
                 ItemId = row.ItemId,
@@ -230,26 +247,13 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
 
     private static long CreateInternalDraftOrder(IDataStore dataStore, IReadOnlyList<OrderLineView> draftLines)
     {
-        var orderId = dataStore.AddOrder(new Order
-        {
-            OrderRef = GenerateNextOrderRef(dataStore),
-            Type = OrderType.Internal,
-            Status = OrderStatus.Draft,
-            Comment = "Автосформировано из потребности производства.",
-            CreatedAt = DateTime.Now
-        });
-
-        foreach (var line in draftLines)
-        {
-            dataStore.AddOrderLine(new OrderLine
-            {
-                OrderId = orderId,
-                ItemId = line.ItemId,
-                QtyOrdered = line.QtyOrdered,
-                ProductionPurpose = ProductionLinePurpose.InternalStock
-            });
-        }
-
-        return orderId;
+        return OrderService.CreateDraftOrderInTransaction(
+            dataStore,
+            GenerateNextOrderRef(dataStore),
+            partnerId: null,
+            dueDate: null,
+            comment: "Автосформировано из потребности производства.",
+            draftLines,
+            OrderType.Internal);
     }
 }
