@@ -1688,6 +1688,238 @@ assert.doesNotMatch(catalogHtml, /ШК:\s*<\/div>/);
 assert.doesNotMatch(catalogHtml, /<th[^>]*>\s*ID\s*<\/th>/);
 assert.doesNotMatch(catalogHtml, /<th[^>]*>\s*GTIN\s*<\/th>/);
 assert.doesNotMatch(catalogHtml, /<th[^>]*>[^<]*ШК[^<]*<\/th>/);
+assert.match(catalogHtml, /data-catalog-item-id="100"/);
+assert.match(catalogHtml, /tabindex="0" role="button"/);
+
+const catalogSource = fs.readFileSync(catalogPath, "utf8");
+assert.match(catalogSource, /event\.key !== "Enter" && event\.key !== " "/);
+assert.match(catalogSource, /deps\.fetchJson\("\/api\/item-types\?include_inactive=1"\)/);
+
+const catalogHooks = context.window.FlowStockPcCatalog.testHooks;
+assert.strictEqual(
+  catalogHooks.formatVatRate({ default_sale_vat_rate_name: "Основная", default_sale_vat_rate: 20 }),
+  "Основная — 20%"
+);
+assert.strictEqual(
+  catalogHooks.formatVatRate({ default_sale_vat_rate_name: "Базовая 22%", default_sale_vat_rate: 22 }),
+  "Базовая 22%",
+  "VAT percentage already present in the rate name must not be duplicated"
+);
+assert.strictEqual(
+  catalogHooks.formatVatRate({
+    default_sale_vat_rate_name: "Базовая 22%",
+    default_sale_vat_rate: 22,
+    default_sale_vat_rate_is_active: false,
+  }),
+  "Базовая 22% (неактивна)"
+);
+assert.strictEqual(
+  catalogHooks.formatVatRate({ default_sale_vat_rate_name: "Только название" }),
+  "Только название"
+);
+assert.strictEqual(
+  catalogHooks.formatVatRate({ default_sale_vat_rate: 10 }),
+  "10%"
+);
+assert.deepStrictEqual(
+  Array.from(catalogHooks.buildExactFilterOptions([
+    { brand: "Brand" },
+    { brand: "brand" },
+    { brand: "Brand" },
+    { brand: "A  B" },
+    { brand: "A B" },
+    { brand: "" },
+    { brand: "   " },
+  ], "brand")),
+  ["A  B", "A B", "brand", "Brand"].sort(function (left, right) {
+    return left.localeCompare(right, "ru", { sensitivity: "variant", numeric: true });
+  }),
+  "brand options must preserve exact case and internal spaces while excluding empty values"
+);
+
+const exactFilterRows = catalogHooks.buildCatalogRows([
+  { id: 1, item_type_id: 10, name: "Горчица", brand: "Brand", volume: "1 л" },
+  { id: 2, item_type_id: 10, name: "Горчица", brand: "brand", volume: "1 л" },
+  { id: 3, item_type_id: 11, name: "Соус", brand: "Brand", volume: "2 л" },
+]);
+assert.deepStrictEqual(
+  Array.from(catalogHooks.filterCatalogRows(exactFilterRows, {
+    query: "горчица",
+    typeId: 10,
+    brand: "Brand",
+    volume: "1 л",
+  })).map(function (row) { return row.itemId; }),
+  [1],
+  "catalog search, type, brand and volume filters must be combined with AND"
+);
+assert.strictEqual(catalogHooks.retainAvailableValue("Brand", ["Brand"]), "Brand");
+assert.strictEqual(catalogHooks.retainAvailableValue("Missing", ["Brand"]), "");
+assert.strictEqual(
+  catalogHooks.selectVisibleCatalogItems([
+    { id: 1, is_active: true, item_type_is_visible_in_product_catalog: false },
+    { id: 2, is_active: false, item_type_is_visible_in_product_catalog: true },
+  ]).length,
+  0,
+  "catalog must not fall back to all items when visible item types contain no active products"
+);
+
+const productCardHtml = catalogHooks.renderProductCardContent({
+  id: 100,
+  name: "Соус <острый>",
+  barcode: "0",
+  gtin: "",
+  brand: "Печагин & Ко",
+  volume: "1 кг",
+  shelf_life_months: 0,
+  storage_conditions: "Хранить сухо\nНе замораживать <0>",
+  tara_name: "Банка",
+  item_type_name: "Соусы",
+  base_uom_code: "шт",
+  default_sale_price_gross: 12.34567,
+  default_sale_vat_rate_name: "Основная",
+  default_sale_vat_rate: 20,
+  default_sale_vat_rate_is_active: false,
+  item_type_enable_min_stock_control: true,
+  min_stock_qty: 0,
+  item_type_enable_marking: true,
+  max_qty_per_hu: 48,
+}, {
+  enable_hu_distribution: true,
+  enable_marking: true,
+});
+assert.match(productCardHtml, /Соус &lt;острый&gt;/);
+assert.match(productCardHtml, /Печагин &amp; Ко/);
+assert.match(productCardHtml, /Хранить сухо\nНе замораживать &lt;0&gt;/);
+assert.match(productCardHtml, /Цена продажи с НДС[\s\S]*12,3457/);
+assert.match(productCardHtml, /Ставка НДС[\s\S]*Основная — 20% \(неактивна\)/);
+assert.match(productCardHtml, /Минимальный остаток[\s\S]*>0</);
+assert.match(productCardHtml, /Макс\. в 1 HU[\s\S]*48/);
+assert.match(productCardHtml, /Маркировка ЧЗ[\s\S]*Нет, GTIN не заполнен/);
+assert.doesNotMatch(productCardHtml, /<input|<select|data-product-price-(?:save|edit)/);
+
+const plainProductCardHtml = catalogHooks.renderProductCardContent({ name: "Без настроек" }, {});
+assert.match(plainProductCardHtml, /SKU \/ штрихкод[\s\S]*—/);
+assert.doesNotMatch(plainProductCardHtml, /Минимальный остаток|Макс\. в 1 HU|Маркировка ЧЗ/);
+
+const customerPricesHtml = catalogHooks.renderCustomerPrices({
+  loaded: true,
+  loading: false,
+  error: false,
+  totalCount: 2,
+  items: [
+    { partner_name: "Клиент <1>", partner_code: "K&1", unit_price_gross: 10.5, is_active: true },
+    { partner_name: "Клиент 2", partner_code: "", unit_price_gross: 0, is_active: false },
+  ],
+});
+assert.match(customerPricesHtml, /Клиент &lt;1&gt;/);
+assert.match(customerPricesHtml, /K&amp;1/);
+assert.match(customerPricesHtml, /Цена с НДС/);
+assert.match(customerPricesHtml, /Активна/);
+assert.match(customerPricesHtml, /Неактивна/);
+assert.match(customerPricesHtml, />0</);
+assert.match(
+  catalogHooks.renderCustomerPrices({ loaded: true, loading: false, error: false, totalCount: 0, items: [] }),
+  /Индивидуальные цены клиентов не заданы\./
+);
+assert.match(
+  catalogHooks.renderCustomerPrices({ loaded: true, loading: false, error: true, totalCount: 0, items: [] }),
+  /data-product-prices-retry/
+);
+assert.strictEqual(
+  catalogHooks.buildCustomerPricesUrl(123, 200),
+  "/api/partner-item-sale-prices?item_id=123&limit=100&offset=200"
+);
+
+function runSharedModalDismissRegression() {
+  const core = context.window.FlowStockPcCore;
+  const connectedModals = [];
+  const documentListeners = {};
+
+  function addListener(store, type, handler) {
+    if (!store[type]) store[type] = [];
+    store[type].push(handler);
+  }
+  function removeListener(store, type, handler) {
+    store[type] = (store[type] || []).filter(function (registered) { return registered !== handler; });
+  }
+  function createModal() {
+    const listeners = {};
+    return {
+      isConnected: true,
+      addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+      removeEventListener: function (type, handler) { removeListener(listeners, type, handler); },
+      dispatchClick: function (target) {
+        (listeners.click || []).slice().forEach(function (handler) { handler({ target: target }); });
+      },
+      listenerCount: function (type) { return (listeners[type] || []).length; },
+    };
+  }
+  function dispatchEscape() {
+    const event = {
+      key: "Escape",
+      defaultPrevented: false,
+      preventDefault: function () { this.defaultPrevented = true; },
+    };
+    (documentListeners.keydown || []).slice().forEach(function (handler) { handler(event); });
+  }
+
+  const originalQuerySelectorAll = context.document.querySelectorAll;
+  context.document.querySelectorAll = function (selector) {
+    return selector === ".pc-modal" ? connectedModals.slice() : [];
+  };
+  context.document.addEventListener = function (type, handler) { addListener(documentListeners, type, handler); };
+  context.document.removeEventListener = function (type, handler) { removeListener(documentListeners, type, handler); };
+
+  const first = createModal();
+  const second = createModal();
+  connectedModals.push(first, second);
+  let firstDismissals = 0;
+  let secondDismissals = 0;
+  let disposeFirst = function () {};
+  let disposeSecond = function () {};
+  disposeFirst = core.bindModalDismiss(first, function () {
+    firstDismissals += 1;
+    first.isConnected = false;
+    connectedModals.splice(connectedModals.indexOf(first), 1);
+    disposeFirst();
+  });
+  disposeSecond = core.bindModalDismiss(second, function () {
+    secondDismissals += 1;
+    second.isConnected = false;
+    connectedModals.splice(connectedModals.indexOf(second), 1);
+    disposeSecond();
+  });
+
+  first.dispatchClick({});
+  assert.strictEqual(firstDismissals, 0, "click inside modal card must not dismiss its overlay");
+  dispatchEscape();
+  assert.strictEqual(firstDismissals, 0, "one Escape must leave the lower modal open");
+  assert.strictEqual(secondDismissals, 1, "one Escape must dismiss only the last connected modal");
+  assert.strictEqual(first.listenerCount("click"), 1, "lower modal listeners must remain active");
+  dispatchEscape();
+  assert.strictEqual(firstDismissals, 1, "the next Escape must dismiss the remaining modal");
+  assert.strictEqual(secondDismissals, 1, "one Escape event must never dismiss two modals");
+  assert.strictEqual((documentListeners.keydown || []).length, 0, "disposers must remove keydown listeners");
+
+  const overlay = createModal();
+  connectedModals.push(overlay);
+  let overlayDismissals = 0;
+  let disposeOverlay = function () {};
+  disposeOverlay = core.bindModalDismiss(overlay, function () {
+    overlayDismissals += 1;
+    disposeOverlay();
+  });
+  overlay.dispatchClick({});
+  assert.strictEqual(overlayDismissals, 0);
+  overlay.dispatchClick(overlay);
+  overlay.dispatchClick(overlay);
+  assert.strictEqual(overlayDismissals, 1, "overlay click and disposer must be idempotent");
+  assert.strictEqual(overlay.listenerCount("click"), 0);
+
+  context.document.querySelectorAll = originalQuerySelectorAll;
+}
+
+runSharedModalDismissRegression();
 
 
 const pcAppSourceForOrderRefSort =
@@ -1719,9 +1951,34 @@ assert.match(
   /expandedOrderLineIds:\s*\{\}/,
   "open order modal should keep expanded order line state across live refresh"
 );
+assert.match(
+  fs.readFileSync(orderModalPath, "utf8"),
+  /disposeDismiss = bindModalDismiss\(modal, close\);[\s\S]*openOrderModalController = \{/,
+  "order modal dismissal must wrap the existing controller lifecycle"
+);
+assert.match(
+  fs.readFileSync(orderModalPath, "utf8"),
+  /if \(!modal\.isConnected\) \{[\s\S]*clearOpenOrderModalController\(\);[\s\S]*return;/,
+  "late order modal refresh must not update detached DOM"
+);
 
 const pcIndexSource = fs.readFileSync(indexPath, "utf8");
 const pcAppSource = fs.readFileSync(appPath, "utf8");
+assert.strictEqual(
+  (pcAppSource.match(/disposeDismiss = bindModalDismiss\(modal, close\);/g) || []).length,
+  2,
+  "production preview and new-order modal must both use the shared dismissal helper"
+);
+assert.match(
+  pcAppSource,
+  /function openNewOrderModal[\s\S]*if \(duplicateWarningTimer\) \{[\s\S]*clearTimeout\(duplicateWarningTimer\)[\s\S]*removeEventListener\("resize", syncSuggestionOverlay\)[\s\S]*suggestionOverlay\.parentNode\.removeChild/,
+  "new-order close path must retain timer, floating overlay and resize listener cleanup"
+);
+assert.match(
+  pcAppSource,
+  /if \(closed \|\| modal\.isConnected === false\) \{\s*return;\s*\}[\s\S]*var refsData = payload\[0\]/,
+  "late new-order reference data must not update detached DOM"
+);
 assert.match(pcIndexSource, /id="pcVersionBanner"/);
 assert.match(pcIndexSource, /Доступна новая версия FlowStock/);
 assert.match(pcIndexSource, /id="pcVersionReloadBtn"[^>]*>Обновить</);
@@ -1832,7 +2089,290 @@ async function runPcVersionWatcherTests() {
   assert.strictEqual(versionBanner.hidden, true, "banner should hide when frontend versions match again");
 }
 
-runPcVersionWatcherTests().catch(function (error) {
+async function runCatalogModalTests() {
+  const catalog = context.window.FlowStockPcCatalog;
+  const core = context.window.FlowStockPcCore;
+  const connectedModals = [];
+  const documentListeners = {};
+  const fetchCalls = [];
+  const firstPage = createDeferred();
+  const latePage = createDeferred();
+  let fetchMode = "first";
+
+  function addListener(store, type, handler) {
+    if (!store[type]) store[type] = [];
+    store[type].push(handler);
+  }
+  function removeListener(store, type, handler) {
+    store[type] = (store[type] || []).filter(function (registered) { return registered !== handler; });
+  }
+  function createButton() {
+    const listeners = {};
+    return {
+      textContent: "",
+      addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+      setAttribute: function () {},
+      click: function () {
+        (listeners.click || []).slice().forEach(function (handler) { handler({ target: this }); }, this);
+      },
+    };
+  }
+  function createCatalogModal() {
+    const listeners = {};
+    const closeButton = createButton();
+    const toggleButton = createButton();
+    const pricesSection = {
+      hidden: true,
+      _innerHTML: "Индивидуальные цены будут загружены по запросу.",
+      moreButton: null,
+      retryButton: null,
+      set innerHTML(value) {
+        this._innerHTML = String(value || "");
+        this.moreButton = this._innerHTML.indexOf("data-product-prices-more") >= 0 ? createButton() : null;
+        this.retryButton = this._innerHTML.indexOf("data-product-prices-retry") >= 0 ? createButton() : null;
+      },
+      get innerHTML() {
+        return this._innerHTML;
+      },
+      querySelector: function (selector) {
+        if (selector === "[data-product-prices-more]") return this.moreButton;
+        if (selector === "[data-product-prices-retry]") return this.retryButton;
+        return null;
+      },
+    };
+    return {
+      className: "",
+      innerHTML: "",
+      parentNode: null,
+      isConnected: false,
+      closeButton,
+      toggleButton,
+      pricesSection,
+      addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+      removeEventListener: function (type, handler) { removeListener(listeners, type, handler); },
+      dispatchClick: function (target) {
+        (listeners.click || []).slice().forEach(function (handler) { handler({ target: target }); });
+      },
+      querySelector: function (selector) {
+        if (selector === "[data-product-card-close]") return closeButton;
+        if (selector === "[data-product-prices-toggle]") return toggleButton;
+        if (selector === "[data-product-prices]") return pricesSection;
+        return null;
+      },
+    };
+  }
+
+  context.document.querySelectorAll = function (selector) {
+    return selector === ".pc-modal" ? connectedModals.slice() : [];
+  };
+  context.document.addEventListener = function (type, handler) { addListener(documentListeners, type, handler); };
+  context.document.removeEventListener = function (type, handler) { removeListener(documentListeners, type, handler); };
+  context.document.createElement = function () { return createCatalogModal(); };
+  context.document.body = {
+    appendChild: function (element) {
+      element.parentNode = this;
+      element.isConnected = true;
+      connectedModals.push(element);
+    },
+    removeChild: function (element) {
+      element.parentNode = null;
+      element.isConnected = false;
+      const index = connectedModals.indexOf(element);
+      if (index >= 0) connectedModals.splice(index, 1);
+    },
+  };
+
+  catalog.init({
+    escapeHtml: core.escapeHtml,
+    bindModalDismiss: core.bindModalDismiss,
+    fetchJson: function (url) {
+      fetchCalls.push(url);
+      if (fetchMode === "first") return firstPage.promise;
+      if (fetchMode === "late") return latePage.promise;
+      return Promise.resolve({ items: [], total_count: 0 });
+    },
+  });
+
+  const originalItem = { id: 777, name: "Snapshot товар", default_sale_vat_rate_name: "Основная", default_sale_vat_rate: 20 };
+  const firstController = catalog.testHooks.openProductCard(originalItem);
+  const firstModal = firstController.modal;
+  const originalHtml = firstModal.innerHTML;
+  originalItem.name = "Изменён после открытия";
+  assert.strictEqual(firstModal.innerHTML, originalHtml, "open product card must remain a read-only snapshot");
+  assert.strictEqual(fetchCalls.length, 0, "customer prices must stay lazy until first expansion");
+  firstModal.toggleButton.click();
+  assert.strictEqual(fetchCalls.length, 1);
+  assert.strictEqual(fetchCalls[0], "/api/partner-item-sale-prices?item_id=777&limit=100&offset=0");
+  firstPage.resolve({
+    items: [{ partner_name: "Клиент", partner_code: "K1", unit_price_gross: 9.99, is_active: true }],
+    total_count: 2,
+  });
+  await firstPage.promise;
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.match(firstModal.pricesSection.innerHTML, /Клиент/);
+  firstModal.toggleButton.click();
+  firstModal.toggleButton.click();
+  assert.strictEqual(fetchCalls.length, 1, "repeated expansion must use the product card cache");
+  assert.ok(firstModal.pricesSection.moreButton, "partial page must offer explicit pagination");
+  fetchMode = "resolved";
+  firstModal.pricesSection.moreButton.click();
+  assert.strictEqual(fetchCalls[1], "/api/partner-item-sale-prices?item_id=777&limit=100&offset=1");
+  await Promise.resolve();
+  await Promise.resolve();
+  firstModal.closeButton.click();
+  firstModal.closeButton.click();
+  assert.strictEqual(catalog.testHooks.getOpenProductCardController(), null);
+
+  fetchMode = "late";
+  const lateController = catalog.testHooks.openProductCard({ id: 778, name: "Поздний ответ" });
+  const lateModal = lateController.modal;
+  lateModal.toggleButton.click();
+  const htmlBeforeClose = lateModal.pricesSection.innerHTML;
+  lateModal.dispatchClick({});
+  assert.ok(lateModal.isConnected, "click inside product modal card must not close it");
+  lateModal.dispatchClick(lateModal);
+  assert.strictEqual(lateModal.isConnected, false, "product card overlay click must use its close path");
+  latePage.resolve({ items: [{ partner_name: "Не отображать", unit_price_gross: 1, is_active: true }], total_count: 1 });
+  await latePage.promise;
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.strictEqual(
+    lateModal.pricesSection.innerHTML,
+    htmlBeforeClose,
+    "late customer price response must not mutate detached product card DOM"
+  );
+}
+
+async function runOrderModalDismissTests() {
+  const orderModal = context.window.FlowStockPcOrderModal;
+  const core = context.window.FlowStockPcCore;
+  const connectedModals = [];
+  const documentListeners = {};
+  let pendingRefresh = null;
+
+  function addListener(store, type, handler) {
+    if (!store[type]) store[type] = [];
+    store[type].push(handler);
+  }
+  function removeListener(store, type, handler) {
+    store[type] = (store[type] || []).filter(function (registered) { return registered !== handler; });
+  }
+  function createOrderModalElement() {
+    const listeners = {};
+    const closeButton = {
+      addEventListener: function (type, handler) { if (type === "click") this.click = handler; },
+      click: function () {},
+    };
+    const linesWrap = { innerHTML: "", textContent: "Загрузка строк..." };
+    return {
+      className: "",
+      innerHTML: "",
+      parentNode: null,
+      isConnected: false,
+      closeButton,
+      linesWrap,
+      addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+      removeEventListener: function (type, handler) { removeListener(listeners, type, handler); },
+      dispatchClick: function (target) {
+        (listeners.click || []).slice().forEach(function (handler) { handler({ target: target }); });
+      },
+      querySelector: function (selector) {
+        if (selector === "#modalCloseBtn") return closeButton;
+        if (selector === "#orderLinesWrap") return linesWrap;
+        return null;
+      },
+      querySelectorAll: function () { return []; },
+    };
+  }
+
+  context.document.querySelectorAll = function (selector) {
+    return selector === ".pc-modal" ? connectedModals.slice() : [];
+  };
+  context.document.addEventListener = function (type, handler) { addListener(documentListeners, type, handler); };
+  context.document.removeEventListener = function (type, handler) { removeListener(documentListeners, type, handler); };
+  context.document.createElement = function () { return createOrderModalElement(); };
+  context.document.body = {
+    appendChild: function (element) {
+      element.parentNode = this;
+      element.isConnected = true;
+      connectedModals.push(element);
+    },
+    removeChild: function (element) {
+      element.parentNode = null;
+      element.isConnected = false;
+      const index = connectedModals.indexOf(element);
+      if (index >= 0) connectedModals.splice(index, 1);
+    },
+  };
+
+  orderModal.init({
+    fetchJson: function () { return pendingRefresh ? pendingRefresh.promise : Promise.resolve([]); },
+    escapeHtml: core.escapeHtml,
+    formatDate: function () { return "—"; },
+    formatQuantity: function (value) { return String(value == null ? "—" : value); },
+    isInternalOrder: function () { return false; },
+    isShippedOrder: function () { return false; },
+    getShipmentReadiness: function () { return {}; },
+    renderReadinessBadge: function () { return ""; },
+    applyOrderReadinessFromLines: function () {},
+    translatePalletStatus: function (value) { return String(value || ""); },
+    getOrderLineHighlightState: function () { return {}; },
+    renderLinePalletFillingBadge: function () { return ""; },
+    getOrderTypeLabel: function () { return "Клиентский"; },
+    bindModalDismiss: core.bindModalDismiss,
+  });
+
+  orderModal.openOrderModal({ id: 1, order_ref: "001", order_type: "CUSTOMER" });
+  let controller = orderModal.getOpenOrderModalController();
+  const explicitModal = controller.modal;
+  explicitModal.closeButton.click();
+  explicitModal.closeButton.click();
+  assert.strictEqual(orderModal.getOpenOrderModalController(), null, "order close must clear controller once");
+
+  orderModal.openOrderModal({ id: 2, order_ref: "002", order_type: "CUSTOMER" });
+  controller = orderModal.getOpenOrderModalController();
+  const overlayModal = controller.modal;
+  overlayModal.dispatchClick({});
+  assert.ok(overlayModal.isConnected, "click inside order modal card must not close it");
+  overlayModal.dispatchClick(overlayModal);
+  assert.strictEqual(overlayModal.isConnected, false, "order overlay click must use the close path");
+
+  orderModal.openOrderModal({ id: 3, order_ref: "003", order_type: "CUSTOMER" });
+  controller = orderModal.getOpenOrderModalController();
+  const escapeModal = controller.modal;
+  const escapeEvent = {
+    key: "Escape",
+    defaultPrevented: false,
+    preventDefault: function () { this.defaultPrevented = true; },
+  };
+  (documentListeners.keydown || []).slice().forEach(function (handler) { handler(escapeEvent); });
+  assert.strictEqual(escapeModal.isConnected, false, "Escape must close order modal");
+
+  pendingRefresh = createDeferred();
+  orderModal.openOrderModal({ id: 4, order_ref: "004", order_type: "CUSTOMER" });
+  controller = orderModal.getOpenOrderModalController();
+  const lateModal = controller.modal;
+  const linesBeforeClose = lateModal.linesWrap.textContent;
+  controller.close();
+  pendingRefresh.resolve([]);
+  await pendingRefresh.promise;
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.strictEqual(
+    lateModal.linesWrap.textContent,
+    linesBeforeClose,
+    "late order refresh must not update detached modal DOM"
+  );
+}
+
+async function runAsyncRegressions() {
+  await runPcVersionWatcherTests();
+  await runCatalogModalTests();
+  await runOrderModalDismissTests();
+}
+
+runAsyncRegressions().catch(function (error) {
   console.error(error);
   process.exitCode = 1;
 });

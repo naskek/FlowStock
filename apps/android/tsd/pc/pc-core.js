@@ -288,6 +288,50 @@
     });
   }
 
+  function bindModalDismiss(modal, dismiss) {
+    if (!modal || typeof dismiss !== "function") {
+      return function () {};
+    }
+
+    var disposed = false;
+    function onOverlayClick(event) {
+      if (!disposed && event && event.target === modal) {
+        dismiss();
+      }
+    }
+    function onKeyDown(event) {
+      if (disposed || !event || event.key !== "Escape" || event.defaultPrevented) {
+        return;
+      }
+      var modals = document.querySelectorAll(".pc-modal");
+      var topModal = null;
+      for (var index = modals.length - 1; index >= 0; index -= 1) {
+        if (modals[index] && modals[index].isConnected !== false) {
+          topModal = modals[index];
+          break;
+        }
+      }
+      if (topModal !== modal) {
+        return;
+      }
+      if (typeof event.preventDefault === "function") {
+        event.preventDefault();
+      }
+      dismiss();
+    }
+
+    modal.addEventListener("click", onOverlayClick);
+    document.addEventListener("keydown", onKeyDown);
+    return function disposeModalDismiss() {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      modal.removeEventListener("click", onOverlayClick);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }
+
   window.FlowStockPcCore = {
     init: init,
     fetchJson: fetchJson,
@@ -303,5 +347,6 @@
     renderSortableHeader: renderSortableHeader,
     sortRows: sortRows,
     bindTableSorting: bindTableSorting,
+    bindModalDismiss: bindModalDismiss,
   };
 })();

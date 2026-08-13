@@ -3,13 +3,90 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
+const corePath = path.join(__dirname, "pc-core.js");
 const boardPath = path.join(__dirname, "warehouse-board.js");
 const appPath = path.join(__dirname, "app.js");
 const boardSource = fs.readFileSync(boardPath, "utf8");
 const appSource = fs.readFileSync(appPath, "utf8");
 
-const context = { window: {}, console, localStorage: { getItem: () => null } };
+const connectedModals = [];
+const documentListeners = {};
+let lastModal = null;
+
+function addListener(store, type, handler) {
+  if (!store[type]) store[type] = [];
+  store[type].push(handler);
+}
+
+function removeListener(store, type, handler) {
+  store[type] = (store[type] || []).filter(function (registered) { return registered !== handler; });
+}
+
+function createModal() {
+  const listeners = {};
+  const closeButton = {
+    addEventListener: function (type, handler) {
+      if (type === "click") this.click = handler;
+    },
+    click: function () {},
+  };
+  return {
+    className: "",
+    innerHTML: "",
+    parentNode: null,
+    isConnected: false,
+    addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+    removeEventListener: function (type, handler) { removeListener(listeners, type, handler); },
+    dispatchClick: function (target) {
+      (listeners.click || []).slice().forEach(function (handler) { handler({ target: target }); });
+    },
+    querySelector: function (selector) {
+      return selector === "[data-close-modal]" ? closeButton : null;
+    },
+    remove: function () {
+      this.parentNode = null;
+      this.isConnected = false;
+      const index = connectedModals.indexOf(this);
+      if (index >= 0) connectedModals.splice(index, 1);
+    },
+    closeButton,
+    listenerCount: function (type) { return (listeners[type] || []).length; },
+  };
+}
+
+const context = {
+  window: {},
+  console,
+  Headers,
+  localStorage: { getItem: () => null },
+  fetch: function () {
+    return Promise.resolve({
+      ok: true,
+      json: function () { return Promise.resolve({ bundles: [] }); },
+    });
+  },
+  document: {
+    createElement: function () {
+      lastModal = createModal();
+      return lastModal;
+    },
+    querySelectorAll: function (selector) {
+      return selector === ".pc-modal" ? connectedModals.slice() : [];
+    },
+    addEventListener: function (type, handler) { addListener(documentListeners, type, handler); },
+    removeEventListener: function (type, handler) { removeListener(documentListeners, type, handler); },
+    body: {
+      appendChild: function (element) {
+        element.parentNode = this;
+        element.isConnected = true;
+        connectedModals.push(element);
+      },
+    },
+  },
+};
+context.window.document = context.document;
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(corePath, "utf8"), context, { filename: corePath });
 vm.runInContext(boardSource, context, { filename: boardPath });
 
 const board = context.window.FlowStockWarehouseBoard;
@@ -40,10 +117,44 @@ board.init({
   escapeHtml: function (value) {
     return String(value || "");
   },
+  bindModalDismiss: context.window.FlowStockPcCore.bindModalDismiss,
 });
 
 const html = board.render();
 assert.ok(html.includes("wpScenarioPicker"), "render must include scenario picker shell");
 assert.ok(html.includes(board.UI_LABELS.SAFETY_HINT), "render must include safety hint");
 
-console.log("warehouse-board.presentation.test.js: ok");
+async function runBundlesModalRegression() {
+  await board.testHooks.openBundlesModal();
+  const explicitModal = lastModal;
+  assert.ok(explicitModal.isConnected);
+  explicitModal.closeButton.click();
+  explicitModal.closeButton.click();
+  assert.strictEqual(explicitModal.isConnected, false, "explicit close must use idempotent removal path");
+  assert.strictEqual(explicitModal.listenerCount("click"), 0, "close must dispose overlay listener");
+
+  await board.testHooks.openBundlesModal();
+  const overlayModal = lastModal;
+  overlayModal.dispatchClick({});
+  assert.ok(overlayModal.isConnected, "click inside modal card must not close bundles modal");
+  overlayModal.dispatchClick(overlayModal);
+  assert.strictEqual(overlayModal.isConnected, false, "overlay click must close bundles modal");
+
+  await board.testHooks.openBundlesModal();
+  const escapeModal = lastModal;
+  const escapeEvent = {
+    key: "Escape",
+    defaultPrevented: false,
+    preventDefault: function () { this.defaultPrevented = true; },
+  };
+  (documentListeners.keydown || []).slice().forEach(function (handler) { handler(escapeEvent); });
+  assert.strictEqual(escapeModal.isConnected, false, "Escape must close bundles modal");
+  assert.strictEqual((documentListeners.keydown || []).length, 0, "Escape close must remove keydown listener");
+}
+
+runBundlesModalRegression().then(function () {
+  console.log("warehouse-board.presentation.test.js: ok");
+}).catch(function (error) {
+  console.error(error);
+  process.exitCode = 1;
+});

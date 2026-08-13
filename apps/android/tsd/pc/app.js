@@ -55,6 +55,7 @@
   var renderSortableHeader = core.renderSortableHeader;
   var sortRows = core.sortRows;
   var bindTableSorting = core.bindTableSorting;
+  var bindModalDismiss = core.bindModalDismiss;
   auth.init({
     fetchJson: fetchJson,
     onLoginSuccess: function () {
@@ -95,6 +96,7 @@
     getOrderLineHighlightState: getOrderLineHighlightState,
     renderLinePalletFillingBadge: renderLinePalletFillingBadge,
     getOrderTypeLabel: getOrderTypeLabel,
+    bindModalDismiss: bindModalDismiss,
   });
   var openOrderModal = orderModal.openOrderModal;
   var renderOrderLinesTable = orderModal.renderOrderLinesTable;
@@ -114,6 +116,7 @@
     renderSortableHeader: renderSortableHeader,
     sortRows: sortRows,
     bindTableSorting: bindTableSorting,
+    bindModalDismiss: bindModalDismiss,
   });
   var stock = window.FlowStockPcStock;
   stock.init({
@@ -460,11 +463,18 @@
   function openProductionNeedPreviewModal(rows, onConfirm, onCancel) {
     var modal = document.createElement("div");
     var confirmed = false;
+    var closed = false;
+    var disposeDismiss = function () {};
     modal.className = "pc-modal";
     modal.innerHTML = renderProductionNeedPreviewModalContent(rows);
     document.body.appendChild(modal);
 
     function close() {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      disposeDismiss();
       if (modal.parentNode) {
         modal.parentNode.removeChild(modal);
       }
@@ -472,6 +482,8 @@
         onCancel();
       }
     }
+
+    disposeDismiss = bindModalDismiss(modal, close);
 
     modal.querySelector("#productionNeedPreviewCloseBtn").addEventListener("click", close);
     modal.querySelector("#productionNeedPreviewCancelBtn").addEventListener("click", close);
@@ -581,42 +593,6 @@
       });
     }
 
-    function openProductionNeedPreviewModal(rows, onConfirm) {
-      var modal = document.createElement("div");
-      modal.className = "pc-modal";
-      modal.innerHTML = renderProductionNeedPreviewModalContent(rows);
-      document.body.appendChild(modal);
-
-      function close() {
-        if (modal.parentNode) {
-          modal.parentNode.removeChild(modal);
-        }
-      }
-
-      modal.querySelector("#productionNeedPreviewCloseBtn").addEventListener("click", close);
-      modal.querySelector("#productionNeedPreviewCancelBtn").addEventListener("click", close);
-      modal.querySelector("#productionNeedPreviewConfirmBtn").addEventListener("click", function () {
-        var requestRows = rows.map(function (row, index) {
-          var input = modal.querySelector('[data-preview-index="' + index + '"]');
-          var qty = input ? Number(input.value) || 0 : 0;
-          return {
-            item_id: row.itemId,
-            qty_ordered: qty
-          };
-        }).filter(function (row) {
-          return row.qty_ordered > 0;
-        });
-
-        if (!requestRows.length) {
-          window.alert("Нет строк с количеством больше нуля.");
-          return;
-        }
-
-        close();
-        onConfirm(requestRows);
-      });
-    }
-
     function loadProductionNeedPreview() {
       return fetchJson("/api/reports/production-need/create-orders/preview", {
         method: "POST",
@@ -696,6 +672,8 @@
                 .finally(function () {
                   createOrdersBtn.disabled = false;
                 });
+            }, function () {
+              createOrdersBtn.disabled = false;
             });
           })
           .catch(function (error) {
@@ -2278,6 +2256,8 @@
     var selectedPartnerId = 0;
     var activeSuggestIndex = -1;
     var duplicateWarningTimer = 0;
+    var closed = false;
+    var disposeDismiss = function () {};
     var suggestionOverlay = document.createElement("div");
     suggestionOverlay.className = "pc-order-suggest pc-order-suggest-floating";
     document.body.appendChild(suggestionOverlay);
@@ -2286,7 +2266,7 @@
     document.body.appendChild(partnerSuggestionOverlay);
 
     function setStatus(text) {
-      if (refs.statusEl) {
+      if (!closed && refs.statusEl) {
         if (duplicateWarningTimer) {
           window.clearTimeout(duplicateWarningTimer);
           duplicateWarningTimer = 0;
@@ -2504,6 +2484,15 @@
     }
 
     function close() {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      disposeDismiss();
+      if (duplicateWarningTimer) {
+        window.clearTimeout(duplicateWarningTimer);
+        duplicateWarningTimer = 0;
+      }
       window.removeEventListener("resize", syncSuggestionOverlay);
       window.removeEventListener("resize", syncPartnerSuggestionOverlay);
       if (refs.card) {
@@ -2522,6 +2511,8 @@
         modal.parentNode.removeChild(modal);
       }
     }
+
+    disposeDismiss = bindModalDismiss(modal, close);
 
     function buildPartnerLabel(partner) {
       if (!partner) {
@@ -3243,7 +3234,7 @@
           setStatus("Ошибка отправки: " + message);
         })
         .finally(function () {
-          if (refs.submitBtn) {
+          if (!closed && modal.isConnected !== false && refs.submitBtn) {
             refs.submitBtn.disabled = false;
           }
         });
@@ -3317,6 +3308,9 @@
     setStatus("Загрузка справочников...");
     Promise.all([loadOrderReferenceData()])
       .then(function (payload) {
+        if (closed || modal.isConnected === false) {
+          return;
+        }
         var refsData = payload[0];
 
         partners = refsData.partners;
@@ -3337,7 +3331,9 @@
         setStatus("");
       })
       .catch(function () {
-        setStatus("Ошибка загрузки справочников.");
+        if (!closed && modal.isConnected !== false) {
+          setStatus("Ошибка загрузки справочников.");
+        }
       });
 
     renderLines();
@@ -3586,6 +3582,7 @@
       escapeHtml: escapeHtml,
       formatDateTime: formatDateTime,
       formatDate: formatDate,
+      bindModalDismiss: bindModalDismiss,
     });
   }
 

@@ -16,6 +16,7 @@
   var getOrderLineHighlightState;
   var renderLinePalletFillingBadge;
   var getOrderTypeLabel;
+  var bindModalDismiss;
 
   function init(shared) {
     deps = shared || {};
@@ -32,6 +33,7 @@
     getOrderLineHighlightState = deps.getOrderLineHighlightState;
     renderLinePalletFillingBadge = deps.renderLinePalletFillingBadge;
     getOrderTypeLabel = deps.getOrderTypeLabel;
+    bindModalDismiss = deps.bindModalDismiss;
   }
 
   function clearOpenOrderModalController() {
@@ -168,6 +170,9 @@
           populateOrderModalContent(modal, order, payload.lines);
         })
         .catch(function () {
+          if (!modal || modal.isConnected === false) {
+            return;
+          }
           var wrap = modal.querySelector("#orderLinesWrap");
           if (wrap) {
             wrap.textContent = "Ошибка загрузки строк.";
@@ -481,7 +486,15 @@
       "</div>";
     document.body.appendChild(modal);
 
+    var closed = false;
+    var disposeDismiss = function () {};
+
     function close() {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      disposeDismiss();
       if (openOrderModalController && openOrderModalController.modal === modal) {
         clearOpenOrderModalController();
       }
@@ -489,6 +502,8 @@
         modal.parentNode.removeChild(modal);
       }
     }
+
+    disposeDismiss = bindModalDismiss(modal, close);
 
     var closeBtn = modal.querySelector("#modalCloseBtn");
     if (closeBtn) {

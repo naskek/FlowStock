@@ -12,13 +12,39 @@ const appPath = path.join(__dirname, "app.js");
 const hooks = {};
 let lastModal = null;
 let lastAlert = "";
+const connectedModals = [];
+const documentListeners = {};
+
+function addListener(store, type, handler) {
+  if (!store[type]) store[type] = [];
+  store[type].push(handler);
+}
+
+function removeListener(store, type, handler) {
+  if (!store[type]) return;
+  store[type] = store[type].filter(function (registered) { return registered !== handler; });
+}
+
+function dispatchDocument(type, event) {
+  (documentListeners[type] || []).slice().forEach(function (handler) { handler(event); });
+}
+
+function createEscapeEvent() {
+  return {
+    key: "Escape",
+    defaultPrevented: false,
+    preventDefault: function () { this.defaultPrevented = true; },
+  };
+}
 
 function createModalElement() {
   const buttons = {};
   const inputs = {};
+  const listeners = {};
   const modal = {
     className: "",
     parentNode: null,
+    isConnected: false,
     _innerHTML: "",
     buttons,
     inputs,
@@ -32,6 +58,18 @@ function createModalElement() {
     },
     get innerHTML() {
       return this._innerHTML;
+    },
+    addEventListener: function (type, handler) {
+      addListener(listeners, type, handler);
+    },
+    removeEventListener: function (type, handler) {
+      removeListener(listeners, type, handler);
+    },
+    dispatch: function (type, event) {
+      (listeners[type] || []).slice().forEach(function (handler) { handler(event); });
+    },
+    listenerCount: function (type) {
+      return (listeners[type] || []).length;
     },
     querySelector: function (selector) {
       const previewMatch = String(selector || "").match(/^\[data-preview-index="([^"]+)"\]$/);
@@ -70,8 +108,8 @@ const context = {
     getElementById: function () {
       return null;
     },
-    querySelectorAll: function () {
-      return [];
+    querySelectorAll: function (selector) {
+      return selector === ".pc-modal" ? connectedModals.slice() : [];
     },
     querySelector: function () {
       return null;
@@ -80,12 +118,23 @@ const context = {
       lastModal = createModalElement();
       return lastModal;
     },
+    addEventListener: function (type, handler) {
+      addListener(documentListeners, type, handler);
+    },
+    removeEventListener: function (type, handler) {
+      removeListener(documentListeners, type, handler);
+    },
     body: {
       appendChild: function (element) {
         element.parentNode = this;
+        element.isConnected = true;
+        connectedModals.push(element);
       },
       removeChild: function (element) {
         element.parentNode = null;
+        element.isConnected = false;
+        const index = connectedModals.indexOf(element);
+        if (index >= 0) connectedModals.splice(index, 1);
       },
     },
   },
@@ -159,5 +208,49 @@ const closeModal = lastModal;
 closeModal.buttons.productionNeedPreviewCloseBtn.click();
 assert.strictEqual(closeModal.parentNode, null);
 assert.strictEqual(cancelCount, 2, "close icon must use the existing cancel flow");
+
+hooks.openProductionNeedPreviewModal(
+  [{ itemId: 34, itemName: "Горчица 200 гр", gtin: "04607186951520", qtyToCreate: 1 }],
+  function () {},
+  function () { cancelCount += 1; }
+);
+const escapeModal = lastModal;
+const keydownListenersBeforeEscape = (documentListeners.keydown || []).length;
+dispatchDocument("keydown", createEscapeEvent());
+assert.strictEqual(escapeModal.parentNode, null);
+assert.strictEqual(cancelCount, 3, "Escape must use the existing cancel flow exactly once");
+assert.strictEqual(
+  (documentListeners.keydown || []).length,
+  keydownListenersBeforeEscape - 1,
+  "Escape close must remove its keydown listener"
+);
+escapeModal.buttons.productionNeedPreviewCloseBtn.click();
+assert.strictEqual(cancelCount, 3, "repeated close must not call onCancel twice");
+
+hooks.openProductionNeedPreviewModal(
+  [{ itemId: 34, itemName: "Горчица 200 гр", gtin: "04607186951520", qtyToCreate: 1 }],
+  function () {},
+  function () { cancelCount += 1; }
+);
+const overlayModal = lastModal;
+overlayModal.dispatch("click", { target: {} });
+assert.notStrictEqual(overlayModal.parentNode, null, "click inside modal card must not close the overlay");
+overlayModal.dispatch("click", { target: overlayModal });
+assert.strictEqual(overlayModal.parentNode, null, "click directly on overlay must close the modal");
+assert.strictEqual(cancelCount, 4);
+assert.strictEqual(overlayModal.listenerCount("click"), 0, "overlay listener must be removed on close");
+
+let confirmCount = 0;
+let confirmCancelCount = 0;
+hooks.openProductionNeedPreviewModal(
+  [{ itemId: 34, itemName: "Горчица 200 гр", gtin: "04607186951520", qtyToCreate: 1 }],
+  function () { confirmCount += 1; },
+  function () { confirmCancelCount += 1; }
+);
+const confirmedModal = lastModal;
+confirmedModal.buttons.productionNeedPreviewConfirmBtn.click();
+confirmedModal.buttons.productionNeedPreviewCloseBtn.click();
+assert.strictEqual(confirmCount, 1, "confirm callback must retain its existing single-call semantics");
+assert.strictEqual(confirmCancelCount, 0, "confirmed preview must never call onCancel");
 
 console.log("app.production-need-preview.test.js: ok");

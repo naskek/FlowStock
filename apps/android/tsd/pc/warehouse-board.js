@@ -1243,9 +1243,18 @@
         body +
         '<div class="pc-modal-footer"><button type="button" class="wp-btn" data-close-modal>Закрыть</button></div></div>';
       document.body.appendChild(modal);
-      modal.querySelector("[data-close-modal]").addEventListener("click", function () {
+      var closed = false;
+      var disposeDismiss = function () {};
+      function close() {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        disposeDismiss();
         modal.remove();
-      });
+      }
+      disposeDismiss = deps.bindModalDismiss(modal, close);
+      modal.querySelector("[data-close-modal]").addEventListener("click", close);
     });
   }
 
@@ -1396,5 +1405,8 @@
     UI_LABELS: UI_LABELS,
     formatActionLineLabel: formatActionLineLabel,
     formatPreviewIssue: formatPreviewIssue,
+    testHooks: {
+      openBundlesModal: openBundlesModal,
+    },
   };
 })();
