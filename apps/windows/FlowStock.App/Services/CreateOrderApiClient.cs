@@ -38,11 +38,17 @@ public sealed class CreateOrderApiClient
             BaseAddress = baseUri
         };
 
-        using var responseMessage = await client.PostAsJsonAsync(
-                "/api/orders",
-                request,
-                cancellationToken)
-            .ConfigureAwait(false);
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/api/orders")
+        {
+            Content = JsonContent.Create(request)
+        };
+        if (!string.IsNullOrWhiteSpace(options.WpfAdminApiKey))
+        {
+            httpRequest.Headers.TryAddWithoutValidation("X-FlowStock-WPF-Admin-Key", options.WpfAdminApiKey.Trim());
+            httpRequest.Headers.TryAddWithoutValidation("X-FlowStock-WPF-Audit-Actor", Environment.UserName);
+        }
+
+        using var responseMessage = await client.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
 
         if (responseMessage.StatusCode == HttpStatusCode.OK)
         {

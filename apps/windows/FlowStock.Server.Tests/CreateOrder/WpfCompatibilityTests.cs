@@ -2,12 +2,31 @@ using FlowStock.App;
 using FlowStock.Core.Models;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 using FlowStock.Server.Tests.CreateOrder.Infrastructure;
+using System.Net;
+using System.Net.Http.Json;
 
 namespace FlowStock.Server.Tests.CreateOrder;
 
 [Collection("CreateOrder")]
 public sealed class WpfCompatibilityTests
 {
+    [Fact]
+    public async Task CanonicalCreate_RejectsMissingTrustedWpfCredential()
+    {
+        var (harness, apiStore) = CreateOrderHttpScenario.CreateCustomerScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/orders")
+        {
+            Content = JsonContent.Create(new { type = "CUSTOMER" })
+        };
+        request.Headers.Add(WpfMachineAuthorization.KeyHeader, "invalid-key");
+
+        using var response = await host.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(0, harness.OrderCount);
+    }
+
     [Fact]
     public async Task WpfCreateOrder_MapsInactiveItemToValidationMessage()
     {
@@ -152,7 +171,8 @@ public sealed class WpfCompatibilityTests
                     UseServerCreateOrder = useServerCreateOrder,
                     BaseUrl = baseAddress.ToString().TrimEnd('/'),
                     CloseTimeoutSeconds = 10,
-                    AllowInvalidTls = false
+                    AllowInvalidTls = false,
+                    WpfAdminApiKey = CloseDocumentHttpHost.WpfAdminApiKey
                 }
             };
 

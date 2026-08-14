@@ -14,7 +14,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
+public sealed class PostgresDataStore : IDataStore, IOrderRequestManagementStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -17745,6 +17745,69 @@ RETURNING id;");
         {
             using var command = CreateCommand(connection, "SELECT COUNT(*) FROM order_requests WHERE status = 'PENDING';");
             return Convert.ToInt32(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        });
+    }
+
+    public OrderRequest? GetOrderRequestForUpdate(long requestId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, request_type, payload_json, status, created_at, created_by_login,
+       created_by_device_id, resolved_at, resolved_by, resolution_note, applied_order_id
+FROM order_requests
+WHERE id = @id
+FOR UPDATE;");
+            command.Parameters.AddWithValue("@id", requestId);
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return null;
+            }
+
+            return new OrderRequest
+            {
+                Id = reader.GetInt64(0),
+                RequestType = reader.GetString(1),
+                PayloadJson = reader.GetString(2),
+                Status = reader.IsDBNull(3) ? OrderRequestStatus.Pending : reader.GetString(3),
+                CreatedAt = FromDbDate(reader.IsDBNull(4) ? null : reader.GetString(4)) ?? DateTime.MinValue,
+                CreatedByLogin = reader.IsDBNull(5) ? null : reader.GetString(5),
+                CreatedByDeviceId = reader.IsDBNull(6) ? null : reader.GetString(6),
+                ResolvedAt = reader.IsDBNull(7) ? null : FromDbDate(reader.GetString(7)),
+                ResolvedBy = reader.IsDBNull(8) ? null : reader.GetString(8),
+                ResolutionNote = reader.IsDBNull(9) ? null : reader.GetString(9),
+                AppliedOrderId = reader.IsDBNull(10) ? null : reader.GetInt64(10)
+            };
+        });
+    }
+
+    public bool TryResolvePendingOrderRequest(
+        long requestId,
+        string status,
+        DateTime resolvedAt,
+        string resolvedBy,
+        string? note,
+        long? appliedOrderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE order_requests
+SET status = @status,
+    resolved_at = @resolved_at,
+    resolved_by = @resolved_by,
+    resolution_note = @resolution_note,
+    applied_order_id = @applied_order_id
+WHERE id = @id
+  AND status = 'PENDING';");
+            command.Parameters.AddWithValue("@status", status);
+            command.Parameters.AddWithValue("@resolved_at", ToDbDate(resolvedAt));
+            command.Parameters.AddWithValue("@resolved_by", resolvedBy.Trim());
+            command.Parameters.AddWithValue("@resolution_note", string.IsNullOrWhiteSpace(note) ? DBNull.Value : note.Trim());
+            command.Parameters.AddWithValue("@applied_order_id", appliedOrderId.HasValue ? appliedOrderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@id", requestId);
+            return command.ExecuteNonQuery() == 1;
         });
     }
 

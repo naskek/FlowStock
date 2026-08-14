@@ -61,7 +61,8 @@ public sealed class WpfCreateOrderService
                     new ServerCloseClientOptions
                     {
                         BaseUrl = configuration.BaseUrl,
-                        AllowInvalidTls = configuration.AllowInvalidTls
+                        AllowInvalidTls = configuration.AllowInvalidTls,
+                        WpfAdminApiKey = configuration.WpfAdminApiKey
                     },
                     request,
                     timeoutCts.Token)
@@ -239,7 +240,8 @@ public sealed class WpfCreateOrderService
         }
 
         var allowInvalidTls = ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls;
-        return new WpfServerCreateOrderConfiguration(baseUrl, timeoutSeconds, allowInvalidTls);
+        var wpfAdminApiKey = ReadEnvOrSettings("FLOWSTOCK_WPF_ADMIN_API_KEY", settings.WpfAdminApiKey);
+        return new WpfServerCreateOrderConfiguration(baseUrl, timeoutSeconds, allowInvalidTls, wpfAdminApiKey);
     }
 
     private static string NormalizeBaseUrl(string value)
@@ -318,7 +320,8 @@ public sealed record WpfCreateOrderContext(
 public sealed record WpfServerCreateOrderConfiguration(
     string BaseUrl,
     int RequestTimeoutSeconds,
-    bool AllowInvalidTls);
+    bool AllowInvalidTls,
+    string? WpfAdminApiKey);
 
 public sealed class WpfCreateOrderResult
 {

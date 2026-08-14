@@ -86,27 +86,27 @@ public sealed class WpfIncomingRequestsApiService
             .ConfigureAwait(false);
     }
 
-    public async Task<bool> TryResolveOrderRequestAsync(
+    public Task<bool> TryConfirmOrderRequestAsync(
         long requestId,
-        string status,
-        string resolvedBy,
-        string? note,
-        long? appliedOrderId,
-        CancellationToken cancellationToken = default)
-    {
-        return await TryPostAsync(
-                $"/api/orders/requests/{requestId}/resolve",
-                new
-                {
-                    status,
-                    resolved_by = resolvedBy,
-                    note,
-                    applied_order_id = appliedOrderId
-                },
-                "incoming-order-request-resolve",
-                cancellationToken)
-            .ConfigureAwait(false);
-    }
+        string auditActor,
+        CancellationToken cancellationToken = default) =>
+        TryPostAsync(
+            $"/api/orders/requests/{requestId}/confirm",
+            null,
+            "incoming-order-request-confirm",
+            cancellationToken,
+            auditActor);
+
+    public Task<bool> TryRejectOrderRequestAsync(
+        long requestId,
+        string auditActor,
+        CancellationToken cancellationToken = default) =>
+        TryPostAsync(
+            $"/api/orders/requests/{requestId}/reject",
+            null,
+            "incoming-order-request-reject",
+            cancellationToken,
+            auditActor);
 
     private bool TryRead<T>(
         string relativePath,
@@ -144,7 +144,8 @@ public sealed class WpfIncomingRequestsApiService
         string relativePath,
         object? payload,
         string operationName,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? auditActor = null)
     {
         try
         {
@@ -162,6 +163,7 @@ public sealed class WpfIncomingRequestsApiService
             };
 
             using var request = new HttpRequestMessage(HttpMethod.Post, relativePath);
+            AddTrustedWpfHeaders(request, configuration, auditActor);
             if (payload != null)
             {
                 request.Content = new StringContent(
@@ -195,6 +197,7 @@ public sealed class WpfIncomingRequestsApiService
             Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
         };
         using var request = new HttpRequestMessage(HttpMethod.Get, relativePath);
+        AddTrustedWpfHeaders(request, configuration, null);
         using var response = client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead)
             .ConfigureAwait(false)
             .GetAwaiter()
@@ -227,7 +230,8 @@ public sealed class WpfIncomingRequestsApiService
         configuration = new WpfIncomingRequestsApiConfiguration(
             NormalizeBaseUrl(baseUrl),
             timeoutSeconds,
-            ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls);
+            ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls,
+            ReadEnvOrSettings("FLOWSTOCK_WPF_ADMIN_API_KEY", settings.WpfAdminApiKey));
 
         return !string.IsNullOrWhiteSpace(configuration.BaseUrl);
     }
@@ -241,6 +245,20 @@ public sealed class WpfIncomingRequestsApiService
         }
 
         return handler;
+    }
+
+    private static void AddTrustedWpfHeaders(
+        HttpRequestMessage request,
+        WpfIncomingRequestsApiConfiguration configuration,
+        string? auditActor)
+    {
+        if (!string.IsNullOrWhiteSpace(configuration.WpfAdminApiKey))
+        {
+            request.Headers.TryAddWithoutValidation("X-FlowStock-WPF-Admin-Key", configuration.WpfAdminApiKey.Trim());
+            request.Headers.TryAddWithoutValidation(
+                "X-FlowStock-WPF-Audit-Actor",
+                string.IsNullOrWhiteSpace(auditActor) ? Environment.UserName : auditActor.Trim());
+        }
     }
 
     private static string? NormalizeBaseUrl(string? value)
@@ -444,4 +462,8 @@ public sealed record IncomingRequestsSummary(
     public int TotalPending => ActionRequiredCount + BusinessNotificationsUnread;
 }
 
-internal sealed record WpfIncomingRequestsApiConfiguration(string? BaseUrl, int TimeoutSeconds, bool AllowInvalidTls);
+internal sealed record WpfIncomingRequestsApiConfiguration(
+    string? BaseUrl,
+    int TimeoutSeconds,
+    bool AllowInvalidTls,
+    string? WpfAdminApiKey);

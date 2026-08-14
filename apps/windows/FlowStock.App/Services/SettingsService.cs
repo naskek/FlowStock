@@ -364,6 +364,9 @@ public sealed class ServerSettings
     [JsonPropertyName("allow_invalid_tls")]
     public bool AllowInvalidTls { get; set; }
 
+    [JsonPropertyName("wpf_admin_api_key")]
+    public string? WpfAdminApiKey { get; set; }
+
     public ServerSettings Normalize()
     {
         UseServerCreateOrder = true;
@@ -380,6 +383,7 @@ public sealed class ServerSettings
         PcClientUrl = NormalizeValue(PcClientUrl);
         TsdClientUrl = NormalizeValue(TsdClientUrl);
         DeviceId = NormalizeValue(DeviceId);
+        WpfAdminApiKey = NormalizeValue(WpfAdminApiKey);
 
         if (CloseTimeoutSeconds < 1)
         {

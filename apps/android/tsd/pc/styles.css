@@ -647,6 +647,87 @@ body.pc-body::before {
   vertical-align: middle;
 }
 
+.pc-orders-card {
+  width: min(var(--pc-content-max), calc(100vw - (var(--pc-page-gutter) * 2)));
+  min-width: 0;
+}
+
+#ordersTableWrap {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.pc-orders-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: auto;
+}
+
+.pc-orders-table th,
+.pc-orders-table td {
+  box-sizing: border-box;
+  padding-right: 6px;
+  padding-left: 6px;
+}
+
+.pc-order-ref-header,
+.pc-order-ref-cell {
+  width: 78px;
+  max-width: 110px;
+}
+
+.pc-order-type-header,
+.pc-order-type-cell {
+  max-width: 110px;
+  overflow-wrap: anywhere;
+}
+
+.pc-order-partner-header,
+.pc-order-partner-cell {
+  min-width: 90px;
+  max-width: 220px;
+}
+
+.pc-order-plan-header,
+.pc-order-plan-cell,
+.pc-order-fact-header,
+.pc-order-fact-cell {
+  width: 1px;
+  white-space: nowrap;
+}
+
+.pc-order-status-header,
+.pc-order-status-cell {
+  width: 1px;
+  white-space: nowrap;
+}
+
+.pc-order-pallet-header,
+.pc-order-pallet-cell {
+  width: 1px;
+  white-space: nowrap;
+}
+
+.pc-order-marking-header,
+.pc-order-marking-cell {
+  width: 1px;
+  white-space: nowrap;
+}
+
+.pc-orders-table--with-actions .pc-order-actions-header,
+.pc-orders-table--with-actions .pc-order-actions-cell {
+  width: 116px;
+  min-width: 116px;
+}
+
+.pc-order-ref-cell,
+.pc-order-partner-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .pc-order-icon-cell-inner {
   display: inline-flex;
   align-items: center;
@@ -658,6 +739,56 @@ body.pc-body::before {
 .pc-order-pallet-cell,
 .pc-order-marking-cell {
   white-space: nowrap;
+}
+
+.pc-order-pallet-cell .pc-status-badge {
+  max-width: none;
+}
+
+.pc-order-pallet-cell .pc-pallet-progress {
+  min-width: 90px;
+  max-width: 150px;
+}
+
+.pc-order-pallet-cell .pc-pallet-progress-track {
+  min-width: 36px;
+}
+
+.pc-order-actions-header,
+.pc-order-actions-cell {
+  text-align: center;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.pc-order-inline-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+}
+
+.btn.pc-order-inline-action {
+  width: 100%;
+  max-width: 112px;
+  min-height: 28px;
+  padding: 4px 6px;
+  font-size: 11px;
+  line-height: 1.15;
+}
+
+.btn.pc-order-inline-action--reject {
+  border-color: #b42318;
+  background: #b42318;
+  color: #ffffff;
+}
+
+.btn.pc-order-inline-action--reject:hover:not(:disabled) {
+  border-color: #912018;
+  background: #912018;
+  box-shadow: 0 6px 16px rgba(180, 35, 24, 0.18);
 }
 
 .pc-catalog-table .pc-catalog-item-cell {
@@ -1472,6 +1603,59 @@ body.pc-body::before {
   max-height: 80vh;
   overflow: auto;
   box-shadow: var(--pc-shadow);
+}
+
+.pc-attention-modal-card {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 14px 16px;
+  align-items: start;
+  max-width: 540px;
+  padding: 24px;
+}
+
+.pc-attention-modal-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border: 2px solid #d97706;
+  border-radius: 50%;
+  color: #b45309;
+  background: #fff7ed;
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.pc-attention-modal-body {
+  min-width: 0;
+}
+
+.pc-modal-title.pc-attention-modal-title {
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.pc-attention-modal-message {
+  margin-top: 10px;
+  color: var(--pc-ink);
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.pc-attention-modal-footer {
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+.btn.pc-attention-modal-ok {
+  width: auto;
+  min-width: 96px;
 }
 
 .pc-order-modal-card {

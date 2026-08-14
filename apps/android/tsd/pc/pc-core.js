@@ -15,7 +15,13 @@
   }
 
   function shouldAttachBlockHeader(url) {
-    return url !== "/api/client-blocks" && url !== "/api/tsd/login";
+    return (
+      url !== "/api/client-blocks" &&
+      url !== "/api/tsd/login" &&
+      url !== "/api/pc/login" &&
+      url !== "/api/pc/session" &&
+      url !== "/api/pc/logout"
+    );
   }
 
   function createRequestHeaders(source, url) {
@@ -57,6 +63,15 @@
           .then(function (payload) {
             if (!response.ok) {
               var message = payload && payload.error ? payload.error : "SERVER_ERROR";
+              if (
+                response.status === 401 &&
+                url !== "/api/pc/login" &&
+                url !== "/api/pc/session" &&
+                url !== "/api/pc/logout" &&
+                deps.handleUnauthorized
+              ) {
+                deps.handleUnauthorized();
+              }
               if (
                 message === "BLOCK_DISABLED" &&
                 url !== "/api/client-blocks" &&

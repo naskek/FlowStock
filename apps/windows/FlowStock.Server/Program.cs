@@ -45,6 +45,7 @@ var tsdRoot = ServerPaths.TsdRoot;
 var pcRoot = ServerPaths.PcRoot;
 var pcWebBundle = PcWebStaticFiles.Load(tsdRoot, pcRoot);
 var discoveryOptions = FlowStockDiscoveryOptions.FromConfiguration(builder.Configuration, appVersion);
+var wpfAdminApiKey = builder.Configuration["FLOWSTOCK_WPF_ADMIN_API_KEY"];
 
 builder.Services.AddSingleton<PostgresDataStore>(sp =>
 {
@@ -88,6 +89,9 @@ builder.Services.AddSingleton<PostgresDataStore>(sp =>
             explainDiagnostics.IncludeCancelledMerged));
 });
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
+builder.Services.AddSingleton(new PcWebSessionStore(postgresConnectionString));
+builder.Services.AddSingleton<IPcWebSessionResolver>(sp => sp.GetRequiredService<PcWebSessionStore>());
+builder.Services.AddSingleton(new WpfMachineAuthorization(wpfAdminApiKey));
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IMarkingCutoverPreflightStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.ITsdHuResolverStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IHuOperatorFactsStore>(sp => sp.GetRequiredService<PostgresDataStore>());
@@ -130,6 +134,8 @@ builder.Services.AddHostedService<FlowStockDiscoveryUdpService>();
 var app = builder.Build();
 
 OrderCreateEndpoint.Map(app);
+PcWebSessionEndpoints.Map(app);
+OrderRequestManagementEndpoint.Map(app);
 OrderUpdateEndpoint.Map(app);
 OrderProducedStockReleaseEndpoint.Map(app);
 OrderDeleteEndpoint.Map(app);
@@ -476,12 +482,17 @@ app.MapPost("/api/imports/jsonl", async (HttpRequest request, ImportService impo
     });
 });
 
-app.MapGet("/api/admin/tsd-devices", () =>
+app.MapGet("/api/admin/tsd-devices", (HttpRequest request, WpfMachineAuthorization wpfAuthorization) =>
 {
+    if (!wpfAuthorization.IsAuthorized(request))
+    {
+        return Results.Json(new ApiResult(false, "WPF_ADMIN_KEY_REQUIRED"), statusCode: StatusCodes.Status401Unauthorized);
+    }
+
     using var connection = OpenConnection(postgresConnectionString);
     using var command = connection.CreateCommand();
     command.CommandText = @"
-SELECT id, device_id, login, platform, is_active, created_at, last_seen
+SELECT id, device_id, login, platform, is_active, created_at, last_seen, access_role
 FROM tsd_devices
 ORDER BY login;";
     using var reader = command.ExecuteReader();
@@ -497,15 +508,21 @@ ORDER BY login;";
             platform = NormalizeDevicePlatform(platform),
             is_active = reader.GetBoolean(4),
             created_at = reader.IsDBNull(5) ? null : reader.GetString(5),
-            last_seen = reader.IsDBNull(6) ? null : reader.GetString(6)
+            last_seen = reader.IsDBNull(6) ? null : reader.GetString(6),
+            access_role = PcAccessRole.Normalize(reader.IsDBNull(7) ? null : reader.GetString(7))
         });
     }
 
     return Results.Ok(list);
 });
 
-app.MapPost("/api/admin/tsd-devices", async (HttpRequest request) =>
+app.MapPost("/api/admin/tsd-devices", async (HttpRequest request, WpfMachineAuthorization wpfAuthorization) =>
 {
+    if (!wpfAuthorization.IsAuthorized(request))
+    {
+        return Results.Json(new ApiResult(false, "WPF_ADMIN_KEY_REQUIRED"), statusCode: StatusCodes.Status401Unauthorized);
+    }
+
     var rawJson = await ReadBody(request);
     if (string.IsNullOrWhiteSpace(rawJson))
     {
@@ -542,6 +559,12 @@ app.MapPost("/api/admin/tsd-devices", async (HttpRequest request) =>
     }
 
     var normalizedPlatform = NormalizeDevicePlatform(upsertRequest.Platform);
+    var accessRoleError = PcAccessRole.ValidateInput(upsertRequest.AccessRole, out var accessRole);
+    if (accessRoleError != null)
+    {
+        return accessRoleError;
+    }
+
     var salt = RandomNumberGenerator.GetBytes(16);
     var hash = HashPassword(password, salt, 100_000);
 
@@ -558,8 +581,8 @@ app.MapPost("/api/admin/tsd-devices", async (HttpRequest request) =>
     var deviceId = GenerateTsdDeviceId(connection);
     using var command = connection.CreateCommand();
     command.CommandText = @"
-INSERT INTO tsd_devices(device_id, login, password_salt, password_hash, password_iterations, platform, is_active, created_at)
-VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @created_at);";
+INSERT INTO tsd_devices(device_id, login, password_salt, password_hash, password_iterations, platform, is_active, access_role, created_at)
+VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @access_role, @created_at);";
     AddParam(command, "@device_id", deviceId);
     AddParam(command, "@login", login);
     AddParam(command, "@salt", Convert.ToBase64String(salt));
@@ -567,6 +590,7 @@ VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @cr
     AddParam(command, "@iterations", 100_000);
     AddParam(command, "@platform", normalizedPlatform);
     AddParam(command, "@is_active", upsertRequest.IsActive);
+    AddParam(command, "@access_role", accessRole);
     AddParam(command, "@created_at", DateTime.Now.ToString("s", CultureInfo.InvariantCulture));
 
     try
@@ -585,8 +609,13 @@ VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @cr
     });
 });
 
-app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest request) =>
+app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest request, WpfMachineAuthorization wpfAuthorization) =>
 {
+    if (!wpfAuthorization.IsAuthorized(request))
+    {
+        return Results.Json(new ApiResult(false, "WPF_ADMIN_KEY_REQUIRED"), statusCode: StatusCodes.Status401Unauthorized);
+    }
+
     var rawJson = await ReadBody(request);
     if (string.IsNullOrWhiteSpace(rawJson))
     {
@@ -617,6 +646,11 @@ app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest requ
     }
 
     var normalizedPlatform = NormalizeDevicePlatform(upsertRequest.Platform);
+    var accessRoleError = PcAccessRole.ValidateInput(upsertRequest.AccessRole, out var accessRole);
+    if (accessRoleError != null)
+    {
+        return accessRoleError;
+    }
 
     using var connection = OpenConnection(postgresConnectionString);
     using (var exists = connection.CreateCommand())
@@ -648,6 +682,7 @@ UPDATE tsd_devices
 SET login = @login,
     platform = @platform,
     is_active = @is_active,
+    access_role = @access_role,
     password_salt = @salt,
     password_hash = @hash,
     password_iterations = @iterations
@@ -655,6 +690,7 @@ WHERE id = @id;";
         AddParam(command, "@login", login);
         AddParam(command, "@platform", normalizedPlatform);
         AddParam(command, "@is_active", upsertRequest.IsActive);
+        AddParam(command, "@access_role", accessRole);
         AddParam(command, "@salt", Convert.ToBase64String(salt));
         AddParam(command, "@hash", Convert.ToBase64String(hash));
         AddParam(command, "@iterations", 100_000);
@@ -676,11 +712,13 @@ WHERE id = @id;";
 UPDATE tsd_devices
 SET login = @login,
     platform = @platform,
-    is_active = @is_active
+    is_active = @is_active,
+    access_role = @access_role
 WHERE id = @id;";
         AddParam(command, "@login", login);
         AddParam(command, "@platform", normalizedPlatform);
         AddParam(command, "@is_active", upsertRequest.IsActive);
+        AddParam(command, "@access_role", accessRole);
         AddParam(command, "@id", id);
 
         try
@@ -2068,8 +2106,14 @@ app.MapGet("/api/orders/{orderId:long}/bound-hu", (long orderId, IDataStore stor
     return Results.Ok(rows);
 });
 
-app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStore store) =>
+app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStore store, IPcWebSessionResolver pcSessions) =>
 {
+    var identity = pcSessions.Resolve(request);
+    if (identity == null)
+    {
+        return Results.Json(new ApiResult(false, "INVALID_SESSION"), statusCode: StatusCodes.Status401Unauthorized);
+    }
+
     var rawJson = await ReadBody(request);
     if (string.IsNullOrWhiteSpace(rawJson))
     {
@@ -2177,18 +2221,6 @@ app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStor
         return Results.BadRequest(new ApiResult(false, "MISSING_LINES"));
     }
 
-    var createdByLogin = string.IsNullOrWhiteSpace(createRequest.Login) ? null : createRequest.Login.Trim();
-    var createdByDeviceId = string.IsNullOrWhiteSpace(createRequest.DeviceId) ? null : createRequest.DeviceId.Trim();
-    if (string.IsNullOrWhiteSpace(createdByLogin) || string.IsNullOrWhiteSpace(createdByDeviceId))
-    {
-        return Results.Json(new ApiResult(false, "MISSING_ACCOUNT"), statusCode: StatusCodes.Status401Unauthorized);
-    }
-
-    if (!IsActivePcAccount(postgresConnectionString, createdByLogin, createdByDeviceId))
-    {
-        return Results.Json(new ApiResult(false, "INVALID_ACCOUNT"), statusCode: StatusCodes.Status401Unauthorized);
-    }
-
     var payloadJson = JsonSerializer.Serialize(new
     {
         order_ref = orderRef,
@@ -2205,8 +2237,8 @@ app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStor
         PayloadJson = payloadJson,
         Status = OrderRequestStatus.Pending,
         CreatedAt = DateTime.Now,
-        CreatedByLogin = createdByLogin,
-        CreatedByDeviceId = createdByDeviceId
+        CreatedByLogin = identity.Login,
+        CreatedByDeviceId = identity.DeviceId
     });
 
     return Results.Ok(new
@@ -2247,61 +2279,6 @@ app.MapGet("/api/requests/summary", (IDataStore store) =>
         business_notifications_unread = businessNotificationsUnread,
         total_pending = itemCount + orderCount + readyHuBindingPending + businessNotificationsUnread
     });
-});
-
-app.MapPost("/api/orders/requests/{requestId:long}/resolve", async (long requestId, HttpRequest request, IDataStore store) =>
-{
-    var rawJson = await ReadBody(request);
-    if (string.IsNullOrWhiteSpace(rawJson))
-    {
-        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
-    }
-
-    ResolveOrderRequestRequest? resolveRequest;
-    try
-    {
-        resolveRequest = JsonSerializer.Deserialize<ResolveOrderRequestRequest>(
-            rawJson,
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-    }
-    catch (JsonException)
-    {
-        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
-    }
-
-    if (resolveRequest == null)
-    {
-        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
-    }
-
-    var existing = store.GetOrderRequests(true)
-        .FirstOrDefault(orderRequest => orderRequest.Id == requestId);
-    if (existing == null)
-    {
-        return Results.NotFound(new ApiResult(false, "ORDER_REQUEST_NOT_FOUND"));
-    }
-
-    var status = NormalizeOrderRequestResolutionStatus(resolveRequest.Status);
-    if (status == null)
-    {
-        return Results.BadRequest(new ApiResult(false, "INVALID_STATUS"));
-    }
-
-    var resolvedBy = string.IsNullOrWhiteSpace(resolveRequest.ResolvedBy)
-        ? "WPF"
-        : resolveRequest.ResolvedBy.Trim();
-    var note = string.IsNullOrWhiteSpace(resolveRequest.Note)
-        ? null
-        : resolveRequest.Note.Trim();
-
-    store.ResolveOrderRequest(
-        requestId,
-        status,
-        resolvedBy,
-        note,
-        resolveRequest.AppliedOrderId);
-
-    return Results.Ok(new ApiResult(true));
 });
 
 app.MapGet("/api/stock", () =>
@@ -3073,6 +3050,7 @@ static bool IsClientBlockBypassPath(PathString path)
     if (path.StartsWithSegments("/api/client-blocks")
         || path.StartsWithSegments("/api/production-pallets/filling-corrections")
         || path.StartsWithSegments("/api/tsd/login")
+        || path.StartsWithSegments("/api/pc")
         || path.StartsWithSegments("/api/discovery")
         || path.StartsWithSegments("/api/ping")
         || path.StartsWithSegments("/api/version"))
@@ -3150,6 +3128,7 @@ static object MapOrderRequest(OrderRequest request)
     {
         id = request.Id,
         request_type = request.RequestType,
+        management_supported = OrderRequestManagementService.Supports(request.RequestType),
         payload_json = request.PayloadJson,
         status = request.Status,
         created_at = request.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
@@ -3241,6 +3220,8 @@ static List<object> GetPendingCreateOrderRows(IDataStore store, string? normaliz
         {
             id = $"request:{request.Id}",
             request_id = request.Id,
+            request_type = request.RequestType,
+            management_supported = OrderRequestManagementService.Supports(request.RequestType),
             order_ref = displayOrderRef,
             order_type = OrderStatusMapper.TypeToString(orderType),
             partner_id = partnerId,
@@ -3959,21 +3940,6 @@ static bool ParseIncludeInactive(string? value)
     };
 }
 
-static string? NormalizeOrderRequestResolutionStatus(string? value)
-{
-    if (string.IsNullOrWhiteSpace(value))
-    {
-        return null;
-    }
-
-    return value.Trim().ToUpperInvariant() switch
-    {
-        OrderRequestStatus.Approved => OrderRequestStatus.Approved,
-        OrderRequestStatus.Rejected => OrderRequestStatus.Rejected,
-        _ => null
-    };
-}
-
 static DocType? ParseDocType(string? value)
 {
     return DocTypeMapper.FromOpString(value);
@@ -4159,23 +4125,6 @@ static bool TryVerifyPassword(string password, string saltBase64, string hashBas
     using var derive = new Rfc2898DeriveBytes(password, salt, iterations, HashAlgorithmName.SHA256);
     var actual = derive.GetBytes(expectedHash.Length);
     return CryptographicOperations.FixedTimeEquals(actual, expectedHash);
-}
-
-static bool IsActivePcAccount(string connectionString, string login, string deviceId)
-{
-    using var connection = OpenConnection(connectionString);
-    using var command = connection.CreateCommand();
-    command.CommandText = @"
-SELECT 1
-FROM tsd_devices
-WHERE login = @login
-  AND device_id = @device_id
-  AND is_active = TRUE
-  AND UPPER(COALESCE(platform, 'TSD')) IN ('PC', 'BOTH')
-LIMIT 1;";
-    AddParam(command, "@login", login);
-    AddParam(command, "@device_id", deviceId);
-    return command.ExecuteScalar() != null;
 }
 
 static string ResolveAppVersion()

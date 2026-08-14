@@ -8,14 +8,12 @@ namespace FlowStock.App;
 public partial class TsdDeviceWindow : Window
 {
     private readonly AppServices _services;
-    private readonly TsdDeviceService _deviceService;
     private readonly ObservableCollection<TsdDeviceInfo> _devices = new();
     private TsdDeviceInfo? _selected;
 
     public TsdDeviceWindow(AppServices services)
     {
         _services = services;
-        _deviceService = new TsdDeviceService(_services.ConnectionString, _services.AppLogger);
         InitializeComponent();
 
         DevicesGrid.ItemsSource = _devices;
@@ -26,9 +24,15 @@ public partial class TsdDeviceWindow : Window
     private void LoadDevices()
     {
         _devices.Clear();
-        var devices = _services.WpfAdminApi.TryGetTsdDevices(out var apiDevices)
-            ? apiDevices
-            : _deviceService.GetDevices();
+        if (!_services.WpfAdminApi.TryGetTsdDevices(out var devices))
+        {
+            MessageBox.Show(
+                "Не удалось загрузить аккаунты через защищённый server API.",
+                "Аккаунты",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            return;
+        }
         foreach (var device in devices)
         {
             _devices.Add(device);
@@ -48,6 +52,7 @@ public partial class TsdDeviceWindow : Window
         LoginBox.Text = device.Login;
         PasswordBox.Text = string.Empty;
         IsActiveCheck.IsChecked = device.IsActive;
+        IsAdminCheck.IsChecked = string.Equals(device.AccessRole, "ADMIN", StringComparison.OrdinalIgnoreCase);
         SetPlatformSelection(device.Platform);
     }
 
@@ -69,6 +74,7 @@ public partial class TsdDeviceWindow : Window
         var password = PasswordBox.Text ?? string.Empty;
         var isActive = IsActiveCheck.IsChecked == true;
         var platform = GetSelectedPlatform();
+        var accessRole = IsAdminCheck.IsChecked == true ? "ADMIN" : "OPERATOR";
         var selectedId = _selected?.Id ?? 0;
 
         try
@@ -76,22 +82,22 @@ public partial class TsdDeviceWindow : Window
             if (_selected == null)
             {
                 var saved = await _services.WpfAdminApi
-                    .TryAddTsdDeviceAsync(login, password, isActive, platform)
+                    .TryAddTsdDeviceAsync(login, password, isActive, platform, accessRole)
                     .ConfigureAwait(true);
                 if (!saved)
                 {
-                    _deviceService.AddDevice(login, password, isActive, platform);
+                    throw new InvalidOperationException("Server API отклонил создание аккаунта.");
                 }
             }
             else
             {
                 var passwordToUpdate = string.IsNullOrWhiteSpace(password) ? null : password;
                 var saved = await _services.WpfAdminApi
-                    .TryUpdateTsdDeviceAsync(selectedId, login, passwordToUpdate, isActive, platform)
+                    .TryUpdateTsdDeviceAsync(selectedId, login, passwordToUpdate, isActive, platform, accessRole)
                     .ConfigureAwait(true);
                 if (!saved)
                 {
-                    _deviceService.UpdateDevice(selectedId, login, passwordToUpdate, isActive, platform);
+                    throw new InvalidOperationException("Server API отклонил изменение аккаунта.");
                 }
             }
 
@@ -118,6 +124,7 @@ public partial class TsdDeviceWindow : Window
         LoginBox.Text = string.Empty;
         PasswordBox.Text = string.Empty;
         IsActiveCheck.IsChecked = true;
+        IsAdminCheck.IsChecked = false;
         SetPlatformSelection("TSD");
     }
 

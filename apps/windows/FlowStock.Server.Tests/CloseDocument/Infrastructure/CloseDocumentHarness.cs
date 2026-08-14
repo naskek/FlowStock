@@ -1801,6 +1801,43 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.GetOrderRequests(It.IsAny<bool>()))
             .Returns<bool>(includeResolved => GetOrderRequests(includeResolved));
 
+        _store.As<IOrderRequestManagementStore>()
+            .Setup(store => store.GetOrderRequestForUpdate(It.IsAny<long>()))
+            .Returns<long>(requestId => GetOrderRequest(requestId));
+
+        _store.As<IOrderRequestManagementStore>()
+            .Setup(store => store.TryResolvePendingOrderRequest(
+                It.IsAny<long>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(),
+                It.IsAny<string>(),
+                It.IsAny<string?>(),
+                It.IsAny<long?>()))
+            .Returns<long, string, DateTime, string, string?, long?>((requestId, status, resolvedAt, resolvedBy, note, appliedOrderId) =>
+            {
+                if (!_orderRequests.TryGetValue(requestId, out var current)
+                    || !string.Equals(current.Status, OrderRequestStatus.Pending, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                _orderRequests[requestId] = new OrderRequest
+                {
+                    Id = current.Id,
+                    RequestType = current.RequestType,
+                    PayloadJson = current.PayloadJson,
+                    Status = status,
+                    CreatedAt = current.CreatedAt,
+                    CreatedByLogin = current.CreatedByLogin,
+                    CreatedByDeviceId = current.CreatedByDeviceId,
+                    ResolvedAt = resolvedAt,
+                    ResolvedBy = resolvedBy,
+                    ResolutionNote = note,
+                    AppliedOrderId = appliedOrderId
+                };
+                return true;
+            });
+
         _store.Setup(store => store.CountUnreadBusinessNotifications(It.IsAny<string>()))
             .Returns(0);
 

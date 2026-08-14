@@ -42,6 +42,10 @@
     getCurrentView: function () { return currentView; },
     getBlockKeyForView: getBlockKeyForView,
     handleBlockedClientRequest: handleBlockedClientRequest,
+    handleUnauthorized: function () {
+      if (clearAccount) clearAccount();
+      init();
+    },
   });
   var fetchJson = core.fetchJson;
   var createRequestHeaders = core.createRequestHeaders;
@@ -72,12 +76,15 @@
   var getClientBlocksSignature = auth.getClientBlocksSignature;
   var normalizePlatform = auth.normalizePlatform;
   var hasPcAccess = auth.hasPcAccess;
+  var hasCapability = auth.hasCapability;
   var loadAccount = auth.loadAccount;
   var saveAccount = auth.saveAccount;
   var clearAccount = auth.clearAccount;
   var setAccountLabel = auth.setAccountLabel;
   var setLoginState = auth.setLoginState;
   var apiLogin = auth.apiLogin;
+  var loadSession = auth.loadSession;
+  var apiLogout = auth.apiLogout;
   var loadClientBlocks = auth.loadClientBlocks;
   var renderLogin = auth.renderLogin;
   var wireLogin = auth.wireLogin;
@@ -97,6 +104,9 @@
     renderLinePalletFillingBadge: renderLinePalletFillingBadge,
     getOrderTypeLabel: getOrderTypeLabel,
     bindModalDismiss: bindModalDismiss,
+    hasCapability: hasCapability,
+    refreshSession: loadSession,
+    onSessionInvalid: init,
   });
   var openOrderModal = orderModal.openOrderModal;
   var renderOrderLinesTable = orderModal.renderOrderLinesTable;
@@ -105,6 +115,7 @@
   var refreshOpenOrderModalIfNeeded = orderModal.refreshOpenOrderModalIfNeeded;
   var clearOpenOrderModalController = orderModal.clearOpenOrderModalController;
   var hasOpenOrderModal = orderModal.hasOpenOrderModal;
+  var submitPendingOrderAction = orderModal.submitPendingOrderAction;
   var catalog = window.FlowStockPcCatalog;
   catalog.init({
     fetchJson: fetchJson,
@@ -711,7 +722,7 @@
 
   function renderOrders() {
     return renderPageShell(
-      '<section class="pc-card">' +
+      '<section class="pc-card pc-orders-card">' +
       '  <div class="section-title">Заказы</div>' +
       '  <div class="pc-toolbar">' +
       '    <div class="form-field">' +
@@ -740,29 +751,108 @@
     return "Клиентский";
   }
 
-  function renderOrdersTable(rows) {
+  function canManagePendingOrderRow(order, canManagePendingRequests) {
+    return !!(
+      canManagePendingRequests &&
+      order &&
+      order.is_pending_confirmation === true &&
+      order.management_supported === true &&
+      Number(order.request_id) > 0
+    );
+  }
+
+  function renderAttentionModalContent(title, message) {
+    return (
+      '<div class="pc-modal-card pc-attention-modal-card" role="alertdialog" aria-modal="true" ' +
+      'aria-labelledby="attentionModalTitle">' +
+      '  <div class="pc-attention-modal-icon" aria-hidden="true">!</div>' +
+      '  <div class="pc-attention-modal-body">' +
+      '    <div class="pc-modal-title pc-attention-modal-title" id="attentionModalTitle">' +
+      escapeHtml(title || "Требуется внимание") +
+      "</div>" +
+      '    <div class="pc-attention-modal-message">' +
+      escapeHtml(message || "Не удалось выполнить действие.") +
+      "</div>" +
+      "  </div>" +
+      '  <div class="pc-attention-modal-footer">' +
+      '    <button class="btn primary-btn pc-attention-modal-ok" type="button" id="attentionModalOkBtn">OK</button>' +
+      "  </div>" +
+      "</div>"
+    );
+  }
+
+  function openAttentionModal(title, message) {
+    var modal = document.createElement("div");
+    modal.className = "pc-modal pc-attention-modal";
+    modal.innerHTML = renderAttentionModalContent(title, message);
+    document.body.appendChild(modal);
+
+    var closed = false;
+    var disposeDismiss = function () {};
+    function close() {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      disposeDismiss();
+      if (modal.parentNode) {
+        modal.parentNode.removeChild(modal);
+      }
+    }
+
+    disposeDismiss = bindModalDismiss(modal, close);
+    var okButton = modal.querySelector("#attentionModalOkBtn");
+    if (okButton) {
+      okButton.addEventListener("click", close);
+    }
+
+    return { modal: modal, close: close };
+  }
+
+  function renderPendingOrderActions(order, canManagePendingRequests) {
+    if (!canManagePendingOrderRow(order, canManagePendingRequests)) {
+      return "";
+    }
+
+    var requestId = escapeHtml(String(order.request_id));
+    return (
+      '<div class="pc-order-inline-actions" data-pending-request-actions="' + requestId + '">' +
+      '<button class="btn primary-btn pc-order-inline-action pc-order-inline-action--confirm" type="button" ' +
+      'data-pending-request-action="confirm" data-request-id="' + requestId + '">Подтвердить</button>' +
+      '<button class="btn pc-order-inline-action pc-order-inline-action--reject" type="button" ' +
+      'data-pending-request-action="reject" data-request-id="' + requestId + '">Отклонить</button>' +
+      "</div>"
+    );
+  }
+
+  function renderOrdersTable(rows, options) {
     if (!rows || !rows.length) {
       return '<div class="empty-state">Заказов нет.</div>';
     }
+    var canManagePendingRequests = !!(options && options.canManagePendingRequests);
+    var tableClass = "pc-table pc-table-zebra pc-orders-table" +
+      (canManagePendingRequests ? " pc-orders-table--with-actions" : "");
     var body = rows
       .map(function (order) {
+        var orderRef = String(order.order_ref || "-");
+        var partnerName = String(order.partner_name || "-");
         return (
           "<tr" +
           ' data-order="' + escapeHtml(String(order.id)) + '"' +
           ">" +
-          "<td>" +
-          escapeHtml(order.order_ref || "-") +
+          '<td class="pc-order-ref-cell" title="' + escapeHtml(orderRef) + '">' +
+          escapeHtml(orderRef) +
           "</td>" +
-          "<td>" +
+          '<td class="pc-order-type-cell">' +
           escapeHtml(getOrderTypeLabel(order.order_type)) +
           "</td>" +
-          "<td>" +
-          escapeHtml(order.partner_name || "-") +
+          '<td class="pc-order-partner-cell" title="' + escapeHtml(partnerName) + '">' +
+          escapeHtml(partnerName) +
           "</td>" +
-          '<td class="pc-num">' +
+          '<td class="pc-num pc-order-plan-cell">' +
           escapeHtml(formatDate(order.due_date)) +
           "</td>" +
-          '<td class="pc-num">' +
+          '<td class="pc-num pc-order-fact-cell">' +
           escapeHtml(formatDate(order.shipped_at)) +
           "</td>" +
           '<td class="pc-order-status-cell">' +
@@ -774,21 +864,27 @@
           '<td class="pc-order-marking-cell">' +
           renderOrderMarkingIndicator(order) +
           "</td>" +
+          (canManagePendingRequests
+            ? '<td class="pc-order-actions-cell">' +
+              renderPendingOrderActions(order, canManagePendingRequests) +
+              "</td>"
+            : "") +
           "</tr>"
         );
       })
       .join("");
     return (
-      '<table class="pc-table pc-table-zebra">' +
+      '<table class="' + tableClass + '">' +
       "<thead><tr>" +
-      renderSortableHeader("orders", "orderRef", "Номер") +
-      renderSortableHeader("orders", "orderType", "Тип") +
-      renderSortableHeader("orders", "partnerName", "Контрагент") +
-      renderSortableHeader("orders", "dueDate", "План", "pc-num") +
-      renderSortableHeader("orders", "shippedAt", "Факт", "pc-num") +
-      renderSortableHeader("orders", "status", "Статус") +
-      renderSortableHeader("orders", "palletFilling", "Наполнение паллет") +
-      '<th title="Честный знак: маркировка">ЧЗ</th>' +
+      renderSortableHeader("orders", "orderRef", "Номер", "pc-order-ref-header") +
+      renderSortableHeader("orders", "orderType", "Тип", "pc-order-type-header") +
+      renderSortableHeader("orders", "partnerName", "Контрагент", "pc-order-partner-header") +
+      renderSortableHeader("orders", "dueDate", "План", "pc-num pc-order-plan-header") +
+      renderSortableHeader("orders", "shippedAt", "Факт", "pc-num pc-order-fact-header") +
+      renderSortableHeader("orders", "status", "Статус", "pc-order-status-header") +
+      renderSortableHeader("orders", "palletFilling", "Наполнение паллет", "pc-order-pallet-header") +
+      '<th class="pc-order-marking-header" title="Честный знак: маркировка">ЧЗ</th>' +
+      (canManagePendingRequests ? '<th class="pc-order-actions-header">Действия</th>' : "") +
       "</tr></thead>" +
       "<tbody>" +
       body +
@@ -820,6 +916,95 @@
 
   function loadOrders(query, offset) {
     return fetchJson(buildOrdersUrl(query, ORDERS_FETCH_LIMIT, offset || 0)).then(trimOrdersPage);
+  }
+
+  function createLatestOnlyGate() {
+    var generation = 0;
+    return {
+      begin: function () {
+        generation += 1;
+        return generation;
+      },
+      isCurrent: function (candidate) {
+        return candidate === generation;
+      },
+    };
+  }
+
+  function executePendingOrderAction(order, action, lifecycle) {
+    var handlers = lifecycle || {};
+    if (handlers.setBusy) {
+      handlers.setBusy(true);
+    }
+
+    function refreshWithOutcome(outcome, message) {
+      var refresh = handlers.refresh ? handlers.refresh() : null;
+      return Promise.resolve(refresh).then(function (refreshResult) {
+        if (refreshResult && refreshResult.refreshFailed) {
+          throw new Error("ORDERS_REFRESH_FAILED");
+        }
+        if (handlers.setStatus && message && !(refreshResult && refreshResult.stale)) {
+          handlers.setStatus(message);
+        }
+        return outcome;
+      });
+    }
+
+    var operation = submitPendingOrderAction(order, action).then(
+      function (response) {
+        var terminalStatus = String(response && response.status || "").trim().toUpperCase();
+        var message = terminalStatus === "REJECTED"
+          ? "Заявка отклонена. Данные обновлены."
+          : "Заявка подтверждена. Данные обновлены.";
+        return refreshWithOutcome("success", message);
+      },
+      function (error) {
+        var code = error && error.message ? error.message : "REQUEST_FAILED";
+        if (code === "ORDER_REQUEST_ALREADY_RESOLVED") {
+          return refreshWithOutcome("conflict", "Состояние заявки обновлено с сервера.");
+        }
+        if (code === "UNAUTHORIZED") {
+          if (handlers.onSessionInvalid) {
+            handlers.onSessionInvalid();
+          }
+          return "unauthorized";
+        }
+        if (code === "MANAGE_PENDING_REQUESTS_REQUIRED") {
+          var sessionRefresh = handlers.refreshSession ? handlers.refreshSession() : null;
+          return Promise.resolve(sessionRefresh).then(function () {
+            return refreshWithOutcome("forbidden", "Права доступа обновлены.");
+          });
+        }
+
+        if (handlers.showAttention) {
+          handlers.showAttention(
+            String(action || "").trim().toLowerCase() === "reject"
+              ? "Не удалось отклонить заявку"
+              : "Не удалось подтвердить заказ",
+            code
+          );
+          if (handlers.setStatus) {
+            handlers.setStatus("Заявка не изменена.");
+          }
+        } else if (handlers.setStatus) {
+          handlers.setStatus("Не удалось выполнить действие с заявкой: " + code);
+        }
+        return "error";
+      }
+    );
+
+    return operation
+      .catch(function () {
+        if (handlers.setStatus) {
+          handlers.setStatus("Не удалось обновить список заказов. Повторите попытку.");
+        }
+        return "error";
+      })
+      .finally(function () {
+        if (handlers.setBusy) {
+          handlers.setBusy(false);
+        }
+      });
   }
 
   function filterOrderSelectableItems(rows) {
@@ -3158,7 +3343,6 @@
       var partnerId = internalOrder ? 0 : (selectedPartner ? Number(selectedPartner.id) : 0);
       var dueDate = refs.dueDateInput ? String(refs.dueDateInput.value || "").trim() : "";
       var comment = refs.commentInput ? String(refs.commentInput.value || "").trim() : "";
-      var account = loadAccount();
       var lines = [];
       var unresolvedLines = [];
 
@@ -3195,7 +3379,7 @@
         setStatus("Строки " + unresolvedLines.join(", ") + ": выберите товар (доступен поиск по GTIN/названию).");
         return;
       }
-      if (!hasPcAccess(account)) {
+      if (!hasPcAccess(loadAccount())) {
         setStatus("Сессия неактивна. Войдите повторно.");
         return;
       }
@@ -3217,13 +3401,11 @@
           due_date: dueDate || null,
           comment: comment || null,
           lines: lines,
-          login: account.login || null,
-          device_id: account.device_id || null,
         }),
       })
         .then(function (result) {
           var requestId = result && result.request_id ? String(result.request_id) : "-";
-          setStatus("Заявка #" + requestId + " отправлена. Ожидается подтверждение в WPF.");
+          setStatus("Заявка #" + requestId + " отправлена. Ожидается подтверждение.");
           if (typeof onSubmitted === "function") {
             onSubmitted();
           }
@@ -3352,6 +3534,7 @@
     var ordersHasMore = false;
     var ordersLoading = false;
     var ordersLoadingMore = false;
+    var ordersLoadGate = createLatestOnlyGate();
 
     function setStatus(text) {
       if (statusEl) {
@@ -3379,7 +3562,9 @@
       var preserveServerOrder = !!(options && options.preserveServerOrder);
       currentRows = Array.isArray(rows) ? rows.slice() : [];
       var sortedRows = preserveServerOrder ? currentRows.slice() : sortOrderRows(currentRows);
-      tableWrap.innerHTML = renderOrdersTable(sortedRows);
+      tableWrap.innerHTML = renderOrdersTable(sortedRows, {
+        canManagePendingRequests: hasCapability("ManagePendingRequests"),
+      });
       bindTableSorting(tableWrap, "orders", function () {
         renderTable(currentRows);
       });
@@ -3395,6 +3580,45 @@
           }
         });
       });
+      var pendingActionButtons = tableWrap.querySelectorAll("[data-pending-request-action]");
+      pendingActionButtons.forEach(function (button) {
+        button.addEventListener("click", function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+
+          var action = button.getAttribute("data-pending-request-action");
+          var requestId = Number(button.getAttribute("data-request-id")) || 0;
+          var target = sortedRows.find(function (entry) {
+            return Number(entry && entry.request_id) === requestId;
+          });
+          if (!canManagePendingOrderRow(target, hasCapability("ManagePendingRequests"))) {
+            return;
+          }
+          if (action === "reject" && !window.confirm("Отклонить эту заявку?")) {
+            return;
+          }
+
+          var actionWrap = button.parentNode;
+          function setActionBusy(busy) {
+            if (!actionWrap || !actionWrap.querySelectorAll) {
+              return;
+            }
+            actionWrap.querySelectorAll("[data-pending-request-action]").forEach(function (actionButton) {
+              actionButton.disabled = !!busy;
+            });
+          }
+
+          setStatus(action === "confirm" ? "Подтверждение заявки..." : "Отклонение заявки...");
+          executePendingOrderAction(target, action, {
+            setBusy: setActionBusy,
+            refresh: runSearch,
+            refreshSession: loadSession,
+            onSessionInvalid: init,
+            showAttention: openAttentionModal,
+            setStatus: setStatus,
+          });
+        });
+      });
     }
 
     function updateLoadMoreButton() {
@@ -3407,6 +3631,7 @@
     }
 
     function runSearch() {
+      var loadGeneration = ordersLoadGate.begin();
       currentQuery = searchInput ? searchInput.value.trim() : "";
       currentRows = [];
       ordersHasMore = false;
@@ -3414,8 +3639,11 @@
       ordersLoadingMore = false;
       updateLoadMoreButton();
       setStatus("Загрузка...");
-      loadOrders(currentQuery, 0)
+      return loadOrders(currentQuery, 0)
         .then(function (page) {
+          if (!ordersLoadGate.isCurrent(loadGeneration)) {
+            return { stale: true };
+          }
           ordersHasMore = page.hasMore;
           var source = Array.isArray(page.rows) ? page.rows.slice() : [];
           renderTable(source, { preserveServerOrder: true });
@@ -3425,17 +3653,27 @@
           }
           setStatus("Загрузка готовности...");
           return enrichOrdersWithReadiness(source).then(function (enrichedRows) {
+            if (!ordersLoadGate.isCurrent(loadGeneration)) {
+              return { stale: true };
+            }
             renderTable(enrichedRows, { preserveServerOrder: true });
             setStatus("Данные с сервера");
             return enrichedRows;
           });
         })
         .catch(function () {
+          if (!ordersLoadGate.isCurrent(loadGeneration)) {
+            return;
+          }
           ordersHasMore = false;
           renderTable([]);
           setStatus("Ошибка загрузки заказов");
+          return { refreshFailed: true };
         })
         .finally(function () {
+          if (!ordersLoadGate.isCurrent(loadGeneration)) {
+            return;
+          }
           ordersLoading = false;
           updateLoadMoreButton();
         });
@@ -3446,11 +3684,15 @@
         return;
       }
 
+      var loadGeneration = ordersLoadGate.begin();
       ordersLoadingMore = true;
       updateLoadMoreButton();
       setStatus("Загрузка...");
-      loadOrders(currentQuery, currentRows.length)
+      return loadOrders(currentQuery, currentRows.length)
         .then(function (page) {
+          if (!ordersLoadGate.isCurrent(loadGeneration)) {
+            return [];
+          }
           ordersHasMore = page.hasMore;
           var appendedRows = currentRows.concat(page.rows);
           renderTable(appendedRows, { preserveServerOrder: true });
@@ -3459,6 +3701,9 @@
             ordersHasMore = false;
           }
           return enrichOrdersWithReadiness(page.rows).then(function (enrichedRows) {
+            if (!ordersLoadGate.isCurrent(loadGeneration)) {
+              return enrichedRows;
+            }
             if (!enrichedRows.length) {
               return appendedRows;
             }
@@ -3474,9 +3719,15 @@
           });
         })
         .catch(function () {
+          if (!ordersLoadGate.isCurrent(loadGeneration)) {
+            return;
+          }
           setStatus("Ошибка загрузки заказов");
         })
         .finally(function () {
+          if (!ordersLoadGate.isCurrent(loadGeneration)) {
+            return;
+          }
           ordersLoadingMore = false;
           updateLoadMoreButton();
         });
@@ -3593,8 +3844,7 @@
       currentView = rememberedView;
     }
 
-    var account = loadAccount();
-    if (!hasPcAccess(account)) {
+    function showLogin() {
       stopVersionWatcher();
       stopLiveUpdates();
       applyClientBlocks(null);
@@ -3605,25 +3855,28 @@
         app.innerHTML = renderLogin();
         wireLogin();
       }
-      return;
     }
 
-    setLoginState(true);
-    setAccountLabel(account);
-    startVersionWatcher();
-    startLiveUpdates();
-    syncTabsVisibility();
     if (app) {
-      app.innerHTML = renderPageShell('<section class="pc-card"><div class="pc-status">Загрузка...</div></section>');
+      app.innerHTML = renderPageShell('<section class="pc-card"><div class="pc-status">Проверка сессии...</div></section>');
     }
-    loadClientBlocks().then(function () {
-      currentView = resolveAllowedView(currentView) || getDefaultView();
-      renderView(currentView);
-    });
+    loadSession()
+      .then(function (account) {
+        setLoginState(true);
+        setAccountLabel(account);
+        startVersionWatcher();
+        startLiveUpdates();
+        syncTabsVisibility();
+        currentView = resolveAllowedView(currentView) || getDefaultView();
+        renderView(currentView);
+      })
+      .catch(showLogin);
   }
 
   if (window.FlowStockPcTestHooks) {
     window.FlowStockPcTestHooks.getOrderStatusPresentation = getOrderStatusPresentation;
+    window.FlowStockPcTestHooks.renderAttentionModalContent = renderAttentionModalContent;
+    window.FlowStockPcTestHooks.openAttentionModal = openAttentionModal;
     window.FlowStockPcTestHooks.getOrderMarkingPresentation = getOrderMarkingPresentation;
     window.FlowStockPcTestHooks.renderOrderMarkingIndicator = renderOrderMarkingIndicator;
     window.FlowStockPcTestHooks.getOrderPalletFillingPresentation = getOrderPalletFillingPresentation;
@@ -3632,6 +3885,8 @@
     window.FlowStockPcTestHooks.applyOrderLineShipmentPalletReadiness = applyOrderLineShipmentPalletReadiness;
     window.FlowStockPcTestHooks.getOrderLineHighlightState = getOrderLineHighlightState;
     window.FlowStockPcTestHooks.renderOrdersTable = renderOrdersTable;
+    window.FlowStockPcTestHooks.executePendingOrderAction = executePendingOrderAction;
+    window.FlowStockPcTestHooks.createLatestOnlyGate = createLatestOnlyGate;
     window.FlowStockPcTestHooks.renderOrderLinesTable = renderOrderLinesTable;
     window.FlowStockPcTestHooks.normalizeMarkingTaskRows = normalizeMarkingTaskRows;
     window.FlowStockPcTestHooks.getEnabledViews = getEnabledViews;
@@ -3686,18 +3941,20 @@
 
   if (logoutBtn) {
     logoutBtn.addEventListener("click", function () {
-      clearAccount();
-      stopVersionWatcher();
-      stopLiveUpdates();
-      knownServerVersion = loadedPcWebVersion;
-      applyClientBlocks(null);
-      syncTabsVisibility();
-      setAccountLabel(null);
-      setLoginState(false);
-      if (app) {
-        app.innerHTML = renderLogin();
-        wireLogin();
-      }
+      apiLogout().finally(function () {
+        clearAccount();
+        stopVersionWatcher();
+        stopLiveUpdates();
+        knownServerVersion = loadedPcWebVersion;
+        applyClientBlocks(null);
+        syncTabsVisibility();
+        setAccountLabel(null);
+        setLoginState(false);
+        if (app) {
+          app.innerHTML = renderLogin();
+          wireLogin();
+        }
+      });
     });
   }
 

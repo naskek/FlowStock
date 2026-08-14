@@ -145,7 +145,7 @@ public sealed class ReadyHuBindingEndpointTests
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.Server", "Program.cs");
         var start = source.IndexOf("app.MapGet(\"/api/requests/summary\"", StringComparison.Ordinal);
-        var end = source.IndexOf("app.MapPost(\"/api/orders/requests/{requestId:long}/resolve\"", start, StringComparison.Ordinal);
+        var end = source.IndexOf("app.MapGet(\"/api/stock\"", start, StringComparison.Ordinal);
         var summaryEndpoint = source[start..end];
 
         Assert.Contains("ready_hu_binding_pending", summaryEndpoint);

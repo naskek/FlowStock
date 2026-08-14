@@ -27,6 +27,7 @@
                     <DataGridTextColumn Header="Логин" Binding="{Binding Login}" Width="160" />
                     <DataGridTextColumn Header="Платформа" Binding="{Binding PlatformDisplay}" Width="120" />
                     <DataGridCheckBoxColumn Header="Активен" Binding="{Binding IsActive}" Width="90" />
+                    <DataGridTextColumn Header="Роль ПК" Binding="{Binding AccessRole}" Width="100" />
                 </DataGrid.Columns>
             </DataGrid>
             <StackPanel Grid.Row="2" Orientation="Horizontal">
@@ -46,6 +47,7 @@
                         <TextBlock Text="Пароль" />
                         <TextBox x:Name="PasswordBox" Margin="0,2,0,8" />
                         <CheckBox x:Name="IsActiveCheck" Content="Активен" Margin="0,0,0,8" />
+                        <CheckBox x:Name="IsAdminCheck" Content="ADMIN в ПК Web" Margin="0,0,0,8" />
                         <TextBlock Text="Платформа" />
                         <ComboBox x:Name="PlatformBox" Margin="0,2,0,8">
                             <ComboBoxItem Content="ТСД" Tag="TSD" />

@@ -287,12 +287,7 @@ public partial class IncomingRequestsWindow : Window
             {
                 var orderRequest = row.OrderRequest!;
                 var resolved = await _services.WpfIncomingRequestsApi
-                    .TryResolveOrderRequestAsync(
-                        orderRequest.Id,
-                        OrderRequestStatus.Rejected,
-                        resolvedBy,
-                        "Отклонено оператором WPF.",
-                        null)
+                    .TryRejectOrderRequestAsync(orderRequest.Id, resolvedBy)
                     .ConfigureAwait(true);
 
                 if (!resolved)

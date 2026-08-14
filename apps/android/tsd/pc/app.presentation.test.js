@@ -104,6 +104,16 @@ vm.runInContext(fs.readFileSync(appPath, "utf8"), context, { filename: appPath }
 
 const pc = context.window.FlowStockPcTestHooks;
 
+const attentionModalHtml = pc.renderAttentionModalContent(
+  "Не удалось подтвердить заказ",
+  "Ошибка <НДС>"
+);
+assert.match(attentionModalHtml, /role="alertdialog"/);
+assert.match(attentionModalHtml, /pc-attention-modal-icon[^>]*>!</);
+assert.match(attentionModalHtml, />Не удалось подтвердить заказ</);
+assert.match(attentionModalHtml, />Ошибка &lt;НДС&gt;</);
+assert.match(attentionModalHtml, /id="attentionModalOkBtn"[^>]*>OK<\/button>/);
+
 assert.strictEqual(
   pc.getOrderStatusPresentation({ status: "Отменён" }).label,
   "Неизвестно",
@@ -129,6 +139,98 @@ const shippedOrderHtml = pc.renderOrdersTable([
   },
 ]);
 assert.match(shippedOrderHtml, /pc-order-status-icon/);
+
+const pendingRequestRow = {
+  id: "request:41",
+  request_id: 41,
+  request_type: "CREATE_ORDER",
+  management_supported: true,
+  order_ref: "041",
+  order_type: "CUSTOMER",
+  partner_name: "Очень длинное наименование контрагента",
+  is_pending_confirmation: true,
+};
+const adminPendingOrderHtml = pc.renderOrdersTable([pendingRequestRow], {
+  canManagePendingRequests: true,
+});
+assert.match(adminPendingOrderHtml, />Действия</);
+assert.match(adminPendingOrderHtml, /data-pending-request-action="confirm"/);
+assert.match(adminPendingOrderHtml, />Подтвердить</);
+assert.match(adminPendingOrderHtml, /data-pending-request-action="reject"/);
+assert.match(adminPendingOrderHtml, />Отклонить</);
+assert.match(
+  adminPendingOrderHtml,
+  /class="btn primary-btn pc-order-inline-action pc-order-inline-action--confirm"[^>]*>Подтвердить<\/button>/
+);
+assert.match(
+  adminPendingOrderHtml,
+  /class="btn pc-order-inline-action pc-order-inline-action--reject"[^>]*>Отклонить<\/button>/
+);
+assert.match(adminPendingOrderHtml, /class="pc-table pc-table-zebra pc-orders-table pc-orders-table--with-actions"/);
+assert.match(adminPendingOrderHtml, /class="pc-order-ref-cell" title="041"/);
+assert.match(
+  adminPendingOrderHtml,
+  /class="pc-order-partner-cell" title="Очень длинное наименование контрагента"/
+);
+assert.match(adminPendingOrderHtml, /class="pc-order-actions-header"/);
+
+const operatorPendingOrderHtml = pc.renderOrdersTable([pendingRequestRow], {
+  canManagePendingRequests: false,
+});
+assert.doesNotMatch(operatorPendingOrderHtml, />Действия</);
+assert.doesNotMatch(operatorPendingOrderHtml, /data-pending-request-action=/);
+assert.match(operatorPendingOrderHtml, /class="pc-table pc-table-zebra pc-orders-table"/);
+assert.doesNotMatch(operatorPendingOrderHtml, /pc-orders-table--with-actions/);
+
+const canonicalAdminOrderHtml = pc.renderOrdersTable([
+  {
+    id: 41,
+    order_ref: "041",
+    order_type: "CUSTOMER",
+    management_supported: true,
+    order_status: "IN_PROGRESS",
+    order_status_presentation: { code: "IN_PROGRESS", label: "В работе" },
+  },
+], { canManagePendingRequests: true });
+assert.match(canonicalAdminOrderHtml, />Действия</);
+assert.doesNotMatch(canonicalAdminOrderHtml, /data-pending-request-action=/);
+
+const contentAwareOrdersHtml = pc.renderOrdersTable([
+  {
+    id: 42,
+    order_ref: "PRICE-SNAPSHOT-VERY-LONG-ORDER-REF",
+    order_type: "CUSTOMER",
+    partner_name: "Очень длинное наименование контрагента для проверки сжатия",
+    order_status: "IN_PROGRESS",
+    order_status_presentation: { code: "PARTIALLY_SHIPPED", label: "Частично отгружен" },
+  },
+  {
+    id: 43,
+    order_ref: "043",
+    order_type: "INTERNAL",
+    order_status: "IN_PROGRESS",
+    order_status_presentation: { code: "IN_PROGRESS", label: "В работе" },
+    needs_production_pallet_plan: true,
+  },
+  {
+    id: 44,
+    order_ref: "044",
+    order_type: "INTERNAL",
+    order_status: "IN_PROGRESS",
+    order_status_presentation: { code: "IN_PROGRESS", label: "В работе" },
+    planned_pallet_count: 14,
+    filled_pallet_count: 4,
+    has_production_pallet_plan: true,
+  },
+], { canManagePendingRequests: true });
+assert.match(contentAwareOrdersHtml, />Частично отгружен</);
+assert.match(contentAwareOrdersHtml, />План не сформирован</);
+assert.match(contentAwareOrdersHtml, />4 \/ 14</);
+assert.match(contentAwareOrdersHtml, /title="PRICE-SNAPSHOT-VERY-LONG-ORDER-REF"/);
+assert.match(
+  contentAwareOrdersHtml,
+  /title="Очень длинное наименование контрагента для проверки сжатия"/
+);
 assert.match(shippedOrderHtml, /title="Выполнен"/);
 assert.doesNotMatch(shippedOrderHtml, />Выполнен</);
 
@@ -1966,8 +2068,8 @@ const pcIndexSource = fs.readFileSync(indexPath, "utf8");
 const pcAppSource = fs.readFileSync(appPath, "utf8");
 assert.strictEqual(
   (pcAppSource.match(/disposeDismiss = bindModalDismiss\(modal, close\);/g) || []).length,
-  2,
-  "production preview and new-order modal must both use the shared dismissal helper"
+  3,
+  "attention, production preview and new-order modals must use the shared dismissal helper"
 );
 assert.match(
   pcAppSource,
@@ -2321,7 +2423,19 @@ async function runOrderModalDismissTests() {
     renderLinePalletFillingBadge: function () { return ""; },
     getOrderTypeLabel: function () { return "Клиентский"; },
     bindModalDismiss: core.bindModalDismiss,
+    hasCapability: function (name) { return name === "ManagePendingRequests"; },
   });
+
+  assert.strictEqual(
+    orderModal.canManagePendingOrder({ is_pending_confirmation: true, management_supported: true }),
+    true,
+    "ADMIN capability should expose actions for every dispatcher-supported pending row"
+  );
+  assert.strictEqual(
+    orderModal.canManagePendingOrder({ is_pending_confirmation: true, management_supported: false }),
+    false,
+    "unsupported request types must stay read-only"
+  );
 
   orderModal.openOrderModal({ id: 1, order_ref: "001", order_type: "CUSTOMER" });
   let controller = orderModal.getOpenOrderModalController();
@@ -2366,9 +2480,311 @@ async function runOrderModalDismissTests() {
   );
 }
 
+async function runInlinePendingOrderActionTests() {
+  const orderModal = context.window.FlowStockPcOrderModal;
+  const pendingOrder = {
+    id: "request:81",
+    request_id: 81,
+    request_type: "CREATE_ORDER",
+    management_supported: true,
+    order_ref: "081",
+    order_type: "CUSTOMER",
+    is_pending_confirmation: true,
+  };
+  const submitted = [];
+  const busyStates = [];
+  const successAttentionCalls = [];
+  let statusMessage = "";
+  let refreshedRows = [pendingOrder];
+  orderModal.init({
+    fetchJson: function (url, options) {
+      submitted.push({ url: url, method: options && options.method });
+      return Promise.resolve({ status: "APPROVED", applied_order_id: 81 });
+    },
+  });
+
+  const outcome = await pc.executePendingOrderAction(pendingOrder, "confirm", {
+    setBusy: function (busy) { busyStates.push(busy); },
+    refresh: function () {
+      refreshedRows = [{
+        id: 81,
+        order_ref: "081",
+        order_type: "CUSTOMER",
+        order_status: "IN_PROGRESS",
+        order_status_presentation: { code: "IN_PROGRESS", label: "В работе" },
+      }];
+      return Promise.resolve();
+    },
+    setStatus: function (message) { statusMessage = message; },
+    showAttention: function (title, message) {
+      successAttentionCalls.push({ title: title, message: message });
+    },
+  });
+
+  assert.deepStrictEqual(submitted, [{
+    url: "/api/orders/requests/81/confirm",
+    method: "POST",
+  }]);
+  assert.strictEqual(outcome, "success");
+  assert.deepStrictEqual(busyStates, [true, false]);
+  assert.deepStrictEqual(successAttentionCalls, []);
+  assert.match(statusMessage, /подтверждена/i);
+  const refreshedHtml = pc.renderOrdersTable(refreshedRows, { canManagePendingRequests: true });
+  assert.match(refreshedHtml, />В работе</);
+  assert.doesNotMatch(refreshedHtml, /Ожидает подтверждения|Черновик/);
+  assert.doesNotMatch(refreshedHtml, /data-pending-request-action=/);
+
+  const rejectBusyStates = [];
+  statusMessage = "";
+  refreshedRows = [pendingOrder];
+  orderModal.init({
+    fetchJson: function () {
+      return Promise.resolve({ status: "REJECTED" });
+    },
+  });
+
+  const rejectOutcome = await pc.executePendingOrderAction(pendingOrder, "reject", {
+    setBusy: function (busy) { rejectBusyStates.push(busy); },
+    refresh: function () {
+      refreshedRows = [];
+      return Promise.resolve();
+    },
+    setStatus: function (message) { statusMessage = message; },
+  });
+
+  assert.strictEqual(rejectOutcome, "success");
+  assert.deepStrictEqual(rejectBusyStates, [true, false]);
+  assert.match(statusMessage, /отклонена/i);
+  const rejectedHtml = pc.renderOrdersTable(refreshedRows, { canManagePendingRequests: true });
+  assert.match(rejectedHtml, /Заказов нет/);
+  assert.doesNotMatch(rejectedHtml, /Ожидает подтверждения|Черновик|data-pending-request-action=/);
+
+  let conflictRefreshCount = 0;
+  const conflictAttentionCalls = [];
+  const conflictBusyStates = [];
+  statusMessage = "";
+  refreshedRows = [pendingOrder];
+  orderModal.init({
+    fetchJson: function () {
+      return Promise.reject(new Error("ORDER_REQUEST_ALREADY_RESOLVED"));
+    },
+  });
+
+  const conflictOutcome = await pc.executePendingOrderAction(pendingOrder, "confirm", {
+    setBusy: function (busy) { conflictBusyStates.push(busy); },
+    refresh: function () {
+      conflictRefreshCount += 1;
+      refreshedRows = [{
+        id: 81,
+        order_ref: "081",
+        order_type: "CUSTOMER",
+        order_status: "IN_PROGRESS",
+        order_status_presentation: { code: "IN_PROGRESS", label: "В работе" },
+      }];
+      return Promise.resolve();
+    },
+    setStatus: function (message) { statusMessage = message; },
+    showAttention: function (title, message) {
+      conflictAttentionCalls.push({ title: title, message: message });
+    },
+  });
+
+  assert.strictEqual(conflictOutcome, "conflict");
+  assert.strictEqual(conflictRefreshCount, 1);
+  assert.deepStrictEqual(conflictBusyStates, [true, false]);
+  assert.deepStrictEqual(conflictAttentionCalls, []);
+  assert.match(statusMessage, /с сервера/i);
+  const conflictHtml = pc.renderOrdersTable(refreshedRows, { canManagePendingRequests: true });
+  assert.match(conflictHtml, />В работе</);
+  assert.doesNotMatch(conflictHtml, /Ожидает подтверждения|Черновик|data-pending-request-action=/);
+
+  const businessMessage = "Для товара не выбрана ставка НДС продажи. Укажите ставку в карточке товара.";
+  const businessBusyStates = [];
+  const attentionCalls = [];
+  let businessRefreshCount = 0;
+  statusMessage = "Подтверждение заявки...";
+  orderModal.init({
+    fetchJson: function () {
+      return Promise.reject(new Error(businessMessage));
+    },
+  });
+  const businessOutcome = await pc.executePendingOrderAction(pendingOrder, "confirm", {
+    setBusy: function (busy) { businessBusyStates.push(busy); },
+    refresh: function () {
+      businessRefreshCount += 1;
+      return Promise.resolve();
+    },
+    showAttention: function (title, message) {
+      attentionCalls.push({ title: title, message: message });
+    },
+    setStatus: function (message) { statusMessage = message; },
+  });
+  assert.strictEqual(businessOutcome, "error");
+  assert.deepStrictEqual(businessBusyStates, [true, false]);
+  assert.strictEqual(businessRefreshCount, 0);
+  assert.deepStrictEqual(attentionCalls, [{
+    title: "Не удалось подтвердить заказ",
+    message: businessMessage,
+  }]);
+  assert.strictEqual(statusMessage, "Заявка не изменена.");
+  assert.doesNotMatch(statusMessage, /ставка НДС/);
+  assert.match(
+    pc.renderOrdersTable([pendingOrder], { canManagePendingRequests: true }),
+    /data-pending-request-action="confirm"/
+  );
+
+  const rejectAttentionCalls = [];
+  orderModal.init({
+    fetchJson: function () {
+      return Promise.reject(new Error("Отклонение запрещено бизнес-правилом."));
+    },
+  });
+  const rejectBusinessOutcome = await pc.executePendingOrderAction(pendingOrder, "reject", {
+    showAttention: function (title, message) {
+      rejectAttentionCalls.push({ title: title, message: message });
+    },
+  });
+  assert.strictEqual(rejectBusinessOutcome, "error");
+  assert.deepStrictEqual(rejectAttentionCalls, [{
+    title: "Не удалось отклонить заявку",
+    message: "Отклонение запрещено бизнес-правилом.",
+  }]);
+
+  let sessionInvalidCount = 0;
+  const unauthorizedBusyStates = [];
+  const authAttentionCalls = [];
+  orderModal.init({
+    fetchJson: function () {
+      return Promise.reject(new Error("UNAUTHORIZED"));
+    },
+  });
+  const unauthorizedOutcome = await pc.executePendingOrderAction(pendingOrder, "confirm", {
+    setBusy: function (busy) { unauthorizedBusyStates.push(busy); },
+    onSessionInvalid: function () { sessionInvalidCount += 1; },
+    showAttention: function (title, message) {
+      authAttentionCalls.push({ title: title, message: message });
+    },
+  });
+  assert.strictEqual(unauthorizedOutcome, "unauthorized");
+  assert.strictEqual(sessionInvalidCount, 1);
+  assert.deepStrictEqual(unauthorizedBusyStates, [true, false]);
+  assert.deepStrictEqual(authAttentionCalls, []);
+
+  let sessionRefreshCount = 0;
+  let forbiddenListRefreshCount = 0;
+  orderModal.init({
+    fetchJson: function () {
+      return Promise.reject(new Error("MANAGE_PENDING_REQUESTS_REQUIRED"));
+    },
+  });
+  const forbiddenOutcome = await pc.executePendingOrderAction(pendingOrder, "reject", {
+    refreshSession: function () {
+      sessionRefreshCount += 1;
+      return Promise.resolve();
+    },
+    refresh: function () {
+      forbiddenListRefreshCount += 1;
+      return Promise.resolve();
+    },
+    showAttention: function (title, message) {
+      authAttentionCalls.push({ title: title, message: message });
+    },
+  });
+  assert.strictEqual(forbiddenOutcome, "forbidden");
+  assert.strictEqual(sessionRefreshCount, 1);
+  assert.strictEqual(forbiddenListRefreshCount, 1);
+  assert.deepStrictEqual(authAttentionCalls, []);
+
+  const refreshFailureBusyStates = [];
+  statusMessage = "";
+  orderModal.init({
+    fetchJson: function () {
+      return Promise.resolve({ status: "APPROVED" });
+    },
+  });
+  const refreshFailureOutcome = await pc.executePendingOrderAction(pendingOrder, "confirm", {
+    setBusy: function (busy) { refreshFailureBusyStates.push(busy); },
+    refresh: function () { return Promise.resolve({ refreshFailed: true }); },
+    setStatus: function (message) { statusMessage = message; },
+  });
+  assert.strictEqual(refreshFailureOutcome, "error");
+  assert.deepStrictEqual(refreshFailureBusyStates, [true, false]);
+  assert.match(statusMessage, /Не удалось обновить список заказов/);
+}
+
+function runAttentionModalTests() {
+  const originalCreateElement = context.document.createElement;
+  const originalBody = context.document.body;
+  const originalQuerySelectorAll = context.document.querySelectorAll;
+  const originalAddEventListener = context.document.addEventListener;
+  const originalRemoveEventListener = context.document.removeEventListener;
+  const okButton = {
+    addEventListener: function (type, handler) {
+      if (type === "click") this.click = handler;
+    },
+    click: function () {},
+  };
+  const modal = {
+    className: "",
+    innerHTML: "",
+    parentNode: null,
+    isConnected: false,
+    addEventListener: function () {},
+    removeEventListener: function () {},
+    querySelector: function (selector) {
+      return selector === "#attentionModalOkBtn" ? okButton : null;
+    },
+  };
+  context.document.createElement = function () { return modal; };
+  context.document.querySelectorAll = function (selector) {
+    return selector === ".pc-modal" && modal.isConnected ? [modal] : [];
+  };
+  context.document.addEventListener = function () {};
+  context.document.removeEventListener = function () {};
+  context.document.body = {
+    appendChild: function (element) {
+      element.parentNode = this;
+      element.isConnected = true;
+    },
+    removeChild: function (element) {
+      element.parentNode = null;
+      element.isConnected = false;
+    },
+  };
+
+  const controller = pc.openAttentionModal(
+    "Не удалось подтвердить заказ",
+    "Для товара не выбрана ставка НДС продажи."
+  );
+  assert.strictEqual(modal.isConnected, true);
+  assert.match(modal.innerHTML, />Не удалось подтвердить заказ</);
+  assert.match(modal.innerHTML, />Для товара не выбрана ставка НДС продажи\.</);
+  okButton.click();
+  assert.strictEqual(modal.isConnected, false);
+  controller.close();
+
+  context.document.createElement = originalCreateElement;
+  context.document.body = originalBody;
+  context.document.querySelectorAll = originalQuerySelectorAll;
+  context.document.addEventListener = originalAddEventListener;
+  context.document.removeEventListener = originalRemoveEventListener;
+}
+
+function runLatestOrdersLoadGateTests() {
+  const gate = pc.createLatestOnlyGate();
+  const staleLoad = gate.begin();
+  const currentLoad = gate.begin();
+
+  assert.strictEqual(gate.isCurrent(staleLoad), false);
+  assert.strictEqual(gate.isCurrent(currentLoad), true);
+}
+
 async function runAsyncRegressions() {
+  runLatestOrdersLoadGateTests();
+  runAttentionModalTests();
   await runPcVersionWatcherTests();
   await runCatalogModalTests();
+  await runInlinePendingOrderActionTests();
   await runOrderModalDismissTests();
 }
 

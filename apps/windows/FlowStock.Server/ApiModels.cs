@@ -684,6 +684,9 @@ public sealed class UpsertTsdDeviceRequest
 
     [JsonPropertyName("platform")]
     public string? Platform { get; set; }
+
+    [JsonPropertyName("access_role")]
+    public string? AccessRole { get; set; }
 }
 
 public sealed class UpsertItemRequest

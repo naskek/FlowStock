@@ -18,8 +18,16 @@ public static class OrderCreateEndpoint
         app.MapPost("/api/orders", HandleCreateAsync);
     }
 
-    private static async Task<IResult> HandleCreateAsync(HttpRequest request, IDataStore store)
+    private static async Task<IResult> HandleCreateAsync(
+        HttpRequest request,
+        IDataStore store,
+        WpfMachineAuthorization wpfAuthorization)
     {
+        if (!wpfAuthorization.IsAuthorized(request))
+        {
+            return Results.Json(new ApiResult(false, "WPF_ADMIN_KEY_REQUIRED"), statusCode: StatusCodes.Status401Unauthorized);
+        }
+
         var rawJson = await ReadBodyAsync(request);
         if (string.IsNullOrWhiteSpace(rawJson))
         {

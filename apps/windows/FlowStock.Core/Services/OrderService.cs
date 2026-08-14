@@ -387,6 +387,28 @@ public sealed class OrderService
         return orderId;
     }
 
+    public static long CreateOrderInTransaction(
+        IDataStore store,
+        string orderRef,
+        long? partnerId,
+        DateTime? dueDate,
+        string? comment,
+        IReadOnlyList<OrderLineView> lines,
+        OrderType type = OrderType.Customer,
+        bool? bindReservedStockForCustomer = null)
+    {
+        return CreateOrderCoreInTransaction(
+            store,
+            orderRef,
+            partnerId,
+            dueDate,
+            comment,
+            lines,
+            type,
+            OrderStatus.InProgress,
+            bindReservedStockForCustomer);
+    }
+
     internal static long CreateDraftOrderInTransaction(
         IDataStore store,
         string orderRef,
@@ -1466,17 +1488,27 @@ public sealed class OrderService
 
     public void ChangeOrderStatus(long orderId, OrderStatus status)
     {
+        _data.ExecuteInTransaction(store => ChangeOrderStatusInTransaction(store, orderId, status));
+    }
+
+    public void CancelOrder(long orderId)
+    {
+        ChangeOrderStatus(orderId, OrderStatus.Cancelled);
+    }
+
+    public static void ChangeOrderStatusInTransaction(IDataStore store, long orderId, OrderStatus status)
+    {
         if (status != OrderStatus.Cancelled)
         {
             throw new InvalidOperationException("Ручное изменение статуса заказа отключено. Статус определяется автоматически по выпуску и отгрузке.");
         }
 
-        CancelOrder(orderId);
-    }
+        if (!store.LockOrdersForUpdate([orderId]))
+        {
+            throw new InvalidOperationException("Заказ не найден.");
+        }
 
-    public void CancelOrder(long orderId)
-    {
-        var existing = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        var existing = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         if (existing.Status == OrderStatus.Shipped)
         {
             throw new InvalidOperationException($"{OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, existing.Type)} заказ нельзя отменить.");
@@ -1487,16 +1519,13 @@ public sealed class OrderService
             return;
         }
 
-        _data.ExecuteInTransaction(store =>
+        TryClearOrderReceiptPlan(store, orderId);
+        DeleteDraftProductionReceiptsForCancelledOrder(store, orderId);
+        store.UpdateOrderStatus(orderId, OrderStatus.Cancelled);
+        if (existing.Type == OrderType.Customer)
         {
-            TryClearOrderReceiptPlan(store, orderId);
-            DeleteDraftProductionReceiptsForCancelledOrder(store, orderId);
-            store.UpdateOrderStatus(orderId, OrderStatus.Cancelled);
-            if (existing.Type == OrderType.Customer)
-            {
-                TryRefreshCustomerReceiptPlans(store);
-            }
-        });
+            TryRefreshCustomerReceiptPlans(store);
+        }
     }
 
     private static void DeleteDraftProductionReceiptsForCancelledOrder(IDataStore store, long orderId)

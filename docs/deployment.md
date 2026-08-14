@@ -214,7 +214,8 @@ cd /opt/FlowStock
 cp deploy/.env.example deploy/.env
 ```
 
-2. Отредактируйте `deploy/.env`: реальный пароль PostgreSQL, `FLOWSTOCK_PUBLIC_BASE_URL`, `FLOWSTOCK_INSTANCE_NAME`, нужные порты.
+2. Отредактируйте `deploy/.env`: реальный пароль PostgreSQL, `FLOWSTOCK_PUBLIC_BASE_URL`, `FLOWSTOCK_INSTANCE_NAME`, нужные порты и случайный `FLOWSTOCK_WPF_ADMIN_API_KEY` длиной не менее 32 символов.
+   Тот же secret задайте каждому доверенному WPF-клиенту через environment `FLOWSTOCK_WPF_ADMIN_API_KEY` либо локальное поле `server.wpf_admin_api_key` в `settings.json`. Secret не добавляется в Git и не идентифицирует конкретного Windows-пользователя.
    Для прямого доступа WPF к PostgreSQL задайте bind-переменные:
    - безопасный default: `127.0.0.1` (доступ только с хоста сервера);
    - пример для production LAN: `FLOWSTOCK_PG_BIND_HOST=192.168.1.3`;
@@ -237,6 +238,21 @@ curl -fsS http://127.0.0.1:${FLOWSTOCK_PORT:-8080}/health/ready
 ```bash
 bash deploy/scripts/release_status.sh
 ```
+
+## Rollout PC Web RBAC (`V0032`)
+
+Перед применением `V0032__pc_web_rbac_sessions.sql` канонический deploy-процесс обязан создать свежий PostgreSQL backup. До обновления runtime выполните read-only инвентаризацию:
+
+```sql
+SELECT upper(request_type) AS request_type, status, count(*)
+FROM order_requests
+GROUP BY upper(request_type), status
+ORDER BY upper(request_type), status;
+```
+
+Текущий dispatcher поддерживает `CREATE_ORDER` и `SET_ORDER_STATUS`. Иные значения не удаляются и не мигрируют автоматически: confirm для них fail-closed возвращает `422`, заявка остаётся `PENDING`.
+
+Server и WPF разворачиваются согласованно с заранее заданным одинаковым machine key. Старый WPF после rollout не может использовать удалённый `/api/orders/requests/{id}/resolve` или прямой `/api/orders` без credential. Все существующие `tsd_devices` получают роль `OPERATOR`; нужные `ADMIN` назначаются после rollout через защищённое WPF-окно аккаунтов. Browser-пользователи проходят новый login, поскольку прежний `localStorage.flowstock_account` больше не является authenticated state.
 
 ### Необязательная разовая проверка чистого bootstrap
 

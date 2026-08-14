@@ -161,6 +161,7 @@ public sealed class ServerCloseClientOptions
 {
     public string BaseUrl { get; init; } = string.Empty;
     public bool AllowInvalidTls { get; init; }
+    public string? WpfAdminApiKey { get; init; }
 }
 
 public sealed class CloseDocumentApiRequest

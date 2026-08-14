@@ -3,6 +3,8 @@
 
   var deps = {};
   var clientBlocks = getDefaultClientBlocks();
+  var currentAccount = null;
+  var capabilities = [];
 
   function init(shared) {
     deps = shared || {};
@@ -58,39 +60,36 @@
   }
 
   function loadAccount() {
-    try {
-      var raw = localStorage.getItem("flowstock_account");
-      if (!raw) {
-        return null;
-      }
-      var parsed = JSON.parse(raw);
-      if (!parsed || !parsed.device_id) {
-        return null;
-      }
-      return {
-        device_id: String(parsed.device_id || "").trim(),
-        login: String(parsed.login || "").trim(),
-        platform: normalizePlatform(parsed.platform),
-      };
-    } catch (error) {
-      return null;
-    }
+    return currentAccount;
   }
 
   function saveAccount(account) {
-    try {
-      localStorage.setItem("flowstock_account", JSON.stringify(account || {}));
-    } catch (error) {
-      // ignore storage failures
-    }
+    currentAccount = account || null;
   }
 
   function clearAccount() {
-    try {
-      localStorage.removeItem("flowstock_account");
-    } catch (error) {
-      // ignore storage failures
+    currentAccount = null;
+    capabilities = [];
+  }
+
+  function applySession(result) {
+    var rawAccount = result && result.account;
+    if (!rawAccount || !rawAccount.device_id) {
+      throw new Error("INVALID_SESSION");
     }
+    currentAccount = {
+      device_id: String(rawAccount.device_id || "").trim(),
+      login: String(rawAccount.login || "").trim(),
+      platform: normalizePlatform(rawAccount.platform),
+      access_role: String(rawAccount.access_role || "OPERATOR").trim().toUpperCase(),
+    };
+    capabilities = Array.isArray(result.capabilities) ? result.capabilities.slice() : [];
+    applyClientBlocks(result.blocks);
+    return currentAccount;
+  }
+
+  function hasCapability(capability) {
+    return capabilities.indexOf(capability) >= 0;
   }
 
   function setAccountLabel(account) {
@@ -113,11 +112,19 @@
   }
 
   function apiLogin(login, password) {
-    return deps.fetchJson("/api/tsd/login", {
+    return deps.fetchJson("/api/pc/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ login: login, password: password }),
     });
+  }
+
+  function loadSession() {
+    return deps.fetchJson("/api/pc/session").then(applySession);
+  }
+
+  function apiLogout() {
+    return deps.fetchJson("/api/pc/logout", { method: "POST" }).finally(clearAccount);
   }
 
   function loadClientBlocks() {
@@ -170,17 +177,7 @@
       setStatus("Подключение...");
       apiLogin(login, password)
         .then(function (result) {
-          var deviceId = result && result.device_id ? String(result.device_id).trim() : "";
-          var platform = normalizePlatform(result && result.platform);
-          if (!deviceId) {
-            throw new Error("NO_DEVICE_ID");
-          }
-          if (platform !== "PC" && platform !== "BOTH") {
-            throw new Error("WRONG_PLATFORM");
-          }
-          applyClientBlocks(result && result.blocks);
-          var account = { device_id: deviceId, login: login, platform: platform };
-          saveAccount(account);
+          var account = applySession(result);
           setAccountLabel(account);
           setLoginState(true);
           if (deps.onLoginSuccess) {
@@ -197,7 +194,7 @@
             message = "Пользователь не найден. Обратитесь к оператору.";
           } else if (code === "DEVICE_BLOCKED") {
             message = "Аккаунт заблокирован. Обратитесь к оператору.";
-          } else if (code === "WRONG_PLATFORM") {
+          } else if (code === "WRONG_PLATFORM" || code === "PC_ACCESS_DENIED") {
             message = "Этот аккаунт не имеет доступа к ПК.";
           }
           setStatus(message);
@@ -228,12 +225,15 @@
     getClientBlocksSignature: getClientBlocksSignature,
     normalizePlatform: normalizePlatform,
     hasPcAccess: hasPcAccess,
+    hasCapability: hasCapability,
     loadAccount: loadAccount,
     saveAccount: saveAccount,
     clearAccount: clearAccount,
     setAccountLabel: setAccountLabel,
     setLoginState: setLoginState,
     apiLogin: apiLogin,
+    loadSession: loadSession,
+    apiLogout: apiLogout,
     loadClientBlocks: loadClientBlocks,
     renderLogin: renderLogin,
     wireLogin: wireLogin,

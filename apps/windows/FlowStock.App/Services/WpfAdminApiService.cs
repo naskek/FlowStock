@@ -95,7 +95,13 @@ public sealed class WpfAdminApiService
             out devices);
     }
 
-    public async Task<bool> TryAddTsdDeviceAsync(string login, string password, bool isActive, string platform, CancellationToken cancellationToken = default)
+    public async Task<bool> TryAddTsdDeviceAsync(
+        string login,
+        string password,
+        bool isActive,
+        string platform,
+        string accessRole,
+        CancellationToken cancellationToken = default)
     {
         return await TryPostAsync(
                 "/api/admin/tsd-devices",
@@ -104,14 +110,22 @@ public sealed class WpfAdminApiService
                     login,
                     password,
                     is_active = isActive,
-                    platform
+                    platform,
+                    access_role = accessRole
                 },
                 "admin-add-tsd-device",
                 cancellationToken)
             .ConfigureAwait(false);
     }
 
-    public async Task<bool> TryUpdateTsdDeviceAsync(long id, string login, string? password, bool isActive, string platform, CancellationToken cancellationToken = default)
+    public async Task<bool> TryUpdateTsdDeviceAsync(
+        long id,
+        string login,
+        string? password,
+        bool isActive,
+        string platform,
+        string accessRole,
+        CancellationToken cancellationToken = default)
     {
         return await TryPostAsync(
                 $"/api/admin/tsd-devices/{id}",
@@ -120,7 +134,8 @@ public sealed class WpfAdminApiService
                     login,
                     password,
                     is_active = isActive,
-                    platform
+                    platform,
+                    access_role = accessRole
                 },
                 "admin-update-tsd-device",
                 cancellationToken)
@@ -175,6 +190,7 @@ public sealed class WpfAdminApiService
             {
                 Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
             };
+            AddTrustedWpfHeaders(request, configuration);
             using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
             {
@@ -219,6 +235,7 @@ public sealed class WpfAdminApiService
             {
                 Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
             };
+            AddTrustedWpfHeaders(request, configuration);
             using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
@@ -244,7 +261,9 @@ public sealed class WpfAdminApiService
             BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
             Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
         };
-        using var response = client.GetAsync(relativePath, HttpCompletionOption.ResponseHeadersRead)
+        using var request = new HttpRequestMessage(HttpMethod.Get, relativePath);
+        AddTrustedWpfHeaders(request, configuration);
+        using var response = client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead)
             .ConfigureAwait(false)
             .GetAwaiter()
             .GetResult();
@@ -274,7 +293,8 @@ public sealed class WpfAdminApiService
         configuration = new WpfAdminApiConfiguration(
             NormalizeBaseUrl(baseUrl),
             timeoutSeconds,
-            ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls);
+            ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls,
+            ReadEnvOrSettings("FLOWSTOCK_WPF_ADMIN_API_KEY", settings.WpfAdminApiKey));
 
         return !string.IsNullOrWhiteSpace(configuration.BaseUrl);
     }
@@ -288,6 +308,15 @@ public sealed class WpfAdminApiService
         }
 
         return handler;
+    }
+
+    private static void AddTrustedWpfHeaders(HttpRequestMessage request, WpfAdminApiConfiguration configuration)
+    {
+        if (!string.IsNullOrWhiteSpace(configuration.WpfAdminApiKey))
+        {
+            request.Headers.TryAddWithoutValidation("X-FlowStock-WPF-Admin-Key", configuration.WpfAdminApiKey.Trim());
+            request.Headers.TryAddWithoutValidation("X-FlowStock-WPF-Audit-Actor", Environment.UserName);
+        }
     }
 
     private static async Task<string> TryReadApiErrorAsync(HttpResponseMessage response)
@@ -329,9 +358,13 @@ public sealed class WpfAdminApiService
             Platform = NormalizePlatform(ReadString(element, "platform")),
             IsActive = ReadBool(element, "is_active"),
             CreatedAt = ReadString(element, "created_at"),
-            LastSeen = ReadString(element, "last_seen")
+            LastSeen = ReadString(element, "last_seen"),
+            AccessRole = NormalizeAccessRole(ReadString(element, "access_role"))
         };
     }
+
+    private static string NormalizeAccessRole(string? accessRole) =>
+        string.Equals(accessRole?.Trim(), "ADMIN", StringComparison.OrdinalIgnoreCase) ? "ADMIN" : "OPERATOR";
 
     private static string NormalizePlatform(string? platform)
     {
@@ -515,7 +548,11 @@ public sealed class WpfAdminApiService
     }
 }
 
-internal sealed record WpfAdminApiConfiguration(string? BaseUrl, int TimeoutSeconds, bool AllowInvalidTls);
+internal sealed record WpfAdminApiConfiguration(
+    string? BaseUrl,
+    int TimeoutSeconds,
+    bool AllowInvalidTls,
+    string? WpfAdminApiKey);
 
 public sealed class WpfMaintenanceBackfillReportResult
 {

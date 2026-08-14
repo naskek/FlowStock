@@ -3,12 +3,72 @@ using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 using FlowStock.Server.Tests.IncomingRequestsOrderConvergence.Infrastructure;
+using System.Net.Http.Json;
 
 namespace FlowStock.Server.Tests.IncomingRequestsOrderConvergence;
 
 [Collection("IncomingRequestsOrderConvergence")]
 public sealed class ValidationAndFailureTests
 {
+    [Fact]
+    public async Task LegacyResolveRoute_IsClosed()
+    {
+        var (harness, apiStore, request) = IncomingRequestsOrderConvergenceScenario.CreateCreateOrderApprovalScenario();
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsJsonAsync(
+            $"/api/orders/requests/{request.Id}/resolve",
+            new { status = "APPROVED", applied_order_id = 123 });
+
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal(OrderRequestStatus.Pending, harness.GetOrderRequest(request.Id)!.Status);
+        Assert.Equal(0, harness.OrderCount);
+    }
+
+    [Fact]
+    public async Task UnsupportedRequestType_ReturnsUnprocessableEntity_AndRemainsPending()
+    {
+        var (harness, apiStore, request) = IncomingRequestsOrderConvergenceScenario.CreateCreateOrderApprovalScenario();
+        var unsupported = new OrderRequest
+        {
+            Id = request.Id,
+            RequestType = "UNKNOWN_ORDER_ACTION",
+            PayloadJson = "{}",
+            Status = OrderRequestStatus.Pending,
+            CreatedAt = request.CreatedAt
+        };
+        harness.SeedOrderRequest(unsupported);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsync($"/api/orders/requests/{unsupported.Id}/confirm", null);
+
+        Assert.Equal(System.Net.HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal(OrderRequestStatus.Pending, harness.GetOrderRequest(unsupported.Id)!.Status);
+        Assert.Equal(0, harness.OrderCount);
+    }
+
+    [Fact]
+    public async Task UnsupportedRequestType_RejectAlsoReturnsUnprocessableEntity_AndRemainsPending()
+    {
+        var (harness, apiStore, request) = IncomingRequestsOrderConvergenceScenario.CreateCreateOrderApprovalScenario();
+        var unsupported = new OrderRequest
+        {
+            Id = request.Id,
+            RequestType = "UNKNOWN_ORDER_ACTION",
+            PayloadJson = "{}",
+            Status = OrderRequestStatus.Pending,
+            CreatedAt = request.CreatedAt
+        };
+        harness.SeedOrderRequest(unsupported);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.PostAsync($"/api/orders/requests/{unsupported.Id}/reject", null);
+
+        Assert.Equal(System.Net.HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal(OrderRequestStatus.Pending, harness.GetOrderRequest(unsupported.Id)!.Status);
+        Assert.Equal(0, harness.OrderCount);
+    }
+
     [Fact]
     public async Task CanonicalValidationFailure_DoesNotMarkRequestApproved()
     {
@@ -82,7 +142,7 @@ public sealed class ValidationAndFailureTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal(IncomingRequestOrderApprovalResultKind.ValidationFailed, result.Kind);
-        Assert.Contains("выведен из оборота", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Сервер отклонил подтверждение заявки.", result.Message);
         Assert.Equal(0, harness.OrderCount);
         Assert.Equal(0, harness.TotalOrderLineCount);
         var storedRequest = Assert.IsType<OrderRequest>(harness.GetOrderRequest(request.Id));
@@ -110,7 +170,8 @@ public sealed class ValidationAndFailureTests
                     UseServerIncomingRequestOrderApproval = useServerIncomingRequestOrderApproval,
                     BaseUrl = baseAddress.ToString().TrimEnd('/'),
                     CloseTimeoutSeconds = 10,
-                    AllowInvalidTls = false
+                    AllowInvalidTls = false,
+                    WpfAdminApiKey = CloseDocumentHttpHost.WpfAdminApiKey
                 }
             };
 

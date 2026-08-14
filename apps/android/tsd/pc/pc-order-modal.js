@@ -450,8 +450,33 @@
     );
   }
 
+  function canManagePendingOrder(order) {
+    return !!(
+      order &&
+      order.is_pending_confirmation &&
+      order.management_supported &&
+      deps.hasCapability &&
+      deps.hasCapability("ManagePendingRequests")
+    );
+  }
+
+  function submitPendingOrderAction(order, action) {
+    var requestId = Number(order && order.request_id) || 0;
+    var normalizedAction = String(action || "").trim().toLowerCase();
+    if (!requestId || (normalizedAction !== "confirm" && normalizedAction !== "reject")) {
+      return Promise.reject(new Error("INVALID_ORDER_REQUEST_ACTION"));
+    }
+
+    return deps.fetchJson(
+      "/api/orders/requests/" + encodeURIComponent(requestId) + "/" + normalizedAction,
+      { method: "POST" }
+    );
+  }
+
   function openOrderModal(order, onSubmitted) {
     var isPending = order && order.is_pending_confirmation;
+    var canManage = canManagePendingOrder(order);
+
     var modal = document.createElement("div");
     modal.className = "pc-modal";
     modal.innerHTML =
@@ -478,11 +503,20 @@
       '  <div class="pc-order-status-box">' +
       '    <div class="pc-status">' +
       (isPending
-        ? "Заказ ожидает подтверждения в WPF."
+        ? canManage
+          ? "Заявка ожидает решения администратора."
+          : "Заказ ожидает подтверждения."
         : "Статус формируется автоматически по выпуску и отгрузке.") +
       "</div>" +
       "  </div>" +
       '  <div id="orderLinesWrap" class="pc-status" style="margin-top:12px;">Загрузка строк...</div>' +
+      (canManage
+        ? '  <div class="pc-modal-footer">' +
+          '    <button class="btn btn-outline" type="button" id="pendingRejectBtn">Отклонить</button>' +
+          '    <button class="btn primary-btn" type="button" id="pendingConfirmBtn">Подтвердить</button>' +
+          '    <div class="pc-status" id="pendingManagementStatus"></div>' +
+          "  </div>"
+        : "") +
       "</div>";
     document.body.appendChild(modal);
 
@@ -510,6 +544,57 @@
       closeBtn.addEventListener("click", close);
     }
 
+    function managePending(action) {
+      var requestId = Number(order && order.request_id) || 0;
+      var statusEl = modal.querySelector("#pendingManagementStatus");
+      var confirmBtn = modal.querySelector("#pendingConfirmBtn");
+      var rejectBtn = modal.querySelector("#pendingRejectBtn");
+      if (!requestId) {
+        return;
+      }
+      if (action === "reject" && !window.confirm("Отклонить эту заявку?")) {
+        return;
+      }
+      if (confirmBtn) confirmBtn.disabled = true;
+      if (rejectBtn) rejectBtn.disabled = true;
+      if (statusEl) statusEl.textContent = action === "confirm" ? "Подтверждение..." : "Отклонение...";
+      submitPendingOrderAction(order, action)
+        .then(function () {
+          if (typeof onSubmitted === "function") {
+            onSubmitted();
+          }
+          close();
+        })
+        .catch(function (error) {
+          var code = error && error.message ? error.message : "REQUEST_FAILED";
+          if (code === "ORDER_REQUEST_ALREADY_RESOLVED") {
+            if (typeof onSubmitted === "function") onSubmitted();
+            close();
+            return;
+          }
+          if (code === "UNAUTHORIZED" && deps.onSessionInvalid) {
+            deps.onSessionInvalid();
+            close();
+            return;
+          }
+          if (code === "MANAGE_PENDING_REQUESTS_REQUIRED" && deps.refreshSession) {
+            deps.refreshSession();
+          }
+          if (statusEl) statusEl.textContent = "Ошибка: " + code;
+          if (confirmBtn) confirmBtn.disabled = false;
+          if (rejectBtn) rejectBtn.disabled = false;
+        });
+    }
+
+    var confirmPendingBtn = modal.querySelector("#pendingConfirmBtn");
+    if (confirmPendingBtn) {
+      confirmPendingBtn.addEventListener("click", function () { managePending("confirm"); });
+    }
+    var rejectPendingBtn = modal.querySelector("#pendingRejectBtn");
+    if (rejectPendingBtn) {
+      rejectPendingBtn.addEventListener("click", function () { managePending("reject"); });
+    }
+
     var refreshOrderModalContent = createOrderModalRefreshHandler(modal, order);
     openOrderModalController = {
       orderId: order.id,
@@ -534,6 +619,8 @@
     clearOpenOrderModalController: clearOpenOrderModalController,
     hasOpenOrderModal: hasOpenOrderModal,
     getOpenOrderModalController: getOpenOrderModalController,
+    canManagePendingOrder: canManagePendingOrder,
+    submitPendingOrderAction: submitPendingOrderAction,
     __setOpenOrderModalControllerForTest: setOpenOrderModalControllerForTest,
   };
 })();

@@ -15,6 +15,8 @@ namespace FlowStock.Server.Tests.CloseDocument.Infrastructure;
 
 internal sealed class CloseDocumentHttpHost : IAsyncDisposable
 {
+    internal const string WpfAdminApiKey = "test-wpf-admin-key-at-least-32-chars";
+
     private readonly WebApplication _app;
 
     private CloseDocumentHttpHost(WebApplication app, HttpClient client)
@@ -28,7 +30,8 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
     public static async Task<CloseDocumentHttpHost> StartAsync(
         CloseDocumentHarness harness,
         InMemoryApiDocStore apiStore,
-        Action<ILoggingBuilder>? configureLogging = null)
+        Action<ILoggingBuilder>? configureLogging = null,
+        PcWebIdentity? pcIdentity = null)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
@@ -45,6 +48,9 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         builder.Services.AddSingleton<OutboundPickingService>();
         builder.Services.AddSingleton<MarkingExcelService>();
         builder.Services.AddSingleton<ProductionPalletService>();
+        builder.Services.AddSingleton(new WpfMachineAuthorization(WpfAdminApiKey));
+        builder.Services.AddSingleton<IPcWebSessionResolver>(new TestPcWebSessionResolver(pcIdentity));
+        builder.Services.AddSingleton<PartnerRoleResolver>();
 
         var app = builder.Build();
         OrderCreateEndpoint.Map(app);
@@ -52,6 +58,7 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         OrderLinesEndpoint.Map(app);
         OrderDeleteEndpoint.Map(app);
         OrderStatusEndpoint.Map(app);
+        OrderRequestManagementEndpoint.Map(app);
         OrderPartialOutboundPermissionEndpoint.Map(app);
         OrderMarkingExportEndpoint.Map(app);
         ProductionNeedCreateOrdersEndpoint.Map(app);
@@ -66,34 +73,6 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         OrderStatusDiagnosticsEndpoint.Map(app);
         OverShippedOrderDiagnosticsEndpoint.Map(app);
         ProductionPlanConsistencyDiagnosticsEndpoint.Map(app);
-        app.MapPost("/api/orders/requests/{requestId:long}/resolve", (long requestId, ResolveOrderRequestRequest request, IDataStore store) =>
-        {
-            var existing = store.GetOrderRequests(true).FirstOrDefault(entry => entry.Id == requestId);
-            if (existing == null)
-            {
-                return Results.NotFound(new ApiResult(false, "ORDER_REQUEST_NOT_FOUND"));
-            }
-
-            var status = string.Equals(request.Status, OrderRequestStatus.Approved, StringComparison.OrdinalIgnoreCase)
-                ? OrderRequestStatus.Approved
-                : string.Equals(request.Status, OrderRequestStatus.Rejected, StringComparison.OrdinalIgnoreCase)
-                    ? OrderRequestStatus.Rejected
-                    : null;
-            if (status == null)
-            {
-                return Results.BadRequest(new ApiResult(false, "INVALID_STATUS"));
-            }
-
-            store.ResolveOrderRequest(
-                requestId,
-                status,
-                string.IsNullOrWhiteSpace(request.ResolvedBy) ? "WPF" : request.ResolvedBy.Trim(),
-                string.IsNullOrWhiteSpace(request.Note) ? null : request.Note.Trim(),
-                request.AppliedOrderId);
-
-            return Results.Ok(new ApiResult(true));
-        });
-
         await app.StartAsync();
 
         var addresses = app.Services
@@ -113,6 +92,7 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         {
             BaseAddress = new Uri(address, UriKind.Absolute)
         };
+        client.DefaultRequestHeaders.Add(WpfMachineAuthorization.KeyHeader, WpfAdminApiKey);
 
         return new CloseDocumentHttpHost(app, client);
     }
@@ -123,6 +103,11 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         await _app.StopAsync();
         await _app.DisposeAsync();
     }
+}
+
+internal sealed class TestPcWebSessionResolver(PcWebIdentity? identity) : IPcWebSessionResolver
+{
+    public PcWebIdentity? Resolve(HttpRequest request) => identity;
 }
 
 internal sealed record CapturedLogEntry(

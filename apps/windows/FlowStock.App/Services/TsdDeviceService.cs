@@ -237,6 +237,7 @@ public sealed class TsdDeviceInfo
     public bool IsActive { get; init; }
     public string? CreatedAt { get; init; }
     public string? LastSeen { get; init; }
+    public string AccessRole { get; init; } = "OPERATOR";
 
     public string PlatformDisplay => string.Equals(Platform, "PC", StringComparison.OrdinalIgnoreCase)
         ? "ПК"
