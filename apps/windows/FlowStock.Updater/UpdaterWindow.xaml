@@ -1,0 +1,23 @@
+<Window x:Class="FlowStock.Updater.UpdaterWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Обновление FlowStock" Height="260" Width="620"
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
+        Closing="Window_Closing">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="FlowStock обновляется" FontSize="22" FontWeight="SemiBold" />
+        <TextBlock x:Name="StageText" Grid.Row="1" Margin="0,18,0,4" FontWeight="SemiBold" />
+        <TextBlock x:Name="MessageText" Grid.Row="2" TextWrapping="Wrap" />
+        <ProgressBar x:Name="Progress" Grid.Row="3" Height="18" Margin="0,18,0,0"
+                     IsIndeterminate="True" VerticalAlignment="Top" />
+        <Button x:Name="CloseButton" Grid.Row="4" Content="Отмена" Width="120"
+                HorizontalAlignment="Right" Click="CloseButton_Click" />
+    </Grid>
+</Window>

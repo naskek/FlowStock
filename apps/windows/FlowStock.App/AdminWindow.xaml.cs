@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
+using FlowStock.DesktopUpdate;
 using FlowStock.Core.Models;
 using WpfCheckBox = System.Windows.Controls.CheckBox;
 using WpfPanel = System.Windows.Controls.Panel;
@@ -14,6 +15,9 @@ public partial class AdminWindow : Window
     private readonly Action? _onOperationsCleared;
     private readonly Dictionary<string, WpfCheckBox> _clientBlockBoxes = new(StringComparer.OrdinalIgnoreCase);
     private string? _palletLabelPrinterEnvironmentOverride;
+    private CancellationTokenSource? _updateCheckCancellation;
+    private int _updateCheckGeneration;
+    private DesktopUpdateCheckResult? _updateCheckResult;
 
     public AdminWindow(AppServices services, Action? onOperationsCleared = null)
     {
@@ -23,6 +27,140 @@ public partial class AdminWindow : Window
         InitializeComponent();
         LoadClientBlocksUi();
         LoadPalletLabelPrinterUi();
+        InstalledBuildText.Text = $"Установлено: {AppRuntimeInfo.Current.ProductVersion}\n{AppRuntimeInfo.Current.SourceCommit}"
+            + (AppRuntimeInfo.IsSourceRun ? "\nРежим: запуск из исходного checkout" : string.Empty);
+        Loaded += async (_, _) => await CheckForUpdateAsync();
+        Closed += (_, _) => CancelUpdateCheck();
+    }
+
+    private async void CheckUpdate_Click(object sender, RoutedEventArgs e) => await CheckForUpdateAsync();
+
+    private async Task CheckForUpdateAsync()
+    {
+        if (_updateCheckCancellation is not null)
+        {
+            return;
+        }
+
+        var cancellation = new CancellationTokenSource();
+        _updateCheckCancellation = cancellation;
+        var generation = ++_updateCheckGeneration;
+        CheckUpdateButton.IsEnabled = false;
+        InstallUpdateButton.IsEnabled = false;
+        UpdateStatusText.Text = "Проверка production server...";
+        UpdateTargetText.Text = string.Empty;
+        UpdateDiagnosticsText.Text = string.Empty;
+        try
+        {
+            if (AppRuntimeInfo.IsDevelopmentCheckout)
+            {
+                throw new InvalidOperationException("Production self-update из D:\\FlowStock-dev запрещён.");
+            }
+
+            var updateServerBaseUri = DesktopUpdateEndpointResolver.Resolve();
+            UpdateStatusText.Text = $"Проверка доверенного сервера обновлений {updateServerBaseUri.GetLeftPart(UriPartial.Authority)}...";
+            using var http = DesktopUpdateHttpClientFactory.Create(TimeSpan.FromSeconds(30));
+            var runner = new ProcessRunner();
+            var checker = new DesktopUpdateChecker(http, new GitRepositoryClient(runner));
+            var result = await checker.CheckAsync(
+                updateServerBaseUri,
+                DesktopUpdateConstants.DefaultRepositoryRoot,
+                AppRuntimeInfo.Current,
+                cancellation.Token);
+            if (generation != _updateCheckGeneration || cancellation.IsCancellationRequested || !IsLoaded)
+            {
+                return;
+            }
+
+            _updateCheckResult = result;
+            UpdateStatusText.Text = result.Message;
+            UpdateTargetText.Text = result.Target is null
+                ? string.Empty
+                : $"Production target: {result.Target.ProductVersion}\n{result.Target.SourceCommit}";
+            UpdateDiagnosticsText.Text = string.IsNullOrWhiteSpace(result.Diagnostics)
+                ? string.Empty
+                : $"Состояние repository root (только диагностика):\n{result.Diagnostics}";
+            InstallUpdateButton.IsEnabled = result.CanUpdate;
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            if (generation == _updateCheckGeneration && IsLoaded)
+            {
+                UpdateStatusText.Text = $"Невозможно проверить обновление: {exception.Message}";
+            }
+        }
+        finally
+        {
+            if (generation == _updateCheckGeneration)
+            {
+                _updateCheckCancellation = null;
+                CheckUpdateButton.IsEnabled = IsLoaded;
+            }
+
+            cancellation.Dispose();
+        }
+    }
+
+    private async void InstallUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        var result = _updateCheckResult;
+        if (result?.CanUpdate != true || result.Target is null)
+        {
+            return;
+        }
+
+        var confirmation = MessageBox.Show(
+            $"Обновить FlowStock и перезапустить приложение?\n\n"
+            + $"Сейчас: {result.Installed.ProductVersion}\n{result.Installed.SourceCommit}\n\n"
+            + $"Target: {result.Target.ProductVersion}\n{result.Target.SourceCommit}\n\n"
+            + "Завершите незаконченные редактирования в открытых формах.",
+            "Обновление FlowStock",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question,
+            MessageBoxResult.No);
+        if (confirmation != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        InstallUpdateButton.IsEnabled = false;
+        CheckUpdateButton.IsEnabled = false;
+        try
+        {
+            var paths = new DesktopUpdatePaths();
+            var runner = new ProcessRunner();
+            var bootstrap = new UpdateBootstrapService(
+                paths,
+                new RuntimeStateManager(paths),
+                new GitRepositoryClient(runner),
+                runner);
+            var session = await bootstrap.PrepareAndLaunchAsync(
+                result.UpdateServerBaseUri,
+                DesktopUpdateConstants.DefaultRepositoryRoot,
+                result.Installed,
+                result.Target,
+                CancellationToken.None);
+            UpdateStatusText.Text = "Updater подготовлен; FlowStock завершает работу...";
+            await bootstrap.WaitUntilReadyAsync(session, TimeSpan.FromSeconds(30), CancellationToken.None);
+            System.Windows.Application.Current.Shutdown();
+        }
+        catch (Exception exception)
+        {
+            _services.AdminLogger.Error("desktop_update bootstrap failed", exception);
+            MessageBox.Show(exception.Message, "Обновление FlowStock", MessageBoxButton.OK, MessageBoxImage.Error);
+            CheckUpdateButton.IsEnabled = true;
+            InstallUpdateButton.IsEnabled = true;
+        }
+    }
+
+    private void CancelUpdateCheck()
+    {
+        _updateCheckGeneration++;
+        _updateCheckCancellation?.Cancel();
+        _updateCheckCancellation = null;
     }
 
     private void OpenDbConnection_Click(object sender, RoutedEventArgs e)

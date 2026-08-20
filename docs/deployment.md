@@ -45,6 +45,46 @@ DC='docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.
 
 Одноразовое ограничение первого rollout этой политики: ранее сохранённый браузером PC index без cache headers может быть полностью взят из локального кэша без обращения к серверу. Для такой вкладки может потребоваться одно ручное обновление с обходом кэша (`Ctrl+F5`). Не добавляйте для обхода `Clear-Site-Data`, cookies, service worker, origin-wide очистку кэша или forced reload. После первого получения нового `no-store` index последующие deploy не требуют `Ctrl+F5`.
 
+## Детерминированный source commit production server
+
+Production server source commit является authority для WPF update. Канонический deploy до Compose разрешает exact commit подготовленного server checkout:
+
+```powershell
+$expectedCommit = (git rev-parse --verify 'HEAD^{commit}').Trim().ToLowerInvariant()
+if ($expectedCommit -notmatch '^[0-9a-f]{40}$') { throw 'Invalid production source commit' }
+$env:FLOWSTOCK_SOURCE_COMMIT = $expectedCommit
+docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml config -q
+docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml build
+```
+
+Если Compose запускается по SSH, переменная задаётся в том же удалённом execution context, который непосредственно вызывает Compose. `FLOWSTOCK_SOURCE_COMMIT` не записывается в `deploy/.env`: это исключает случайное повторное использование SHA предыдущего deploy. Shell environment имеет приоритет при Compose interpolation.
+
+`deploy/docker-compose.yml` передаёт SHA как Docker build arg и runtime environment. Default `INVALID_SOURCE_COMMIT` нужен только для разрешения `config`; Docker build с ним, uppercase, short или non-hex значением завершается ошибкой. `deploy/Dockerfile` не читает `.git`: publish server получает `/p:SourceRevisionId=<full-sha>`, поэтому изменение SHA инвалидирует publish layer.
+
+После `/health/live` и `/health/ready`, но до записи successful release metadata, канонический deploy запрашивает `/api/version` и fail closed проверяет:
+
+- `server_build.source_commit == $expectedCommit`;
+- `desktop_update.target_commit == $expectedCommit`;
+- оба SHA полные и lowercase;
+- `desktop_update.policy == server_source_commit`;
+- repository URL равен `https://github.com/naskek/FlowStock.git`, branch равна `main`.
+
+Mismatch делает deploy неуспешным и не разрешает считать server источником WPF update. Автоматический DB rollback не запускается: используется действующая production recovery/forward-fix процедура. `deploy_update.sh` всегда экспортирует SHA текущего exact checkout и выполняет этот строгий modern gate.
+
+`rollback_release.sh` также экспортирует exact rollback SHA, но capability определяет заранее только по target Git tree: наличие `apps/windows/FlowStock.DesktopUpdate/FlowStock.DesktopUpdate.csproj` в exact target commit означает modern source identity contract. Для такого target тот же строгий gate обязателен и отсутствие `server_build`/`desktop_update` является ошибкой. Target без marker считается legacy: после readiness helper требует доступный валидный `/api/version` с непустыми строковыми `version` и `pc_web_version`, затем предупреждает, что exact running source commit через legacy API подтвердить невозможно. Отсутствие modern полей в HTTP response само по себе никогда не выбирает legacy mode.
+
+## Первый rollout WPF updater
+
+Старый WPF не может установить subsystem, которого в нём ещё нет. Один раз вручную доставьте в repository root `D:\FlowStock` bootstrap commit с `FlowStock.DesktopUpdate`, `FlowStock.Updater`, обновлённым `FLOWSTOCK.cmd` и launcher. Запустите его обычной MAIN-командой. Production server к этому моменту должен быть развёрнут с deterministic identity contract; до этого AdminWindow показывает, что desktop update не поддерживается.
+
+На WPF-машине имя `flowstock.local` должно резолвиться в production server, а HTTPS certificate на `https://flowstock.local:7154` должен быть доверен Windows и содержать соответствующее имя. Operational подключение WPF может использовать другой `server.base_url` и `server.allow_invalid_tls`, но эти параметры не ослабляют desktop update TLS. Для отдельного доверенного стенда допускается process-level `FLOWSTOCK_UPDATE_SERVER_BASE_URL`; production/non-loopback override обязан быть HTTPS root URL.
+
+Пока `%LOCALAPPDATA%\FlowStock\Desktop\state\active-runtime.json` отсутствует, launcher запускает `dotnet run` из repository root. Первая WPF версия с updater subsystem собирает recovery updater из clean detached worktree своего embedded commit, затем устанавливает первый side-by-side target и создаёт active manifest. Installed identity в этом режиме берётся из assembly, а не из repository `HEAD`.
+
+Если embedded commit bootstrap WPF уже равен server target, Git fetch для подтверждения равенства не выполняется и WPF остаётся в source-run mode до появления следующего разрешённого production target.
+
+При аварии/reboot launcher проверяет pending transaction раньше active runtime: transaction recovery bundle → LKG updater → source-run fallback. Успешный recovery завершается с code `0` и оставляет `success-ready` либо `fallback-ready`; launcher запускает выбранный runtime с session handoff и только затем удаляет pending. Ненулевой recovery code сохраняет pending и блокирует дальнейший запуск в этой попытке. Candidate не используется как единственная recovery-копия. Если recovery недоступен, unresolved candidate не запускается; диагностический лог находится в `%APPDATA%\FlowStock\Logs\Updates`.
+
 ## Обязательные файлы и каталоги
 
 - `deploy/.env` — создаётся из `deploy/.env.example`.
@@ -488,6 +528,7 @@ bash deploy/scripts/rollback_release.sh
 - перед checkout останавливает и удаляет `discovery-relay`, если он есть в текущем compose project;
 - делает checkout предыдущей записанной успешной ревизии релиза;
 - проверяет target Compose: старая revision без relay должна публиковать `flowstock` на `7155/udp`, новая revision с relay должна использовать host-network `discovery-relay` и loopback backend publish;
+- по exact target Git tree определяет source-identity capability: modern target проходит строгую сверку SHA/manifest, legacy target — проверку доступности и legacy payload `/api/version` с явным warning о невозможности подтвердить running SHA;
 - восстанавливает последний записанный pre-deploy dump текущего релиза;
 - запускает сервисы, существующие в target revision: `flowstock`, при наличии `discovery-relay`, затем `nginx` и `pgbackup`;
 - записывает rollback как новый последний успешный релиз.

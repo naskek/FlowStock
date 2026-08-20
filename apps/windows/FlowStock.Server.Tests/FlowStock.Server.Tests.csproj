@@ -30,5 +30,7 @@
     <ProjectReference Include="..\\FlowStock.Core\\FlowStock.Core.csproj" />
     <ProjectReference Include="..\\FlowStock.Data\\FlowStock.Data.csproj" />
     <ProjectReference Include="..\\FlowStock.Server\\FlowStock.Server.csproj" />
+    <ProjectReference Include="..\\FlowStock.ProcessTestShim\\FlowStock.ProcessTestShim.csproj" />
+    <ProjectReference Include="..\\FlowStock.Updater\\FlowStock.Updater.csproj" />
   </ItemGroup>
 </Project>

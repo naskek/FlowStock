@@ -19,6 +19,8 @@ on_error() {
 trap on_error ERR
 
 ensure_docker
+ensure_git_repo
+export_source_commit_from_checkout
 ensure_tls_assets
 ensure_compose_config
 discovery_network_preflight
@@ -50,6 +52,7 @@ allow_udp_7155_free_or_current_flowstock_publish
 log "starting flowstock backend"
 compose up -d --no-deps --force-recreate flowstock
 wait_for_flowstock_ready
+assert_deployed_source_commit
 
 require_udp_port_free 7155
 check_discovery_backend

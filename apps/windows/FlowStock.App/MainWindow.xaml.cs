@@ -126,6 +126,8 @@ public partial class MainWindow : Window
     {
         _services = services;
         InitializeComponent();
+        BuildIdentityText.Text = AppRuntimeInfo.DisplayText;
+        BuildIdentityText.ToolTip = AppRuntimeInfo.Current.SourceCommit;
 
         ItemsGrid.ItemsSource = _items;
         _itemsView = CollectionViewSource.GetDefaultView(_items);

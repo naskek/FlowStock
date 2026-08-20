@@ -58,3 +58,4 @@
 
 - [`architecture/incoming-requests-order-api-convergence.md`](architecture/incoming-requests-order-api-convergence.md)
 - [`architecture/server-operation-logging.md`](architecture/server-operation-logging.md)
+- [`architecture/wpf-self-update.md`](architecture/wpf-self-update.md)

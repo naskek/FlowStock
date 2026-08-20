@@ -10,6 +10,8 @@ public sealed class CommercialWpfSourceTests
         "apps", "windows", "FlowStock.App", "ItemEditWindow.xaml.cs");
     private static readonly string MainWindow = ReadRepoFile(
         "apps", "windows", "FlowStock.App", "MainWindow.xaml");
+    private static readonly string PartnerItemSalePriceWindow = ReadRepoFile(
+        "apps", "windows", "FlowStock.App", "PartnerItemSalePriceWindow.xaml.cs");
 
     [Fact]
     public void Customer_order_uses_preview_but_only_checkbox_creates_manual_price_intent()
@@ -44,6 +46,43 @@ public sealed class CommercialWpfSourceTests
         Assert.Contains("apiItems.Where(item => item.IsActive)", OrderWindow, StringComparison.Ordinal);
         var readApi = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfReadApiService.cs");
         Assert.DoesNotContain("Where(item => item.IsActive)", readApi, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Customer_price_partner_picker_is_editable_and_filters_an_isolated_option_collection()
+    {
+        var xaml = ReadRepoFile("apps", "windows", "FlowStock.App", "PartnerItemSalePriceWindow.xaml");
+
+        Assert.Contains("x:Name=\"PartnerCombo\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("IsEditable=\"True\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("IsTextSearchEnabled=\"False\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("StaysOpenOnEdit=\"True\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("PartnerCombo.ItemsSource = _partnerAutocompleteOptions", PartnerItemSalePriceWindow, StringComparison.Ordinal);
+        Assert.Contains("FilterPartnerCombo.ItemsSource = _partners", PartnerItemSalePriceWindow, StringComparison.Ordinal);
+        Assert.Contains("partner.DisplayName.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)", PartnerItemSalePriceWindow, StringComparison.Ordinal);
+        Assert.Contains("TextBoxBase.TextChangedEvent", PartnerItemSalePriceWindow, StringComparison.Ordinal);
+        Assert.Contains("PartnerCombo.IsDropDownOpen = _partnerAutocompleteOptions.Count > 0", PartnerItemSalePriceWindow, StringComparison.Ordinal);
+        Assert.Contains("PartnerCombo.SelectedItem is not Partner partner", PartnerItemSalePriceWindow, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("РОМАШ", true)]
+    [InlineData("123456", true)]
+    [InlineData("маш", true)]
+    [InlineData("другой", false)]
+    [InlineData("", true)]
+    [InlineData("   ", true)]
+    public void Customer_price_partner_picker_matches_full_display_name_by_substring(
+        string query,
+        bool expected)
+    {
+        var partner = new FlowStock.Core.Models.Partner
+        {
+            Name = "Ромашка",
+            Code = "1234567890"
+        };
+
+        Assert.Equal(expected, FlowStock.App.PartnerItemSalePriceWindow.PartnerMatchesAutocomplete(partner, query));
     }
 
     private static string ReadRepoFile(params string[] parts)

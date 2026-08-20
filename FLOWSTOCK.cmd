@@ -13,6 +13,7 @@ set "SLN_REL=apps\windows\FlowStock.sln"
 set "SERVER_PROJ_REL=apps\windows\FlowStock.Server\FlowStock.Server.csproj"
 set "APP_PROJ_REL=apps\windows\FlowStock.App\FlowStock.App.csproj"
 set "TSD_SIM_REL=tools\flowstock-scan-simulator\tsd-scanner-sim.ps1"
+set "WPF_LAUNCHER_REL=tools\windows\start-flowstock-wpf.ps1"
 
 set "BASE_URL=https://127.0.0.1:7154"
 
@@ -211,6 +212,7 @@ set "SLN_FULL=%ROOT%\%SLN_REL%"
 set "SERVER_PROJ_FULL=%ROOT%\%SERVER_PROJ_REL%"
 set "APP_PROJ_FULL=%ROOT%\%APP_PROJ_REL%"
 set "TSD_SIM_FULL=%ROOT%\%TSD_SIM_REL%"
+set "WPF_LAUNCHER_FULL=%ROOT_MAIN%\%WPF_LAUNCHER_REL%"
 exit /b 0
 
 rem ============================================================
@@ -350,6 +352,14 @@ echo.
 echo [%ENV_NAME%] Запускаю FlowStock WPF...
 echo ROOT: %ROOT%
 
+if /i "%ENV_NAME%"=="MAIN" (
+    start "FlowStock WPF [MAIN]" powershell ^
+        -NoLogo ^
+        -ExecutionPolicy Bypass ^
+        -File "%WPF_LAUNCHER_FULL%"
+    exit /b 0
+)
+
 start "FlowStock WPF [%ENV_NAME%]" powershell ^
     -NoLogo ^
     -NoExit ^
@@ -455,6 +465,9 @@ echo.
 echo TSD_SIM_FULL:
 echo %TSD_SIM_FULL%
 echo.
+echo WPF_LAUNCHER_FULL:
+echo %WPF_LAUNCHER_FULL%
+echo.
 
 if exist "%ROOT%" (
     echo OK: ROOT найден
@@ -484,6 +497,12 @@ if exist "%TSD_SIM_FULL%" (
     echo OK: TSD simulator найден
 ) else (
     echo ERROR: TSD simulator не найден: %TSD_SIM_FULL%
+)
+
+if exist "%WPF_LAUNCHER_FULL%" (
+    echo OK: WPF launcher найден
+) else (
+    echo ERROR: WPF launcher не найден: %WPF_LAUNCHER_FULL%
 )
 
 call :resolve_pwsh
