@@ -153,7 +153,9 @@ public sealed class ValidationAndFailureTests
 
     private sealed class TempSettingsScope : IDisposable
     {
+        private const string WpfAdminApiKeyEnvironmentVariable = "FLOWSTOCK_WPF_ADMIN_API_KEY";
         private readonly string _dir;
+        private readonly string? _previousWpfAdminApiKey;
 
         public TempSettingsScope(Uri baseAddress, bool useServerIncomingRequestOrderApproval)
         {
@@ -176,6 +178,8 @@ public sealed class ValidationAndFailureTests
             };
 
             new SettingsService(SettingsPath).Save(settings);
+            _previousWpfAdminApiKey = Environment.GetEnvironmentVariable(WpfAdminApiKeyEnvironmentVariable);
+            Environment.SetEnvironmentVariable(WpfAdminApiKeyEnvironmentVariable, null);
         }
 
         public string SettingsPath { get; }
@@ -184,6 +188,7 @@ public sealed class ValidationAndFailureTests
 
         public void Dispose()
         {
+            Environment.SetEnvironmentVariable(WpfAdminApiKeyEnvironmentVariable, _previousWpfAdminApiKey);
             try
             {
                 if (Directory.Exists(_dir))

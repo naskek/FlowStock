@@ -37,8 +37,8 @@ public interface IDataStore
 
     IReadOnlyList<Uom> GetUoms();
     long AddUom(Uom uom);
+    void RenameUom(long uomId, string newName);
     void DeleteUom(long uomId);
-    bool IsUomUsed(long uomId);
 
     IReadOnlyList<WriteOffReason> GetWriteOffReasons();
     long AddWriteOffReason(WriteOffReason reason);
@@ -82,6 +82,7 @@ public interface IDataStore
     bool HasPartnerItemSalePricesForItem(long itemId);
 
     Partner? GetPartner(long id);
+    Partner? LockPartnerForUpdate(long id);
     Partner? FindPartnerByCode(string code);
     IReadOnlyList<Partner> GetPartners();
     long AddPartner(Partner partner);

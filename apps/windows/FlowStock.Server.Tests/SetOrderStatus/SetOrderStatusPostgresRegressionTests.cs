@@ -6,6 +6,7 @@ using FlowStock.Core.Models;
 using FlowStock.Data;
 using FlowStock.Server;
 using FlowStock.Server.Tests.SetOrderStatus.Infrastructure;
+using FlowStock.Server.Tests.Support;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -16,6 +17,7 @@ using Npgsql;
 
 namespace FlowStock.Server.Tests.SetOrderStatus;
 
+[Collection(PostgresLocationIntegrationTestCollection.Name)]
 public sealed class SetOrderStatusPostgresRegressionTests
 {
     [Theory]

@@ -15,6 +15,12 @@
         <img class="pc-logo" src="./assets/FS_logo.png" alt="FlowStock" />
       </div>
       <div class="pc-account">
+        <div id="adminMenu" class="pc-admin-menu" hidden>
+          <button id="adminMenuBtn" class="btn btn-outline" type="button" aria-haspopup="menu" aria-expanded="false">Администрирование</button>
+          <div id="adminMenuPopover" class="pc-admin-menu-popover" role="menu" hidden>
+            <button id="adminReferencesBtn" class="pc-admin-menu-item" role="menuitem" type="button">Справочники</button>
+          </div>
+        </div>
         <div class="pc-account-chip">
           <span id="accountInitial" class="pc-account-avatar" aria-hidden="true">Г</span>
           <span id="accountLabel" class="pc-account-label">Гость</span>

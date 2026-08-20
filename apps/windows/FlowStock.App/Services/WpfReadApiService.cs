@@ -55,10 +55,10 @@ public sealed class WpfReadApiService
     public bool TryGetItems(string? search, out IReadOnlyList<Item> items)
     {
         items = Array.Empty<Item>();
-        var path = "/api/items";
+        var path = "/api/items?include_inactive=1";
         if (!string.IsNullOrWhiteSpace(search))
         {
-            path += "?q=" + Uri.EscapeDataString(search.Trim());
+            path += "&q=" + Uri.EscapeDataString(search.Trim());
         }
 
         return TryRead(
@@ -911,6 +911,7 @@ public sealed class WpfReadApiService
             BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
             Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
         };
+        WpfTrustedRequestHeaders.Add(client, configuration.WpfAdminApiKey);
         using var request = new HttpRequestMessage(method, relativePath);
         if (body != null)
         {
@@ -1367,7 +1368,8 @@ public sealed class WpfReadApiService
         return new WpfReadApiConfiguration(
             NormalizeBaseUrl(baseUrl),
             timeoutSeconds,
-            ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls);
+            ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls,
+            WpfTrustedRequestHeaders.ReadAdminApiKey(settings));
     }
 
     private static HttpMessageHandler CreateHandler(WpfReadApiConfiguration configuration)
@@ -2421,7 +2423,8 @@ public sealed class WpfReadApiService
 public sealed record WpfReadApiConfiguration(
     string? BaseUrl,
     int TimeoutSeconds,
-    bool AllowInvalidTls)
+    bool AllowInvalidTls,
+    string? WpfAdminApiKey)
 {
     public bool IsConfigured => !string.IsNullOrWhiteSpace(BaseUrl);
 }

@@ -54,16 +54,14 @@ public static class PartnerItemSalePriceEndpoints
     }
 
     private static IResult HandleCreate(
+        HttpRequest httpRequest,
         UpsertPartnerItemSalePriceRequest request,
         PartnerItemSalePriceService service,
-        PartnerRoleResolver roleResolver)
+        CatalogAuthorization authorization)
     {
-        if (!roleResolver.IsCustomer(request.PartnerId))
+        if (authorization.RequireManageCatalog(httpRequest) is { } rejection)
         {
-            return Results.BadRequest(new ApiErrorResult(
-                false,
-                "PARTNER_IS_SUPPLIER",
-                "Индивидуальная цена может быть задана только для клиента."));
+            return rejection;
         }
 
         try
@@ -90,16 +88,14 @@ public static class PartnerItemSalePriceEndpoints
 
     private static IResult HandleUpdate(
         long id,
+        HttpRequest httpRequest,
         UpsertPartnerItemSalePriceRequest request,
         PartnerItemSalePriceService service,
-        PartnerRoleResolver roleResolver)
+        CatalogAuthorization authorization)
     {
-        if (!roleResolver.IsCustomer(request.PartnerId))
+        if (authorization.RequireManageCatalog(httpRequest) is { } rejection)
         {
-            return Results.BadRequest(new ApiErrorResult(
-                false,
-                "PARTNER_IS_SUPPLIER",
-                "Индивидуальная цена может быть задана только для клиента."));
+            return rejection;
         }
 
         try
@@ -125,8 +121,17 @@ public static class PartnerItemSalePriceEndpoints
         }
     }
 
-    private static IResult HandleDelete(long id, PartnerItemSalePriceService service)
+    private static IResult HandleDelete(
+        long id,
+        HttpRequest request,
+        PartnerItemSalePriceService service,
+        CatalogAuthorization authorization)
     {
+        if (authorization.RequireManageCatalog(request) is { } rejection)
+        {
+            return rejection;
+        }
+
         try
         {
             service.Delete(id);

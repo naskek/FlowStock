@@ -3,6 +3,17 @@ using FlowStock.Core.Models;
 
 namespace FlowStock.Core.Services;
 
+public sealed class CatalogIdentifierConflictException(
+    string errorCode,
+    string message,
+    long existingItemId) : InvalidOperationException(message)
+{
+    public string ErrorCode { get; } = errorCode;
+    public long ExistingItemId { get; } = existingItemId;
+}
+
+public sealed class UomNotFoundException(string message) : InvalidOperationException(message);
+
 public sealed class CatalogService
 {
     private readonly IDataStore _data;
@@ -39,15 +50,19 @@ public sealed class CatalogService
             throw new ArgumentException("Наименование обязательно.", nameof(name));
         }
 
-        var normalizedUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom.Trim();
+        var normalizedIdentifiers = NormalizeAndValidateItemIdentifiers(barcode, gtin, currentItemId: null);
+        var normalizedUom = NormalizeAndValidateBaseUom(baseUom);
+        ValidateShelfLife(shelfLifeMonths);
+        ValidateTara(taraId);
+        ValidateItemTypeId(itemTypeId);
         var normalizedMaxQtyPerHu = NormalizeMaxQtyPerHu(itemTypeId, maxQtyPerHu);
         var normalizedMinStock = NormalizeMinStock(itemTypeId, minStockQty);
         ValidateSalePrice(defaultSalePriceGross);
         var item = new Item
         {
             Name = name.Trim(),
-            Barcode = string.IsNullOrWhiteSpace(barcode) ? null : barcode.Trim(),
-            Gtin = string.IsNullOrWhiteSpace(gtin) ? null : gtin.Trim(),
+            Barcode = normalizedIdentifiers.Barcode,
+            Gtin = normalizedIdentifiers.Gtin,
             BaseUom = normalizedUom,
             Brand = string.IsNullOrWhiteSpace(brand) ? null : brand.Trim(),
             Volume = string.IsNullOrWhiteSpace(volume) ? null : volume.Trim(),
@@ -100,9 +115,11 @@ public sealed class CatalogService
             throw new ArgumentException("Единица измерения обязательна.", nameof(name));
         }
 
+        var normalized = name.Trim();
+        EnsureNotReservedLegacyUom(normalized, nameof(name));
         var uom = new Uom
         {
-            Name = name.Trim()
+            Name = normalized
         };
 
         return _data.AddUom(uom);
@@ -146,15 +163,32 @@ public sealed class CatalogService
 
     public void DeleteUom(long uomId)
     {
-        if (_data.IsUomUsed(uomId))
+        if (uomId <= 0)
         {
-            throw new InvalidOperationException("Нельзя удалить единицу измерения, которая используется в товарах.");
+            throw new ArgumentException("Некорректная единица измерения.", nameof(uomId));
         }
 
         _data.DeleteUom(uomId);
     }
 
-    public long CreatePartner(string name, string? code)
+    public void RenameUom(long uomId, string newName)
+    {
+        if (uomId <= 0)
+        {
+            throw new ArgumentException("Некорректная единица измерения.", nameof(uomId));
+        }
+
+        if (string.IsNullOrWhiteSpace(newName))
+        {
+            throw new ArgumentException("Единица измерения обязательна.", nameof(newName));
+        }
+
+        var normalized = newName.Trim();
+        EnsureNotReservedLegacyUom(normalized, nameof(newName));
+        _data.RenameUom(uomId, normalized);
+    }
+
+    public long CreatePartner(string name, string? code, string partnerRole)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -164,7 +198,8 @@ public sealed class CatalogService
         var partner = new Partner
         {
             Name = name.Trim(),
-            Code = string.IsNullOrWhiteSpace(code) ? null : code.Trim(),
+            Code = NormalizeAndValidatePartnerCode(code),
+            PartnerRole = NormalizePartnerRole(partnerRole),
             CreatedAt = DateTime.Now
         };
 
@@ -194,7 +229,11 @@ public sealed class CatalogService
             throw new InvalidOperationException("Товар не найден.");
         }
 
-        var normalizedUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom.Trim();
+        var normalizedIdentifiers = NormalizeAndValidateItemIdentifiers(barcode, gtin, itemId);
+        var normalizedUom = NormalizeAndValidateBaseUom(baseUom);
+        ValidateShelfLife(shelfLifeMonths);
+        ValidateTara(taraId);
+        ValidateItemTypeId(itemTypeId);
         var normalizedMaxQtyPerHu = NormalizeMaxQtyPerHu(itemTypeId, maxQtyPerHu);
         var normalizedMinStock = NormalizeMinStock(itemTypeId, minStockQty);
         ValidateSalePrice(defaultSalePriceGross);
@@ -202,8 +241,8 @@ public sealed class CatalogService
         {
             Id = itemId,
             Name = name.Trim(),
-            Barcode = string.IsNullOrWhiteSpace(barcode) ? null : barcode.Trim(),
-            Gtin = string.IsNullOrWhiteSpace(gtin) ? null : gtin.Trim(),
+            Barcode = normalizedIdentifiers.Barcode,
+            Gtin = normalizedIdentifiers.Gtin,
             BaseUom = normalizedUom,
             DefaultPackagingId = existing.DefaultPackagingId,
             Brand = string.IsNullOrWhiteSpace(brand) ? null : brand.Trim(),
@@ -434,28 +473,40 @@ public sealed class CatalogService
         }
     }
 
-    public void UpdatePartner(long partnerId, string name, string? code)
+    public void UpdatePartner(long partnerId, string name, string? code, string partnerRole)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
             throw new ArgumentException("Наименование обязательно.", nameof(name));
         }
 
-        var existing = _data.GetPartner(partnerId);
-        if (existing == null)
+        var normalizedCode = NormalizeAndValidatePartnerCode(code);
+        var normalizedRole = NormalizePartnerRole(partnerRole);
+        _data.ExecuteInTransaction(store =>
         {
-            throw new InvalidOperationException("Контрагент не найден.");
-        }
+            var existing = store.LockPartnerForUpdate(partnerId);
+            if (existing == null)
+            {
+                throw new InvalidOperationException("Контрагент не найден.");
+            }
 
-        var partner = new Partner
-        {
-            Id = partnerId,
-            Name = name.Trim(),
-            Code = string.IsNullOrWhiteSpace(code) ? null : code.Trim(),
-            CreatedAt = existing.CreatedAt
-        };
+            if (normalizedRole == "SUPPLIER"
+                && store.HasPartnerItemSalePricesForPartner(partnerId))
+            {
+                throw new CommercialTermsException(
+                    "PARTNER_HAS_CUSTOMER_PRICES",
+                    "Нельзя изменить роль клиента на поставщика, пока для него существуют индивидуальные цены.");
+            }
 
-        _data.UpdatePartner(partner);
+            store.UpdatePartner(new Partner
+            {
+                Id = partnerId,
+                Name = name.Trim(),
+                Code = normalizedCode,
+                PartnerRole = normalizedRole,
+                CreatedAt = existing.CreatedAt
+            });
+        });
     }
 
     public void DeletePartner(long partnerId)
@@ -521,6 +572,16 @@ public sealed class CatalogService
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
+    private static void ValidateItemTypeId(long? itemTypeId)
+    {
+        if (itemTypeId.HasValue && itemTypeId.Value <= 0)
+        {
+            throw new ArgumentException(
+                "Идентификатор типа номенклатуры должен быть положительным.",
+                nameof(itemTypeId));
+        }
+    }
+
     private double? NormalizeMaxQtyPerHu(long? itemTypeId, double? maxQtyPerHu)
     {
         if (maxQtyPerHu.HasValue && maxQtyPerHu.Value <= 0)
@@ -550,5 +611,113 @@ public sealed class CatalogService
         }
 
         return maxQtyPerHu;
+    }
+
+    private (string Barcode, string? Gtin) NormalizeAndValidateItemIdentifiers(
+        string? barcode,
+        string? gtin,
+        long? currentItemId)
+    {
+        var normalizedBarcode = string.IsNullOrWhiteSpace(barcode) ? null : barcode.Trim();
+        var normalizedGtin = string.IsNullOrWhiteSpace(gtin) ? null : gtin.Trim();
+        normalizedBarcode ??= normalizedGtin;
+        if (string.IsNullOrWhiteSpace(normalizedBarcode))
+        {
+            throw new ArgumentException("Введите SKU / штрихкод или GTIN.", nameof(barcode));
+        }
+
+        var items = _data.GetItems(null) ?? Array.Empty<Item>();
+        var duplicateBarcode = items.FirstOrDefault(item =>
+            (!currentItemId.HasValue || item.Id != currentItemId.Value)
+            && !string.IsNullOrWhiteSpace(item.Barcode)
+            && string.Equals(item.Barcode.Trim(), normalizedBarcode, StringComparison.OrdinalIgnoreCase));
+        if (duplicateBarcode != null)
+        {
+            throw new CatalogIdentifierConflictException(
+                "ITEM_BARCODE_DUPLICATE",
+                $"SKU / штрихкод уже используется товаром «{duplicateBarcode.Name}» (ID {duplicateBarcode.Id}).",
+                duplicateBarcode.Id);
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalizedGtin))
+        {
+            var duplicateGtin = items.FirstOrDefault(item =>
+                (!currentItemId.HasValue || item.Id != currentItemId.Value)
+                && !string.IsNullOrWhiteSpace(item.Gtin)
+                && string.Equals(item.Gtin.Trim(), normalizedGtin, StringComparison.OrdinalIgnoreCase));
+            if (duplicateGtin != null)
+            {
+                throw new CatalogIdentifierConflictException(
+                    "ITEM_GTIN_DUPLICATE",
+                    $"GTIN уже используется товаром «{duplicateGtin.Name}» (ID {duplicateGtin.Id}).",
+                    duplicateGtin.Id);
+            }
+        }
+
+        return (normalizedBarcode, normalizedGtin);
+    }
+
+    private string NormalizeAndValidateBaseUom(string? baseUom)
+    {
+        var normalized = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom.Trim();
+        var uoms = _data.GetUoms() ?? Array.Empty<Uom>();
+        var isCanonicalLegacyDefault = string.Equals(normalized, "шт", StringComparison.OrdinalIgnoreCase);
+        if (!isCanonicalLegacyDefault
+            && !uoms.Any(uom => string.Equals(uom.Name.Trim(), normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new ArgumentException("Выбранная единица измерения не найдена.", nameof(baseUom));
+        }
+
+        return normalized;
+    }
+
+    private static void EnsureNotReservedLegacyUom(string name, string parameterName)
+    {
+        if (string.Equals(name.Trim(), "шт", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                "Имя «шт» зарезервировано для legacy-совместимости и не может быть master-единицей измерения.",
+                parameterName);
+        }
+    }
+
+    private void ValidateTara(long? taraId)
+    {
+        if (taraId.HasValue && !_data.GetTaras().Any(tara => tara.Id == taraId.Value))
+        {
+            throw new ArgumentException("Выбранная тара не найдена.", nameof(taraId));
+        }
+    }
+
+    private static void ValidateShelfLife(int? shelfLifeMonths)
+    {
+        if (shelfLifeMonths.HasValue && shelfLifeMonths.Value <= 0)
+        {
+            throw new ArgumentException(
+                "Срок годности должен быть положительным целым числом месяцев.",
+                nameof(shelfLifeMonths));
+        }
+    }
+
+    private static string? NormalizeAndValidatePartnerCode(string? code)
+    {
+        var normalized = string.IsNullOrWhiteSpace(code) ? null : code.Trim();
+        if (normalized != null && normalized.Any(ch => !char.IsDigit(ch)))
+        {
+            throw new ArgumentException("ИНН должен содержать только цифры.", nameof(code));
+        }
+
+        return normalized;
+    }
+
+    private static string NormalizePartnerRole(string partnerRole)
+    {
+        var normalized = partnerRole?.Trim().ToUpperInvariant();
+        if (normalized is not ("SUPPLIER" or "CLIENT" or "BOTH"))
+        {
+            throw new ArgumentException("Некорректная роль контрагента.", nameof(partnerRole));
+        }
+
+        return normalized;
     }
 }

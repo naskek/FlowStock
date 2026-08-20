@@ -5,9 +5,11 @@ using FlowStock.Core.Models.Marking;
 using FlowStock.Core.Services;
 using FlowStock.Data;
 using FlowStock.Server;
+using FlowStock.Server.Tests.Support;
 
 namespace FlowStock.Server.Tests.Orders;
 
+[Collection(PostgresLocationIntegrationTestCollection.Name)]
 public sealed class OrderListInternalStatusPostgresRegressionTests
 {
     [Theory]
@@ -178,6 +180,7 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
         await RunInRollbackTransactionAsync(connectionString, scopedStore =>
         {
             var prefix = $"MK-{DateTime.UtcNow.Ticks}";
+            var gtin = "9" + (DateTime.UtcNow.Ticks % 10_000_000_000_000L).ToString("D13");
             var itemTypeId = scopedStore.AddItemType(new ItemType
             {
                 Name = $"{prefix}-type",
@@ -190,7 +193,7 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
                 Name = $"{prefix}-item",
                 BaseUom = "шт",
                 ItemTypeId = itemTypeId,
-                Gtin = "04607186951520"
+                Gtin = gtin
             });
             var importId = scopedStore.AddMarkingCodeImport(new MarkingCodeImport
             {
@@ -207,19 +210,19 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
             var covered = SeedMarkableOrder(scopedStore, $"{prefix}-covered", itemId, qty: 2);
             var coveredTask = AddMarkingOrder(scopedStore, covered.OrderId, itemId, requestedQty: 2);
             AddMarkingCode(scopedStore, importId, coveredTask, "COVERED-R", MarkingCodeStatus.Reserved, gtin: null);
-            AddMarkingCode(scopedStore, importId, coveredTask, "COVERED-P", MarkingCodeStatus.Printed, gtin: "04607186951520");
+            AddMarkingCode(scopedStore, importId, coveredTask, "COVERED-P", MarkingCodeStatus.Printed, gtin);
 
             var missing = SeedMarkableOrder(scopedStore, $"{prefix}-missing", itemId, qty: 2);
             var missingTask = AddMarkingOrder(scopedStore, missing.OrderId, itemId, requestedQty: 2);
-            AddMarkingCode(scopedStore, importId, missingTask, "MISSING-V", MarkingCodeStatus.Voided, gtin: "04607186951520");
+            AddMarkingCode(scopedStore, importId, missingTask, "MISSING-V", MarkingCodeStatus.Voided, gtin);
             var other = SeedMarkableOrder(scopedStore, $"{prefix}-other", itemId, qty: 10);
             var otherTask = AddMarkingOrder(scopedStore, other.OrderId, itemId, requestedQty: 10);
-            AddMarkingCode(scopedStore, importId, otherTask, "OTHER-R", MarkingCodeStatus.Reserved, gtin: "04607186951520");
-            AddMarkingCode(scopedStore, importId, otherTask, "OTHER-P", MarkingCodeStatus.Printed, gtin: "04607186951520");
+            AddMarkingCode(scopedStore, importId, otherTask, "OTHER-R", MarkingCodeStatus.Reserved, gtin);
+            AddMarkingCode(scopedStore, importId, otherTask, "OTHER-P", MarkingCodeStatus.Printed, gtin);
 
             var bound = SeedMarkableOrder(scopedStore, $"{prefix}-bound", itemId, qty: 1);
             var boundTask = AddMarkingOrder(scopedStore, bound.OrderId, itemId, requestedQty: 1);
-            var boundCodeId = AddMarkingCode(scopedStore, importId, boundTask, "BOUND-R", MarkingCodeStatus.Reserved, gtin: "04607186951520");
+            var boundCodeId = AddMarkingCode(scopedStore, importId, boundTask, "BOUND-R", MarkingCodeStatus.Reserved, gtin);
             var docId = scopedStore.AddDoc(new Doc
             {
                 DocRef = $"{prefix}-prd",
@@ -291,7 +294,7 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
             });
             var sharedGtin = "04607186951521";
             var itemA = AddMarkableItem(scopedStore, itemTypeId, $"{prefix}-item-a", sharedGtin);
-            var itemB = AddMarkableItem(scopedStore, itemTypeId, $"{prefix}-item-b", sharedGtin);
+            var itemB = AddMarkableItem(scopedStore, itemTypeId, $"{prefix}-item-b", "04607186951524");
             var itemC = AddMarkableItem(scopedStore, itemTypeId, $"{prefix}-item-c", "04607186951522");
             var itemD = AddMarkableItem(scopedStore, itemTypeId, $"{prefix}-item-d", "04607186951523");
             var importId = scopedStore.AddMarkingCodeImport(new MarkingCodeImport
@@ -398,7 +401,7 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
             AssertMarking(ReadSingleOrderPageRow(scopedStore, singleFreeCodeWithMultipleNeeds.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, singleBoundCodeWithMultipleNeeds.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, emptyGtinDoesNotFallback.OrderRef), required: true, covered: false);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, sharedNeed.OrderRef), required: true, covered: true);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, sharedNeed.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, multiNeed.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, freeAndBound.OrderRef), required: true, covered: true);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, boundOnlyNeedsTwo.OrderRef), required: true, covered: false);

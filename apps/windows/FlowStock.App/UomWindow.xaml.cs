@@ -20,7 +20,7 @@ public partial class UomWindow : Window
 
         UomsGrid.ItemsSource = _uoms;
         LoadUoms();
-        UpdateDeleteButton();
+        UpdateSelectionButtons();
     }
 
     private void LoadUoms()
@@ -34,7 +34,7 @@ public partial class UomWindow : Window
             _uoms.Add(uom);
         }
 
-        UpdateDeleteButton();
+        UpdateSelectionButtons();
     }
 
     private async void AddUom_Click(object sender, RoutedEventArgs e)
@@ -111,10 +111,57 @@ public partial class UomWindow : Window
         }
     }
 
+    private async void EditUom_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedUom == null)
+        {
+            MessageBox.Show("Выберите единицу измерения.", "Ед. измерения", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(UomNameBox.Text))
+        {
+            MessageBox.Show("Введите единицу измерения.", "Ед. измерения", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            var result = await _services.WpfCatalogApi
+                .TryUpdateUomAsync(_selectedUom.Id, UomNameBox.Text.Trim())
+                .ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                throw new InvalidOperationException(result.Error ?? "Не удалось переименовать единицу измерения через сервер.");
+            }
+
+            UomNameBox.Text = string.Empty;
+            _selectedUom = null;
+            LoadUoms();
+            _onChanged?.Invoke();
+        }
+        catch (ArgumentException ex)
+        {
+            MessageBox.Show(ex.Message, "Ед. измерения", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(ex.Message, "Ед. измерения", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Ед. измерения", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void UomsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         _selectedUom = UomsGrid.SelectedItem as Uom;
-        UpdateDeleteButton();
+        if (_selectedUom != null)
+        {
+            UomNameBox.Text = _selectedUom.Name;
+        }
+        UpdateSelectionButtons();
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -130,8 +177,12 @@ public partial class UomWindow : Window
         DeleteUom_Click(UomsGrid, new RoutedEventArgs());
     }
 
-    private void UpdateDeleteButton()
+    private void UpdateSelectionButtons()
     {
+        if (EditUomButton != null)
+        {
+            EditUomButton.IsEnabled = _selectedUom != null;
+        }
         if (DeleteUomButton != null)
         {
             DeleteUomButton.IsEnabled = _selectedUom != null;

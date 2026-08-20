@@ -8,6 +8,7 @@ using FlowStock.Core.Services;
 using FlowStock.Data;
 using FlowStock.Server;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -27,6 +28,7 @@ public sealed class ItemStorageConditionsPostgresTests
         await RunInRollbackTransactionAsync(connectionString, scopedStore =>
         {
             var suffix = Guid.NewGuid().ToString("N")[..12];
+            scopedStore.AddUom(new Uom { Name = "кор-" + suffix });
             var expected = "от 0С до +10С  влажность 75%\nне замораживать + беречь";
             var itemId = SeedItem(scopedStore, suffix, " \r\n" + expected + " \t ");
 
@@ -44,7 +46,7 @@ public sealed class ItemStorageConditionsPostgresTests
                 IsActive = false,
                 Barcode = $"SC-PG-UPD-{suffix}",
                 Gtin = BuildGtin("1" + suffix[1..]),
-                BaseUom = "кор",
+                BaseUom = "кор-" + suffix,
                 DefaultPackagingId = listed.DefaultPackagingId,
                 Brand = "Марка  + %",
                 Volume = "500 мл",
@@ -427,6 +429,10 @@ WHERE table_schema = current_schema()
             });
             builder.Services.AddSingleton<IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
             builder.Services.AddSingleton<CatalogService>();
+            const string machineKey = "test-catalog-machine-key-at-least-32-characters";
+            builder.Services.AddSingleton(new WpfMachineAuthorization(machineKey));
+            builder.Services.AddSingleton<IPcWebSessionResolver>(new AnonymousPcSessionResolver());
+            builder.Services.AddSingleton<CatalogAuthorization>();
 
             var app = builder.Build();
             ItemCatalogEndpoints.Map(app, connectionString);
@@ -437,7 +443,9 @@ WHERE table_schema = current_schema()
                 .Addresses
                 .Single();
 
-            return new CatalogItemApiHost(app, new HttpClient { BaseAddress = new Uri(address) });
+            var client = new HttpClient { BaseAddress = new Uri(address) };
+            client.DefaultRequestHeaders.Add(WpfMachineAuthorization.KeyHeader, machineKey);
+            return new CatalogItemApiHost(app, client);
         }
 
         public async ValueTask DisposeAsync()
@@ -449,5 +457,10 @@ WHERE table_schema = current_schema()
 
     private sealed class RollbackRequestedException : Exception
     {
+    }
+
+    private sealed class AnonymousPcSessionResolver : IPcWebSessionResolver
+    {
+        public PcWebIdentity? Resolve(HttpRequest request) => null;
     }
 }

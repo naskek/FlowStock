@@ -1,10 +1,12 @@
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Data;
+using FlowStock.Server.Tests.Support;
 using Npgsql;
 
 namespace FlowStock.Server.Tests.ProductionPallets;
 
+[Collection(PostgresLocationIntegrationTestCollection.Name)]
 public sealed class ProductionPalletFillingCorrectionPostgresTests
 {
     [Fact]

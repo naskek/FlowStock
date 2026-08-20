@@ -7,7 +7,7 @@ public sealed class Item
     public bool IsActive { get; init; } = true;
     public string? Barcode { get; init; }
     public string? Gtin { get; init; }
-    public string BaseUom { get; init; } = "èâ";
+    public string BaseUom { get; init; } = "шт";
     public long? DefaultPackagingId { get; init; }
     public string? Brand { get; init; }
     public string? Volume { get; init; }

@@ -5,7 +5,6 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
@@ -32,6 +31,18 @@ if (MarkingStatusBackfillCommand.TryRun(args, postgresConnectionString, out var 
 if (OrderReservationBackfillCommand.TryRun(args, postgresConnectionString, out var maintenanceExitCode))
 {
     Environment.ExitCode = maintenanceExitCode;
+    return;
+}
+
+if (PartnerRoleBackfillCommand.TryRun(args, postgresConnectionString, out var partnerRoleMaintenanceExitCode))
+{
+    Environment.ExitCode = partnerRoleMaintenanceExitCode;
+    return;
+}
+
+if (UomRemediationCommand.TryRun(args, postgresConnectionString, out var uomMaintenanceExitCode))
+{
+    Environment.ExitCode = uomMaintenanceExitCode;
     return;
 }
 
@@ -92,6 +103,7 @@ builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.G
 builder.Services.AddSingleton(new PcWebSessionStore(postgresConnectionString));
 builder.Services.AddSingleton<IPcWebSessionResolver>(sp => sp.GetRequiredService<PcWebSessionStore>());
 builder.Services.AddSingleton(new WpfMachineAuthorization(wpfAdminApiKey));
+builder.Services.AddSingleton<CatalogAuthorization>();
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IMarkingCutoverPreflightStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.ITsdHuResolverStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IHuOperatorFactsStore>(sp => sp.GetRequiredService<PostgresDataStore>());
@@ -124,6 +136,7 @@ builder.Services.AddSingleton<PartnerItemSalePriceService>();
 builder.Services.AddSingleton<CommercialTermsResolver>();
 builder.Services.AddSingleton<CommercialStatisticsService>();
 builder.Services.AddSingleton<PartnerRoleResolver>();
+builder.Services.AddSingleton<IPartnerRoleResolver>(sp => sp.GetRequiredService<PartnerRoleResolver>());
 builder.Services.AddSingleton<ImportService>();
 builder.Services.AddSingleton<ItemPackagingService>();
 builder.Services.AddSingleton<MarkingExcelService>();
@@ -653,14 +666,21 @@ app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest requ
     }
 
     using var connection = OpenConnection(postgresConnectionString);
+    using var transaction = connection.BeginTransaction();
+    string previousAccessRole;
     using (var exists = connection.CreateCommand())
     {
-        exists.CommandText = "SELECT 1 FROM tsd_devices WHERE id = @id LIMIT 1;";
+        exists.Transaction = transaction;
+        exists.CommandText = "SELECT access_role FROM tsd_devices WHERE id = @id FOR UPDATE;";
         AddParam(exists, "@id", id);
-        if (exists.ExecuteScalar() == null)
+        var currentAccessRole = exists.ExecuteScalar();
+        if (currentAccessRole == null)
         {
+            transaction.Rollback();
             return Results.NotFound(new ApiResult(false, "DEVICE_NOT_FOUND"));
         }
+
+        previousAccessRole = PcAccessRole.Normalize(Convert.ToString(currentAccessRole, CultureInfo.InvariantCulture));
     }
 
     try
@@ -677,6 +697,7 @@ app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest requ
         var salt = RandomNumberGenerator.GetBytes(16);
         var hash = HashPassword(upsertRequest.Password, salt, 100_000);
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = @"
 UPDATE tsd_devices
 SET login = @login,
@@ -708,6 +729,7 @@ WHERE id = @id;";
     else
     {
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = @"
 UPDATE tsd_devices
 SET login = @login,
@@ -730,6 +752,14 @@ WHERE id = @id;";
             return Results.Conflict(new ApiResult(false, "LOGIN_ALREADY_EXISTS"));
         }
     }
+
+    if (!string.Equals(previousAccessRole, PcAccessRole.Admin, StringComparison.Ordinal)
+        && string.Equals(accessRole, PcAccessRole.Admin, StringComparison.Ordinal))
+    {
+        PcWebSessionStore.RevokeForAdminPromotion(connection, transaction, id, DateTimeOffset.UtcNow);
+    }
+
+    transaction.Commit();
 
     return Results.Ok(new ApiResult(true));
 });
@@ -922,9 +952,14 @@ app.MapDelete("/api/locations/{locationId:long}", (long locationId, CatalogServi
 ItemCatalogEndpoints.Map(app, postgresConnectionString);
 VatRateEndpoints.Map(app);
 
-app.MapGet("/api/packagings", (HttpRequest request, IDataStore store) =>
+app.MapGet("/api/packagings", (HttpRequest request, IDataStore store, CatalogAuthorization authorization) =>
 {
     var includeInactive = ParseIncludeInactive(request.Query["include_inactive"].ToString());
+    if (includeInactive && authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     var itemIdText = request.Query["item_id"].ToString();
     var itemIdFilter = long.TryParse(itemIdText, out var parsedItemId) && parsedItemId > 0
         ? parsedItemId
@@ -946,8 +981,13 @@ app.MapGet("/api/packagings", (HttpRequest request, IDataStore store) =>
     return Results.Ok(list);
 });
 
-app.MapPost("/api/packagings", async (HttpRequest request, ItemPackagingService packagings) =>
+app.MapPost("/api/packagings", async (HttpRequest request, ItemPackagingService packagings, CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     var parsed = await ParseJsonBody<UpsertPackagingRequest>(request);
     if (!parsed.IsSuccess)
     {
@@ -974,8 +1014,13 @@ app.MapPost("/api/packagings", async (HttpRequest request, ItemPackagingService 
     }
 });
 
-app.MapPost("/api/packagings/{packagingId:long}", async (long packagingId, HttpRequest request, ItemPackagingService packagings) =>
+app.MapPost("/api/packagings/{packagingId:long}", async (long packagingId, HttpRequest request, ItemPackagingService packagings, CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     var parsed = await ParseJsonBody<UpsertPackagingRequest>(request);
     if (!parsed.IsSuccess)
     {
@@ -1004,8 +1049,13 @@ app.MapPost("/api/packagings/{packagingId:long}", async (long packagingId, HttpR
     }
 });
 
-app.MapDelete("/api/packagings/{packagingId:long}", (long packagingId, ItemPackagingService packagings) =>
+app.MapDelete("/api/packagings/{packagingId:long}", (long packagingId, HttpRequest request, ItemPackagingService packagings, CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     try
     {
         packagings.DeactivatePackaging(packagingId);
@@ -1017,8 +1067,13 @@ app.MapDelete("/api/packagings/{packagingId:long}", (long packagingId, ItemPacka
     }
 });
 
-app.MapPost("/api/items/{itemId:long}/default-packaging", async (long itemId, HttpRequest request, ItemPackagingService packagings) =>
+app.MapPost("/api/items/{itemId:long}/default-packaging", async (long itemId, HttpRequest request, ItemPackagingService packagings, CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     var parsed = await ParseJsonBody<SetDefaultPackagingRequest>(request);
     if (!parsed.IsSuccess)
     {
@@ -1044,8 +1099,13 @@ app.MapGet("/api/uoms", (CatalogService catalog) =>
     return Results.Ok(uoms);
 });
 
-app.MapPost("/api/uoms", async (HttpRequest request, CatalogService catalog) =>
+app.MapPost("/api/uoms", async (HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     var parsed = await ParseJsonBody<CreateNamedEntityRequest>(request);
     if (!parsed.IsSuccess)
     {
@@ -1061,14 +1121,59 @@ app.MapPost("/api/uoms", async (HttpRequest request, CatalogService catalog) =>
     {
         return Results.BadRequest(new ApiResult(false, ex.Message));
     }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiErrorResult(false, "UOM_ALREADY_EXISTS", "Единица измерения с таким названием уже существует."));
+    }
 });
 
-app.MapDelete("/api/uoms/{uomId:long}", (long uomId, CatalogService catalog) =>
+app.MapPost("/api/uoms/{uomId:long}", async (long uomId, HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
+    var parsed = await ParseJsonBody<CreateNamedEntityRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        catalog.RenameUom(uomId, parsed.Value?.Name ?? string.Empty);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (UomNotFoundException ex)
+    {
+        return Results.NotFound(new ApiErrorResult(false, "UOM_NOT_FOUND", ex.Message));
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiErrorResult(false, "UOM_ALREADY_EXISTS", "Единица измерения с таким названием уже существует."));
+    }
+});
+
+app.MapDelete("/api/uoms/{uomId:long}", (long uomId, HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
+{
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     try
     {
         catalog.DeleteUom(uomId);
         return Results.Ok(new ApiResult(true));
+    }
+    catch (UomNotFoundException ex)
+    {
+        return Results.NotFound(new ApiErrorResult(false, "UOM_NOT_FOUND", ex.Message));
     }
     catch (InvalidOperationException ex)
     {
@@ -1133,8 +1238,13 @@ app.MapGet("/api/taras", (CatalogService catalog) =>
     return Results.Ok(taras);
 });
 
-app.MapPost("/api/taras", async (HttpRequest request, CatalogService catalog) =>
+app.MapPost("/api/taras", async (HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     var parsed = await ParseJsonBody<CreateNamedEntityRequest>(request);
     if (!parsed.IsSuccess)
     {
@@ -1156,8 +1266,41 @@ app.MapPost("/api/taras", async (HttpRequest request, CatalogService catalog) =>
     }
 });
 
-app.MapDelete("/api/taras/{taraId:long}", (long taraId, CatalogService catalog) =>
+app.MapPost("/api/taras/{taraId:long}", async (long taraId, HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
+    var parsed = await ParseJsonBody<CreateNamedEntityRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        catalog.UpdateTara(taraId, parsed.Value?.Name ?? string.Empty);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiResult(false, "TARA_ALREADY_EXISTS"));
+    }
+});
+
+app.MapDelete("/api/taras/{taraId:long}", (long taraId, HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
+{
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     try
     {
         catalog.DeleteTara(taraId);
@@ -1169,9 +1312,14 @@ app.MapDelete("/api/taras/{taraId:long}", (long taraId, CatalogService catalog) 
     }
 });
 
-app.MapGet("/api/item-types", (HttpRequest request, CatalogService catalog) =>
+app.MapGet("/api/item-types", (HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
 {
     var includeInactive = ParseIncludeInactive(request.Query["include_inactive"].ToString());
+    if (includeInactive && authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     var itemTypes = catalog.GetItemTypes(includeInactive)
         .Select(itemType => new
         {
@@ -1191,8 +1339,13 @@ app.MapGet("/api/item-types", (HttpRequest request, CatalogService catalog) =>
     return Results.Ok(itemTypes);
 });
 
-app.MapPost("/api/item-types", async (HttpRequest request, CatalogService catalog) =>
+app.MapPost("/api/item-types", async (HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     var parsed = await ParseJsonBody<UpsertItemTypeRequest>(request);
     if (!parsed.IsSuccess)
     {
@@ -1224,8 +1377,13 @@ app.MapPost("/api/item-types", async (HttpRequest request, CatalogService catalo
     }
 });
 
-app.MapPost("/api/item-types/{itemTypeId:long}", async (long itemTypeId, HttpRequest request, CatalogService catalog) =>
+app.MapPost("/api/item-types/{itemTypeId:long}", async (long itemTypeId, HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     var parsed = await ParseJsonBody<UpsertItemTypeRequest>(request);
     if (!parsed.IsSuccess)
     {
@@ -1262,8 +1420,13 @@ app.MapPost("/api/item-types/{itemTypeId:long}", async (long itemTypeId, HttpReq
     }
 });
 
-app.MapDelete("/api/item-types/{itemTypeId:long}", (long itemTypeId, CatalogService catalog) =>
+app.MapDelete("/api/item-types/{itemTypeId:long}", (long itemTypeId, HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     try
     {
         catalog.DeleteItemType(itemTypeId);
@@ -1352,7 +1515,7 @@ app.MapPost("/api/item-requests/{requestId:long}/resolve", (long requestId, IDat
     return Results.Ok(new ApiResult(true));
 });
 
-app.MapGet("/api/partners", (HttpRequest request, IDataStore store) =>
+app.MapGet("/api/partners", (HttpRequest request, IDataStore store, PartnerRoleResolver partnerRoles) =>
 {
     var role = request.Query["role"].ToString();
     var filter = ParsePartnerRole(role);
@@ -1361,12 +1524,16 @@ app.MapGet("/api/partners", (HttpRequest request, IDataStore store) =>
         return Results.BadRequest(new ApiResult(false, "INVALID_ROLE"));
     }
 
-    var statusMap = LoadPartnerStatuses();
     var partners = store.GetPartners();
     var list = new List<object>();
     foreach (var partner in partners)
     {
-        var status = statusMap.TryGetValue(partner.Id, out var stored) ? stored : PartnerRole.Both;
+        var status = partnerRoles.GetRole(partner) switch
+        {
+            FlowStockPartnerRole.Supplier => PartnerRole.Supplier,
+            FlowStockPartnerRole.Client => PartnerRole.Client,
+            _ => PartnerRole.Both
+        };
         if (!ShouldIncludePartner(status, filter))
         {
             continue;
@@ -1384,8 +1551,13 @@ app.MapGet("/api/partners", (HttpRequest request, IDataStore store) =>
     return Results.Ok(list);
 });
 
-app.MapPost("/api/partners", async (HttpRequest request, CatalogService catalog) =>
+app.MapPost("/api/partners", async (HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     var parsed = await ParseJsonBody<UpsertPartnerRequest>(request);
     if (!parsed.IsSuccess)
     {
@@ -1400,8 +1572,10 @@ app.MapPost("/api/partners", async (HttpRequest request, CatalogService catalog)
 
     try
     {
-        var partnerId = catalog.CreatePartner(parsed.Value?.Name ?? string.Empty, parsed.Value?.Code);
-        SavePartnerStatus(partnerId, status.Value);
+        var partnerId = catalog.CreatePartner(
+            parsed.Value?.Name ?? string.Empty,
+            parsed.Value?.Code,
+            status.Value.ToString());
         return Results.Ok(new { ok = true, partner_id = partnerId });
     }
     catch (ArgumentException ex)
@@ -1418,8 +1592,13 @@ app.MapPost("/api/partners/{partnerId:long}", async (
     long partnerId,
     HttpRequest request,
     CatalogService catalog,
-    IDataStore store) =>
+    CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     var parsed = await ParseJsonBody<UpsertPartnerRequest>(request);
     if (!parsed.IsSuccess)
     {
@@ -1432,24 +1611,22 @@ app.MapPost("/api/partners/{partnerId:long}", async (
         return Results.BadRequest(new ApiResult(false, "INVALID_PARTNER_STATUS"));
     }
 
-    if (status.Value == PartnerRole.Supplier
-        && store.HasPartnerItemSalePricesForPartner(partnerId))
-    {
-        return Results.BadRequest(new ApiErrorResult(
-            false,
-            "PARTNER_HAS_CUSTOMER_PRICES",
-            "Нельзя изменить роль клиента на поставщика, пока для него существуют индивидуальные цены."));
-    }
-
     try
     {
-        catalog.UpdatePartner(partnerId, parsed.Value?.Name ?? string.Empty, parsed.Value?.Code);
-        SavePartnerStatus(partnerId, status.Value);
+        catalog.UpdatePartner(
+            partnerId,
+            parsed.Value?.Name ?? string.Empty,
+            parsed.Value?.Code,
+            status.Value.ToString());
         return Results.Ok(new ApiResult(true));
     }
     catch (ArgumentException ex)
     {
         return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (CommercialTermsException ex)
+    {
+        return Results.BadRequest(new ApiErrorResult(false, ex.ErrorCode, ex.Message));
     }
     catch (InvalidOperationException ex)
     {
@@ -1461,12 +1638,16 @@ app.MapPost("/api/partners/{partnerId:long}", async (
     }
 });
 
-app.MapDelete("/api/partners/{partnerId:long}", (long partnerId, CatalogService catalog) =>
+app.MapDelete("/api/partners/{partnerId:long}", (long partnerId, HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
 {
+    if (authorization.RequireManageCatalog(request) is { } rejection)
+    {
+        return rejection;
+    }
+
     try
     {
         catalog.DeletePartner(partnerId);
-        RemovePartnerStatus(partnerId);
         return Results.Ok(new ApiResult(true));
     }
     catch (InvalidOperationException ex)
@@ -3943,114 +4124,6 @@ static bool ParseIncludeInactive(string? value)
 static DocType? ParseDocType(string? value)
 {
     return DocTypeMapper.FromOpString(value);
-}
-
-static IReadOnlyDictionary<long, PartnerRole> LoadPartnerStatuses()
-{
-    var path = GetPartnerStatusPath();
-    if (!File.Exists(path))
-    {
-        return new Dictionary<long, PartnerRole>();
-    }
-
-    try
-    {
-        var json = File.ReadAllText(path);
-        var options = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true,
-            Converters = { new JsonStringEnumConverter() }
-        };
-        var data = JsonSerializer.Deserialize<Dictionary<long, PartnerRole>>(json, options);
-        return data ?? new Dictionary<long, PartnerRole>();
-    }
-    catch
-    {
-        return new Dictionary<long, PartnerRole>();
-    }
-}
-
-static void SavePartnerStatus(long partnerId, PartnerRole status)
-{
-    var path = GetPartnerStatusPath();
-    Dictionary<long, PartnerRole> data;
-    if (File.Exists(path))
-    {
-        try
-        {
-            var json = File.ReadAllText(path);
-            var options = new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-                Converters = { new JsonStringEnumConverter() }
-            };
-            data = JsonSerializer.Deserialize<Dictionary<long, PartnerRole>>(json, options)
-                   ?? new Dictionary<long, PartnerRole>();
-        }
-        catch
-        {
-            data = new Dictionary<long, PartnerRole>();
-        }
-    }
-    else
-    {
-        data = new Dictionary<long, PartnerRole>();
-    }
-
-    data[partnerId] = status;
-    SavePartnerStatuses(path, data);
-}
-
-static void RemovePartnerStatus(long partnerId)
-{
-    var path = GetPartnerStatusPath();
-    if (!File.Exists(path))
-    {
-        return;
-    }
-
-    try
-    {
-        var json = File.ReadAllText(path);
-        var options = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true,
-            Converters = { new JsonStringEnumConverter() }
-        };
-        var data = JsonSerializer.Deserialize<Dictionary<long, PartnerRole>>(json, options)
-                   ?? new Dictionary<long, PartnerRole>();
-        if (!data.Remove(partnerId))
-        {
-            return;
-        }
-
-        SavePartnerStatuses(path, data);
-    }
-    catch
-    {
-    }
-}
-
-static void SavePartnerStatuses(string path, Dictionary<long, PartnerRole> data)
-{
-    var dir = Path.GetDirectoryName(path);
-    if (!string.IsNullOrWhiteSpace(dir))
-    {
-        Directory.CreateDirectory(dir);
-    }
-
-    var options = new JsonSerializerOptions
-    {
-        WriteIndented = true,
-        Converters = { new JsonStringEnumConverter() }
-    };
-    var json = JsonSerializer.Serialize(data, options);
-    File.WriteAllText(path, json);
-}
-
-static string GetPartnerStatusPath()
-{
-    return Path.Combine(ServerPaths.BaseDir, "partner_statuses.json");
 }
 
 static PartnerRole? ParsePartnerStatusValue(string? value)

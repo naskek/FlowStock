@@ -1,6 +1,7 @@
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Data;
+using FlowStock.Server.Tests.Support;
 
 namespace FlowStock.Server.Tests.Orders;
 
@@ -12,6 +13,7 @@ namespace FlowStock.Server.Tests.Orders;
 /// на PostgreSQL и ловит parse/runtime-ошибки, а не только in-memory расчёты.
 /// Тест пропускается, если тестовая PostgreSQL недоступна.
 /// </summary>
+[Collection(PostgresLocationIntegrationTestCollection.Name)]
 public sealed class GetOrderCustomerReadinessPostgresRegressionTests
 {
     [Fact]

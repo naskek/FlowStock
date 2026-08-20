@@ -3,9 +3,11 @@ using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Data;
+using FlowStock.Server.Tests.Support;
 
 namespace FlowStock.Server.Tests.Reports;
 
+[Collection(PostgresLocationIntegrationTestCollection.Name)]
 public sealed class ProductionNeedPostgresRegressionTests
 {
     [Theory]

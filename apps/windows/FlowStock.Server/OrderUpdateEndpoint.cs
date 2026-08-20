@@ -11,8 +11,6 @@ namespace FlowStock.Server;
 
 public static class OrderUpdateEndpoint
 {
-    private static readonly PartnerRoleResolver PartnerRoles = new();
-
     public static void Map(WebApplication app)
     {
         app.MapPut("/api/orders/{orderId:long}", HandleUpdateAsync);
@@ -22,6 +20,7 @@ public static class OrderUpdateEndpoint
         HttpRequest request,
         long orderId,
         IDataStore store,
+        PartnerRoleResolver partnerRoles,
         ILogger<OrderUpdateEndpointMarker> logger)
     {
         var existing = store.GetOrder(orderId);
@@ -113,7 +112,7 @@ public static class OrderUpdateEndpoint
                 return Results.BadRequest(new ApiResult(false, "PARTNER_NOT_FOUND"));
             }
 
-            if (!PartnerRoles.IsCustomer(partner.Id))
+            if (!partnerRoles.IsCustomer(partner.Id))
             {
                 return Results.BadRequest(new ApiResult(false, "PARTNER_IS_SUPPLIER"));
             }

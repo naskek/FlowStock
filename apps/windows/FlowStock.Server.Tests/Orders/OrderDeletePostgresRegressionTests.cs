@@ -5,6 +5,7 @@ using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Data;
 using FlowStock.Server;
+using FlowStock.Server.Tests.Support;
 using FlowStock.Server.Tests.UpdateOrder.Infrastructure;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -15,6 +16,7 @@ using Microsoft.Extensions.Hosting;
 
 namespace FlowStock.Server.Tests.Orders;
 
+[Collection(PostgresLocationIntegrationTestCollection.Name)]
 public sealed class OrderDeletePostgresRegressionTests
 {
     [Fact]
@@ -1105,6 +1107,7 @@ public sealed class OrderDeletePostgresRegressionTests
 
             builder.WebHost.UseUrls("http://127.0.0.1:0");
             builder.Services.AddSingleton(typeof(IDataStore), store);
+            builder.Services.AddSingleton<PartnerRoleResolver>();
 
             var app = builder.Build();
             OrderUpdateEndpoint.Map(app);

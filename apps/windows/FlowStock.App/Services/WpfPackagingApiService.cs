@@ -124,6 +124,7 @@ public sealed class WpfPackagingApiService
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
                 Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             };
+            WpfTrustedRequestHeaders.Add(client, configuration.WpfAdminApiKey);
             using var response = client.GetAsync(relativePath, HttpCompletionOption.ResponseHeadersRead)
                 .ConfigureAwait(false)
                 .GetAwaiter()
@@ -165,6 +166,7 @@ public sealed class WpfPackagingApiService
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
                 Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             };
+            WpfTrustedRequestHeaders.Add(client, configuration.WpfAdminApiKey);
             using var request = new HttpRequestMessage(HttpMethod.Post, relativePath)
             {
                 Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
@@ -205,6 +207,7 @@ public sealed class WpfPackagingApiService
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
                 Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             };
+            WpfTrustedRequestHeaders.Add(client, configuration.WpfAdminApiKey);
             using var request = new HttpRequestMessage(HttpMethod.Post, relativePath)
             {
                 Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
@@ -243,6 +246,7 @@ public sealed class WpfPackagingApiService
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
                 Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             };
+            WpfTrustedRequestHeaders.Add(client, configuration.WpfAdminApiKey);
             using var response = await client.DeleteAsync(relativePath, cancellationToken).ConfigureAwait(false);
             return response.IsSuccessStatusCode
                 ? (true, null)
@@ -268,7 +272,8 @@ public sealed class WpfPackagingApiService
         configuration = new WpfPackagingApiConfiguration(
             NormalizeBaseUrl(baseUrl),
             timeoutSeconds,
-            ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls);
+            ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls,
+            WpfTrustedRequestHeaders.ReadAdminApiKey(settings));
         return !string.IsNullOrWhiteSpace(configuration.BaseUrl);
     }
 
@@ -448,5 +453,9 @@ public sealed class WpfPackagingApiService
     }
 
     private sealed record ApiErrorResponse(string? Error);
-    private sealed record WpfPackagingApiConfiguration(string? BaseUrl, int TimeoutSeconds, bool AllowInvalidTls);
+    private sealed record WpfPackagingApiConfiguration(
+        string? BaseUrl,
+        int TimeoutSeconds,
+        bool AllowInvalidTls,
+        string? WpfAdminApiKey);
 }

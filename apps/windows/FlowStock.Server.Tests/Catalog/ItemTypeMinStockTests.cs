@@ -11,6 +11,7 @@ public sealed class ItemTypeMinStockTests
     public void CreateItem_WhenTypeDoesNotControlMinStock_ClearsMinStockQty()
     {
         var store = new Mock<IDataStore>();
+        ConfigureItemReferences(store);
         store.Setup(x => x.GetItemType(5)).Returns(new ItemType
         {
             Id = 5,
@@ -47,6 +48,7 @@ public sealed class ItemTypeMinStockTests
     public void CreateItem_WhenMinStockIsNegative_Throws()
     {
         var store = new Mock<IDataStore>();
+        ConfigureItemReferences(store);
         store.Setup(x => x.GetItemType(7)).Returns(new ItemType
         {
             Id = 7,
@@ -151,5 +153,12 @@ public sealed class ItemTypeMinStockTests
 
         Assert.NotNull(captured);
         Assert.True(captured!.MinStockUsesOrderBinding);
+    }
+
+    private static void ConfigureItemReferences(Mock<IDataStore> store)
+    {
+        store.Setup(data => data.GetItems(null)).Returns(Array.Empty<Item>());
+        store.Setup(data => data.GetUoms()).Returns([new Uom { Id = 1, Name = "шт" }]);
+        store.Setup(data => data.GetTaras()).Returns(Array.Empty<Tara>());
     }
 }

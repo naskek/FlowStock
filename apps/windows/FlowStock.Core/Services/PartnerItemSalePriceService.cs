@@ -6,10 +6,14 @@ namespace FlowStock.Core.Services;
 public sealed class PartnerItemSalePriceService
 {
     private readonly IDataStore _data;
+    private readonly IPartnerRoleResolver _partnerRoles;
 
-    public PartnerItemSalePriceService(IDataStore data)
+    public PartnerItemSalePriceService(
+        IDataStore data,
+        IPartnerRoleResolver? partnerRoles = null)
     {
         _data = data;
+        _partnerRoles = partnerRoles ?? PersistedPartnerRoleResolver.Instance;
     }
 
     public PartnerItemSalePricePage Get(
@@ -33,15 +37,22 @@ public sealed class PartnerItemSalePriceService
 
     public long Create(long partnerId, long itemId, decimal unitPriceGross, bool isActive)
     {
-        ValidateReferences(_data, partnerId, itemId);
-        var price = CommercialTermsResolver.ValidateManualPrice(unitPriceGross);
-        return _data.AddPartnerItemSalePrice(new PartnerItemSalePrice
+        long id = 0;
+        _data.ExecuteInTransaction(store =>
         {
-            PartnerId = partnerId,
-            ItemId = itemId,
-            UnitPriceGross = price,
-            IsActive = isActive
+            var partner = LockPartner(store, partnerId);
+            ValidateCustomerRole(partner);
+            ValidateItem(store, itemId);
+            var price = CommercialTermsResolver.ValidateManualPrice(unitPriceGross);
+            id = store.AddPartnerItemSalePrice(new PartnerItemSalePrice
+            {
+                PartnerId = partnerId,
+                ItemId = itemId,
+                UnitPriceGross = price,
+                IsActive = isActive
+            });
         });
+        return id;
     }
 
     public void Update(long id, long partnerId, long itemId, decimal unitPriceGross, bool isActive)
@@ -55,7 +66,22 @@ public sealed class PartnerItemSalePriceService
                     "Цена клиента не найдена.");
             }
 
-            ValidateReferences(store, partnerId, itemId);
+            var existing = store.GetPartnerItemSalePrice(id)
+                           ?? throw new CommercialTermsException(
+                               "PARTNER_ITEM_SALE_PRICE_NOT_FOUND",
+                               "Цена клиента не найдена.");
+            var lockedPartners = new Dictionary<long, Partner>();
+            foreach (var lockedPartnerId in new[] { existing.PartnerId, partnerId }
+                         .Distinct()
+                         .OrderBy(value => value))
+            {
+                lockedPartners.Add(
+                    lockedPartnerId,
+                    LockPartner(store, lockedPartnerId));
+            }
+
+            ValidateCustomerRole(lockedPartners[partnerId]);
+            ValidateItem(store, itemId);
             var price = CommercialTermsResolver.ValidateManualPrice(unitPriceGross);
             store.UpdatePartnerItemSalePrice(new PartnerItemSalePrice
             {
@@ -73,16 +99,45 @@ public sealed class PartnerItemSalePriceService
         _data.DeletePartnerItemSalePrice(id);
     }
 
-    private static void ValidateReferences(IDataStore store, long partnerId, long itemId)
+    private static Partner LockPartner(IDataStore store, long partnerId)
     {
-        if (store.GetPartner(partnerId) == null)
-        {
-            throw new CommercialTermsException("PARTNER_NOT_FOUND", "Контрагент не найден.");
-        }
+        return store.LockPartnerForUpdate(partnerId)
+               ?? throw new CommercialTermsException(
+                   "PARTNER_NOT_FOUND",
+                   "Контрагент не найден.");
+    }
 
+    private void ValidateCustomerRole(Partner partner)
+    {
+        if (!_partnerRoles.IsCustomer(partner))
+        {
+            throw new CommercialTermsException(
+                "PARTNER_IS_SUPPLIER",
+                "Индивидуальная цена может быть задана только для клиента.");
+        }
+    }
+
+    private static void ValidateItem(IDataStore store, long itemId)
+    {
         if (store.FindItemById(itemId) == null)
         {
             throw new CommercialTermsException("ITEM_NOT_FOUND", "Товар не найден.");
+        }
+    }
+
+    private sealed class PersistedPartnerRoleResolver : IPartnerRoleResolver
+    {
+        public static PersistedPartnerRoleResolver Instance { get; } = new();
+
+        public bool IsCustomer(Partner partner)
+        {
+            return partner.PartnerRole?.Trim().ToUpperInvariant() switch
+            {
+                "SUPPLIER" => false,
+                "CLIENT" or "BOTH" => true,
+                null or "" => true,
+                _ => false
+            };
         }
     }
 }

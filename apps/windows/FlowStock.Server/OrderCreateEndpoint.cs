@@ -11,8 +11,6 @@ namespace FlowStock.Server;
 
 public static class OrderCreateEndpoint
 {
-    private static readonly PartnerRoleResolver PartnerRoles = new();
-
     public static void Map(WebApplication app)
     {
         app.MapPost("/api/orders", HandleCreateAsync);
@@ -21,6 +19,7 @@ public static class OrderCreateEndpoint
     private static async Task<IResult> HandleCreateAsync(
         HttpRequest request,
         IDataStore store,
+        PartnerRoleResolver partnerRoles,
         WpfMachineAuthorization wpfAuthorization)
     {
         if (!wpfAuthorization.IsAuthorized(request))
@@ -101,7 +100,7 @@ public static class OrderCreateEndpoint
                 return Results.BadRequest(new ApiResult(false, "PARTNER_NOT_FOUND"));
             }
 
-            if (!PartnerRoles.IsCustomer(partner.Id))
+            if (!partnerRoles.IsCustomer(partner.Id))
             {
                 return Results.BadRequest(new ApiResult(false, "PARTNER_IS_SUPPLIER"));
             }

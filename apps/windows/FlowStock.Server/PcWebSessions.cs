@@ -15,6 +15,7 @@ public static class PcAccessRole
     public const string Operator = "OPERATOR";
     public const string Admin = "ADMIN";
     public const string ManagePendingRequests = "ManagePendingRequests";
+    public const string ManageCatalog = "ManageCatalog";
     public const string InvalidAccessRole = "INVALID_ACCESS_ROLE";
 
     public static string Normalize(string? value) =>
@@ -42,6 +43,7 @@ public static class PcAccessRole
 public sealed record PcWebIdentity(long AccountId, string DeviceId, string Login, string Platform, string AccessRole)
 {
     public bool CanManagePendingRequests => string.Equals(AccessRole, PcAccessRole.Admin, StringComparison.Ordinal);
+    public bool CanManageCatalog => string.Equals(AccessRole, PcAccessRole.Admin, StringComparison.Ordinal);
 }
 
 public interface IPcWebSessionResolver
@@ -98,6 +100,45 @@ LIMIT 1;";
             .Replace('/', '_');
         var expiresAt = now.Add(Lifetime);
         using var transaction = connection.BeginTransaction();
+        using (var lockAccount = connection.CreateCommand())
+        {
+            lockAccount.Transaction = transaction;
+            lockAccount.CommandText = @"
+SELECT device_id, login, password_salt, password_hash, password_iterations,
+       is_active, platform, access_role
+FROM tsd_devices
+WHERE id = @id
+FOR UPDATE;";
+            AddParam(lockAccount, "@id", accountId);
+            using var current = lockAccount.ExecuteReader();
+            if (!current.Read())
+            {
+                transaction.Rollback();
+                return PcWebLoginResult.Invalid("INVALID_CREDENTIALS");
+            }
+
+            deviceId = current.GetString(0);
+            storedLogin = current.GetString(1);
+            salt = current.GetString(2);
+            hash = current.GetString(3);
+            iterations = current.GetInt32(4);
+            isActive = current.GetBoolean(5);
+            platform = current.IsDBNull(6) ? "TSD" : current.GetString(6);
+            accessRole = current.IsDBNull(7)
+                ? PcAccessRole.Operator
+                : PcAccessRole.Normalize(current.GetString(7));
+        }
+
+        if (!isActive || !IsPcPlatform(platform))
+        {
+            transaction.Rollback();
+            return PcWebLoginResult.Invalid("PC_ACCESS_DENIED");
+        }
+        if (!VerifyPassword(password, salt, hash, iterations))
+        {
+            transaction.Rollback();
+            return PcWebLoginResult.Invalid("INVALID_CREDENTIALS");
+        }
         using (var cleanup = connection.CreateCommand())
         {
             cleanup.Transaction = transaction;
@@ -117,6 +158,22 @@ VALUES(@account_id, @token_hash, @created_at, @expires_at, NULL);";
             AddParam(insert, "@created_at", now.UtcDateTime);
             AddParam(insert, "@expires_at", expiresAt.UtcDateTime);
             insert.ExecuteNonQuery();
+        }
+
+        if (string.Equals(accessRole, PcAccessRole.Admin, StringComparison.Ordinal))
+        {
+            using var revoke = connection.CreateCommand();
+            revoke.Transaction = transaction;
+            revoke.CommandText = @"
+UPDATE pc_web_sessions
+SET revoked_at = @revoked_at
+WHERE account_id = @account_id
+  AND token_hash <> @new_token_hash
+  AND revoked_at IS NULL;";
+            AddParam(revoke, "@revoked_at", now.UtcDateTime);
+            AddParam(revoke, "@account_id", accountId);
+            AddParam(revoke, "@new_token_hash", HashToken(rawToken));
+            revoke.ExecuteNonQuery();
         }
 
         using (var update = connection.CreateCommand())
@@ -188,6 +245,24 @@ WHERE token_hash = @token_hash
   AND revoked_at IS NULL;";
         AddParam(command, "@revoked_at", now.UtcDateTime);
         AddParam(command, "@token_hash", HashToken(rawToken));
+        command.ExecuteNonQuery();
+    }
+
+    public static void RevokeForAdminPromotion(
+        DbConnection connection,
+        DbTransaction transaction,
+        long accountId,
+        DateTimeOffset now)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = @"
+UPDATE pc_web_sessions
+SET revoked_at = @revoked_at
+WHERE account_id = @account_id
+  AND revoked_at IS NULL;";
+        AddParam(command, "@revoked_at", now.UtcDateTime);
+        AddParam(command, "@account_id", accountId);
         command.ExecuteNonQuery();
     }
 
@@ -313,7 +388,7 @@ public static class PcWebSessionEndpoints
             access_role = identity.AccessRole
         },
         capabilities = identity.CanManagePendingRequests
-            ? new[] { PcAccessRole.ManagePendingRequests }
+            ? new[] { PcAccessRole.ManagePendingRequests, PcAccessRole.ManageCatalog }
             : Array.Empty<string>(),
         expires_at = expiresAt?.ToString("O", CultureInfo.InvariantCulture),
         blocks = ClientBlockCatalog.MergeWithDefaults(store.GetClientBlockSettings())

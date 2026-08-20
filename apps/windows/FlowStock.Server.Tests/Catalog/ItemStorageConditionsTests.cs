@@ -11,6 +11,7 @@ public sealed class ItemStorageConditionsTests
     public void CreateItem_StorageConditions_TrimsEdgesAndPreservesInternalText()
     {
         var store = new Mock<IDataStore>();
+        ConfigureItemReferences(store);
         Item? captured = null;
         store.Setup(data => data.AddItem(It.IsAny<Item>()))
             .Callback<Item>(item => captured = item)
@@ -38,6 +39,7 @@ public sealed class ItemStorageConditionsTests
     public void CreateItem_WhitespaceStorageConditions_BecomesNull()
     {
         var store = new Mock<IDataStore>();
+        ConfigureItemReferences(store);
         Item? captured = null;
         store.Setup(data => data.AddItem(It.IsAny<Item>()))
             .Callback<Item>(item => captured = item)
@@ -64,6 +66,7 @@ public sealed class ItemStorageConditionsTests
     public void UpdateItem_StorageConditions_CanBeChangedAndCleared()
     {
         var store = new Mock<IDataStore>();
+        ConfigureItemReferences(store);
         store.Setup(data => data.FindItemById(10)).Returns(new Item
         {
             Id = 10,
@@ -150,5 +153,12 @@ public sealed class ItemStorageConditionsTests
         }
 
         throw new FileNotFoundException("Не удалось найти файл в репозитории.", Path.Combine(parts));
+    }
+
+    private static void ConfigureItemReferences(Mock<IDataStore> store)
+    {
+        store.Setup(data => data.GetItems(null)).Returns(Array.Empty<Item>());
+        store.Setup(data => data.GetUoms()).Returns([new Uom { Id = 1, Name = "шт" }]);
+        store.Setup(data => data.GetTaras()).Returns(Array.Empty<Tara>());
     }
 }

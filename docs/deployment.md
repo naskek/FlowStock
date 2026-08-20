@@ -254,6 +254,96 @@ ORDER BY upper(request_type), status;
 
 Server и WPF разворачиваются согласованно с заранее заданным одинаковым machine key. Старый WPF после rollout не может использовать удалённый `/api/orders/requests/{id}/resolve` или прямой `/api/orders` без credential. Все существующие `tsd_devices` получают роль `OPERATOR`; нужные `ADMIN` назначаются после rollout через защищённое WPF-окно аккаунтов. Browser-пользователи проходят новый login, поскольку прежний `localStorage.flowstock_account` больше не является authenticated state.
 
+## Rollout ADMIN-каталога (`V0033` / `V0034`)
+
+Перед rollout создайте свежий PostgreSQL backup каноническим PowerShell-процессом. `V0033__partner_roles.sql` является additive: добавляет nullable `partners.partner_role` и CHECK допустимых значений `NULL|SUPPLIER|CLIENT|BOTH`. В ней намеренно нет `NOT NULL` и нет `CHECK (partner_role IS NOT NULL) NOT VALID`: применение migration не зависит от заранее выполненного maintenance.
+
+### Read-only identifier preflight
+
+До production migration выполните read-only проверку case-insensitive дублей SKU/штрихкода и GTIN:
+
+```bash
+cd /opt/FlowStock
+bash deploy/scripts/preflight_catalog_identifiers.sh
+```
+
+Проверка группирует непустые значения по `LOWER(BTRIM(value))` и выводит нормализованное значение с item IDs. Любой дубль останавливает rollout. Скрипт и `V0034` не выполняют merge, rename, deactivate или `UPDATE`: исправление делается только штатным WPF/API после свежего backup.
+
+`V0034__item_identifier_case_insensitive_uniqueness.sql` повторяет fail-fast проверку внутри migration transaction, затем создаёт partial functional unique indexes для `LOWER(BTRIM(barcode))` и `LOWER(BTRIM(gtin))`. При конфликте transaction откатывается: `V0034` не появляется в `schema_migrations`, частично созданных индексов не остаётся.
+
+### Staged partner-role cutover
+
+Production cutover выполняется без пользовательских Partner writes:
+
+1. примените additive `V0033` и остановитесь до открытия нового runtime;
+2. оставьте текущую версию либо остановите writers на maintenance window;
+3. из нового server image выполните dry-run:
+
+   ```bash
+   $DC run --rm --no-deps flowstock maintenance partner-role-backfill --dry-run
+   ```
+
+4. проверьте explicit JSON roles, default `Both`, уже заполненные строки, orphan IDs, malformed JSON и итоговый `NULL` count;
+5. при наличии свежего backup выполните:
+
+   ```bash
+   $DC run --rm --no-deps flowstock maintenance partner-role-backfill --apply --confirm APPLY
+   ```
+
+6. подтвердите `NULL = 0`, примените `V0034`, затем открывайте трафик согласованной Server/WPF/PC-версии.
+
+Apply отказывается работать с malformed JSON, не перезаписывает заполненную PostgreSQL-role, импортирует explicit JSON только в `NULL`, оставшиеся `NULL` заполняет `BOTH` и откатывает transaction, если `NULL` остались. Legacy JSON не удаляется.
+
+Rollback до APPLY совместим: старая версия продолжает читать/писать неизменённый JSON, nullable колонка ей не мешает, а новая версия ещё не принимала Partner writes. После APPLY и начала DB-only Partner writes запуск старой JSON-writing версии запрещён: используйте forward-fix либо восстановление согласованного pre-cutover backup. Окончательный `SET NOT NULL`/validated mandatory CHECK выполняется отдельным последующим release только после подтверждённого production backfill и не входит в V0033/V0034.
+
+### UOM remediation и blocking migration `V0035`
+
+Legacy token `LOWER(BTRIM(items.base_uom)) = 'шт'` остаётся допустим без строки в `uoms`. Он не является alias master-значения `Шт.`: точка сохраняется normalization, поэтому эти значения не объединяются автоматически. Создавать либо переименовывать master UOM в зарезервированное `шт` запрещено. Исторические `items.uom`, document/audit/import JSON и другие snapshots не переписываются.
+
+Rollout однофазный, но выполняется по стадиям в maintenance window. Blocking migration нельзя запускать до появления пути remediation:
+
+1. соберите новый server image, содержащий UOM rename и `maintenance uom-remediation`, но не запускайте migrator;
+2. остановите Server, WPF и import writers;
+3. создайте свежий PostgreSQL backup каноническим процессом;
+4. новым image на pre-`V0035` schema выполните inventory:
+
+   ```bash
+   $DC run --rm --no-deps flowstock maintenance uom-remediation --dry-run
+   ```
+
+5. если есть blocking findings, подготовьте явный JSON plan и сначала симулируйте его:
+
+   ```bash
+   $DC run --rm --no-deps -v /secure/uom-plan.json:/run/uom-plan.json:ro flowstock maintenance uom-remediation --plan /run/uom-plan.json --dry-run
+   ```
+
+6. только после проверки dry-run и backup выполните atomic apply:
+
+   ```bash
+   $DC run --rm --no-deps -v /secure/uom-plan.json:/run/uom-plan.json:ro flowstock maintenance uom-remediation --plan /run/uom-plan.json --apply --confirm APPLY
+   ```
+
+7. повторите command inventory и read-only SQL preflight `bash deploy/scripts/preflight_uom_references.sh`; blocking findings должны отсутствовать;
+8. только после этого запустите migrator с `V0035` и откройте трафик согласованных Server/WPF/PC-версий.
+
+Plan содержит только явно выбранные оператором массивы `rename` (`uom_id`, `new_name`), `merge` (`target_uom_id`, `source_uom_ids`, optional `target_name`), `map_orphan` (`source_value`, `target_uom_id`) и `create_and_map_orphan` (`source_value`, `new_uom_name`). Command не выбирает survivor/canonical target самостоятельно, запрещает операции над legacy `шт`, выполняет весь plan в одной transaction и откатывается, если после него остаются blocking findings. Повторный apply уже достигнутого состояния является no-op; противоречивый plan завершается ненулевым кодом.
+
+Remediation для preflight failures выполняется без ручного SQL: blank master — явный rename/merge; отдельная blank item-reference без master — explicit `map_orphan` с `source_value: ""`; normalized duplicate — merge с явно выбранным survivor; orphan — map на существующий master либо explicit create-and-map; legacy `шт` не является failure. Master-row, нормализующаяся в `шт`, выводится как warning overlap и автоматически не изменяется. `V0035` повторяет те же проверки через `LOWER(BTRIM(...))`, не меняет данные, добавляет nonblank CHECK, normalized unique index `uoms.name` и lookup index `items.base_uom`. При ошибке migration transaction откатывается и `V0035` не записывается в `schema_migrations`.
+
+### Обязательный PostgreSQL verification gate
+
+Обычного `dotnet test` без connection string недостаточно. Для release поднимите отдельную непроизводственную PostgreSQL и примените полный migration chain тем же migrator-механизмом. Репозиторий содержит disposable compose-вариант на `127.0.0.1:55432`:
+
+```powershell
+docker compose --project-name flowstock-catalog-test -f deploy/docker-compose.test-postgres.yml up -d postgres-test
+docker compose --project-name flowstock-catalog-test -f deploy/docker-compose.test-postgres.yml run --rm migrator-test
+$env:FLOWSTOCK_POSTGRES_TEST_CONNECTION='Host=127.0.0.1;Port=55432;Database=flowstock_test;Username=flowstock_test;Password=flowstock_test'
+dotnet test apps/windows/FlowStock.Server.Tests/FlowStock.Server.Tests.csproj --filter "FullyQualifiedName~CatalogCutoverPostgresTests|FullyQualifiedName~UomCatalogPostgresTests|FullyQualifiedName~CommercialCatalogPostgresConcurrencyTests|FullyQualifiedName~CommercialPriceShipmentConcurrencyPostgresTests"
+dotnet test apps/windows/FlowStock.sln
+```
+
+Отдельно зафиксируйте `Passed / Failed / Skipped`. Для migration/V0034/V0035, UOM remediation/rename concurrency, ADMIN single-session, promotion, partner-role persistence/fallback/backfill и identifier concurrency любое `Skipped` означает непройденный gate. В тестовой PostgreSQL обязательны: подготовленный duplicate и ожидаемый fail-fast V0034/V0035, legacy `шт` без master, remediation dry-run/apply, успешное повторное применение, отказ normalized indexes принимать duplicate, concurrent UOM rename с catalog/import writers, а также затронутые VAT/customer-price concurrency regressions.
+
 ### Необязательная разовая проверка чистого bootstrap
 
 Только на заведомо пустом сервере или во временном тестовом проекте (команда `down -v` удаляет данные):

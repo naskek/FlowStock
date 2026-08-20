@@ -2,10 +2,12 @@ using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Services;
 using FlowStock.Data;
+using FlowStock.Server.Tests.Support;
 using Npgsql;
 
 namespace FlowStock.Server.Tests.Commercial;
 
+[Collection(PostgresLocationIntegrationTestCollection.Name)]
 public sealed class CommercialPriceShipmentConcurrencyPostgresTests
 {
     [Fact]
@@ -285,7 +287,8 @@ SELECT EXISTS (
             var catalog = new CatalogService(Store);
             var partnerId = catalog.CreatePartner(
                 $"Клиент {Prefix}",
-                $"{Prefix}-PARTNER");
+                null,
+                "CLIENT");
             _partnerIds.Add(partnerId);
             var itemId = catalog.CreateItem(
                 name: $"Товар {Prefix}",

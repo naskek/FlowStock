@@ -163,11 +163,13 @@ public sealed class WpfCommercialCatalogApiService
             handler.ServerCertificateCustomValidationCallback =
                 HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
         }
-        return new HttpClient(handler)
+        var client = new HttpClient(handler)
         {
             BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/", UriKind.Absolute),
             Timeout = TimeSpan.FromSeconds(Math.Max(1, server.CloseTimeoutSeconds))
         };
+        WpfTrustedRequestHeaders.Add(client, WpfTrustedRequestHeaders.ReadAdminApiKey(server));
+        return client;
     }
 
     private async Task EnsureSuccessAsync(HttpResponseMessage response)

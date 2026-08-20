@@ -69,7 +69,7 @@
 2. требует `items.default_sale_vat_rate_id`;
 3. проверяет существование и активность ставки;
 4. копирует `vat_rates.rate` в `order_lines.vat_rate`;
-5. разрешает цену в порядке: explicit manual override, активная `partner_item_sale_prices`, `items.default_sale_price_gross`;
+5. если write-контракт явно передал intent ручного override — валидирует и использует ручную цену; иначе автоматически выбирает активную `partner_item_sale_prices`, а при её отсутствии — `items.default_sale_price_gross`;
 6. сохраняет `order_lines.unit_price_gross`.
 
 Стабильные ошибки: `ITEM_SALE_VAT_RATE_REQUIRED`, `VAT_RATE_INACTIVE_FOR_NEW_ORDER_LINE`, `ITEM_SALE_VAT_RATE_REFERENCE_INVALID`, `ITEM_SALE_PRICE_REQUIRED`. Fallback VAT, выбор первой активной ставки и перенос отображаемого preview в write-команду запрещены. Любая ошибка любой строки откатывает заказ, строки, существующие изменения, резервы, планы и производные записи.
@@ -77,6 +77,8 @@
 Write-контракт строки принимает `order_line_id`, `item_id`, `qty_ordered` и опциональные `change_unit_price_gross=true` + `unit_price_gross`. Числовой VAT и `vat_rate_id` write-контракт не принимает. Для `INTERNAL` коммерческие intent-поля запрещены, а snapshots равны `NULL`.
 
 Manual override является неотрицательным `decimal` с максимум четырьмя дробными знаками; значение `0` допустимо. Override не изменяет базовую или индивидуальную цену. При отсутствии intent переданное числовое значение отклоняется `UNIT_PRICE_OVERRIDE_INTENT_REQUIRED`.
+
+Это не общая цепочка `manual -> partner -> default`: manual price участвует только при явном intent. PC Web не выбирает источник цены и не переносит `CommercialTermsResolver` в JavaScript; browser отправляет только допустимый write intent, а окончательное решение остаётся серверным. Правила и реализация `CommercialTermsResolver` этим каталогом не изменяются.
 
 Update сначала сопоставляет строку по `order_line_id`; legacy fallback `(item_id, production_purpose)` предназначен только для старых клиентов. Matched-строка сохраняет цену и VAT, quantity-only не читает текущие master-данные. Только новый INSERT запускает resolver.
 

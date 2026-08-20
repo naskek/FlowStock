@@ -5,6 +5,10 @@
   var header = document.querySelector ? document.querySelector(".pc-header") : null;
   var tabs = document.querySelectorAll(".pc-tab");
   var logoutBtn = document.getElementById("logoutBtn");
+  var adminMenu = document.getElementById("adminMenu");
+  var adminMenuBtn = document.getElementById("adminMenuBtn");
+  var adminMenuPopover = document.getElementById("adminMenuPopover");
+  var adminReferencesBtn = document.getElementById("adminReferencesBtn");
   var versionBanner = document.getElementById("pcVersionBanner");
   var versionReloadBtn = document.getElementById("pcVersionReloadBtn");
   var versionMeta = document.querySelector
@@ -44,6 +48,7 @@
     handleBlockedClientRequest: handleBlockedClientRequest,
     handleUnauthorized: function () {
       if (clearAccount) clearAccount();
+      syncAdminMenuVisibility();
       init();
     },
   });
@@ -67,6 +72,7 @@
       startLiveUpdates();
       currentView = resolveAllowedView(currentView) || getDefaultView();
       syncTabsVisibility();
+      syncAdminMenuVisibility();
       renderView(currentView);
     },
   });
@@ -128,6 +134,9 @@
     sortRows: sortRows,
     bindTableSorting: bindTableSorting,
     bindModalDismiss: bindModalDismiss,
+    hasCapability: hasCapability,
+    refreshSession: loadSession,
+    showAttention: openAttentionModal,
   });
   var stock = window.FlowStockPcStock;
   stock.init({
@@ -759,6 +768,21 @@
       order.management_supported === true &&
       Number(order.request_id) > 0
     );
+  }
+
+  function setAdminMenuOpen(open) {
+    var next = !!open && !!adminMenu && !adminMenu.hidden;
+    if (adminMenuPopover) adminMenuPopover.hidden = !next;
+    if (adminMenuBtn) adminMenuBtn.setAttribute("aria-expanded", next ? "true" : "false");
+  }
+
+  function syncAdminMenuVisibility() {
+    var canManage = hasCapability("ManageCatalog");
+    if (adminMenu) adminMenu.hidden = !canManage;
+    if (!canManage) {
+      setAdminMenuOpen(false);
+      if (catalog && catalog.closeReferencesModal) catalog.closeReferencesModal();
+    }
   }
 
   function renderAttentionModalContent(title, message) {
@@ -3847,8 +3871,10 @@
     function showLogin() {
       stopVersionWatcher();
       stopLiveUpdates();
+      clearAccount();
       applyClientBlocks(null);
       syncTabsVisibility();
+      syncAdminMenuVisibility();
       setLoginState(false);
       setAccountLabel(null);
       if (app) {
@@ -3867,10 +3893,32 @@
         startVersionWatcher();
         startLiveUpdates();
         syncTabsVisibility();
+        syncAdminMenuVisibility();
         currentView = resolveAllowedView(currentView) || getDefaultView();
         renderView(currentView);
       })
       .catch(showLogin);
+  }
+
+  if (adminMenuBtn) {
+    adminMenuBtn.addEventListener("click", function (event) {
+      event.stopPropagation();
+      setAdminMenuOpen(adminMenuPopover ? adminMenuPopover.hidden : false);
+    });
+  }
+  if (adminReferencesBtn) {
+    adminReferencesBtn.addEventListener("click", function () {
+      setAdminMenuOpen(false);
+      catalog.openReferencesModal();
+    });
+  }
+  if (document.addEventListener) {
+    document.addEventListener("click", function (event) {
+      if (adminMenu && !adminMenu.contains(event.target)) setAdminMenuOpen(false);
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && adminMenuPopover && !adminMenuPopover.hidden) setAdminMenuOpen(false);
+    });
   }
 
   if (window.FlowStockPcTestHooks) {
@@ -3890,6 +3938,7 @@
     window.FlowStockPcTestHooks.renderOrderLinesTable = renderOrderLinesTable;
     window.FlowStockPcTestHooks.normalizeMarkingTaskRows = normalizeMarkingTaskRows;
     window.FlowStockPcTestHooks.getEnabledViews = getEnabledViews;
+    window.FlowStockPcTestHooks.syncAdminMenuVisibility = syncAdminMenuVisibility;
     window.FlowStockPcTestHooks.renderStock = stock.testHooks.renderStock;
     window.FlowStockPcTestHooks.renderStockReplenishmentPreview = stock.testHooks.renderStockReplenishmentPreview;
     window.FlowStockPcTestHooks.renderStockTable = stock.testHooks.renderStockTable;
@@ -3948,6 +3997,7 @@
         knownServerVersion = loadedPcWebVersion;
         applyClientBlocks(null);
         syncTabsVisibility();
+        syncAdminMenuVisibility();
         setAccountLabel(null);
         setLoginState(false);
         if (app) {

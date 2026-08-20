@@ -14,7 +14,7 @@ public sealed class CommercialCatalogPostgresConcurrencyTests
         var suffix = Guid.NewGuid().ToString("N");
         var store = new PostgresDataStore(connectionString);
         var catalog = new CatalogService(store);
-        var partnerId = catalog.CreatePartner($"Клиент {suffix}", $"PRICE-SNAPSHOT-{suffix}");
+        var partnerId = catalog.CreatePartner($"Клиент {suffix}", null, "CLIENT");
         var itemId = catalog.CreateItem(
             name: $"Товар {suffix}",
             barcode: $"PRICE-SNAPSHOT-{suffix}",
@@ -82,6 +82,195 @@ public sealed class CommercialCatalogPostgresConcurrencyTests
         Assert.Equal("PARTNER_ITEM_SALE_PRICE_NOT_FOUND", error.ErrorCode);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Partner_with_customer_price_cannot_become_supplier(bool isActive)
+    {
+        var connectionString = ResolveRequiredPostgresTestConnectionString();
+        var suffix = Guid.NewGuid().ToString("N");
+        var store = new PostgresDataStore(connectionString);
+        var catalog = new CatalogService(store);
+        var partnerId = catalog.CreatePartner($"Клиент {suffix}", null, "CLIENT");
+        var itemId = catalog.CreateItem(
+            name: $"Товар {suffix}",
+            barcode: $"PARTNER-ROLE-PRICE-{isActive}-{suffix}",
+            gtin: null,
+            baseUom: "шт",
+            brand: null,
+            volume: null,
+            shelfLifeMonths: null,
+            taraId: null,
+            isMarked: false);
+        new PartnerItemSalePriceService(store).Create(
+            partnerId,
+            itemId,
+            123.45m,
+            isActive);
+
+        var error = Assert.Throws<CommercialTermsException>(() =>
+            catalog.UpdatePartner(partnerId, $"Клиент {suffix}", null, "SUPPLIER"));
+
+        Assert.Equal("PARTNER_HAS_CUSTOMER_PRICES", error.ErrorCode);
+        Assert.Equal("CLIENT", store.GetPartner(partnerId)?.PartnerRole);
+        Assert.True(store.HasPartnerItemSalePricesForPartner(partnerId));
+    }
+
+    [Fact]
+    public void Partner_without_customer_prices_can_become_supplier()
+    {
+        var connectionString = ResolveRequiredPostgresTestConnectionString();
+        var suffix = Guid.NewGuid().ToString("N");
+        var store = new PostgresDataStore(connectionString);
+        var catalog = new CatalogService(store);
+        var partnerId = catalog.CreatePartner($"Клиент {suffix}", null, "BOTH");
+
+        catalog.UpdatePartner(partnerId, $"Поставщик {suffix}", null, "SUPPLIER");
+
+        var updated = store.GetPartner(partnerId);
+        Assert.Equal($"Поставщик {suffix}", updated?.Name);
+        Assert.Equal("SUPPLIER", updated?.PartnerRole);
+        Assert.False(store.HasPartnerItemSalePricesForPartner(partnerId));
+    }
+
+    [Fact]
+    public void Customer_price_create_for_supplier_is_rejected_by_canonical_service()
+    {
+        var connectionString = ResolveRequiredPostgresTestConnectionString();
+        var suffix = Guid.NewGuid().ToString("N");
+        var store = new PostgresDataStore(connectionString);
+        var catalog = new CatalogService(store);
+        var partnerId = catalog.CreatePartner($"Поставщик {suffix}", null, "SUPPLIER");
+        var itemId = catalog.CreateItem(
+            name: $"Товар {suffix}",
+            barcode: $"SUPPLIER-PRICE-{suffix}",
+            gtin: null,
+            baseUom: "шт",
+            brand: null,
+            volume: null,
+            shelfLifeMonths: null,
+            taraId: null,
+            isMarked: false);
+
+        var error = Assert.Throws<CommercialTermsException>(() =>
+            new PartnerItemSalePriceService(store).Create(
+                partnerId,
+                itemId,
+                123.45m,
+                isActive: true));
+
+        Assert.Equal("PARTNER_IS_SUPPLIER", error.ErrorCode);
+        Assert.False(store.HasPartnerItemSalePricesForPartner(partnerId));
+    }
+
+    [Fact]
+    public void Customer_price_cannot_be_reassigned_to_supplier()
+    {
+        var connectionString = ResolveRequiredPostgresTestConnectionString();
+        var suffix = Guid.NewGuid().ToString("N");
+        var store = new PostgresDataStore(connectionString);
+        var catalog = new CatalogService(store);
+        var clientId = catalog.CreatePartner($"Клиент {suffix}", null, "CLIENT");
+        var supplierId = catalog.CreatePartner($"Поставщик {suffix}", null, "SUPPLIER");
+        var itemId = catalog.CreateItem(
+            name: $"Товар {suffix}",
+            barcode: $"SUPPLIER-PRICE-MOVE-{suffix}",
+            gtin: null,
+            baseUom: "шт",
+            brand: null,
+            volume: null,
+            shelfLifeMonths: null,
+            taraId: null,
+            isMarked: false);
+        var service = new PartnerItemSalePriceService(store);
+        var priceId = service.Create(clientId, itemId, 123.45m, isActive: false);
+
+        var error = Assert.Throws<CommercialTermsException>(() =>
+            service.Update(priceId, supplierId, itemId, 150m, isActive: false));
+
+        Assert.Equal("PARTNER_IS_SUPPLIER", error.ErrorCode);
+        Assert.Equal(clientId, store.GetPartnerItemSalePrice(priceId)?.PartnerId);
+        Assert.False(store.HasPartnerItemSalePricesForPartner(supplierId));
+    }
+
+    [Fact]
+    public async Task Supplier_transition_and_customer_price_create_are_serialized()
+    {
+        var connectionString = ResolveRequiredPostgresTestConnectionString();
+        var suffix = Guid.NewGuid().ToString("N");
+        var setupStore = new PostgresDataStore(connectionString);
+        var catalog = new CatalogService(setupStore);
+        var partnerId = catalog.CreatePartner($"Клиент {suffix}", null, "CLIENT");
+        var itemId = catalog.CreateItem(
+            name: $"Товар {suffix}",
+            barcode: $"PARTNER-PRICE-RACE-{suffix}",
+            gtin: null,
+            baseUom: "шт",
+            brand: null,
+            volume: null,
+            shelfLifeMonths: null,
+            taraId: null,
+            isMarked: false);
+
+        await using var blockerConnection = new NpgsqlConnection(connectionString);
+        await blockerConnection.OpenAsync();
+        await using var blockerTransaction = await blockerConnection.BeginTransactionAsync();
+        await using (var blockerCommand = blockerConnection.CreateCommand())
+        {
+            blockerCommand.Transaction = blockerTransaction;
+            blockerCommand.CommandText = "SELECT id FROM partners WHERE id = @id FOR UPDATE;";
+            blockerCommand.Parameters.AddWithValue("@id", partnerId);
+            await blockerCommand.ExecuteScalarAsync();
+        }
+
+        var supplierApplicationName = $"partner-supplier-race-{suffix}";
+        var supplierStore = new PostgresDataStore(
+            WithApplicationName(connectionString, supplierApplicationName));
+        var supplierTask = Task.Run(() => Record.Exception(() =>
+            new CatalogService(supplierStore).UpdatePartner(
+                partnerId,
+                $"Поставщик {suffix}",
+                null,
+                "SUPPLIER")));
+
+        var priceApplicationName = $"partner-price-race-{suffix}";
+        var priceStore = new PostgresDataStore(
+            WithApplicationName(connectionString, priceApplicationName));
+        var priceTask = Task.Run(() => Record.Exception(() =>
+            new PartnerItemSalePriceService(priceStore).Create(
+                partnerId,
+                itemId,
+                123.45m,
+                isActive: true)));
+
+        await WaitUntilSessionWaitsForLock(connectionString, supplierApplicationName);
+        await WaitUntilSessionWaitsForLock(connectionString, priceApplicationName);
+        await blockerTransaction.CommitAsync();
+
+        var supplierError = await supplierTask.WaitAsync(TimeSpan.FromSeconds(10));
+        var priceError = await priceTask.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.NotEqual(supplierError == null, priceError == null);
+        if (supplierError != null)
+        {
+            Assert.Equal(
+                "PARTNER_HAS_CUSTOMER_PRICES",
+                Assert.IsType<CommercialTermsException>(supplierError).ErrorCode);
+        }
+        if (priceError != null)
+        {
+            Assert.Equal(
+                "PARTNER_IS_SUPPLIER",
+                Assert.IsType<CommercialTermsException>(priceError).ErrorCode);
+        }
+
+        var finalRole = setupStore.GetPartner(partnerId)?.PartnerRole;
+        var hasPrice = setupStore.HasPartnerItemSalePricesForPartner(partnerId);
+        Assert.True(
+            (finalRole == "SUPPLIER" && !hasPrice)
+            || (finalRole is "CLIENT" or "BOTH" && hasPrice),
+            $"Недопустимое итоговое состояние: role={finalRole}, hasPrice={hasPrice}.");
+    }
+
     [Fact]
     public async Task Deleting_customer_price_serializes_with_reactivation()
     {
@@ -89,7 +278,7 @@ public sealed class CommercialCatalogPostgresConcurrencyTests
         var suffix = Guid.NewGuid().ToString("N");
         var setupStore = new PostgresDataStore(connectionString);
         var catalog = new CatalogService(setupStore);
-        var partnerId = catalog.CreatePartner($"Клиент {suffix}", $"PRICE-{suffix}");
+        var partnerId = catalog.CreatePartner($"Клиент {suffix}", null, "CLIENT");
         var itemId = catalog.CreateItem(
             name: $"Товар {suffix}",
             barcode: $"PRICE-{suffix}",
@@ -152,7 +341,7 @@ public sealed class CommercialCatalogPostgresConcurrencyTests
         var suffix = Guid.NewGuid().ToString("N");
         var setupStore = new PostgresDataStore(connectionString);
         var catalog = new CatalogService(setupStore);
-        var partnerId = catalog.CreatePartner($"Клиент {suffix}", $"PRICE-DELETE-FIRST-{suffix}");
+        var partnerId = catalog.CreatePartner($"Клиент {suffix}", null, "CLIENT");
         var itemId = catalog.CreateItem(
             name: $"Товар {suffix}",
             barcode: $"PRICE-DELETE-FIRST-{suffix}",

@@ -2016,6 +2016,7 @@ FOR SHARE;");
 
     private long AddItemCore(Item item)
     {
+        var canonicalBaseUom = LockAndResolveUom(item.BaseUom);
         LockVatRateForItemAssignment(item.DefaultSaleVatRateId, currentVatRateId: null);
         return WithConnection(connection =>
         {
@@ -2028,7 +2029,7 @@ RETURNING id;
             command.Parameters.AddWithValue("@is_active", item.IsActive);
             command.Parameters.AddWithValue("@barcode", (object?)item.Barcode ?? DBNull.Value);
             command.Parameters.AddWithValue("@gtin", (object?)item.Gtin ?? DBNull.Value);
-            command.Parameters.AddWithValue("@base_uom", item.BaseUom);
+            command.Parameters.AddWithValue("@base_uom", canonicalBaseUom);
             command.Parameters.AddWithValue("@default_packaging_id", item.DefaultPackagingId.HasValue ? item.DefaultPackagingId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@brand", string.IsNullOrWhiteSpace(item.Brand) ? DBNull.Value : item.Brand.Trim());
             command.Parameters.AddWithValue("@volume", string.IsNullOrWhiteSpace(item.Volume) ? DBNull.Value : item.Volume.Trim());
@@ -2061,6 +2062,7 @@ RETURNING id;
     {
         ExecuteAtomic(store =>
         {
+            var canonicalBaseUom = store.LockAndResolveUom(item.BaseUom);
             var (exists, currentVatRateId) = store.LockItemVatRate(item.Id);
             if (!exists)
             {
@@ -2093,7 +2095,7 @@ WHERE id = @id;
             command.Parameters.AddWithValue("@is_active", item.IsActive);
             command.Parameters.AddWithValue("@barcode", (object?)item.Barcode ?? DBNull.Value);
             command.Parameters.AddWithValue("@gtin", (object?)item.Gtin ?? DBNull.Value);
-            command.Parameters.AddWithValue("@base_uom", item.BaseUom);
+            command.Parameters.AddWithValue("@base_uom", canonicalBaseUom);
             command.Parameters.AddWithValue("@default_packaging_id", item.DefaultPackagingId.HasValue ? item.DefaultPackagingId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@brand", string.IsNullOrWhiteSpace(item.Brand) ? DBNull.Value : item.Brand.Trim());
             command.Parameters.AddWithValue("@volume", string.IsNullOrWhiteSpace(item.Volume) ? DBNull.Value : item.Volume.Trim());
@@ -2443,6 +2445,48 @@ RETURNING id;
         });
     }
 
+    public void RenameUom(long uomId, string newName)
+    {
+        ExecuteAtomic(store =>
+        {
+            var currentName = store.WithConnection(connection =>
+            {
+                using var lockCommand = store.CreateCommand(connection, "SELECT name FROM uoms WHERE id = @id FOR UPDATE;");
+                lockCommand.Parameters.AddWithValue("@id", uomId);
+                return lockCommand.ExecuteScalar() as string;
+            });
+
+            if (currentName == null)
+            {
+                throw new UomNotFoundException("Единица измерения не найдена.");
+            }
+
+            if (IsLegacyUomToken(currentName) || IsLegacyUomToken(newName))
+            {
+                throw new ArgumentException(
+                    "Имя «шт» зарезервировано для legacy-совместимости и не может быть master-единицей измерения.",
+                    nameof(newName));
+            }
+
+            using var updateItems = store.CreateCommand(store._connection!, @"
+UPDATE items
+SET base_uom = @new_name
+WHERE LOWER(BTRIM(base_uom)) = LOWER(BTRIM(@old_name));");
+            updateItems.Parameters.AddWithValue("@new_name", newName);
+            updateItems.Parameters.AddWithValue("@old_name", currentName);
+            updateItems.ExecuteNonQuery();
+
+            using var updateUom = store.CreateCommand(store._connection!, @"
+UPDATE uoms
+SET name = @new_name
+WHERE id = @id;");
+            updateUom.Parameters.AddWithValue("@new_name", newName);
+            updateUom.Parameters.AddWithValue("@id", uomId);
+            updateUom.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public IReadOnlyList<WriteOffReason> GetWriteOffReasons()
     {
         return WithConnection(connection =>
@@ -2487,30 +2531,66 @@ RETURNING id;
 
     public void DeleteUom(long uomId)
     {
-        WithConnection(connection =>
+        ExecuteAtomic(store =>
         {
-            using var command = CreateCommand(connection, "DELETE FROM uoms WHERE id = @id");
+            var currentName = store.WithConnection(connection =>
+            {
+                using var lockCommand = store.CreateCommand(connection, "SELECT name FROM uoms WHERE id = @id FOR UPDATE;");
+                lockCommand.Parameters.AddWithValue("@id", uomId);
+                return lockCommand.ExecuteScalar() as string;
+            });
+
+            if (currentName == null)
+            {
+                throw new UomNotFoundException("Единица измерения не найдена.");
+            }
+
+            using var used = store.CreateCommand(store._connection!, @"
+SELECT 1
+FROM items
+WHERE LOWER(BTRIM(base_uom)) = LOWER(BTRIM(@name))
+LIMIT 1;");
+            used.Parameters.AddWithValue("@name", currentName);
+            if (used.ExecuteScalar() != null)
+            {
+                throw new InvalidOperationException("Нельзя удалить единицу измерения, которая используется в товарах.");
+            }
+
+            using var command = store.CreateCommand(store._connection!, "DELETE FROM uoms WHERE id = @id");
             command.Parameters.AddWithValue("@id", uomId);
             command.ExecuteNonQuery();
             return 0;
         });
     }
 
-    public bool IsUomUsed(long uomId)
+    private string LockAndResolveUom(string? value)
     {
+        var normalized = string.IsNullOrWhiteSpace(value) ? "шт" : value.Trim();
+        if (IsLegacyUomToken(normalized))
+        {
+            return "шт";
+        }
+
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT 1
-FROM items i
-JOIN uoms u ON LOWER(i.base_uom) = LOWER(u.name)
-WHERE u.id = @id
-LIMIT 1;
-");
-            command.Parameters.AddWithValue("@id", uomId);
-            return command.ExecuteScalar() != null;
+SELECT name
+FROM uoms
+WHERE LOWER(BTRIM(name)) = LOWER(BTRIM(@name))
+FOR SHARE;");
+            command.Parameters.AddWithValue("@name", normalized);
+            var canonicalName = command.ExecuteScalar() as string;
+            if (canonicalName == null)
+            {
+                throw new ArgumentException("Выбранная единица измерения не найдена.", nameof(value));
+            }
+
+            return canonicalName;
         });
     }
+
+    private static bool IsLegacyUomToken(string value) =>
+        string.Equals(value.Trim(), "шт", StringComparison.OrdinalIgnoreCase);
 
     public IReadOnlyList<Tara> GetTaras()
     {
@@ -3083,7 +3163,23 @@ FOR UPDATE;
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, name, code, created_at FROM partners WHERE id = @id");
+            using var command = CreateCommand(connection, "SELECT id, name, code, created_at, partner_role FROM partners WHERE id = @id");
+            command.Parameters.AddWithValue("@id", id);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadPartner(reader) : null;
+        });
+    }
+
+    public Partner? LockPartnerForUpdate(long id)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, """
+SELECT id, name, code, created_at, partner_role
+FROM partners
+WHERE id = @id
+FOR UPDATE;
+""");
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadPartner(reader) : null;
@@ -3099,7 +3195,7 @@ FOR UPDATE;
 
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, name, code, created_at FROM partners WHERE code = @code LIMIT 1");
+            using var command = CreateCommand(connection, "SELECT id, name, code, created_at, partner_role FROM partners WHERE code = @code LIMIT 1");
             command.Parameters.AddWithValue("@code", code.Trim());
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadPartner(reader) : null;
@@ -3110,7 +3206,7 @@ FOR UPDATE;
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, name, code, created_at FROM partners ORDER BY name");
+            using var command = CreateCommand(connection, "SELECT id, name, code, created_at, partner_role FROM partners ORDER BY name");
             using var reader = command.ExecuteReader();
             var partners = new List<Partner>();
             while (reader.Read())
@@ -3127,13 +3223,14 @@ FOR UPDATE;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO partners(name, code, created_at)
-VALUES(@name, @code, @created_at)
+INSERT INTO partners(name, code, created_at, partner_role)
+VALUES(@name, @code, @created_at, @partner_role)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@name", partner.Name);
             command.Parameters.AddWithValue("@code", (object?)partner.Code ?? DBNull.Value);
             command.Parameters.AddWithValue("@created_at", ToDbDate(partner.CreatedAt));
+            command.Parameters.AddWithValue("@partner_role", (object?)partner.PartnerRole ?? DBNull.Value);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -3145,11 +3242,13 @@ RETURNING id;
             using var command = CreateCommand(connection, @"
 UPDATE partners
 SET name = @name,
-    code = @code
+    code = @code,
+    partner_role = @partner_role
 WHERE id = @id;
 ");
             command.Parameters.AddWithValue("@name", partner.Name);
             command.Parameters.AddWithValue("@code", (object?)partner.Code ?? DBNull.Value);
+            command.Parameters.AddWithValue("@partner_role", (object?)partner.PartnerRole ?? DBNull.Value);
             command.Parameters.AddWithValue("@id", partner.Id);
             command.ExecuteNonQuery();
             return 0;
@@ -15530,7 +15629,8 @@ RETURNING id;
             Id = reader.GetInt64(0),
             Name = reader.GetString(1),
             Code = reader.IsDBNull(2) ? null : reader.GetString(2),
-            CreatedAt = FromDbDate(reader.IsDBNull(3) ? null : reader.GetString(3)) ?? DateTime.MinValue
+            CreatedAt = FromDbDate(reader.IsDBNull(3) ? null : reader.GetString(3)) ?? DateTime.MinValue,
+            PartnerRole = reader.IsDBNull(4) ? null : reader.GetString(4)
         };
     }
 

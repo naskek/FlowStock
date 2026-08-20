@@ -34,11 +34,11 @@ public sealed class OrderRequestManagementPostgresTests
         {
             var first = Task.Run(() => new OrderRequestManagementService(
                     new PostgresDataStore(connectionString),
-                    new PartnerRoleResolver())
+                    new PartnerRoleResolver(new PostgresDataStore(connectionString)))
                 .Confirm(requestId, "PC:first"));
             var second = Task.Run(() => new OrderRequestManagementService(
                     new PostgresDataStore(connectionString),
-                    new PartnerRoleResolver())
+                    new PartnerRoleResolver(new PostgresDataStore(connectionString)))
                 .Confirm(requestId, "PC:second"));
 
             var results = await Task.WhenAll(first, second);
@@ -82,10 +82,10 @@ public sealed class OrderRequestManagementPostgresTests
         try
         {
             var confirm = Task.Run(() => new OrderRequestManagementService(
-                    new PostgresDataStore(connectionString), new PartnerRoleResolver())
+                    new PostgresDataStore(connectionString), new PartnerRoleResolver(new PostgresDataStore(connectionString)))
                 .Confirm(requestId, "PC:admin"));
             var reject = Task.Run(() => new OrderRequestManagementService(
-                    new PostgresDataStore(connectionString), new PartnerRoleResolver())
+                    new PostgresDataStore(connectionString), new PartnerRoleResolver(new PostgresDataStore(connectionString)))
                 .Reject(requestId, "WPF:operator"));
 
             var results = await Task.WhenAll(confirm, reject);
@@ -145,11 +145,11 @@ public sealed class OrderRequestManagementPostgresTests
         {
             var first = Task.Run(() => new OrderRequestManagementService(
                     new PostgresDataStore(connectionString),
-                    new PartnerRoleResolver())
+                    new PartnerRoleResolver(new PostgresDataStore(connectionString)))
                 .Confirm(requestId, "PC:first"));
             var second = Task.Run(() => new OrderRequestManagementService(
                     new PostgresDataStore(connectionString),
-                    new PartnerRoleResolver())
+                    new PartnerRoleResolver(new PostgresDataStore(connectionString)))
                 .Confirm(requestId, "PC:second"));
 
             var results = await Task.WhenAll(first, second);

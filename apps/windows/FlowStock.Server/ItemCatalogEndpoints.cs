@@ -30,10 +30,18 @@ public static class ItemCatalogEndpoints
             return Results.Ok(MapItem(item));
         });
 
-        app.MapGet("/api/items", (HttpRequest request) =>
+        app.MapGet("/api/items", (HttpRequest request, CatalogAuthorization authorization, IPcWebSessionResolver pcSessions) =>
         {
+            var includeInactive = ParseIncludeInactive(request.Query["include_inactive"].ToString());
+            if (includeInactive && authorization.RequireManageCatalog(request) is { } rejection)
+            {
+                return rejection;
+            }
+
             var query = request.Query["q"].ToString();
             var search = string.IsNullOrWhiteSpace(query) ? null : $"%{query.Trim()}%";
+            var pcIdentity = pcSessions.Resolve(request);
+            var pcOperator = pcIdentity != null && !pcIdentity.CanManageCatalog;
 
             using var connection = OpenConnection(postgresConnectionString);
             using var command = connection.CreateCommand();
@@ -69,12 +77,16 @@ FROM items i
 LEFT JOIN taras t ON t.id = i.tara_id
 LEFT JOIN item_types it ON it.id = i.item_type_id
 LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id
-WHERE @search::text IS NULL
-   OR i.name ILIKE @search::text
-   OR i.barcode ILIKE @search::text
-   OR i.gtin ILIKE @search::text
-ORDER BY i.name;";
+ WHERE (@include_inactive OR COALESCE(i.is_active, TRUE))
+   AND (NOT @pc_operator OR COALESCE(it.is_visible_in_product_catalog, FALSE))
+   AND (@search::text IS NULL
+        OR i.name ILIKE @search::text
+        OR i.barcode ILIKE @search::text
+        OR i.gtin ILIKE @search::text)
+ ORDER BY i.name;";
             AddParam(command, "@search", search ?? (object)DBNull.Value);
+            AddParam(command, "@include_inactive", includeInactive);
+            AddParam(command, "@pc_operator", pcOperator);
             using var reader = command.ExecuteReader();
             var list = new List<object>();
             while (reader.Read())
@@ -138,8 +150,13 @@ ORDER BY i.name;";
             return Results.Ok(list);
         });
 
-        app.MapPost("/api/items", async (HttpRequest request, CatalogService catalog) =>
+        app.MapPost("/api/items", async (HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
         {
+            if (authorization.RequireManageCatalog(request) is { } rejection)
+            {
+                return rejection;
+            }
+
             var parsed = await ParseJsonBody<UpsertItemRequest>(request);
             if (!parsed.IsSuccess)
             {
@@ -171,18 +188,27 @@ ORDER BY i.name;";
             {
                 return Results.BadRequest(new ApiResult(false, ex.Message));
             }
+            catch (CatalogIdentifierConflictException ex)
+            {
+                return Results.Conflict(new ApiErrorResult(false, ex.ErrorCode, ex.Message));
+            }
             catch (InvalidOperationException ex)
             {
                 return Results.BadRequest(new ApiResult(false, ex.Message));
             }
             catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
             {
-                return Results.Conflict(new ApiResult(false, "ITEM_ALREADY_EXISTS"));
+                return MapIdentifierUniqueViolation(ex);
             }
         });
 
-        app.MapPost("/api/items/{itemId:long}", async (long itemId, HttpRequest request, CatalogService catalog) =>
+        app.MapPost("/api/items/{itemId:long}", async (long itemId, HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
         {
+            if (authorization.RequireManageCatalog(request) is { } rejection)
+            {
+                return rejection;
+            }
+
             var parsed = await ParseJsonBody<UpsertItemRequest>(request);
             if (!parsed.IsSuccess)
             {
@@ -215,18 +241,27 @@ ORDER BY i.name;";
             {
                 return Results.BadRequest(new ApiResult(false, ex.Message));
             }
+            catch (CatalogIdentifierConflictException ex)
+            {
+                return Results.Conflict(new ApiErrorResult(false, ex.ErrorCode, ex.Message));
+            }
             catch (InvalidOperationException ex)
             {
                 return Results.BadRequest(new ApiResult(false, ex.Message));
             }
             catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
             {
-                return Results.Conflict(new ApiResult(false, "ITEM_ALREADY_EXISTS"));
+                return MapIdentifierUniqueViolation(ex);
             }
         });
 
-        app.MapDelete("/api/items/{itemId:long}", (long itemId, CatalogService catalog) =>
+        app.MapDelete("/api/items/{itemId:long}", (long itemId, HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
         {
+            if (authorization.RequireManageCatalog(request) is { } rejection)
+            {
+                return rejection;
+            }
+
             try
             {
                 catalog.DeleteItem(itemId);
@@ -237,6 +272,19 @@ ORDER BY i.name;";
                 return Results.BadRequest(new ApiResult(false, ex.Message));
             }
         });
+    }
+
+    private static bool ParseIncludeInactive(string? value) =>
+        string.Equals(value, "1", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
+
+    private static IResult MapIdentifierUniqueViolation(PostgresException exception)
+    {
+        var gtin = string.Equals(exception.ConstraintName, "ux_items_gtin_normalized", StringComparison.Ordinal);
+        return Results.Conflict(new ApiErrorResult(
+            false,
+            gtin ? "ITEM_GTIN_DUPLICATE" : "ITEM_BARCODE_DUPLICATE",
+            gtin ? "GTIN уже используется другим товаром." : "SKU / штрихкод уже используется другим товаром."));
     }
 
     internal static Item? FindItemByBarcodeVariant(IDataStore store, string barcode)

@@ -7,12 +7,16 @@ public static class VatRateEndpoints
 {
     public static void Map(WebApplication app)
     {
-        app.MapGet("/api/vat-rates", (HttpRequest request, VatRateService service) =>
+        app.MapGet("/api/vat-rates", (HttpRequest request, VatRateService service, CatalogAuthorization authorization) =>
         {
-            var includeInactive = string.Equals(
-                request.Query["include_inactive"].ToString(),
-                "true",
-                StringComparison.OrdinalIgnoreCase);
+            var rawIncludeInactive = request.Query["include_inactive"].ToString();
+            var includeInactive = string.Equals(rawIncludeInactive, "true", StringComparison.OrdinalIgnoreCase)
+                                  || string.Equals(rawIncludeInactive, "1", StringComparison.OrdinalIgnoreCase);
+            if (includeInactive && authorization.RequireManageCatalog(request) is { } rejection)
+            {
+                return rejection;
+            }
+
             return Results.Ok(service.GetVatRates(includeInactive).Select(vatRate => new
             {
                 id = vatRate.Id,
@@ -23,8 +27,13 @@ public static class VatRateEndpoints
             }));
         });
 
-        app.MapPost("/api/vat-rates", (UpsertVatRateRequest request, VatRateService service) =>
+        app.MapPost("/api/vat-rates", (UpsertVatRateRequest request, HttpRequest httpRequest, VatRateService service, CatalogAuthorization authorization) =>
         {
+            if (authorization.RequireManageCatalog(httpRequest) is { } rejection)
+            {
+                return rejection;
+            }
+
             try
             {
                 var id = service.CreateVatRate(
@@ -44,8 +53,13 @@ public static class VatRateEndpoints
             }
         });
 
-        app.MapPost("/api/vat-rates/{id:long}", (long id, UpsertVatRateRequest request, VatRateService service) =>
+        app.MapPost("/api/vat-rates/{id:long}", (long id, UpsertVatRateRequest request, HttpRequest httpRequest, VatRateService service, CatalogAuthorization authorization) =>
         {
+            if (authorization.RequireManageCatalog(httpRequest) is { } rejection)
+            {
+                return rejection;
+            }
+
             try
             {
                 service.UpdateVatRate(
@@ -70,8 +84,13 @@ public static class VatRateEndpoints
             }
         });
 
-        app.MapDelete("/api/vat-rates/{id:long}", (long id, VatRateService service) =>
+        app.MapDelete("/api/vat-rates/{id:long}", (long id, HttpRequest request, VatRateService service, CatalogAuthorization authorization) =>
         {
+            if (authorization.RequireManageCatalog(request) is { } rejection)
+            {
+                return rejection;
+            }
+
             try
             {
                 service.DeleteVatRate(id);

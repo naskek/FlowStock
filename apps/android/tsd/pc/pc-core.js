@@ -3,6 +3,9 @@
 
   var deps = {};
   var CLIENT_BLOCK_HEADER = "X-FlowStock-Block-Key";
+  var activeModalCount = 0;
+  var modalLockBody = null;
+  var previousBodyOverflow = "";
   var tableSortState = {
     stock: { key: "", direction: "asc" },
     catalog: { key: "", direction: "asc" },
@@ -62,7 +65,8 @@
           })
           .then(function (payload) {
             if (!response.ok) {
-              var message = payload && payload.error ? payload.error : "SERVER_ERROR";
+              var errorCode = payload && payload.error ? payload.error : "SERVER_ERROR";
+              var message = payload && payload.message ? payload.message : errorCode;
               if (
                 response.status === 401 &&
                 url !== "/api/pc/login" &&
@@ -73,13 +77,17 @@
                 deps.handleUnauthorized();
               }
               if (
-                message === "BLOCK_DISABLED" &&
+                errorCode === "BLOCK_DISABLED" &&
                 url !== "/api/client-blocks" &&
                 deps.handleBlockedClientRequest
               ) {
                 deps.handleBlockedClientRequest();
               }
-              throw new Error(message);
+              var error = new Error(message);
+              error.status = response.status;
+              error.error = errorCode;
+              error.payload = payload;
+              throw error;
             }
             return payload;
           });
@@ -309,6 +317,13 @@
     }
 
     var disposed = false;
+    if (activeModalCount === 0) {
+      modalLockBody = document.body || null;
+      previousBodyOverflow = modalLockBody && modalLockBody.style ? modalLockBody.style.overflow || "" : "";
+      if (modalLockBody && modalLockBody.style) modalLockBody.style.overflow = "hidden";
+      if (modalLockBody && modalLockBody.classList) modalLockBody.classList.add("pc-modal-open");
+    }
+    activeModalCount += 1;
     function onOverlayClick(event) {
       if (!disposed && event && event.target === modal) {
         dismiss();
@@ -344,6 +359,13 @@
       disposed = true;
       modal.removeEventListener("click", onOverlayClick);
       document.removeEventListener("keydown", onKeyDown);
+      activeModalCount = Math.max(0, activeModalCount - 1);
+      if (activeModalCount === 0) {
+        if (modalLockBody && modalLockBody.style) modalLockBody.style.overflow = previousBodyOverflow;
+        if (modalLockBody && modalLockBody.classList) modalLockBody.classList.remove("pc-modal-open");
+        modalLockBody = null;
+        previousBodyOverflow = "";
+      }
     };
   }
 

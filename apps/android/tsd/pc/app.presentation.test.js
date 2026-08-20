@@ -1796,8 +1796,77 @@ assert.match(catalogHtml, /tabindex="0" role="button"/);
 const catalogSource = fs.readFileSync(catalogPath, "utf8");
 assert.match(catalogSource, /event\.key !== "Enter" && event\.key !== " "/);
 assert.match(catalogSource, /deps\.fetchJson\("\/api\/item-types\?include_inactive=1"\)/);
+assert.match(catalogSource, /hasCapability\("ManageCatalog"\)/);
+assert.match(catalogSource, /admin \? "\/api\/items\?include_inactive=1" : "\/api\/items"/);
+assert.doesNotMatch(catalogSource, /data-catalog-mode=/, "main Catalog must contain only items");
+assert.match(catalogSource, /function openReferencesModal/);
+assert.match(catalogSource, /function closeReferencesModal/);
+assert.match(catalogSource, /\/api\/packagings/);
+assert.match(catalogSource, /\/api\/partner-item-sale-prices/);
+assert.match(catalogSource, /\/api\/vat-rates\?include_inactive=1/);
+assert.doesNotMatch(catalogSource, /X-FlowStock-WPF-Admin-Key/);
+assert.match(catalogSource, /data-reference-form/);
+assert.doesNotMatch(catalogSource, /Тип активен\?|Ставка активна\?|Показывать в продуктовом каталоге\?/);
+assert.doesNotMatch(catalogSource, /window\.prompt/, "catalog CRUD must not use browser prompt editors");
+const coreSource = fs.readFileSync(corePath, "utf8");
+assert.match(coreSource, /error\.status = response\.status/);
+assert.match(coreSource, /error\.error = errorCode/);
 
 const catalogHooks = context.window.FlowStockPcCatalog.testHooks;
+assert.strictEqual(catalogHooks.isModalReferenceKind("taras"), true);
+assert.strictEqual(catalogHooks.isModalReferenceKind("partners"), true);
+assert.strictEqual(catalogHooks.isModalReferenceKind("item-types"), true);
+assert.strictEqual(catalogHooks.isModalReferenceKind("vat-rates"), true);
+assert.strictEqual(catalogHooks.isModalReferenceKind("uoms"), true, "UOM create must use the common modal form");
+assert.doesNotMatch(catalogSource, /ИНН \(только цифры|Роль: Supplier, Client или Both/);
+assert.doesNotMatch(catalogSource, />Изменить</, "ADMIN catalog buttons must use Редактировать");
+
+const referenceShellHtml = catalogHooks.renderReferencesShell(true);
+assert.match(referenceShellHtml, /btn-success[^>]*>Добавить</, "reference create must use green semantic variant");
+assert.match(referenceShellHtml, /data-reference-kind="uoms"/);
+assert.match(referenceShellHtml, /data-reference-kind="partners"/);
+assert.doesNotMatch(referenceShellHtml, /<select[^>]*catalogReferenceKind/);
+const taraReferenceRowsHtml = catalogHooks.renderReferenceRows("taras", [{ id: 7, name: "Палета" }], true);
+assert.match(taraReferenceRowsHtml, /btn-outline[^>]*data-reference-edit="7"[^>]*>Редактировать</);
+assert.match(taraReferenceRowsHtml, /btn-danger[^>]*data-reference-delete="7"[^>]*>Удалить</);
+const uomReferenceRowsHtml = catalogHooks.renderReferenceRows("uoms", [{ id: 8, name: "Шт." }], true);
+assert.match(uomReferenceRowsHtml, /btn-outline[^>]*data-reference-edit="8"[^>]*>Редактировать</);
+assert.match(uomReferenceRowsHtml, /btn-danger[^>]*data-reference-delete="8"/);
+const partnerEditorHtml = catalogHooks.renderReferenceEditorForm("partners", { name: "Клиент", status: "Client" });
+assert.match(partnerEditorHtml, /name="code"/);
+assert.match(partnerEditorHtml, /select class="form-input" name="status"/);
+assert.match(partnerEditorHtml, /value="Supplier"/);
+assert.match(partnerEditorHtml, /value="Client" selected/);
+assert.match(partnerEditorHtml, /value="Both"/);
+assert.match(partnerEditorHtml, />Поставщик</);
+assert.match(partnerEditorHtml, />Клиент</);
+assert.match(partnerEditorHtml, />Поставщик \+ клиент</);
+const taraEditorHtml = catalogHooks.renderReferenceEditorForm("taras", null);
+assert.match(taraEditorHtml, /Добавить тару/);
+assert.match(taraEditorHtml, /name="name"/);
+assert.doesNotMatch(taraEditorHtml, /name="code"|name="status"/);
+const uomEditorHtml = catalogHooks.renderReferenceEditorForm("uoms", null);
+assert.match(uomEditorHtml, /Добавить единицу измерения/);
+assert.match(uomEditorHtml, /name="name"/);
+assert.doesNotMatch(uomEditorHtml, /name="code"|name="sort_order"|name="is_active"/);
+const packagingEditorHtml = catalogHooks.renderPackagingEditorForm({ code: "BOX", name: "Коробка", factor_to_base: 12, sort_order: 4 });
+assert.match(packagingEditorHtml, /Редактировать упаковку/);
+assert.match(packagingEditorHtml, /name="code"/);
+assert.match(packagingEditorHtml, /name="name"/);
+assert.match(packagingEditorHtml, /name="factor_to_base"/);
+assert.match(packagingEditorHtml, /name="sort_order"/);
+const priceEditorHtml = catalogHooks.renderPriceEditorForm({ partner_name: "Клиент", unit_price_gross: 5, is_active: false });
+assert.match(priceEditorHtml, /Редактировать индивидуальную цену/);
+assert.match(priceEditorHtml, /name="unit_price_gross"/);
+assert.match(priceEditorHtml, /name="is_active" type="checkbox"/);
+assert.doesNotMatch(priceEditorHtml, /name="partner_id"|<select/);
+const adminItemFormHtml = catalogHooks.renderAdminItemForm({ id: 1, name: "Товар", barcode: "SKU", base_uom: "шт" }, {
+  uoms: [{ id: 1, name: "Шт." }, { id: 2, name: "Кг." }], taras: [], itemTypes: [], vatRates: [],
+});
+assert.match(adminItemFormHtml, /class="pc-item-form-fields"/, "item core form must use one-column layout container");
+assert.doesNotMatch(adminItemFormHtml, /class="pc-form-grid"/);
+assert.match(adminItemFormHtml, /btn-danger[^>]*data-item-delete[^>]*>Удалить</);
+assert.match(adminItemFormHtml, /value="__flowstock_legacy_sht__"[^>]*>шт \(legacy\)</);
 assert.strictEqual(
   catalogHooks.formatVatRate({ default_sale_vat_rate_name: "Основная", default_sale_vat_rate: 20 }),
   "Основная — 20%"
@@ -1932,10 +2001,153 @@ assert.strictEqual(
   "/api/partner-item-sale-prices?item_id=123&limit=100&offset=200"
 );
 
+const realisticUomRefs = {
+  uoms: [{ id: 11, name: "Кг." }, { id: 12, name: "Шт." }],
+};
+const newItemUomForm = { elements: { base_uom: { value: "11" } } };
+catalogHooks.selectUomCode(newItemUomForm, realisticUomRefs, null);
+assert.strictEqual(
+  newItemUomForm.elements.base_uom.value,
+  "__flowstock_legacy_sht__",
+  "new item must use the special legacy шт option instead of the first master UOM"
+);
+const reorderedNewItemUomForm = { elements: { base_uom: { value: "12" } } };
+catalogHooks.selectUomCode(reorderedNewItemUomForm, {
+  uoms: realisticUomRefs.uoms.slice().reverse(),
+}, null);
+assert.strictEqual(
+  reorderedNewItemUomForm.elements.base_uom.value,
+  "__flowstock_legacy_sht__",
+  "new-item UOM must not depend on master UOM order"
+);
+
+function createApplicabilityField() {
+  const input = { disabled: false };
+  return {
+    hidden: false,
+    input: input,
+    querySelector: function (selector) { return selector === "input" ? input : null; },
+  };
+}
+const itemTypeChangeHandlers = [];
+const itemTypeSelect = {
+  value: "21",
+  addEventListener: function (type, handler) { if (type === "change") itemTypeChangeHandlers.push(handler); },
+};
+const minStockField = createApplicabilityField();
+const maxQtyField = createApplicabilityField();
+const applicabilityForm = {
+  elements: { item_type_id: itemTypeSelect },
+  querySelector: function (selector) {
+    if (selector === "[data-item-min-stock]") return minStockField;
+    if (selector === "[data-item-max-qty-per-hu]") return maxQtyField;
+    return null;
+  },
+};
+catalogHooks.wireItemTypeApplicability(applicabilityForm, {
+  itemTypes: [
+    { id: 21, enable_min_stock_control: true, enable_hu_distribution: false },
+    { id: 22, enable_min_stock_control: false, enable_hu_distribution: true },
+  ],
+});
+assert.strictEqual(minStockField.hidden, false);
+assert.strictEqual(minStockField.input.disabled, false);
+assert.strictEqual(maxQtyField.hidden, true);
+assert.strictEqual(maxQtyField.input.disabled, true);
+itemTypeSelect.value = "22";
+itemTypeChangeHandlers[0]();
+assert.strictEqual(minStockField.hidden, true, "MinStock applicability must follow selected item type");
+assert.strictEqual(minStockField.input.disabled, true);
+assert.strictEqual(maxQtyField.hidden, false, "MaxQty applicability must follow selected item type");
+assert.strictEqual(maxQtyField.input.disabled, false);
+
+const itemPayloadForm = {
+  elements: {
+    name: { value: "Товар" },
+    barcode: { value: "SKU-PAYLOAD" },
+    gtin: { value: "" },
+    base_uom: { value: "11" },
+    brand: { value: "" },
+    volume: { value: "" },
+    shelf_life_months: { value: "" },
+    storage_conditions: { value: "" },
+    tara_id: { value: "" },
+    item_type_id: { value: "31" },
+    min_stock_qty: { value: "5.5" },
+    max_qty_per_hu: { value: "12" },
+    default_sale_price_gross: { value: "" },
+    default_sale_vat_rate_id: { value: "" },
+    is_active: { checked: true },
+  },
+};
+const itemPayloadRefs = {
+  uoms: realisticUomRefs.uoms,
+  itemTypes: [
+    { id: 31, enable_min_stock_control: false, enable_hu_distribution: false },
+    { id: 32, enable_min_stock_control: true, enable_hu_distribution: false },
+    { id: 33, enable_min_stock_control: false, enable_hu_distribution: true },
+  ],
+};
+itemPayloadForm.elements.name.value = "Товар с изменённым именем";
+catalogHooks.selectUomCode(itemPayloadForm, itemPayloadRefs, { id: 1, base_uom: " шт " });
+assert.strictEqual(itemPayloadForm.elements.base_uom.value, "__flowstock_legacy_sht__");
+let uomPayload = catalogHooks.buildItemPayload(itemPayloadForm, itemPayloadRefs, { id: 1, base_uom: " шт " });
+assert.strictEqual(uomPayload.base_uom, "шт", "unrelated edit must preserve the special legacy шт token");
+
+itemPayloadForm.elements.base_uom.value = "11";
+catalogHooks.selectUomCode(itemPayloadForm, itemPayloadRefs, { id: 2, base_uom: "  шТ. " });
+assert.strictEqual(itemPayloadForm.elements.base_uom.value, "12", "normal UOM matching must use trim/case-insensitive semantics");
+uomPayload = catalogHooks.buildItemPayload(itemPayloadForm, itemPayloadRefs, { id: 2, base_uom: "  шТ. " });
+assert.strictEqual(uomPayload.base_uom, "Шт.", "normal master selection must send its authoritative name");
+
+itemPayloadForm.elements.base_uom.value = "11";
+catalogHooks.selectUomCode(itemPayloadForm, itemPayloadRefs, { id: 3, base_uom: "Ящик" });
+assert.strictEqual(
+  itemPayloadForm.elements.base_uom.value,
+  "__flowstock_current_non_master_uom__",
+  "unknown non-legacy UOM must not become the first master option"
+);
+uomPayload = catalogHooks.buildItemPayload(itemPayloadForm, itemPayloadRefs, { id: 3, base_uom: "Ящик" });
+assert.strictEqual(uomPayload.base_uom, "Ящик", "unknown current UOM must remain explicit and fail server validation until corrected");
+assert.match(
+  catalogHooks.renderAdminItemForm({ id: 3, name: "Orphan", barcode: "SKU-ORPHAN", base_uom: "Ящик" }, {
+    uoms: realisticUomRefs.uoms, taras: [], itemTypes: [], vatRates: [],
+  }),
+  /Текущее значение: Ящик \(нет в справочнике\)/
+);
+
+itemPayloadForm.elements.base_uom.value = "11";
+catalogHooks.selectUomCode(itemPayloadForm, itemPayloadRefs, null);
+uomPayload = catalogHooks.buildItemPayload(itemPayloadForm, itemPayloadRefs, {});
+assert.strictEqual(uomPayload.base_uom, "шт", "new item payload must use special legacy шт without a master fixture");
+
+itemPayloadForm.elements.base_uom.value = "11";
+let applicablePayload = catalogHooks.buildItemPayload(itemPayloadForm, itemPayloadRefs, {});
+assert.strictEqual(applicablePayload.min_stock_qty, null, "inapplicable MinStock must not be sent");
+assert.strictEqual(applicablePayload.max_qty_per_hu, null, "inapplicable MaxQtyPerHu must not be sent");
+itemPayloadForm.elements.item_type_id.value = "32";
+applicablePayload = catalogHooks.buildItemPayload(itemPayloadForm, itemPayloadRefs, {});
+assert.strictEqual(applicablePayload.min_stock_qty, 5.5, "applicable MinStock must keep nullableNumber semantics");
+assert.strictEqual(applicablePayload.max_qty_per_hu, null);
+itemPayloadForm.elements.item_type_id.value = "33";
+applicablePayload = catalogHooks.buildItemPayload(itemPayloadForm, itemPayloadRefs, {});
+assert.strictEqual(applicablePayload.min_stock_qty, null);
+assert.strictEqual(applicablePayload.max_qty_per_hu, 12, "applicable MaxQtyPerHu must keep nullableNumber semantics");
+
 function runSharedModalDismissRegression() {
   const core = context.window.FlowStockPcCore;
   const connectedModals = [];
   const documentListeners = {};
+  const originalBody = context.document.body;
+  const bodyClasses = new Set();
+  context.document.body = {
+    style: { overflow: "auto" },
+    classList: {
+      add: function (name) { bodyClasses.add(name); },
+      remove: function (name) { bodyClasses.delete(name); },
+      contains: function (name) { return bodyClasses.has(name); },
+    },
+  };
 
   function addListener(store, type, handler) {
     if (!store[type]) store[type] = [];
@@ -1992,16 +2204,22 @@ function runSharedModalDismissRegression() {
     disposeSecond();
   });
 
+  assert.strictEqual(context.document.body.style.overflow, "hidden", "open modal must lock background scroll");
+  assert.strictEqual(context.document.body.classList.contains("pc-modal-open"), true);
+
   first.dispatchClick({});
   assert.strictEqual(firstDismissals, 0, "click inside modal card must not dismiss its overlay");
   dispatchEscape();
   assert.strictEqual(firstDismissals, 0, "one Escape must leave the lower modal open");
   assert.strictEqual(secondDismissals, 1, "one Escape must dismiss only the last connected modal");
+  assert.strictEqual(context.document.body.style.overflow, "hidden", "closing nested modal must keep background locked");
   assert.strictEqual(first.listenerCount("click"), 1, "lower modal listeners must remain active");
   dispatchEscape();
   assert.strictEqual(firstDismissals, 1, "the next Escape must dismiss the remaining modal");
   assert.strictEqual(secondDismissals, 1, "one Escape event must never dismiss two modals");
   assert.strictEqual((documentListeners.keydown || []).length, 0, "disposers must remove keydown listeners");
+  assert.strictEqual(context.document.body.style.overflow, "auto", "closing last modal must restore previous overflow");
+  assert.strictEqual(context.document.body.classList.contains("pc-modal-open"), false);
 
   const overlay = createModal();
   connectedModals.push(overlay);
@@ -2017,8 +2235,10 @@ function runSharedModalDismissRegression() {
   overlay.dispatchClick(overlay);
   assert.strictEqual(overlayDismissals, 1, "overlay click and disposer must be idempotent");
   assert.strictEqual(overlay.listenerCount("click"), 0);
+  assert.strictEqual(context.document.body.style.overflow, "auto");
 
   context.document.querySelectorAll = originalQuerySelectorAll;
+  context.document.body = originalBody;
 }
 
 runSharedModalDismissRegression();
@@ -2082,9 +2302,39 @@ assert.match(
   "late new-order reference data must not update detached DOM"
 );
 assert.match(pcIndexSource, /id="pcVersionBanner"/);
+assert.match(pcIndexSource, /id="adminMenu"[^>]*hidden/);
+assert.match(pcIndexSource, /id="adminReferencesBtn"[^>]*>Справочники</);
+assert.match(pcAppSource, /if \(adminMenu\) adminMenu\.hidden = !canManage/);
+assert.match(
+  pcAppSource,
+  /if \(!canManage\) \{[\s\S]*setAdminMenuOpen\(false\);[\s\S]*catalog\.closeReferencesModal\(\);/,
+  "capability loss must close both ADMIN dropdown and References modal"
+);
+assert.match(
+  pcAppSource,
+  /handleUnauthorized:[\s\S]*clearAccount\(\);[\s\S]*syncAdminMenuVisibility\(\);[\s\S]*init\(\);/,
+  "INVALID_SESSION handling must close capability-owned UI before rendering login"
+);
+assert.match(
+  pcAppSource,
+  /apiLogout\(\)\.finally\(function \(\) \{[\s\S]*clearAccount\(\);[\s\S]*syncAdminMenuVisibility\(\);[\s\S]*renderLogin\(\)/,
+  "logout must close capability-owned UI before rendering login"
+);
 assert.match(pcIndexSource, /Доступна новая версия FlowStock/);
 assert.match(pcIndexSource, /id="pcVersionReloadBtn"[^>]*>Обновить</);
 assert.match(styles, /\.pc-version-banner\[hidden\]\s*\{[^}]*display:\s*none/s);
+assert.match(styles, /body\.pc-modal-open\s*\{[^}]*overflow:\s*hidden/s, "modal body class must lock background scroll");
+assert.match(
+  styles,
+  /\.pc-references-modal-card\s*\{[^}]*max-height:\s*calc\(100vh - 32px\);[^}]*overflow:\s*auto;/s,
+  "References modal must remain scrollable while background body is locked"
+);
+assert.match(styles, /\.pc-modal\s*\{[^}]*background:\s*rgba\([^;]+;[^}]*backdrop-filter:\s*blur\(/s, "modal backdrop must dim and blur the page");
+assert.match(styles, /\.pc-item-form-fields\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s, "item core form must be one column");
+assert.match(styles, /\.btn-success\s*\{[^}]*background:\s*#2f855a/s, "add actions must use reusable green variant");
+assert.doesNotMatch(catalogSource, /btn-warning/, "catalog edit actions must be neutral or primary");
+assert.match(styles, /\.btn-outline\s*\{[^}]*background:\s*#ffffff/s, "edit actions must use neutral outline variant");
+assert.match(styles, /\.btn-danger\s*\{[^}]*background:\s*#c53030/s, "destructive actions must use reusable red variant");
 assert(
   pcIndexSource.indexOf('id="pcVersionBanner"') > pcIndexSource.indexOf('id="app"'),
   "version banner must live outside the route-rendered #app container"
@@ -2344,6 +2594,833 @@ async function runCatalogModalTests() {
     htmlBeforeClose,
     "late customer price response must not mutate detached product card DOM"
   );
+}
+
+async function runCatalogPackagingDirtyRegression() {
+  const catalog = context.window.FlowStockPcCatalog;
+  const core = context.window.FlowStockPcCore;
+  const requests = [];
+  let bodyRenderCount = 0;
+
+  function addListener(store, type, handler) {
+    if (!store[type]) store[type] = [];
+    store[type].push(handler);
+  }
+  function createButton() {
+    const listeners = {};
+    return {
+      addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+      click: function () { (listeners.click || []).slice().forEach(function (handler) { handler({ target: this }); }, this); },
+    };
+  }
+  function createControl(value, checked) {
+    const listeners = {};
+    return {
+      value: value == null ? "" : String(value),
+      checked: !!checked,
+      disabled: false,
+      addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+      dispatch: function (type) { (listeners[type] || []).slice().forEach(function (handler) { handler({ target: this }); }, this); },
+    };
+  }
+  function createCoreForm() {
+    const listeners = {};
+    const elements = {
+      name: createControl("Серверное имя"),
+      barcode: createControl("SKU-51"),
+      gtin: createControl(""),
+      base_uom: createControl("1"),
+      brand: createControl(""),
+      volume: createControl(""),
+      shelf_life_months: createControl(""),
+      storage_conditions: createControl(""),
+      tara_id: createControl(""),
+      item_type_id: createControl("21"),
+      min_stock_qty: createControl("5"),
+      max_qty_per_hu: createControl("12"),
+      default_sale_price_gross: createControl(""),
+      default_sale_vat_rate_id: createControl(""),
+      is_active: createControl("", true),
+    };
+    const minField = { hidden: false, querySelector: function () { return elements.min_stock_qty; } };
+    const maxField = { hidden: false, querySelector: function () { return elements.max_qty_per_hu; } };
+    return {
+      elements: elements,
+      addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+      querySelector: function (selector) {
+        if (selector === "[data-item-min-stock]") return minField;
+        if (selector === "[data-item-max-qty-per-hu]") return maxField;
+        return null;
+      },
+      dispatchInput: function () {
+        (listeners.input || []).slice().forEach(function (handler) { handler({ target: elements.name }); });
+      },
+    };
+  }
+  function createPackagingForm() {
+    const listeners = {};
+    return {
+      elements: {
+        code: createControl("BOX"),
+        name: createControl("Коробка"),
+        factor: createControl("12"),
+        sort: createControl("0"),
+      },
+      addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+      submit: function () {
+        (listeners.submit || []).slice().forEach(function (handler) {
+          handler({ preventDefault: function () {}, currentTarget: this });
+        }, this);
+      },
+    };
+  }
+  function createCompactEditorModal(elements) {
+    const formListeners = {};
+    const form = {
+      elements: elements,
+      addEventListener: function (type, handler) { addListener(formListeners, type, handler); },
+      submit: function () {
+        (formListeners.submit || []).slice().forEach(function (handler) {
+          handler({ preventDefault: function () {}, currentTarget: form });
+        });
+      },
+    };
+    const closeButton = createButton();
+    const cancelButton = createButton();
+    const statusElement = { textContent: "" };
+    return {
+      form: form,
+      closeButton: closeButton,
+      cancelButton: cancelButton,
+      statusElement: statusElement,
+      className: "",
+      innerHTML: "",
+      parentNode: null,
+      isConnected: false,
+      querySelector: function (selector) {
+        if (selector === "[data-compact-editor-form]") return form;
+        if (selector === "[data-compact-editor-close]") return closeButton;
+        if (selector === "[data-compact-editor-cancel]") return cancelButton;
+        if (selector === "[data-compact-editor-status]") return statusElement;
+        return null;
+      },
+    };
+  }
+  function createPackagingContainer() {
+    return {
+      isConnected: true,
+      renderCount: 0,
+      form: null,
+      set innerHTML(value) {
+        this._innerHTML = value;
+        this.renderCount += 1;
+        this.form = createPackagingForm();
+      },
+      get innerHTML() { return this._innerHTML; },
+      querySelector: function (selector) { return selector === "[data-package-create]" ? this.form : null; },
+    };
+  }
+  function createPriceContainer() {
+    return {
+      isConnected: true,
+      set innerHTML(value) {
+        this._innerHTML = value;
+        this.form = { addEventListener: function () {} };
+      },
+      get innerHTML() { return this._innerHTML; },
+      querySelector: function (selector) { return selector === "[data-price-create]" ? this.form : null; },
+    };
+  }
+
+  const body = {
+    coreForm: null,
+    packagingContainer: null,
+    priceContainer: null,
+    set innerHTML(value) {
+      this._innerHTML = value;
+      bodyRenderCount += 1;
+      this.coreForm = createCoreForm();
+      this.packagingContainer = createPackagingContainer();
+      this.priceContainer = createPriceContainer();
+    },
+    get innerHTML() { return this._innerHTML; },
+    querySelector: function (selector) {
+      if (selector === "[data-item-form]") return this.coreForm;
+      if (selector === "[data-packaging-editor]") return this.packagingContainer;
+      if (selector === "[data-price-editor]") return this.priceContainer;
+      return null;
+    },
+  };
+  const status = { textContent: "" };
+  const closeButton = createButton();
+  const modal = {
+    className: "",
+    innerHTML: "",
+    parentNode: null,
+    isConnected: false,
+    querySelector: function (selector) {
+      if (selector === "[data-admin-item-body]") return body;
+      if (selector === "[data-admin-item-status]") return status;
+      if (selector === "[data-admin-item-close]") return closeButton;
+      return null;
+    },
+  };
+  const cancelledPackagingModal = createCompactEditorModal({
+    code: createControl("BOX"),
+    name: createControl("Коробка"),
+    factor_to_base: createControl("12"),
+    sort_order: createControl("0"),
+  });
+  const savedPackagingModal = createCompactEditorModal({
+    code: createControl("BOX-NEW"),
+    name: createControl("Новая коробка"),
+    factor_to_base: createControl("24"),
+    sort_order: createControl("3"),
+  });
+  const createdModals = [modal, cancelledPackagingModal, savedPackagingModal];
+  context.document.createElement = function () { return createdModals.shift(); };
+  context.document.body = {
+    appendChild: function (element) { element.parentNode = this; element.isConnected = true; },
+    removeChild: function (element) { element.parentNode = null; element.isConnected = false; },
+  };
+
+  let confirmResult = true;
+  const previousConfirm = context.window.confirm;
+  context.window.confirm = function () { return confirmResult; };
+
+  catalog.init({
+    escapeHtml: core.escapeHtml,
+    hasCapability: function (capability) { return capability === "ManageCatalog"; },
+    bindModalDismiss: function () { return function () {}; },
+    reloadCatalog: function () {},
+    fetchJson: function (url, options) {
+      requests.push({ url: url, options: options });
+      if (url === "/api/uoms") return Promise.resolve([{ id: 1, name: "Шт." }, { id: 2, name: "Кг." }]);
+      if (url === "/api/taras") return Promise.resolve([]);
+      if (url === "/api/item-types?include_inactive=1") {
+        return Promise.resolve([{ id: 21, name: "Тип", is_active: true, enable_min_stock_control: true, enable_hu_distribution: true }]);
+      }
+      if (url === "/api/vat-rates?include_inactive=1") return Promise.resolve([]);
+      if (url.indexOf("/api/packagings?item_id=") === 0) {
+        return Promise.resolve([{ id: 91, name: "Коробка", code: "BOX", factor_to_base: 12, sort_order: 0, is_active: true }]);
+      }
+      if (url.indexOf("/api/partner-item-sale-prices?item_id=") === 0) return Promise.resolve({ items: [] });
+      if (url === "/api/partners?role=customer") return Promise.resolve([]);
+      if (url === "/api/items?include_inactive=1") {
+        return Promise.resolve([{ id: 51, name: "Серверное имя", barcode: "SKU-51", base_uom: "шт", item_type_id: 21, default_packaging_id: 91, is_active: true }]);
+      }
+      return Promise.resolve({});
+    },
+  });
+
+  async function flushUi() {
+    await new Promise(function (resolve) { setImmediate(resolve); });
+    await new Promise(function (resolve) { setImmediate(resolve); });
+  }
+  function packagingTarget(attribute) {
+    return {
+      getAttribute: function (name) { return name === attribute ? "91" : null; },
+      hasAttribute: function (name) { return name === attribute; },
+    };
+  }
+  function assertCorePreserved(controller, originalForm, previousPackagingRenders, operationName) {
+    assert.strictEqual(bodyRenderCount, 1, operationName + " must not rebuild the core editor");
+    assert.strictEqual(body.coreForm, originalForm, operationName + " must preserve core form identity");
+    assert.strictEqual(body.coreForm.elements.name.value, "Несохранённое имя", operationName + " must preserve entered core value");
+    assert.strictEqual(controller.isDirty(), true, operationName + " must preserve dirty=true");
+    assert.ok(body.packagingContainer.renderCount > previousPackagingRenders, operationName + " must refresh nested packaging editor");
+  }
+
+  const controller = catalog.testHooks.openProductCard({
+    id: 51,
+    name: "Серверное имя",
+    barcode: "SKU-51",
+    base_uom: "шт",
+    item_type_id: 21,
+    default_packaging_id: null,
+    is_active: true,
+  });
+  await flushUi();
+  const originalForm = body.coreForm;
+  originalForm.elements.name.value = "Несохранённое имя";
+  originalForm.dispatchInput();
+  assert.strictEqual(controller.isDirty(), true);
+  assert.strictEqual(bodyRenderCount, 1);
+
+  let packagingRenders = body.packagingContainer.renderCount;
+  body.packagingContainer.form.submit();
+  await flushUi();
+  assertCorePreserved(controller, originalForm, packagingRenders, "packaging create");
+
+  packagingRenders = body.packagingContainer.renderCount;
+  body.packagingContainer.onclick({ target: packagingTarget("data-package-edit") });
+  assert.strictEqual(cancelledPackagingModal.isConnected, true, "packaging edit must open a compact modal form");
+  cancelledPackagingModal.cancelButton.click();
+  await flushUi();
+  assert.strictEqual(cancelledPackagingModal.isConnected, false, "cancel must close packaging modal");
+  assert.strictEqual(requests.filter(function (call) { return call.url === "/api/packagings/91" && call.options && call.options.method === "POST"; }).length, 0, "cancel must not update packaging");
+  assert.strictEqual(body.packagingContainer.renderCount, packagingRenders, "cancel must not refresh packaging editor");
+  assert.strictEqual(body.coreForm, originalForm);
+  assert.strictEqual(controller.isDirty(), true);
+
+  body.packagingContainer.onclick({ target: packagingTarget("data-package-edit") });
+  assert.strictEqual(savedPackagingModal.isConnected, true, "packaging edit must reopen a compact modal form");
+  savedPackagingModal.form.submit();
+  await flushUi();
+  assertCorePreserved(controller, originalForm, packagingRenders, "packaging update");
+  const packagingUpdate = requests.find(function (call) { return call.url === "/api/packagings/91" && call.options && call.options.method === "POST"; });
+  assert.deepStrictEqual(JSON.parse(packagingUpdate.options.body), {
+    item_id: 51,
+    code: "BOX-NEW",
+    name: "Новая коробка",
+    factor_to_base: 24,
+    sort_order: 3,
+    is_active: true,
+  });
+
+  packagingRenders = body.packagingContainer.renderCount;
+  body.packagingContainer.onclick({ target: packagingTarget("data-package-default") });
+  await flushUi();
+  assertCorePreserved(controller, originalForm, packagingRenders, "default packaging change");
+  assert.ok(requests.some(function (call) { return call.url === "/api/items?include_inactive=1"; }));
+  assert.match(body.packagingContainer.innerHTML, /по умолчанию/);
+
+  packagingRenders = body.packagingContainer.renderCount;
+  confirmResult = false;
+  body.packagingContainer.onclick({ target: packagingTarget("data-package-deactivate") });
+  await flushUi();
+  assert.strictEqual(requests.filter(function (call) { return call.options && call.options.method === "DELETE"; }).length, 0);
+  assert.strictEqual(body.packagingContainer.renderCount, packagingRenders, "cancelled deactivation must not refresh packaging editor");
+  assert.strictEqual(body.coreForm, originalForm);
+  assert.strictEqual(controller.isDirty(), true);
+  confirmResult = true;
+  body.packagingContainer.onclick({ target: packagingTarget("data-package-deactivate") });
+  await flushUi();
+  assertCorePreserved(controller, originalForm, packagingRenders, "packaging deactivation");
+  assert.strictEqual(requests.filter(function (call) { return call.options && call.options.method === "DELETE"; }).length, 1);
+  assert.strictEqual(confirmResult, true);
+  context.window.confirm = previousConfirm;
+}
+
+async function runCatalogPriceHandlerRegression() {
+  const catalog = context.window.FlowStockPcCatalog;
+  const core = context.window.FlowStockPcCore;
+  const requests = [];
+  const clickHandlers = [];
+  const container = {
+    isConnected: true,
+    set innerHTML(value) {
+      this._innerHTML = value;
+      this.form = { addEventListener: function () {} };
+    },
+    get innerHTML() { return this._innerHTML; },
+    querySelector: function (selector) {
+      return selector === "[data-price-create]" ? this.form : null;
+    },
+    addEventListener: function (type, handler) {
+      if (type === "click") clickHandlers.push(handler);
+    },
+    dispatchClick: function (target) {
+      clickHandlers.slice().forEach(function (handler) { handler({ target: target }); });
+      if (this.onclick) this.onclick({ target: target });
+    },
+  };
+  const deleteTarget = {
+    getAttribute: function (name) { return name === "data-price-delete" ? "71" : null; },
+  };
+  const editTarget = {
+    getAttribute: function (name) { return name === "data-price-edit" ? "71" : null; },
+  };
+  function createButton() {
+    const listeners = {};
+    return {
+      addEventListener: function (type, handler) { listeners[type] = handler; },
+      click: function () { if (listeners.click) listeners.click({ preventDefault: function () {} }); },
+    };
+  }
+  function createPriceEditorModal(unitPrice, isActive) {
+    const listeners = {};
+    const form = {
+      elements: {
+        unit_price_gross: { value: String(unitPrice) },
+        is_active: { checked: isActive },
+      },
+      addEventListener: function (type, handler) { listeners[type] = handler; },
+      submit: function () { listeners.submit({ preventDefault: function () {}, currentTarget: form }); },
+    };
+    const closeButton = createButton();
+    const cancelButton = createButton();
+    const statusElement = { textContent: "" };
+    return {
+      form: form,
+      closeButton: closeButton,
+      cancelButton: cancelButton,
+      className: "",
+      innerHTML: "",
+      parentNode: null,
+      isConnected: false,
+      querySelector: function (selector) {
+        if (selector === "[data-compact-editor-form]") return form;
+        if (selector === "[data-compact-editor-close]") return closeButton;
+        if (selector === "[data-compact-editor-cancel]") return cancelButton;
+        if (selector === "[data-compact-editor-status]") return statusElement;
+        return null;
+      },
+    };
+  }
+  const cancelledPriceModal = createPriceEditorModal(5, false);
+  const savedPriceModal = createPriceEditorModal(7.5, false);
+  const priceModals = [cancelledPriceModal, savedPriceModal];
+  context.document.createElement = function () { return priceModals.shift(); };
+  context.document.body = {
+    appendChild: function (element) { element.parentNode = this; element.isConnected = true; },
+    removeChild: function (element) { element.parentNode = null; element.isConnected = false; },
+  };
+  const previousConfirm = context.window.confirm;
+  let confirmResult = false;
+  const confirmationMessages = [];
+  context.window.confirm = function (message) { confirmationMessages.push(message); return confirmResult; };
+
+  catalog.init({
+    escapeHtml: core.escapeHtml,
+    bindModalDismiss: function () { return function () {}; },
+    fetchJson: function (url, options) {
+      requests.push({ url: url, options: options });
+      if (url.indexOf("/api/partner-item-sale-prices?item_id=") === 0) {
+        return Promise.resolve({ items: [{ id: 71, partner_id: 9, partner_name: "Клиент", unit_price_gross: 5, is_active: false }] });
+      }
+      if (url === "/api/partners?role=customer") return Promise.resolve([]);
+      return Promise.resolve({});
+    },
+  });
+
+  catalog.testHooks.wirePriceEditor(container, { id: 52 });
+  catalog.testHooks.wirePriceEditor(container, { id: 52 });
+  await new Promise(function (resolve) { setImmediate(resolve); });
+
+  container.dispatchClick(editTarget);
+  assert.strictEqual(cancelledPriceModal.isConnected, true, "price edit must open a compact modal form");
+  assert.strictEqual(confirmationMessages.length, 0, "price edit must not use confirm as a boolean editor");
+  cancelledPriceModal.cancelButton.click();
+  await Promise.resolve();
+  assert.strictEqual(cancelledPriceModal.isConnected, false, "cancel must close price modal");
+  assert.strictEqual(requests.filter(function (call) { return call.url === "/api/partner-item-sale-prices/71" && call.options && call.options.method === "POST"; }).length, 0, "cancel must not update price");
+
+  container.dispatchClick(editTarget);
+  savedPriceModal.form.submit();
+  await new Promise(function (resolve) { setImmediate(resolve); });
+  const priceUpdate = requests.find(function (call) { return call.url === "/api/partner-item-sale-prices/71" && call.options && call.options.method === "POST"; });
+  assert.deepStrictEqual(JSON.parse(priceUpdate.options.body), {
+    partner_id: 9,
+    item_id: 52,
+    unit_price_gross: 7.5,
+    is_active: false,
+  });
+  assert.strictEqual(confirmationMessages.length, 0, "price save must use the checkbox value without confirm");
+
+  container.dispatchClick(deleteTarget);
+  assert.strictEqual(
+    requests.filter(function (call) { return call.options && call.options.method === "DELETE"; }).length,
+    0,
+    "cancelled price deletion must not call the API"
+  );
+  confirmResult = true;
+  container.dispatchClick(deleteTarget);
+  await new Promise(function (resolve) { setImmediate(resolve); });
+
+  assert.strictEqual(
+    requests.filter(function (call) { return call.options && call.options.method === "DELETE"; }).length,
+    1,
+    "one price click after repeated reload must trigger exactly one action"
+  );
+  context.window.confirm = previousConfirm;
+}
+
+async function runCatalogReferenceModalRegressions() {
+  const catalog = context.window.FlowStockPcCatalog;
+  const core = context.window.FlowStockPcCore;
+  const modals = [];
+
+  function createButton() {
+    const listeners = {};
+    return {
+      addEventListener: function (type, handler) { listeners[type] = handler; },
+      click: function () { if (listeners.click) listeners.click({ preventDefault: function () {} }); },
+    };
+  }
+  function createForm(elements) {
+    const listeners = {};
+    return {
+      elements: elements,
+      addEventListener: function (type, handler) { listeners[type] = handler; },
+      submit: function () { listeners.submit({ preventDefault: function () {}, currentTarget: this }); },
+    };
+  }
+  function createReferenceModal(elements) {
+    const form = createForm(elements);
+    const closeButton = createButton();
+    const cancelButton = createButton();
+    const status = { textContent: "" };
+    return {
+      form: form,
+      closeButton: closeButton,
+      cancelButton: cancelButton,
+      status: status,
+      parentNode: null,
+      isConnected: false,
+      className: "",
+      innerHTML: "",
+      querySelector: function (selector) {
+        if (selector === "[data-reference-form]") return form;
+        if (selector === "[data-reference-editor-close]") return closeButton;
+        if (selector === "[data-reference-editor-cancel]") return cancelButton;
+        if (selector === "[data-reference-editor-status]") return status;
+        return null;
+      },
+    };
+  }
+  const itemTypeElements = {
+    name: { value: "Готовая продукция" },
+    code: { value: "FINISHED" },
+    sort_order: { value: "7" },
+    is_active: { checked: true },
+    is_visible_in_product_catalog: { checked: false },
+    enable_min_stock_control: { checked: true },
+    min_stock_uses_order_binding: { checked: true },
+    enable_order_reservation: { checked: false },
+    enable_hu_distribution: { checked: true },
+    enable_marking: { checked: true },
+  };
+  const uomModal = createReferenceModal({ name: { value: "кор" } });
+  const taraModal = createReferenceModal({ name: { value: "Палета" } });
+  const partnerModal = createReferenceModal({
+    name: { value: "Клиент А" },
+    code: { value: "1234567890" },
+    status: { value: "Client" },
+  });
+  const itemTypeModal = createReferenceModal(itemTypeElements);
+  const vatModal = createReferenceModal({
+    name: { value: "Основная" },
+    rate: { value: "20" },
+    sort_order: { value: "0" },
+    is_active: { checked: true },
+  });
+  const inactiveVatModal = createReferenceModal({
+    name: { value: "Льготная" },
+    rate: { value: "10" },
+    sort_order: { value: "3" },
+    is_active: { checked: false },
+  });
+  modals.push(uomModal, taraModal, partnerModal, itemTypeModal, vatModal, inactiveVatModal);
+  context.document.createElement = function () { return modals.shift(); };
+  context.document.body = {
+    appendChild: function (modal) { modal.parentNode = this; modal.isConnected = true; },
+    removeChild: function (modal) { modal.parentNode = null; modal.isConnected = false; },
+  };
+
+  let itemTypePayload = null;
+  let vatMutations = 0;
+  catalog.init({
+    escapeHtml: core.escapeHtml,
+    bindModalDismiss: function () { return function () {}; },
+  });
+
+  let uomMutations = 0;
+  catalog.testHooks.openReferenceEditor("uoms", null, function () {
+    uomMutations += 1;
+    return Promise.resolve();
+  });
+  assert.strictEqual(uomModal.isConnected, true, "UOM create must open a modal form");
+  uomModal.cancelButton.click();
+  await Promise.resolve();
+  assert.strictEqual(uomMutations, 0, "cancel UOM modal must not execute mutation");
+  assert.strictEqual(uomModal.isConnected, false, "cancel UOM modal must close without saving");
+
+  let taraPayload = null;
+  catalog.testHooks.openReferenceEditor("taras", null, function (payload) {
+    taraPayload = payload;
+    return Promise.resolve();
+  });
+  assert.strictEqual(taraModal.isConnected, true, "Tara create must open a modal form");
+  taraModal.form.submit();
+  await new Promise(function (resolve) { setImmediate(resolve); });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(taraPayload)), { name: "Палета" });
+
+  let partnerPayload = null;
+  catalog.testHooks.openReferenceEditor("partners", { id: 5, name: "Старое имя", code: null, status: "Both" }, function (payload) {
+    partnerPayload = payload;
+    return Promise.resolve();
+  });
+  assert.strictEqual(partnerModal.isConnected, true, "Partner edit must open a modal form");
+  partnerModal.form.submit();
+  await new Promise(function (resolve) { setImmediate(resolve); });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(partnerPayload)), {
+    name: "Клиент А",
+    code: "1234567890",
+    status: "Client",
+  });
+
+  catalog.testHooks.openReferenceEditor("item-types", null, function (payload) {
+    itemTypePayload = payload;
+    return Promise.resolve();
+  });
+  itemTypeModal.form.submit();
+  await new Promise(function (resolve) { setImmediate(resolve); });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(itemTypePayload)), {
+    name: "Готовая продукция",
+    code: "FINISHED",
+    sort_order: 7,
+    is_active: true,
+    is_visible_in_product_catalog: false,
+    enable_min_stock_control: true,
+    min_stock_uses_order_binding: true,
+    enable_order_reservation: false,
+    enable_hu_distribution: true,
+    enable_marking: true,
+  });
+
+  catalog.testHooks.openReferenceEditor("vat-rates", { id: 8, name: "Основная", rate: 20 }, function () {
+    vatMutations += 1;
+    return Promise.resolve();
+  });
+  vatModal.cancelButton.click();
+  await Promise.resolve();
+  assert.strictEqual(vatMutations, 0, "cancel reference modal must not execute mutation");
+  assert.strictEqual(vatModal.isConnected, false, "cancel reference modal must close without saving");
+
+  let vatPayload = null;
+  catalog.testHooks.openReferenceEditor("vat-rates", { id: 9, name: "Льготная", rate: 20, is_active: true }, function (payload) {
+    vatPayload = payload;
+    return Promise.resolve();
+  });
+  inactiveVatModal.form.submit();
+  await new Promise(function (resolve) { setImmediate(resolve); });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(vatPayload)), {
+    name: "Льготная",
+    rate: 10,
+    sort_order: 3,
+    is_active: false,
+  });
+}
+
+async function runCatalogReferencesLifecycleRegression() {
+  const catalog = context.window.FlowStockPcCatalog;
+  const core = context.window.FlowStockPcCore;
+  const connectedModals = [];
+  const documentListeners = {};
+  const elementQueue = [];
+  let canManage = true;
+  let createMutations = 0;
+
+  function addListener(store, type, handler) {
+    if (!store[type]) store[type] = [];
+    store[type].push(handler);
+  }
+  function removeListener(store, type, handler) {
+    store[type] = (store[type] || []).filter(function (registered) { return registered !== handler; });
+  }
+  function createButton() {
+    const listeners = {};
+    return {
+      addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+      click: function () { (listeners.click || []).slice().forEach(function (handler) { handler({ preventDefault: function () {} }); }); },
+    };
+  }
+  function createClassList() {
+    const values = new Set();
+    return {
+      add: function (value) { values.add(value); },
+      remove: function (value) { values.delete(value); },
+      toggle: function (value, enabled) { if (enabled) values.add(value); else values.delete(value); },
+      contains: function (value) { return values.has(value); },
+    };
+  }
+  function createParentModal() {
+    const listeners = {};
+    const closeButton = createButton();
+    const createActionButton = createButton();
+    const refreshButton = createButton();
+    const searchInput = { value: "", addEventListener: function () {} };
+    const table = { innerHTML: "", addEventListener: function () {} };
+    const status = { textContent: "" };
+    const title = { textContent: "" };
+    const kindButton = {
+      classList: createClassList(),
+      getAttribute: function (name) { return name === "data-reference-kind" ? "uoms" : null; },
+      addEventListener: function () {},
+    };
+    return {
+      className: "",
+      innerHTML: "",
+      parentNode: null,
+      isConnected: false,
+      closeButton: closeButton,
+      createButton: createActionButton,
+      addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+      removeEventListener: function (type, handler) { removeListener(listeners, type, handler); },
+      querySelectorAll: function (selector) { return selector === "[data-reference-kind]" ? [kindButton] : []; },
+      querySelector: function (selector) {
+        if (selector === "[data-references-close]") return closeButton;
+        if (selector === "[data-reference-create]") return createActionButton;
+        if (selector === "[data-reference-refresh]") return refreshButton;
+        if (selector === "[data-reference-search]") return searchInput;
+        if (selector === "[data-reference-table]") return table;
+        if (selector === "[data-reference-status]") return status;
+        if (selector === "[data-reference-title]") return title;
+        return null;
+      },
+    };
+  }
+  function createEditorModal(name) {
+    const listeners = {};
+    const closeButton = createButton();
+    const cancelButton = createButton();
+    const status = { textContent: "" };
+    const formListeners = {};
+    const form = {
+      elements: { name: { value: name } },
+      addEventListener: function (type, handler) { addListener(formListeners, type, handler); },
+      submit: function () {
+        (formListeners.submit || []).slice().forEach(function (handler) {
+          handler({ preventDefault: function () {}, currentTarget: form });
+        });
+      },
+    };
+    return {
+      className: "",
+      innerHTML: "",
+      parentNode: null,
+      isConnected: false,
+      cancelButton: cancelButton,
+      form: form,
+      addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+      removeEventListener: function (type, handler) { removeListener(listeners, type, handler); },
+      querySelector: function (selector) {
+        if (selector === "[data-reference-form]") return form;
+        if (selector === "[data-reference-editor-close]") return closeButton;
+        if (selector === "[data-reference-editor-cancel]") return cancelButton;
+        if (selector === "[data-reference-editor-status]") return status;
+        return null;
+      },
+    };
+  }
+  function dispatchEscape() {
+    const event = {
+      key: "Escape",
+      defaultPrevented: false,
+      preventDefault: function () { this.defaultPrevented = true; },
+    };
+    (documentListeners.keydown || []).slice().forEach(function (handler) { handler(event); });
+  }
+
+  const parent = createParentModal();
+  const replacedChild = createEditorModal("Первая");
+  const cancelledChild = createEditorModal("Вторая");
+  const savedChild = createEditorModal("Сохранённая");
+  const escapeChild = createEditorModal("Escape");
+  const explicitlyClosedParent = createParentModal();
+  const ownedChild = createEditorModal("Owned");
+  const capabilityParent = createParentModal();
+  const capabilityChild = createEditorModal("Capability loss");
+  elementQueue.push(
+    parent,
+    replacedChild,
+    cancelledChild,
+    savedChild,
+    escapeChild,
+    explicitlyClosedParent,
+    ownedChild,
+    capabilityParent,
+    capabilityChild
+  );
+
+  const originalBody = context.document.body;
+  const originalCreateElement = context.document.createElement;
+  const originalQuerySelectorAll = context.document.querySelectorAll;
+  const originalAddEventListener = context.document.addEventListener;
+  const originalRemoveEventListener = context.document.removeEventListener;
+  context.document.createElement = function () { return elementQueue.shift(); };
+  context.document.querySelectorAll = function (selector) { return selector === ".pc-modal" ? connectedModals.slice() : []; };
+  context.document.addEventListener = function (type, handler) { addListener(documentListeners, type, handler); };
+  context.document.removeEventListener = function (type, handler) { removeListener(documentListeners, type, handler); };
+  context.document.body = {
+    style: { overflow: "auto" },
+    classList: createClassList(),
+    appendChild: function (modal) {
+      modal.parentNode = this;
+      modal.isConnected = true;
+      connectedModals.push(modal);
+    },
+    removeChild: function (modal) {
+      modal.parentNode = null;
+      modal.isConnected = false;
+      const index = connectedModals.indexOf(modal);
+      if (index >= 0) connectedModals.splice(index, 1);
+    },
+  };
+
+  catalog.init({
+    escapeHtml: core.escapeHtml,
+    bindModalDismiss: core.bindModalDismiss,
+    hasCapability: function (capability) { return capability === "ManageCatalog" && canManage; },
+    fetchJson: function (url, options) {
+      if (options && options.method === "POST") createMutations += 1;
+      return Promise.resolve([]);
+    },
+  });
+
+  const parentController = catalog.openReferencesModal();
+  assert.ok(parentController && parent.isConnected, "ADMIN must be able to open References modal");
+  assert.strictEqual(context.document.body.style.overflow, "hidden", "References modal must keep background body locked");
+
+  parent.createButton.click();
+  assert.strictEqual(replacedChild.isConnected, true);
+  parent.createButton.click();
+  assert.strictEqual(replacedChild.isConnected, false, "opening another editor must close the previous owned child");
+  assert.strictEqual(cancelledChild.isConnected, true);
+  cancelledChild.cancelButton.click();
+  assert.strictEqual(cancelledChild.isConnected, false, "child Cancel must close only child");
+  assert.strictEqual(parent.isConnected, true, "child Cancel must leave References parent open");
+  assert.strictEqual(createMutations, 0);
+
+  parent.createButton.click();
+  savedChild.form.submit();
+  await new Promise(function (resolve) { setImmediate(resolve); });
+  assert.strictEqual(savedChild.isConnected, false, "child Save must close child");
+  assert.strictEqual(parent.isConnected, true, "child Save must leave References parent open");
+  assert.strictEqual(createMutations, 1);
+
+  parent.createButton.click();
+  dispatchEscape();
+  assert.strictEqual(escapeChild.isConnected, false, "topmost Escape must close nested editor first");
+  assert.strictEqual(parent.isConnected, true, "topmost Escape must not close parent together with child");
+  dispatchEscape();
+  assert.strictEqual(parent.isConnected, false, "next Escape may close References parent");
+
+  const explicitController = catalog.openReferencesModal();
+  explicitlyClosedParent.createButton.click();
+  explicitlyClosedParent.closeButton.click();
+  assert.strictEqual(explicitlyClosedParent.isConnected, false, "explicit Close must close References parent");
+  assert.strictEqual(ownedChild.isConnected, false, "parent Close must close its owned nested editor");
+  explicitController.close();
+
+  const capabilityController = catalog.openReferencesModal();
+  assert.ok(capabilityController && capabilityParent.isConnected);
+  capabilityParent.createButton.click();
+  assert.strictEqual(capabilityChild.isConnected, true);
+  canManage = false;
+  catalog.closeReferencesModal();
+  catalog.closeReferencesModal();
+  assert.strictEqual(capabilityParent.isConnected, false, "capability loss close path must remove References from document.body");
+  assert.strictEqual(capabilityChild.isConnected, false, "capability loss must remove the owned nested editor from document.body");
+  assert.strictEqual(catalog.testHooks.getOpenReferencesController(), null, "capability loss must clear References controller state");
+  assert.strictEqual(context.document.body.style.overflow, "auto", "closing the last modal must restore background scroll state");
+
+  context.document.body = originalBody;
+  context.document.createElement = originalCreateElement;
+  context.document.querySelectorAll = originalQuerySelectorAll;
+  context.document.addEventListener = originalAddEventListener;
+  context.document.removeEventListener = originalRemoveEventListener;
 }
 
 async function runOrderModalDismissTests() {
@@ -2784,6 +3861,10 @@ async function runAsyncRegressions() {
   runAttentionModalTests();
   await runPcVersionWatcherTests();
   await runCatalogModalTests();
+  await runCatalogPackagingDirtyRegression();
+  await runCatalogPriceHandlerRegression();
+  await runCatalogReferenceModalRegressions();
+  await runCatalogReferencesLifecycleRegression();
   await runInlinePendingOrderActionTests();
   await runOrderModalDismissTests();
 }

@@ -253,6 +253,19 @@ public sealed class WpfCatalogApiService
         return await TryDeleteAsync($"/api/uoms/{id}", "catalog-delete-uom", cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<(bool IsSuccess, string? Error)> TryUpdateUomAsync(
+        long id,
+        string name,
+        CancellationToken cancellationToken = default)
+    {
+        return await TryPostAsync(
+                $"/api/uoms/{id}",
+                new { name },
+                "catalog-update-uom",
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     public async Task<(bool IsSuccess, long? CreatedId, string? Error)> TryCreateWriteOffReasonAsync(
         string code,
         string name,
@@ -401,6 +414,7 @@ public sealed class WpfCatalogApiService
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
                 Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             };
+            WpfTrustedRequestHeaders.Add(client, configuration.WpfAdminApiKey);
             using var response = client.GetAsync(relativePath, HttpCompletionOption.ResponseHeadersRead)
                 .ConfigureAwait(false)
                 .GetAwaiter()
@@ -442,6 +456,7 @@ public sealed class WpfCatalogApiService
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
                 Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             };
+            WpfTrustedRequestHeaders.Add(client, configuration.WpfAdminApiKey);
             using var request = new HttpRequestMessage(HttpMethod.Post, relativePath)
             {
                 Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
@@ -482,6 +497,7 @@ public sealed class WpfCatalogApiService
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
                 Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             };
+            WpfTrustedRequestHeaders.Add(client, configuration.WpfAdminApiKey);
             using var request = new HttpRequestMessage(HttpMethod.Post, relativePath)
             {
                 Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
@@ -521,6 +537,7 @@ public sealed class WpfCatalogApiService
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
                 Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             };
+            WpfTrustedRequestHeaders.Add(client, configuration.WpfAdminApiKey);
             using var response = await client.DeleteAsync(relativePath, cancellationToken).ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
             {
@@ -549,7 +566,8 @@ public sealed class WpfCatalogApiService
         configuration = new WpfCatalogApiConfiguration(
             NormalizeBaseUrl(baseUrl),
             timeoutSeconds,
-            ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls);
+            ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls,
+            WpfTrustedRequestHeaders.ReadAdminApiKey(settings));
         return !string.IsNullOrWhiteSpace(configuration.BaseUrl);
     }
 
@@ -697,4 +715,8 @@ public sealed class WpfCatalogApiService
     }
 }
 
-internal sealed record WpfCatalogApiConfiguration(string? BaseUrl, int TimeoutSeconds, bool AllowInvalidTls);
+internal sealed record WpfCatalogApiConfiguration(
+    string? BaseUrl,
+    int TimeoutSeconds,
+    bool AllowInvalidTls,
+    string? WpfAdminApiKey);
