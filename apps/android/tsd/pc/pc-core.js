@@ -324,9 +324,34 @@
       if (modalLockBody && modalLockBody.classList) modalLockBody.classList.add("pc-modal-open");
     }
     activeModalCount += 1;
-    function onOverlayClick(event) {
-      if (!disposed && event && event.target === modal) {
+    var backdropPresses = Object.create(null);
+    function pointerKey(event) {
+      return event && event.pointerId != null ? String(event.pointerId) : "";
+    }
+    function isPrimaryButtonGesture(event) {
+      return !!(event && event.isPrimary === true && event.button === 0);
+    }
+    function onPointerDown(event) {
+      var key = pointerKey(event);
+      if (key) {
+        backdropPresses[key] = !disposed && isPrimaryButtonGesture(event) && event.target === modal;
+      }
+    }
+    function onPointerUp(event) {
+      var key = pointerKey(event);
+      if (!key) {
+        return;
+      }
+      var startedOnBackdrop = backdropPresses[key] === true;
+      delete backdropPresses[key];
+      if (!disposed && startedOnBackdrop && isPrimaryButtonGesture(event) && event.target === modal) {
         dismiss();
+      }
+    }
+    function onPointerCancel(event) {
+      var key = pointerKey(event);
+      if (key) {
+        delete backdropPresses[key];
       }
     }
     function onKeyDown(event) {
@@ -350,14 +375,19 @@
       dismiss();
     }
 
-    modal.addEventListener("click", onOverlayClick);
+    modal.addEventListener("pointerdown", onPointerDown);
+    modal.addEventListener("pointerup", onPointerUp);
+    modal.addEventListener("pointercancel", onPointerCancel);
     document.addEventListener("keydown", onKeyDown);
     return function disposeModalDismiss() {
       if (disposed) {
         return;
       }
       disposed = true;
-      modal.removeEventListener("click", onOverlayClick);
+      backdropPresses = Object.create(null);
+      modal.removeEventListener("pointerdown", onPointerDown);
+      modal.removeEventListener("pointerup", onPointerUp);
+      modal.removeEventListener("pointercancel", onPointerCancel);
       document.removeEventListener("keydown", onKeyDown);
       activeModalCount = Math.max(0, activeModalCount - 1);
       if (activeModalCount === 0) {

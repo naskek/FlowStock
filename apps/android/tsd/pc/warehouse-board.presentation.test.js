@@ -37,8 +37,15 @@ function createModal() {
     isConnected: false,
     addEventListener: function (type, handler) { addListener(listeners, type, handler); },
     removeEventListener: function (type, handler) { removeListener(listeners, type, handler); },
-    dispatchClick: function (target) {
-      (listeners.click || []).slice().forEach(function (handler) { handler({ target: target }); });
+    dispatchPointer: function (type, target, pointerId, button, isPrimary) {
+      (listeners[type] || []).slice().forEach(function (handler) {
+        handler({
+          target: target,
+          pointerId: pointerId,
+          button: button == null ? 0 : button,
+          isPrimary: isPrimary == null ? true : isPrimary,
+        });
+      });
     },
     querySelector: function (selector) {
       return selector === "[data-close-modal]" ? closeButton : null;
@@ -131,13 +138,15 @@ async function runBundlesModalRegression() {
   explicitModal.closeButton.click();
   explicitModal.closeButton.click();
   assert.strictEqual(explicitModal.isConnected, false, "explicit close must use idempotent removal path");
-  assert.strictEqual(explicitModal.listenerCount("click"), 0, "close must dispose overlay listener");
+  assert.strictEqual(explicitModal.listenerCount("pointerdown"), 0, "close must dispose overlay listener");
 
   await board.testHooks.openBundlesModal();
   const overlayModal = lastModal;
-  overlayModal.dispatchClick({});
-  assert.ok(overlayModal.isConnected, "click inside modal card must not close bundles modal");
-  overlayModal.dispatchClick(overlayModal);
+  overlayModal.dispatchPointer("pointerdown", {}, 1);
+  overlayModal.dispatchPointer("pointerup", overlayModal, 1);
+  assert.ok(overlayModal.isConnected, "gesture started inside modal card must not close bundles modal");
+  overlayModal.dispatchPointer("pointerdown", overlayModal, 2);
+  overlayModal.dispatchPointer("pointerup", overlayModal, 2);
   assert.strictEqual(overlayModal.isConnected, false, "overlay click must close bundles modal");
 
   await board.testHooks.openBundlesModal();

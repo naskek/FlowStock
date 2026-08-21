@@ -233,12 +233,16 @@ hooks.openProductionNeedPreviewModal(
   function () { cancelCount += 1; }
 );
 const overlayModal = lastModal;
-overlayModal.dispatch("click", { target: {} });
-assert.notStrictEqual(overlayModal.parentNode, null, "click inside modal card must not close the overlay");
-overlayModal.dispatch("click", { target: overlayModal });
+overlayModal.dispatch("pointerdown", { target: {}, pointerId: 1, button: 0, isPrimary: true });
+overlayModal.dispatch("pointerup", { target: {}, pointerId: 1, button: 0, isPrimary: true });
+assert.notStrictEqual(overlayModal.parentNode, null, "pointer gesture inside modal card must not close the overlay");
+overlayModal.dispatch("pointerdown", { target: overlayModal, pointerId: 2, button: 0, isPrimary: true });
+overlayModal.dispatch("pointerup", { target: overlayModal, pointerId: 2, button: 0, isPrimary: true });
 assert.strictEqual(overlayModal.parentNode, null, "click directly on overlay must close the modal");
 assert.strictEqual(cancelCount, 4);
-assert.strictEqual(overlayModal.listenerCount("click"), 0, "overlay listener must be removed on close");
+assert.strictEqual(overlayModal.listenerCount("pointerdown"), 0, "overlay listeners must be removed on close");
+assert.strictEqual(overlayModal.listenerCount("pointerup"), 0, "overlay listeners must be removed on close");
+assert.strictEqual(overlayModal.listenerCount("pointercancel"), 0, "overlay listeners must be removed on close");
 
 let confirmCount = 0;
 let confirmCancelCount = 0;

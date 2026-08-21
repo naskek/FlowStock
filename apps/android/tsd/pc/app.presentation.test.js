@@ -2162,8 +2162,15 @@ function runSharedModalDismissRegression() {
       isConnected: true,
       addEventListener: function (type, handler) { addListener(listeners, type, handler); },
       removeEventListener: function (type, handler) { removeListener(listeners, type, handler); },
-      dispatchClick: function (target) {
-        (listeners.click || []).slice().forEach(function (handler) { handler({ target: target }); });
+      dispatchPointer: function (type, target, pointerId, button, isPrimary) {
+        (listeners[type] || []).slice().forEach(function (handler) {
+          handler({
+            target: target,
+            pointerId: pointerId,
+            button: button == null ? 0 : button,
+            isPrimary: isPrimary == null ? true : isPrimary,
+          });
+        });
       },
       listenerCount: function (type) { return (listeners[type] || []).length; },
     };
@@ -2207,17 +2214,24 @@ function runSharedModalDismissRegression() {
   assert.strictEqual(context.document.body.style.overflow, "hidden", "open modal must lock background scroll");
   assert.strictEqual(context.document.body.classList.contains("pc-modal-open"), true);
 
-  first.dispatchClick({});
-  assert.strictEqual(firstDismissals, 0, "click inside modal card must not dismiss its overlay");
-  dispatchEscape();
-  assert.strictEqual(firstDismissals, 0, "one Escape must leave the lower modal open");
-  assert.strictEqual(secondDismissals, 1, "one Escape must dismiss only the last connected modal");
-  assert.strictEqual(context.document.body.style.overflow, "hidden", "closing nested modal must keep background locked");
-  assert.strictEqual(first.listenerCount("click"), 1, "lower modal listeners must remain active");
-  dispatchEscape();
-  assert.strictEqual(firstDismissals, 1, "the next Escape must dismiss the remaining modal");
-  assert.strictEqual(secondDismissals, 1, "one Escape event must never dismiss two modals");
-  assert.strictEqual((documentListeners.keydown || []).length, 0, "disposers must remove keydown listeners");
+  const innerContent = {};
+  second.dispatchPointer("pointerdown", innerContent, 1);
+  second.dispatchPointer("pointerup", second, 1);
+  assert.strictEqual(secondDismissals, 0, "pointerdown inside and pointerup on backdrop must not dismiss nested modal");
+  assert.strictEqual(firstDismissals, 0, "gesture in nested modal must not dismiss its parent");
+
+  second.dispatchPointer("pointerdown", second, 2);
+  second.dispatchPointer("pointerup", innerContent, 2);
+  assert.strictEqual(secondDismissals, 0, "pointerdown on backdrop and pointerup inside must not dismiss nested modal");
+
+  second.dispatchPointer("pointerdown", second, 3);
+  second.dispatchPointer("pointerup", second, 3);
+  assert.strictEqual(secondDismissals, 1, "pointerdown and pointerup on backdrop must dismiss nested modal");
+  assert.strictEqual(firstDismissals, 0, "backdrop dismissal of nested modal must leave parent open");
+
+  first.dispatchPointer("pointerdown", first, 4);
+  first.dispatchPointer("pointerup", first, 4);
+  assert.strictEqual(firstDismissals, 1, "remaining parent modal must retain ordinary backdrop dismiss");
   assert.strictEqual(context.document.body.style.overflow, "auto", "closing last modal must restore previous overflow");
   assert.strictEqual(context.document.body.classList.contains("pc-modal-open"), false);
 
@@ -2227,14 +2241,71 @@ function runSharedModalDismissRegression() {
   let disposeOverlay = function () {};
   disposeOverlay = core.bindModalDismiss(overlay, function () {
     overlayDismissals += 1;
+    overlay.isConnected = false;
+    connectedModals.splice(connectedModals.indexOf(overlay), 1);
     disposeOverlay();
   });
-  overlay.dispatchClick({});
-  assert.strictEqual(overlayDismissals, 0);
-  overlay.dispatchClick(overlay);
-  overlay.dispatchClick(overlay);
-  assert.strictEqual(overlayDismissals, 1, "overlay click and disposer must be idempotent");
-  assert.strictEqual(overlay.listenerCount("click"), 0);
+  overlay.dispatchPointer("pointerdown", overlay, 5);
+  overlay.dispatchPointer("pointercancel", overlay, 5);
+  overlay.dispatchPointer("pointerup", overlay, 5);
+  assert.strictEqual(overlayDismissals, 0, "pointercancel must reset backdrop gesture state");
+
+  overlay.dispatchPointer("pointerdown", overlay, 6, 2, true);
+  overlay.dispatchPointer("pointerup", overlay, 6, 2, true);
+  assert.strictEqual(overlayDismissals, 0, "right mouse button on backdrop must not dismiss modal");
+
+  overlay.dispatchPointer("pointerdown", overlay, 7);
+  overlay.dispatchPointer("pointerdown", overlay, 7, 2, true);
+  overlay.dispatchPointer("pointerup", overlay, 7);
+  assert.strictEqual(overlayDismissals, 0, "new pointerdown must safely overwrite stale gesture state for the same pointerId");
+
+  overlay.dispatchPointer("pointerdown", overlay, 8, 0, false);
+  overlay.dispatchPointer("pointerup", overlay, 8, 0, false);
+  assert.strictEqual(overlayDismissals, 0, "non-primary touch or pen gesture must not dismiss modal");
+
+  overlay.dispatchPointer("pointerdown", overlay, 9);
+  overlay.dispatchPointer("pointerup", overlay, 9, 2, true);
+  overlay.dispatchPointer("pointerup", overlay, 9);
+  assert.strictEqual(overlayDismissals, 0, "invalid pointerup must clear the tracked gesture before a later pointerup");
+
+  overlay.dispatchPointer("pointerdown", overlay, 10);
+  overlay.dispatchPointer("pointerup", overlay, 10);
+  assert.strictEqual(overlayDismissals, 1, "ordinary backdrop click and disposer must be idempotent");
+  assert.strictEqual(overlay.listenerCount("pointerdown"), 0);
+  assert.strictEqual(overlay.listenerCount("pointerup"), 0);
+  assert.strictEqual(overlay.listenerCount("pointercancel"), 0);
+  assert.strictEqual(context.document.body.style.overflow, "auto");
+
+  const escapeFirst = createModal();
+  const escapeSecond = createModal();
+  connectedModals.push(escapeFirst, escapeSecond);
+  let escapeFirstDismissals = 0;
+  let escapeSecondDismissals = 0;
+  let disposeEscapeFirst = function () {};
+  let disposeEscapeSecond = function () {};
+  disposeEscapeFirst = core.bindModalDismiss(escapeFirst, function () {
+    escapeFirstDismissals += 1;
+    escapeFirst.isConnected = false;
+    connectedModals.splice(connectedModals.indexOf(escapeFirst), 1);
+    disposeEscapeFirst();
+  });
+  disposeEscapeSecond = core.bindModalDismiss(escapeSecond, function () {
+    escapeSecondDismissals += 1;
+    escapeSecond.isConnected = false;
+    connectedModals.splice(connectedModals.indexOf(escapeSecond), 1);
+    disposeEscapeSecond();
+  });
+
+  dispatchEscape();
+  assert.strictEqual(escapeFirstDismissals, 0, "first Escape must leave lower modal open");
+  assert.strictEqual(escapeFirst.isConnected, true, "lower modal must remain connected after first Escape");
+  assert.strictEqual(escapeSecondDismissals, 1, "first Escape must dismiss only topmost modal");
+  assert.strictEqual(escapeSecond.isConnected, false, "topmost modal must be disconnected after first Escape");
+  assert.strictEqual(context.document.body.style.overflow, "hidden", "closing nested modal must keep background locked");
+  dispatchEscape();
+  assert.strictEqual(escapeFirstDismissals, 1, "second Escape must dismiss remaining modal");
+  assert.strictEqual(escapeSecondDismissals, 1, "one Escape must never dismiss both modals");
+  assert.strictEqual((documentListeners.keydown || []).length, 0, "Escape disposers must remove keydown listeners");
   assert.strictEqual(context.document.body.style.overflow, "auto");
 
   context.document.querySelectorAll = originalQuerySelectorAll;
@@ -2502,8 +2573,15 @@ async function runCatalogModalTests() {
       pricesSection,
       addEventListener: function (type, handler) { addListener(listeners, type, handler); },
       removeEventListener: function (type, handler) { removeListener(listeners, type, handler); },
-      dispatchClick: function (target) {
-        (listeners.click || []).slice().forEach(function (handler) { handler({ target: target }); });
+      dispatchPointer: function (type, target, pointerId, button, isPrimary) {
+        (listeners[type] || []).slice().forEach(function (handler) {
+          handler({
+            target: target,
+            pointerId: pointerId,
+            button: button == null ? 0 : button,
+            isPrimary: isPrimary == null ? true : isPrimary,
+          });
+        });
       },
       querySelector: function (selector) {
         if (selector === "[data-product-card-close]") return closeButton;
@@ -2581,9 +2659,11 @@ async function runCatalogModalTests() {
   const lateModal = lateController.modal;
   lateModal.toggleButton.click();
   const htmlBeforeClose = lateModal.pricesSection.innerHTML;
-  lateModal.dispatchClick({});
-  assert.ok(lateModal.isConnected, "click inside product modal card must not close it");
-  lateModal.dispatchClick(lateModal);
+  lateModal.dispatchPointer("pointerdown", {}, 1);
+  lateModal.dispatchPointer("pointerup", lateModal, 1);
+  assert.ok(lateModal.isConnected, "gesture started inside product modal card must not close it");
+  lateModal.dispatchPointer("pointerdown", lateModal, 2);
+  lateModal.dispatchPointer("pointerup", lateModal, 2);
   assert.strictEqual(lateModal.isConnected, false, "product card overlay click must use its close path");
   latePage.resolve({ items: [{ partner_name: "Не отображать", unit_price_gross: 1, is_active: true }], total_count: 1 });
   await latePage.promise;
@@ -3453,8 +3533,15 @@ async function runOrderModalDismissTests() {
       linesWrap,
       addEventListener: function (type, handler) { addListener(listeners, type, handler); },
       removeEventListener: function (type, handler) { removeListener(listeners, type, handler); },
-      dispatchClick: function (target) {
-        (listeners.click || []).slice().forEach(function (handler) { handler({ target: target }); });
+      dispatchPointer: function (type, target, pointerId, button, isPrimary) {
+        (listeners[type] || []).slice().forEach(function (handler) {
+          handler({
+            target: target,
+            pointerId: pointerId,
+            button: button == null ? 0 : button,
+            isPrimary: isPrimary == null ? true : isPrimary,
+          });
+        });
       },
       querySelector: function (selector) {
         if (selector === "#modalCloseBtn") return closeButton;
@@ -3524,9 +3611,11 @@ async function runOrderModalDismissTests() {
   orderModal.openOrderModal({ id: 2, order_ref: "002", order_type: "CUSTOMER" });
   controller = orderModal.getOpenOrderModalController();
   const overlayModal = controller.modal;
-  overlayModal.dispatchClick({});
-  assert.ok(overlayModal.isConnected, "click inside order modal card must not close it");
-  overlayModal.dispatchClick(overlayModal);
+  overlayModal.dispatchPointer("pointerdown", {}, 1);
+  overlayModal.dispatchPointer("pointerup", overlayModal, 1);
+  assert.ok(overlayModal.isConnected, "gesture started inside order modal card must not close it");
+  overlayModal.dispatchPointer("pointerdown", overlayModal, 2);
+  overlayModal.dispatchPointer("pointerup", overlayModal, 2);
   assert.strictEqual(overlayModal.isConnected, false, "order overlay click must use the close path");
 
   orderModal.openOrderModal({ id: 3, order_ref: "003", order_type: "CUSTOMER" });
