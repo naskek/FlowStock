@@ -43,7 +43,7 @@ public sealed class CatalogService
         return _data.GetPartners();
     }
 
-    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool isActive = true, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null, string? storageConditions = null, decimal? defaultSalePriceGross = null, long? defaultSaleVatRateId = null)
+    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool isActive = true, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null, string? storageConditions = null, decimal? defaultSalePriceGross = null, long? defaultSaleVatRateId = null, bool chzMarkingExempt = false)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -55,6 +55,7 @@ public sealed class CatalogService
         ValidateShelfLife(shelfLifeMonths);
         ValidateTara(taraId);
         ValidateItemTypeId(itemTypeId);
+        ValidateMarkingGtinTransition(existing: null, itemTypeId, chzMarkingExempt, normalizedIdentifiers.Gtin);
         var normalizedMaxQtyPerHu = NormalizeMaxQtyPerHu(itemTypeId, maxQtyPerHu);
         var normalizedMinStock = NormalizeMinStock(itemTypeId, minStockQty);
         ValidateSalePrice(defaultSalePriceGross);
@@ -75,7 +76,8 @@ public sealed class CatalogService
             ItemTypeId = itemTypeId,
             MinStockQty = normalizedMinStock,
             DefaultSalePriceGross = defaultSalePriceGross,
-            DefaultSaleVatRateId = defaultSaleVatRateId
+            DefaultSaleVatRateId = defaultSaleVatRateId,
+            ChzMarkingExempt = chzMarkingExempt
         };
 
         return _data.AddItem(item);
@@ -216,7 +218,7 @@ public sealed class CatalogService
         _data.UpdateItemBarcode(itemId, barcode.Trim());
     }
 
-    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool? isActive = null, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null, string? storageConditions = null, decimal? defaultSalePriceGross = null, long? defaultSaleVatRateId = null)
+    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked, bool? isActive = null, double? maxQtyPerHu = null, long? itemTypeId = null, double? minStockQty = null, string? storageConditions = null, decimal? defaultSalePriceGross = null, long? defaultSaleVatRateId = null, bool? chzMarkingExempt = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -234,6 +236,8 @@ public sealed class CatalogService
         ValidateShelfLife(shelfLifeMonths);
         ValidateTara(taraId);
         ValidateItemTypeId(itemTypeId);
+        var proposedExemption = chzMarkingExempt ?? existing.ChzMarkingExempt;
+        ValidateMarkingGtinTransition(existing, itemTypeId, proposedExemption, normalizedIdentifiers.Gtin);
         var normalizedMaxQtyPerHu = NormalizeMaxQtyPerHu(itemTypeId, maxQtyPerHu);
         var normalizedMinStock = NormalizeMinStock(itemTypeId, minStockQty);
         ValidateSalePrice(defaultSalePriceGross);
@@ -256,10 +260,36 @@ public sealed class CatalogService
             ItemTypeId = itemTypeId,
             MinStockQty = normalizedMinStock,
             DefaultSalePriceGross = defaultSalePriceGross,
-            DefaultSaleVatRateId = defaultSaleVatRateId
+            DefaultSaleVatRateId = defaultSaleVatRateId,
+            ChzMarkingExempt = proposedExemption
         };
 
         _data.UpdateItem(item);
+    }
+
+    private void ValidateMarkingGtinTransition(
+        Item? existing,
+        long? proposedItemTypeId,
+        bool proposedExemption,
+        string? proposedGtin)
+    {
+        var proposedTypeEnabled = proposedItemTypeId.HasValue
+            && _data.GetItemType(proposedItemTypeId.Value)?.EnableMarking == true;
+        var proposedApplicable = proposedTypeEnabled && !proposedExemption;
+        if (!proposedApplicable)
+        {
+            return;
+        }
+
+        var existingApplicable = existing?.ChzMarkingApplicable == true;
+        var clearsExistingGtin = existingApplicable
+                                 && !string.IsNullOrWhiteSpace(existing!.Gtin)
+                                 && string.IsNullOrWhiteSpace(proposedGtin);
+        if ((existing == null || !existingApplicable || clearsExistingGtin)
+            && string.IsNullOrWhiteSpace(proposedGtin))
+        {
+            throw new InvalidOperationException("MARKING_GTIN_REQUIRED");
+        }
     }
 
     public void DeleteItem(long itemId)

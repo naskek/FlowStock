@@ -22,6 +22,7 @@ public sealed class Item
     public bool ItemTypeIsVisibleInProductCatalog { get; init; }
     public bool ItemTypeEnableMinStockControl { get; init; }
     public bool ItemTypeEnableMarking { get; init; }
+    public bool ChzMarkingExempt { get; init; }
     public double? MinStockQty { get; init; }
     public decimal? DefaultSalePriceGross { get; init; }
     public long? DefaultSaleVatRateId { get; init; }
@@ -29,6 +30,10 @@ public sealed class Item
     public decimal? DefaultSaleVatRate { get; init; }
     public bool? DefaultSaleVatRateIsActive { get; init; }
 
-    public bool IsChestnyZnakMarkingRequired =>
-        ItemTypeEnableMarking && !string.IsNullOrWhiteSpace(Gtin);
+    public bool ChzMarkingApplicable => ItemTypeEnableMarking && !ChzMarkingExempt;
+    public string? ChzMarkingConfigurationError =>
+        ChzMarkingApplicable && string.IsNullOrWhiteSpace(Gtin) ? "GTIN_REQUIRED" : null;
+
+    // Compatibility alias. GTIN is configuration, not applicability.
+    public bool IsChestnyZnakMarkingRequired => ChzMarkingApplicable;
 }

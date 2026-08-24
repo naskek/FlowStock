@@ -72,7 +72,8 @@ SELECT i.id,
        i.default_sale_vat_rate_id,
        vr.name,
        vr.rate,
-       vr.is_active
+       vr.is_active,
+       COALESCE(i.chz_marking_exempt, FALSE)
 FROM items i
 LEFT JOIN taras t ON t.id = i.tara_id
 LEFT JOIN item_types it ON it.id = i.item_type_id
@@ -143,7 +144,17 @@ LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id
                     default_sale_vat_rate_id = reader.IsDBNull(23) ? (long?)null : reader.GetInt64(23),
                     default_sale_vat_rate_name = reader.IsDBNull(24) ? null : reader.GetString(24),
                     default_sale_vat_rate = reader.IsDBNull(25) ? (decimal?)null : reader.GetDecimal(25),
-                    default_sale_vat_rate_is_active = reader.IsDBNull(26) ? (bool?)null : reader.GetBoolean(26)
+                    default_sale_vat_rate_is_active = reader.IsDBNull(26) ? (bool?)null : reader.GetBoolean(26),
+                    chz_marking_exempt = !reader.IsDBNull(27) && reader.GetBoolean(27),
+                    chz_marking_applicable = (!reader.IsDBNull(19) && reader.GetBoolean(19))
+                        && (reader.IsDBNull(27) || !reader.GetBoolean(27)),
+                    chz_marking_configuration_error = (!reader.IsDBNull(19) && reader.GetBoolean(19))
+                        && (reader.IsDBNull(27) || !reader.GetBoolean(27))
+                        && string.IsNullOrWhiteSpace(reader.IsDBNull(4) ? null : reader.GetString(4))
+                            ? "GTIN_REQUIRED"
+                            : null,
+                    cz_marking_required = (!reader.IsDBNull(19) && reader.GetBoolean(19))
+                        && (reader.IsDBNull(27) || !reader.GetBoolean(27))
                 });
             }
 
@@ -181,7 +192,8 @@ LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id
                     parsed.Value?.MinStockQty,
                     parsed.Value?.StorageConditions,
                     parsed.Value?.DefaultSalePriceGross,
-                    parsed.Value?.DefaultSaleVatRateId);
+                    parsed.Value?.DefaultSaleVatRateId,
+                    parsed.Value?.ChzMarkingExempt ?? false);
                 return Results.Ok(new { ok = true, item_id = itemId });
             }
             catch (ArgumentException ex)
@@ -199,6 +211,10 @@ LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id
             catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
             {
                 return MapIdentifierUniqueViolation(ex);
+            }
+            catch (PostgresException ex) when (string.Equals(ex.SqlState, "P0001", StringComparison.Ordinal))
+            {
+                return Results.Conflict(new ApiErrorResult(false, ex.MessageText, ex.MessageText));
             }
         });
 
@@ -234,7 +250,8 @@ LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id
                     parsed.Value?.MinStockQty,
                     parsed.Value?.StorageConditions,
                     parsed.Value?.DefaultSalePriceGross,
-                    parsed.Value?.DefaultSaleVatRateId);
+                    parsed.Value?.DefaultSaleVatRateId,
+                    parsed.Value?.ChzMarkingExempt);
                 return Results.Ok(new ApiResult(true));
             }
             catch (ArgumentException ex)
@@ -252,6 +269,10 @@ LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id
             catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
             {
                 return MapIdentifierUniqueViolation(ex);
+            }
+            catch (PostgresException ex) when (string.Equals(ex.SqlState, "P0001", StringComparison.Ordinal))
+            {
+                return Results.Conflict(new ApiErrorResult(false, ex.MessageText, ex.MessageText));
             }
         });
 
@@ -327,6 +348,9 @@ LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id
             item_type_is_visible_in_product_catalog = item.ItemTypeIsVisibleInProductCatalog,
             item_type_enable_min_stock_control = item.ItemTypeEnableMinStockControl,
             item_type_enable_marking = item.ItemTypeEnableMarking,
+            chz_marking_exempt = item.ChzMarkingExempt,
+            chz_marking_applicable = item.ChzMarkingApplicable,
+            chz_marking_configuration_error = item.ChzMarkingConfigurationError,
             cz_marking_required = item.IsChestnyZnakMarkingRequired,
             min_stock_qty = item.MinStockQty,
             default_sale_price_gross = item.DefaultSalePriceGross,

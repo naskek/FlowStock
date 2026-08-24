@@ -1,4 +1,5 @@
 using FlowStock.Core.Abstractions;
+using FlowStock.Core.Models.Marking;
 using FlowStock.Core.Services;
 using System.Text.Json.Serialization;
 
@@ -9,6 +10,8 @@ public static class MarkingCutoverEndpoints
     public static void Map(IEndpointRouteBuilder app)
     {
         app.MapGet("/api/admin/marking/cutover/preflight", HandlePreflight);
+        app.MapPost("/api/admin/marking/cutover/line-approvals", HandleLineApproval);
+        app.MapPost("/api/admin/marking/cutover/subject-approvals", HandleSubjectApproval);
         app.MapPost("/api/admin/marking/cutover/enforce", HandleEnforce);
     }
 
@@ -44,6 +47,83 @@ public static class MarkingCutoverEndpoints
                 suggested_remediation = entry.SuggestedRemediation
             })
         });
+    }
+
+    private static IResult HandleLineApproval(
+        MarkingCutoverLineApprovalRequest request,
+        HttpRequest httpRequest,
+        IMarkingCutoverApprovalStore store,
+        WpfMachineAuthorization wpfAuthorization,
+        IPcWebSessionResolver pcSessions)
+    {
+        var authorization = AuthorizeAdmin(httpRequest, wpfAuthorization, pcSessions);
+        if (authorization.Rejection != null)
+        {
+            return authorization.Rejection;
+        }
+
+        try
+        {
+            var result = store.ApproveMarkingCutoverLine(
+                request.OrderLineId,
+                request.AllowedSyntheticQuantity,
+                request.PreflightHash,
+                authorization.Actor!,
+                DateTime.UtcNow);
+            return Results.Ok(new
+            {
+                allowlist_id = result.AllowlistId,
+                order_line_id = result.OrderLineId,
+                allowed_synthetic_qty = result.AllowedQuantity,
+                previous_preflight_hash = result.OriginalPreflightHash,
+                preflight_hash = result.CurrentPreflightHash,
+                was_already_approved = result.WasAlreadyApproved
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Conflict(new { error = ex.Message });
+        }
+    }
+
+    private static IResult HandleSubjectApproval(
+        MarkingCutoverSubjectApprovalRequest request,
+        HttpRequest httpRequest,
+        IMarkingCutoverApprovalStore store,
+        WpfMachineAuthorization wpfAuthorization,
+        IPcWebSessionResolver pcSessions)
+    {
+        var authorization = AuthorizeAdmin(httpRequest, wpfAuthorization, pcSessions);
+        if (authorization.Rejection != null)
+        {
+            return authorization.Rejection;
+        }
+
+        try
+        {
+            var intents = request.Subjects?
+                .Select(subject => new MarkingCutoverSubjectApprovalIntent(
+                    subject.MarkingSubjectId,
+                    subject.ApprovedQuantity))
+                .ToArray() ?? [];
+            var result = store.ApproveMarkingCutoverSubjects(
+                request.AllowlistId,
+                intents,
+                request.PreflightHash,
+                authorization.Actor!,
+                DateTime.UtcNow);
+            return Results.Ok(new
+            {
+                allowlist_id = result.AllowlistId,
+                preflight_hash = result.CurrentPreflightHash,
+                approval_ids = result.ApprovalIds,
+                was_already_approved = result.WasAlreadyApproved
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Conflict(new { error = ex.Message });
+        }
     }
 
     private static IResult HandleEnforce(
@@ -108,4 +188,18 @@ public static class MarkingCutoverEndpoints
 
     private sealed record MarkingCutoverEnforceRequest(
         [property: JsonPropertyName("preflight_hash")] string PreflightHash);
+
+    private sealed record MarkingCutoverLineApprovalRequest(
+        [property: JsonPropertyName("order_line_id")] long OrderLineId,
+        [property: JsonPropertyName("allowed_synthetic_qty")] int? AllowedSyntheticQuantity,
+        [property: JsonPropertyName("preflight_hash")] string PreflightHash);
+
+    private sealed record MarkingCutoverSubjectApprovalRequest(
+        [property: JsonPropertyName("allowlist_id")] long AllowlistId,
+        [property: JsonPropertyName("subjects")] IReadOnlyList<MarkingCutoverSubjectApprovalRow>? Subjects,
+        [property: JsonPropertyName("preflight_hash")] string PreflightHash);
+
+    private sealed record MarkingCutoverSubjectApprovalRow(
+        [property: JsonPropertyName("marking_subject_id")] Guid MarkingSubjectId,
+        [property: JsonPropertyName("approved_quantity")] decimal ApprovedQuantity);
 }

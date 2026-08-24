@@ -537,6 +537,15 @@ public sealed class OrderService
 
         _data.ExecuteInTransaction(store =>
         {
+            var prelockLines = store.GetOrderLines(orderId);
+            var itemLockScope = prelockLines.Select(line => line.ItemId)
+                .Concat(normalized.Select(line => line.ItemId))
+                .Where(itemId => itemId > 0)
+                .Distinct()
+                .OrderBy(itemId => itemId)
+                .ToArray();
+            store.LockItemsForOrderValidation(itemLockScope);
+
             if (!store.LockOrdersForUpdate([orderId]))
             {
                 throw new InvalidOperationException("Заказ не найден.");
@@ -545,6 +554,10 @@ public sealed class OrderService
             var existing = store.GetOrder(orderId)
                 ?? throw new InvalidOperationException("Заказ не найден.");
             var existingLines = store.GetOrderLines(orderId);
+            if (existingLines.Any(line => !itemLockScope.Contains(line.ItemId)))
+            {
+                throw new InvalidOperationException("ORDER_CONCURRENTLY_CHANGED");
+            }
 
             if (existing.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
             {

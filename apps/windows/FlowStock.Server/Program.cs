@@ -106,6 +106,7 @@ builder.Services.AddSingleton<IPcWebSessionResolver>(sp => sp.GetRequiredService
 builder.Services.AddSingleton(new WpfMachineAuthorization(wpfAdminApiKey));
 builder.Services.AddSingleton<CatalogAuthorization>();
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IMarkingCutoverPreflightStore>(sp => sp.GetRequiredService<PostgresDataStore>());
+builder.Services.AddSingleton<FlowStock.Core.Abstractions.IMarkingCutoverApprovalStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.ITsdHuResolverStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IHuOperatorFactsStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString));
@@ -1381,6 +1382,10 @@ app.MapPost("/api/item-types", async (HttpRequest request, CatalogService catalo
     {
         return Results.Conflict(new ApiResult(false, "ITEM_TYPE_ALREADY_EXISTS"));
     }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, "P0001", StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiErrorResult(false, ex.MessageText, ex.MessageText));
+    }
 });
 
 app.MapPost("/api/item-types/{itemTypeId:long}", async (long itemTypeId, HttpRequest request, CatalogService catalog, CatalogAuthorization authorization) =>
@@ -1423,6 +1428,10 @@ app.MapPost("/api/item-types/{itemTypeId:long}", async (long itemTypeId, HttpReq
     catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.UniqueViolation, StringComparison.Ordinal))
     {
         return Results.Conflict(new ApiResult(false, "ITEM_TYPE_ALREADY_EXISTS"));
+    }
+    catch (PostgresException ex) when (string.Equals(ex.SqlState, "P0001", StringComparison.Ordinal))
+    {
+        return Results.Conflict(new ApiErrorResult(false, ex.MessageText, ex.MessageText));
     }
 });
 

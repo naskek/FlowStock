@@ -148,7 +148,8 @@ public sealed class WpfCatalogApiService
                     item_type_id = item.ItemTypeId,
                     min_stock_qty = item.MinStockQty,
                     default_sale_price_gross = item.DefaultSalePriceGross,
-                    default_sale_vat_rate_id = item.DefaultSaleVatRateId
+                    default_sale_vat_rate_id = item.DefaultSaleVatRateId,
+                    chz_marking_exempt = item.ChzMarkingExempt
                 },
                 "item_id",
                 "catalog-create-item",
@@ -176,7 +177,8 @@ public sealed class WpfCatalogApiService
                     item_type_id = item.ItemTypeId,
                     min_stock_qty = item.MinStockQty,
                     default_sale_price_gross = item.DefaultSalePriceGross,
-                    default_sale_vat_rate_id = item.DefaultSaleVatRateId
+                    default_sale_vat_rate_id = item.DefaultSaleVatRateId,
+                    chz_marking_exempt = item.ChzMarkingExempt
                 },
                 "catalog-update-item",
                 cancellationToken)

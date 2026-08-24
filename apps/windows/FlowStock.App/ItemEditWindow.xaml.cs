@@ -86,6 +86,7 @@ public partial class ItemEditWindow : Window
             DefaultSalePriceGrossBox.Text = string.Empty;
             DefaultSaleVatRateCombo.SelectedItem = VatRateOption.Empty;
             IsActiveCheck.IsChecked = true;
+            ChzMarkingExemptCheck.IsChecked = false;
             UpdateTypeDrivenControls();
             return;
         }
@@ -116,6 +117,7 @@ public partial class ItemEditWindow : Window
         DefaultSaleVatRateCombo.SelectedItem = _vatRates.FirstOrDefault(rate => rate.Id == _item.DefaultSaleVatRateId)
                                                        ?? VatRateOption.Empty;
         IsActiveCheck.IsChecked = _item.IsActive;
+        ChzMarkingExemptCheck.IsChecked = _item.ChzMarkingExempt;
         UpdateTypeDrivenControls();
     }
 
@@ -211,7 +213,8 @@ public partial class ItemEditWindow : Window
                 ItemTypeId = itemTypeId,
                 MinStockQty = minStockQty,
                 DefaultSalePriceGross = defaultSalePriceGross,
-                DefaultSaleVatRateId = defaultSaleVatRateId
+                DefaultSaleVatRateId = defaultSaleVatRateId,
+                ChzMarkingExempt = ChzMarkingExemptCheck.IsChecked == true
             };
 
             if (_item == null)
@@ -251,7 +254,8 @@ public partial class ItemEditWindow : Window
                     ItemTypeId = candidate.ItemTypeId,
                     MinStockQty = candidate.MinStockQty,
                     DefaultSalePriceGross = candidate.DefaultSalePriceGross,
-                    DefaultSaleVatRateId = candidate.DefaultSaleVatRateId
+                    DefaultSaleVatRateId = candidate.DefaultSaleVatRateId,
+                    ChzMarkingExempt = candidate.ChzMarkingExempt
                 };
                 var result = await _services.WpfCatalogApi.TryUpdateItemAsync(updateCandidate).ConfigureAwait(true);
                 if (!result.IsSuccess)
@@ -459,6 +463,11 @@ public partial class ItemEditWindow : Window
         UpdateMarkingStatusText();
     }
 
+    private void ChzMarkingExemptCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        UpdateMarkingStatusText();
+    }
+
     private void UpdateTypeDrivenControls()
     {
         var selectedType = ItemTypeCombo.SelectedItem as ItemTypeOption;
@@ -494,12 +503,15 @@ public partial class ItemEditWindow : Window
         var visibility = selectedType?.EnableMarking == true
             ? Visibility.Visible
             : Visibility.Collapsed;
+        ChzMarkingExemptCheck.Visibility = visibility;
         MarkingStatusLabel.Visibility = visibility;
         MarkingStatusText.Visibility = visibility;
 
         if (selectedType?.EnableMarking == true)
         {
-            MarkingStatusText.Text = string.IsNullOrWhiteSpace(GtinBox.Text)
+            MarkingStatusText.Text = ChzMarkingExemptCheck.IsChecked == true
+                ? "не требуется (явное исключение)"
+                : string.IsNullOrWhiteSpace(GtinBox.Text)
                 ? "нет, GTIN не заполнен"
                 : "да";
             return;

@@ -1953,6 +1953,10 @@ const productCardHtml = catalogHooks.renderProductCardContent({
   item_type_enable_min_stock_control: true,
   min_stock_qty: 0,
   item_type_enable_marking: true,
+  chz_marking_exempt: false,
+  chz_marking_applicable: true,
+  chz_marking_configuration_error: "GTIN_REQUIRED",
+  cz_marking_required: true,
   max_qty_per_hu: 48,
 }, {
   enable_hu_distribution: true,
@@ -1965,7 +1969,7 @@ assert.match(productCardHtml, /Цена продажи с НДС[\s\S]*12,3457/)
 assert.match(productCardHtml, /Ставка НДС[\s\S]*Основная — 20% \(неактивна\)/);
 assert.match(productCardHtml, /Минимальный остаток[\s\S]*>0</);
 assert.match(productCardHtml, /Макс\. в 1 HU[\s\S]*48/);
-assert.match(productCardHtml, /Маркировка ЧЗ[\s\S]*Нет, GTIN не заполнен/);
+assert.match(productCardHtml, /Маркировка ЧЗ[\s\S]*Требуется, GTIN не заполнен/);
 assert.doesNotMatch(productCardHtml, /<input|<select|data-product-price-(?:save|edit)/);
 
 const plainProductCardHtml = catalogHooks.renderProductCardContent({ name: "Без настроек" }, {});

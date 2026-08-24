@@ -311,9 +311,13 @@ RETURNING id;
 INSERT INTO marking_synthetic_legacy_allowlist_subject(
     id, allowlist_id, marking_subject_id, component_id_snapshot,
     item_id_snapshot, gtin_snapshot, subject_quantity_at_cutover,
-    approved_quantity, preflight_hash, approved_at, approved_by)
-VALUES(@approval_id, @allowlist_id, @subject_id, @component_id,
-       @item_id, @gtin, 100, 100, @hash, @now, 'upgrade-test');
+    approved_quantity, preflight_hash, approved_at, approved_by,
+    subject_revision_at_cutover)
+SELECT @approval_id, @allowlist_id, subject.id, subject.current_component_id,
+       subject.item_id, subject.gtin, subject.subject_quantity, 100,
+       @hash, @now, 'upgrade-test', subject.revision
+FROM marking_production_subject subject
+WHERE subject.id = @subject_id;
 """, connection);
         command.Parameters.AddWithValue("@now", "2026-08-24T10:02:00Z");
         command.Parameters.AddWithValue("@hash", staleHash);
@@ -321,9 +325,6 @@ VALUES(@approval_id, @allowlist_id, @subject_id, @component_id,
         command.Parameters.AddWithValue("@approval_id", approvalId);
         command.Parameters.AddWithValue("@allowlist_id", parentAllowlistId);
         command.Parameters.AddWithValue("@subject_id", subject.SubjectId);
-        command.Parameters.AddWithValue("@component_id", subject.ComponentId);
-        command.Parameters.AddWithValue("@item_id", subject.ItemId);
-        command.Parameters.AddWithValue("@gtin", subject.Gtin);
         await command.ExecuteNonQueryAsync();
         return approvalId;
     }
@@ -337,9 +338,9 @@ VALUES(@approval_id, @allowlist_id, @subject_id, @component_id,
         await using var command = new NpgsqlCommand("""
 INSERT INTO marking_grandfather_operational_allowance(
     id, allowlist_subject_id, marking_subject_id, approved_quantity,
-    cutover_subject_revision, preflight_hash, created_at)
+    cutover_subject_revision, preflight_hash, created_at, usable_quantity_cap)
 SELECT @allowance_id, @approval_id, @subject_id, 100,
-       revision, @hash, @now
+       revision, @hash, @now, 100
 FROM marking_production_subject
 WHERE id = @subject_id;
 """, connection);

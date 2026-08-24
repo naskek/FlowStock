@@ -1839,6 +1839,7 @@ public sealed class WpfReadApiService
             ItemTypeIsVisibleInProductCatalog = ReadBool(element, "item_type_is_visible_in_product_catalog"),
             ItemTypeEnableMinStockControl = ReadBool(element, "item_type_enable_min_stock_control"),
             ItemTypeEnableMarking = ReadBool(element, "item_type_enable_marking"),
+            ChzMarkingExempt = ReadBool(element, "chz_marking_exempt"),
             MinStockQty = ReadNullableDouble(element, "min_stock_qty"),
             DefaultSalePriceGross = ReadNullableDecimal(element, "default_sale_price_gross"),
             DefaultSaleVatRateId = ReadNullableInt64(element, "default_sale_vat_rate_id"),

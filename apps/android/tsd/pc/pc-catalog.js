@@ -270,10 +270,14 @@
     if (type.enable_hu_distribution === true) {
       details.push(renderDetail("Макс. в 1 HU", deps.escapeHtml(formatDecimal(item.max_qty_per_hu, 3))));
     }
-    if (item.item_type_enable_marking === true || type.enable_marking === true) {
+    if (item.chz_marking_applicable === true || item.chz_marking_exempt === true) {
       details.push(renderDetail(
         "Маркировка ЧЗ",
-        String(item.gtin || "").trim() ? "Да" : "Нет, GTIN не заполнен"
+        item.chz_marking_exempt === true
+          ? "Не требуется (явное исключение)"
+          : item.chz_marking_configuration_error === "GTIN_REQUIRED"
+            ? "Требуется, GTIN не заполнен"
+            : "Да"
       ));
     }
 
@@ -451,6 +455,7 @@
       '<div class="form-field"><label class="form-label">Цена с НДС</label><input class="form-input" name="default_sale_price_gross" type="number" min="0" step="0.0001" value="' + (value.default_sale_price_gross == null ? "" : value.default_sale_price_gross) + '"></div>' +
       '<div class="form-field pc-form-wide"><label class="form-label">Условия хранения</label><textarea class="form-input" name="storage_conditions">' + deps.escapeHtml(value.storage_conditions || "") + '</textarea></div>' +
       '<label class="pc-checkbox"><input name="is_active" type="checkbox"' + (value.is_active === false ? "" : " checked") + '> Активен</label>' +
+      '<label class="pc-checkbox"><input name="chz_marking_exempt" type="checkbox"' + (value.chz_marking_exempt === true ? " checked" : "") + '> Освободить от маркировки ЧЗ</label>' +
       '<div class="pc-readonly-field">Маркировка: <strong>' + (value.is_marked ? "Да" : "Нет") + '</strong> (только чтение)</div>' +
       '</div><div class="pc-modal-actions"><button class="btn ' + (value.id ? "btn-primary" : "btn-success") + '" type="submit">Сохранить</button>' +
       (value.id ? '<button class="btn btn-danger" data-item-delete type="button">Удалить</button>' : '') + '</div></form>'
@@ -511,7 +516,9 @@
       max_qty_per_hu: itemType.enable_hu_distribution === true ? nullableNumber(fieldValue(form, "max_qty_per_hu")) : null,
       default_sale_price_gross: nullableNumber(fieldValue(form, "default_sale_price_gross")),
       default_sale_vat_rate_id: nullableNumber(fieldValue(form, "default_sale_vat_rate_id")),
-      is_active: !!form.elements.is_active.checked, is_marked: !!(original && original.is_marked)
+      is_active: !!form.elements.is_active.checked,
+      chz_marking_exempt: !!form.elements.chz_marking_exempt?.checked,
+      is_marked: !!(original && original.is_marked)
     };
   }
 

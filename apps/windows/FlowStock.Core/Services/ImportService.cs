@@ -427,6 +427,8 @@ public sealed class ImportService
                     Gtin = gtin ?? existing.Gtin,
                     BaseUom = baseUom,
                     DefaultPackagingId = existing.DefaultPackagingId,
+                    ItemTypeId = existing.ItemTypeId,
+                    ChzMarkingExempt = existing.ChzMarkingExempt,
                     StorageConditions = existing.StorageConditions,
                     IsMarked = existing.IsMarked,
                     DefaultSalePriceGross = existing.DefaultSalePriceGross,

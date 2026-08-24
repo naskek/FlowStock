@@ -1,5 +1,6 @@
 using FlowStock.Data;
 using FlowStock.Core.Models.Marking;
+using FlowStock.Core.Services;
 using Npgsql;
 
 namespace FlowStock.Server.Tests.Marking;
@@ -116,6 +117,386 @@ VALUES
     }
 
     [Fact]
+    public void CompletedFilledClosed_WithSufficientLedger_IsNotActiveProgressAndEnforceCreatesReadyHuFact()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "FILLED",
+                documentStatus: "CLOSED",
+                plannedQuantity: 100,
+                filledQuantity: 100,
+                hasPalletFilledAt: true,
+                hasComponentFilledAt: true,
+                ledgerQuantity: 100);
+
+            var store = new PostgresDataStore(connection.ConnectionString);
+            var entries = store.GetMarkingCutoverPreflightEntries();
+
+            Assert.DoesNotContain(entries, entry =>
+                entry.OrderId == 9401
+                && entry.IssueCode is "MARKING_ACTIVE_PALLET_PLAN" or "MARKING_FILLING_PROGRESS");
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_SUBJECT_SNAPSHOT"
+                && entry.Level == "info"
+                && entry.Details.Contains("lifecycle=COMPLETED", StringComparison.Ordinal));
+
+            var preflight = new MarkingCutoverPreflightService(store).Run(
+                new DateTime(2026, 8, 24, 12, 0, 0, DateTimeKind.Utc));
+            var repeatedPreflight = new MarkingCutoverPreflightService(store).Run(
+                new DateTime(2026, 8, 24, 12, 0, 1, DateTimeKind.Utc));
+            Assert.Equal(preflight.Hash, repeatedPreflight.Hash);
+            Assert.Equal(preflight.CanonicalJson, repeatedPreflight.CanonicalJson);
+            store.EnforceMarkingCutover(
+                preflight.Hash,
+                "cutover-history-test",
+                new DateTime(2026, 8, 24, 12, 1, 0, DateTimeKind.Utc));
+
+            Assert.Equal(1, ExecuteScalarInt(connection, @"
+SELECT COUNT(*)
+FROM marking_ready_hu_fact fact
+INNER JOIN marking_production_subject subject ON subject.id = fact.marking_subject_id
+WHERE subject.current_order_id = 9401
+  AND fact.provenance = 'GRANDFATHERED'
+  AND fact.reversed_at IS NULL;"));
+        });
+    }
+
+    [Fact]
+    public void CompletedFilledClosed_WithInsufficientLedger_IsNotActiveProgressAndDoesNotCreateReadyHuFact()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "FILLED",
+                documentStatus: "CLOSED",
+                plannedQuantity: 100,
+                filledQuantity: 100,
+                hasPalletFilledAt: true,
+                hasComponentFilledAt: true,
+                ledgerQuantity: 0);
+
+            var store = new PostgresDataStore(connection.ConnectionString);
+            var entries = store.GetMarkingCutoverPreflightEntries();
+
+            Assert.DoesNotContain(entries, entry =>
+                entry.OrderId == 9401
+                && entry.IssueCode is "MARKING_ACTIVE_PALLET_PLAN" or "MARKING_FILLING_PROGRESS");
+
+            var preflight = new MarkingCutoverPreflightService(store).Run(
+                new DateTime(2026, 8, 24, 12, 0, 0, DateTimeKind.Utc));
+            Assert.Equal(0, ExecuteScalarInt(connection, @"
+SELECT COUNT(*)
+FROM (
+    SELECT UPPER(BTRIM(COALESCE(hu_code, hu))) AS hu_code, item_id
+    FROM ledger
+    WHERE item_id = 9401
+    GROUP BY UPPER(BTRIM(COALESCE(hu_code, hu))), item_id
+    HAVING SUM(qty_delta) > 0.000001
+) positive_balance;"));
+            Assert.Equal(0, ExecuteScalarInt(connection, "SELECT COUNT(*) FROM marking_ready_hu_fact;"));
+            store.EnforceMarkingCutover(
+                preflight.Hash,
+                "cutover-history-test",
+                new DateTime(2026, 8, 24, 12, 1, 0, DateTimeKind.Utc));
+
+            Assert.Equal(0, ExecuteScalarInt(connection, @"
+SELECT COUNT(*)
+FROM marking_ready_hu_fact fact
+INNER JOIN marking_production_subject subject ON subject.id = fact.marking_subject_id
+WHERE subject.current_order_id = 9401
+  AND fact.reversed_at IS NULL;"));
+        });
+    }
+
+    [Fact]
+    public void FilledPallet_WithOpenProductionDocument_RemainsFillingBlocker()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "FILLED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 100,
+                hasPalletFilledAt: true,
+                hasComponentFilledAt: true,
+                ledgerQuantity: 0);
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_FILLING_PROGRESS"
+                && entry.Level == "error");
+        });
+    }
+
+    [Fact]
+    public void FilledClosedPallet_WithoutMatchingCurrentSubject_RemainsFailClosed()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "FILLED",
+                documentStatus: "CLOSED",
+                plannedQuantity: 100,
+                filledQuantity: 100,
+                hasPalletFilledAt: true,
+                hasComponentFilledAt: true,
+                ledgerQuantity: 0);
+            Execute(connection, @"
+UPDATE marking_production_subject
+SET current_doc_id = NULL
+WHERE current_order_id = 9401;");
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN"
+                && entry.Level == "error");
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_FILLING_PROGRESS"
+                && entry.Level == "error");
+        });
+    }
+
+    [Theory]
+    [InlineData("PRINTED", 0, true, false)]
+    [InlineData("PLANNED", 25, false, true)]
+    public void PlannedOrPrintedPallet_WithPartialFilling_RemainsFillingBlocker(
+        string palletStatus,
+        double filledQuantity,
+        bool hasPalletFilledAt,
+        bool hasComponentFilledAt)
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus,
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity,
+                hasPalletFilledAt,
+                hasComponentFilledAt,
+                ledgerQuantity: 0);
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_FILLING_PROGRESS"
+                && entry.Level == "error");
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN"
+                && entry.Level == "error");
+        });
+    }
+
+    [Theory]
+    [InlineData("PLANNED")]
+    [InlineData("PRINTED")]
+    public void PlannedOrPrintedPallet_WithMatchingActiveSubject_IsApprovableWarning(
+        string palletStatus)
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus,
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN"
+                && entry.Level == "warning"
+                && entry.Details == $"pallet_status={palletStatus}");
+            Assert.DoesNotContain(entries, entry =>
+                entry.OrderId == 9401
+                && entry.IssueCode == "MARKING_FILLING_PROGRESS");
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_SUBJECT_SNAPSHOT"
+                && entry.Level == "error");
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_OPEN_PRD"
+                && entry.Level == "error");
+        });
+    }
+
+    [Fact]
+    public void PrintedPallet_WithoutSubject_RemainsFailClosed()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "PRINTED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0,
+                createMarkingSubject: false);
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.Equal(0, ExecuteScalarInt(connection, "SELECT COUNT(*) FROM marking_production_subject;"));
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN"
+                && entry.Level == "error");
+        });
+    }
+
+    [Fact]
+    public void PrintedPallet_WithMismatchedCurrentSubject_RemainsFailClosed()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "PRINTED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+            Execute(connection, @"
+UPDATE marking_production_subject
+SET current_doc_id = NULL
+WHERE current_order_id = 9401;");
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN"
+                && entry.Level == "error");
+        });
+    }
+
+    [Theory]
+    [InlineData("PLANNED")]
+    [InlineData("PRINTED")]
+    public void PlannedOrPrintedPallet_WithActiveSubjectOnClosedDocument_RemainsFailClosed(
+        string palletStatus)
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus,
+                documentStatus: "CLOSED",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN"
+                && entry.Level == "error");
+        });
+    }
+
+    [Fact]
+    public void PrintedPallet_WithMissingGtin_KeepsGtinAndActivePlanErrors()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "PRINTED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0,
+                gtin: null);
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_GTIN_REQUIRED"
+                && entry.Level == "error");
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN"
+                && entry.Level == "error");
+        });
+    }
+
+    [Theory]
+    [InlineData("FILLED", "CLOSED", 100, true)]
+    [InlineData("PRINTED", "DRAFT", 0, false)]
+    public void ExplicitlyExemptComponent_DoesNotCreateMarkingCutoverBlockersOrSubject(
+        string palletStatus,
+        string documentStatus,
+        double filledQuantity,
+        bool hasFilledAt)
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus,
+                documentStatus,
+                plannedQuantity: 100,
+                filledQuantity,
+                hasPalletFilledAt: hasFilledAt,
+                hasComponentFilledAt: hasFilledAt,
+                ledgerQuantity: hasFilledAt ? 100 : 0,
+                createMarkingSubject: false,
+                gtin: null,
+                chzMarkingExempt: true);
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.Equal(0, ExecuteScalarInt(connection, "SELECT COUNT(*) FROM marking_production_subject;"));
+            Assert.DoesNotContain(entries, entry => entry.OrderLineId == 9401);
+        });
+    }
+
+    [Fact]
     public void PreflightReadModel_AggregatesUnknownAndConflictEntriesAndExcludesQuarantinedCoverage()
     {
         RunMutatingPostgresTest(connection =>
@@ -162,7 +543,7 @@ VALUES
                 && entry.OrderId == 9301
                 && entry.OrderLineId == 9301));
             Assert.Equal(1, qtyIssue.RealCodeQty);
-            Assert.Equal(1, qtyIssue.LegacySyntheticQty);
+            Assert.Equal(0, qtyIssue.LegacySyntheticQty);
 
             var unknownIssue = Assert.Single(entries.Where(entry =>
                 entry.IssueCode == "MARKING_HISTORICAL_UNKNOWN"
@@ -223,6 +604,88 @@ VALUES
                 && entry.Details.Contains("93510000-0000-0000-0000-000000000001", StringComparison.Ordinal));
 
             Assert.Equal(entries.Count, entries.Distinct().Count());
+        });
+    }
+
+    [Fact]
+    public void ApprovalLifecycle_ParentChangesHash_ChildKeepsHash_AndEvidenceCannotBeConsumedTwice()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            Execute(connection, @"
+INSERT INTO item_types(id, name, code, enable_marking)
+VALUES (9360, 'TEST-V0038-APPROVAL-TYPE', 'TEST-V0038-APPROVAL-TYPE', TRUE);
+INSERT INTO items(id, name, barcode, gtin, item_type_id)
+VALUES (9360, 'TEST-V0038-APPROVAL-ITEM', 'TEST-V0038-APPROVAL-ITEM', '04600000009360', 9360);
+INSERT INTO orders(id, order_ref, order_type, status, created_at, marking_responsibility)
+VALUES (9360, 'TEST-V0038-APPROVAL-ORDER', 'INTERNAL', 'ACCEPTED', '2026-08-24T00:00:00.000Z', 'FLOWSTOCK');
+INSERT INTO order_lines(id, order_id, item_id, qty_ordered)
+VALUES (9360, 9360, 9360, 2);
+INSERT INTO marking_production_subject(
+    id, lifecycle, current_order_id, current_order_line_id, item_id, gtin,
+    subject_quantity, created_at)
+VALUES ('93600000-0000-0000-0000-000000000001', 'ACTIVE', 9360, 9360, 9360,
+        '04600000009360', 2, '2026-08-24T00:00:00.000Z');
+INSERT INTO marking_order(
+    id, order_id, order_line_id, item_id, gtin, requested_quantity,
+    request_number, status, source_type, source_order_id, created_at, updated_at)
+VALUES ('93600000-0000-0000-0000-000000000010', 9360, 9360, 9360,
+        '04600000009360', 2, 'TEST-V0038-APPROVAL', 'Printed',
+        'PRODUCTION_ORDER', 9360, '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z');
+INSERT INTO marking_code_import(
+    id, original_filename, storage_path, file_hash, source_type,
+    matched_marking_order_id, status, imported_rows, valid_code_rows, created_at, processed_at)
+VALUES ('93600000-0000-0000-0000-000000000020', 'synthetic.xlsx',
+        '<temporary-chz-export>', 'TEST-V0038-APPROVAL-IMPORT', 'temporary-chz-export',
+        '93600000-0000-0000-0000-000000000010', 'Imported', 2, 2,
+        '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z');
+INSERT INTO marking_code(
+    id, code, code_hash, gtin, marking_order_id, import_id, status, origin, created_at, updated_at)
+VALUES
+('93600000-0000-0000-0000-000000000031', 'TEST-V0038-APPLIED-1', 'TEST-V0038-APPLIED-HASH-1',
+ '04600000009360', '93600000-0000-0000-0000-000000000010', '93600000-0000-0000-0000-000000000020',
+ 'Applied', 'LegacySynthetic', '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z'),
+('93600000-0000-0000-0000-000000000032', 'TEST-V0038-APPLIED-2', 'TEST-V0038-APPLIED-HASH-2',
+ '04600000009360', '93600000-0000-0000-0000-000000000010', '93600000-0000-0000-0000-000000000020',
+ 'Applied', 'LegacySynthetic', '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z');
+");
+
+            var store = new PostgresDataStore(connection.ConnectionString);
+            var service = new MarkingCutoverPreflightService(store);
+            var h1 = service.Run(new DateTime(2026, 8, 24, 12, 0, 0, DateTimeKind.Utc)).Hash;
+            var parent = store.ApproveMarkingCutoverLine(
+                9360, null, h1, "test-actor", new DateTime(2026, 8, 24, 12, 1, 0, DateTimeKind.Utc));
+
+            Assert.NotEqual(h1, parent.CurrentPreflightHash);
+            var h2 = parent.CurrentPreflightHash;
+            var retry = store.ApproveMarkingCutoverLine(
+                9360, null, h1, "test-actor", new DateTime(2026, 8, 24, 12, 1, 1, DateTimeKind.Utc));
+            Assert.True(retry.WasAlreadyApproved);
+            Assert.Equal(parent.AllowlistId, retry.AllowlistId);
+            var duplicate = Assert.Throws<InvalidOperationException>(() =>
+                store.ApproveMarkingCutoverLine(
+                    9360, null, h2, "test-actor", new DateTime(2026, 8, 24, 12, 1, 2, DateTimeKind.Utc)));
+            Assert.Contains("MARKING_LEGACY_LINE_ALREADY_APPROVED", duplicate.Message, StringComparison.Ordinal);
+            Assert.Equal(1, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_synthetic_legacy_allowlist WHERE order_line_id = 9360;"));
+
+            var child = store.ApproveMarkingCutoverSubjects(
+                parent.AllowlistId,
+                [new MarkingCutoverSubjectApprovalIntent(
+                    Guid.Parse("93600000-0000-0000-0000-000000000001"), 2)],
+                h2,
+                "test-actor",
+                new DateTime(2026, 8, 24, 12, 2, 0, DateTimeKind.Utc));
+            Assert.Equal(h2, child.CurrentPreflightHash);
+            Assert.Equal(h2, service.Run(new DateTime(2026, 8, 24, 12, 2, 1, DateTimeKind.Utc)).Hash);
+
+            store.EnforceMarkingCutover(
+                h2, "test-actor", new DateTime(2026, 8, 24, 12, 3, 0, DateTimeKind.Utc));
+            Assert.Equal(1, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_grandfather_operational_allowance;"));
+            Assert.Equal(1, ExecuteScalarInt(connection, @"
+SELECT COUNT(*) FROM marking_operational_coverage
+WHERE source_type = 'GRANDFATHER_ALLOWANCE' AND retired_at IS NULL;"));
         });
     }
 
@@ -493,10 +956,126 @@ SELECT 'marking_cutover_state', COUNT(*) FROM marking_cutover_state;";
     private static void CleanupTestRows(NpgsqlConnection connection)
     {
         Execute(connection, @"
-TRUNCATE TABLE production_pallet_lines, production_pallets, doc_lines, docs,
-               orders, items, item_types, locations,
+TRUNCATE TABLE ledger, production_pallet_lines, production_pallets, doc_lines, docs,
+               orders, items, item_types, locations, hus,
                marking_order, marking_code_import, marking_code
-CASCADE;");
+CASCADE;
+
+UPDATE marking_cutover_state
+SET state = 'SHADOW',
+    preflight_hash = NULL,
+    preflight_generated_at = NULL,
+    preflight_approved_at = NULL,
+    preflight_approved_by = NULL,
+    enforced_at = NULL,
+    enforced_by = NULL,
+    updated_at = '2026-08-24T00:00:00.000Z'
+WHERE id = TRUE;");
+    }
+
+    private static void SeedMarkingPallet(
+        NpgsqlConnection connection,
+        string palletStatus,
+        string documentStatus,
+        double plannedQuantity,
+        double filledQuantity,
+        bool hasPalletFilledAt,
+        bool hasComponentFilledAt,
+        double ledgerQuantity,
+        bool createMarkingSubject = true,
+        string? gtin = "04600000009401",
+        bool chzMarkingExempt = false)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+INSERT INTO item_types(
+    id, name, code, sort_order, is_active, is_visible_in_product_catalog,
+    enable_min_stock_control, enable_hu_distribution, enable_marking)
+VALUES (9401, 'TEST-CUTOVER-HISTORY-TYPE', 'TEST-CUTOVER-HISTORY-TYPE', 1,
+        TRUE, TRUE, FALSE, FALSE, @enable_marking_during_insert);
+
+INSERT INTO items(id, name, barcode, gtin, item_type_id, chz_marking_exempt)
+VALUES (9401, 'TEST-CUTOVER-HISTORY-ITEM', 'TEST-CUTOVER-HISTORY-ITEM', @gtin, 9401, @chz_marking_exempt);
+
+INSERT INTO locations(id, code, name)
+VALUES (9401, 'TEST-CUTOVER-HISTORY-LOC', 'TEST-CUTOVER-HISTORY-LOC');
+
+INSERT INTO orders(id, order_ref, order_type, status, created_at, marking_responsibility)
+VALUES (9401, 'TEST-CUTOVER-HISTORY-ORDER', 'INTERNAL', 'ACCEPTED', @created_at, 'FLOWSTOCK');
+
+INSERT INTO order_lines(id, order_id, item_id, qty_ordered)
+VALUES (9401, 9401, 9401, @planned_quantity);
+
+INSERT INTO docs(id, doc_ref, type, status, created_at, closed_at, order_id, order_ref)
+VALUES (9401, 'TEST-CUTOVER-HISTORY-PRD', 'PRODUCTION_RECEIPT', @document_status,
+        @created_at,
+        CASE WHEN @document_status = 'CLOSED' THEN @closed_at ELSE NULL END,
+        9401, 'TEST-CUTOVER-HISTORY-ORDER');
+
+INSERT INTO doc_lines(id, doc_id, order_line_id, item_id, qty, to_location_id, to_hu)
+VALUES (9401, 9401, 9401, 9401, @planned_quantity, 9401, 'TEST-CUTOVER-HISTORY-HU');
+
+INSERT INTO hus(hu_code, status, created_at)
+VALUES ('TEST-CUTOVER-HISTORY-HU', 'ACTIVE', @created_at)
+ON CONFLICT (hu_code) DO NOTHING;
+
+INSERT INTO production_pallets(
+    id, prd_doc_id, doc_line_id, order_id, order_line_id, item_id,
+    hu_code, planned_qty, to_location_id, status, filled_at, created_at)
+VALUES (9401, 9401, 9401, 9401, 9401, 9401,
+        'TEST-CUTOVER-HISTORY-HU', @planned_quantity, 9401, @pallet_status,
+        CASE WHEN @has_pallet_filled_at THEN @filled_at ELSE NULL END,
+        @created_at);
+
+INSERT INTO production_pallet_lines(
+    id, production_pallet_id, doc_line_id, order_line_id, item_id,
+    planned_qty, filled_qty, filled_at, created_at)
+VALUES (9401, 9401, 9401, 9401, 9401,
+        @planned_quantity, @filled_quantity,
+        CASE WHEN @has_component_filled_at THEN @filled_at ELSE NULL END,
+        @created_at);
+
+INSERT INTO ledger(ts, doc_id, item_id, location_id, qty_delta, hu_code)
+VALUES (@closed_at, 9401, 9401, 9401, @ledger_quantity, 'TEST-CUTOVER-HISTORY-HU');
+";
+        command.Parameters.AddWithValue("@pallet_status", palletStatus);
+        command.Parameters.AddWithValue("@document_status", documentStatus);
+        command.Parameters.AddWithValue("@planned_quantity", plannedQuantity);
+        command.Parameters.AddWithValue("@filled_quantity", filledQuantity);
+        command.Parameters.AddWithValue("@has_pallet_filled_at", hasPalletFilledAt);
+        command.Parameters.AddWithValue("@has_component_filled_at", hasComponentFilledAt);
+        command.Parameters.AddWithValue("@ledger_quantity", ledgerQuantity);
+        command.Parameters.AddWithValue(
+            "@enable_marking_during_insert",
+            createMarkingSubject && gtin != null && !chzMarkingExempt);
+        command.Parameters.AddWithValue("@chz_marking_exempt", chzMarkingExempt);
+        command.Parameters.Add(new NpgsqlParameter("@gtin", NpgsqlTypes.NpgsqlDbType.Text)
+        {
+            Value = gtin ?? (object)DBNull.Value
+        });
+        command.Parameters.AddWithValue("@created_at", "2026-08-24T10:00:00.000Z");
+        command.Parameters.AddWithValue("@filled_at", "2026-08-24T10:30:00.000Z");
+        command.Parameters.AddWithValue("@closed_at", "2026-08-24T11:00:00.000Z");
+        command.ExecuteNonQuery();
+
+        if (gtin == null && !chzMarkingExempt)
+        {
+            Execute(connection, @"
+ALTER TABLE item_types DISABLE TRIGGER trg_item_types_marking_applicability_transition;
+UPDATE item_types SET enable_marking = TRUE WHERE id = 9401;
+ALTER TABLE item_types ENABLE TRIGGER trg_item_types_marking_applicability_transition;");
+        }
+        else
+        {
+            Execute(connection, "UPDATE item_types SET enable_marking = TRUE WHERE id = 9401;");
+        }
+    }
+
+    private static int ExecuteScalarInt(NpgsqlConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToInt32(command.ExecuteScalar());
     }
 
     private static void Execute(NpgsqlConnection connection, string sql)

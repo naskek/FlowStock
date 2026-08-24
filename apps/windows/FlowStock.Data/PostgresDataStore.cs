@@ -14,7 +14,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IMarkingAggregateStore, IOrderScopedMarkingImportStore, IMarkingCutoverRuntimeGuard, IOrderRequestManagementStore, ILedgerEntryIdStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
+public sealed class PostgresDataStore : IDataStore, IMarkingAggregateStore, IOrderScopedMarkingImportStore, IMarkingCutoverRuntimeGuard, IOrderRequestManagementStore, ILedgerEntryIdStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IMarkingCutoverApprovalStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -983,6 +983,7 @@ markable_line_need AS (
     INNER JOIN item_types it ON it.id = i.item_type_id
     LEFT JOIN reserved_stock_hu_by_line rsh ON rsh.order_line_id = olm.order_line_id
     WHERE COALESCE(it.enable_marking, FALSE) = TRUE
+      AND NOT COALESCE(i.chz_marking_exempt, FALSE)
       AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
 ),
 markable_item_need AS (
@@ -1140,7 +1141,8 @@ aggregate_marking_line AS (
            ols.order_id,
            ols.item_id,
            ols.qty_ordered,
-           COALESCE(it.enable_marking, FALSE) AS marking_enabled,
+           (COALESCE(it.enable_marking, FALSE)
+            AND NOT COALESCE(i.chz_marking_exempt, FALSE)) AS marking_enabled,
            NULLIF(BTRIM(i.gtin), '') AS gtin
     FROM order_lines_scope ols
     INNER JOIN items i ON i.id = ols.item_id
@@ -2009,7 +2011,7 @@ ON CONFLICT (notification_id, reader_key) DO NOTHING;");
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active, COALESCE(i.chz_marking_exempt, FALSE) FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
             command.Parameters.AddWithValue("@barcode", barcode);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -2020,7 +2022,7 @@ ON CONFLICT (notification_id, reader_key) DO NOTHING;");
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id WHERE i.gtin = @gtin");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active, COALESCE(i.chz_marking_exempt, FALSE) FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id WHERE i.gtin = @gtin");
             command.Parameters.AddWithValue("@gtin", gtin);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -2031,7 +2033,7 @@ ON CONFLICT (notification_id, reader_key) DO NOTHING;");
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id WHERE i.id = @id");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active, COALESCE(i.chz_marking_exempt, FALSE) FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id WHERE i.id = @id");
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -2100,8 +2102,8 @@ FOR SHARE;");
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO items(name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty, storage_conditions, default_sale_price_gross, default_sale_vat_rate_id)
-VALUES(@name, @is_active, @barcode, @gtin, @base_uom, @default_packaging_id, @brand, @volume, @shelf_life_months, @max_qty_per_hu, @tara_id, @is_marked, @item_type_id, @min_stock_qty, @storage_conditions, @default_sale_price_gross, @default_sale_vat_rate_id)
+INSERT INTO items(name, is_active, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked, item_type_id, min_stock_qty, storage_conditions, default_sale_price_gross, default_sale_vat_rate_id, chz_marking_exempt)
+VALUES(@name, @is_active, @barcode, @gtin, @base_uom, @default_packaging_id, @brand, @volume, @shelf_life_months, @max_qty_per_hu, @tara_id, @is_marked, @item_type_id, @min_stock_qty, @storage_conditions, @default_sale_price_gross, @default_sale_vat_rate_id, @chz_marking_exempt)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
@@ -2121,6 +2123,7 @@ RETURNING id;
             command.Parameters.AddWithValue("@storage_conditions", NormalizeStorageConditionsForDb(item.StorageConditions));
             command.Parameters.AddWithValue("@default_sale_price_gross", item.DefaultSalePriceGross.HasValue ? item.DefaultSalePriceGross.Value : DBNull.Value);
             command.Parameters.AddWithValue("@default_sale_vat_rate_id", item.DefaultSaleVatRateId.HasValue ? item.DefaultSaleVatRateId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@chz_marking_exempt", item.ChzMarkingExempt);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -2167,7 +2170,8 @@ SET name = @name,
     min_stock_qty = @min_stock_qty,
     storage_conditions = @storage_conditions,
     default_sale_price_gross = @default_sale_price_gross,
-    default_sale_vat_rate_id = @default_sale_vat_rate_id
+    default_sale_vat_rate_id = @default_sale_vat_rate_id,
+    chz_marking_exempt = @chz_marking_exempt
 WHERE id = @id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
@@ -2187,6 +2191,7 @@ WHERE id = @id;
             command.Parameters.AddWithValue("@storage_conditions", NormalizeStorageConditionsForDb(item.StorageConditions));
             command.Parameters.AddWithValue("@default_sale_price_gross", item.DefaultSalePriceGross.HasValue ? item.DefaultSalePriceGross.Value : DBNull.Value);
             command.Parameters.AddWithValue("@default_sale_vat_rate_id", item.DefaultSaleVatRateId.HasValue ? item.DefaultSaleVatRateId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@chz_marking_exempt", item.ChzMarkingExempt);
             command.Parameters.AddWithValue("@id", item.Id);
             command.ExecuteNonQuery();
             return 0;
@@ -7785,6 +7790,7 @@ line_need AS (
     LEFT JOIN shipped ON shipped.order_line_id = ol.id
     LEFT JOIN reserved_filled ON reserved_filled.order_line_id = ol.id
     WHERE COALESCE(it.enable_marking, FALSE) = TRUE
+      AND NOT COALESCE(i.chz_marking_exempt, FALSE)
       AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
 ),
 order_need AS (
@@ -7992,7 +7998,7 @@ open_lines AS (
     WHERE ol.cancelled_at IS NULL
 ),
 markable_lines AS (
-    -- Only lines whose item type enables marking participate in line mapping candidates and
+    -- Only currently applicable lines participate in line mapping candidates and
     -- line-level marking issues. A markable line with a missing GTIN stays in scope so that
     -- MARKING_GTIN_REQUIRED keeps firing.
     SELECT ol.order_id,
@@ -8007,6 +8013,7 @@ markable_lines AS (
     INNER JOIN items i ON i.id = ol.item_id
     INNER JOIN item_types it ON it.id = i.item_type_id
     WHERE COALESCE(it.enable_marking, FALSE) = TRUE
+      AND NOT COALESCE(i.chz_marking_exempt, FALSE)
 ),
 active_tasks AS (
     SELECT mo.id,
@@ -8019,6 +8026,17 @@ active_tasks AS (
            mo.request_number
     FROM marking_order mo
     WHERE mo.status NOT IN ('Cancelled', 'Failed')
+),
+task_code_evidence AS (
+    SELECT task.id AS marking_order_id,
+           COUNT(*) FILTER (
+               WHERE code.origin = 'LegacySynthetic' AND code.status = 'Applied')::integer AS applied_legacy_qty,
+           COUNT(*) FILTER (
+               WHERE code.origin <> 'LegacySynthetic'
+                  OR code.status NOT IN ('Applied', 'Reserved', 'Voided'))::integer AS unsafe_qty
+    FROM active_tasks task
+    LEFT JOIN marking_code code ON code.marking_order_id = task.id
+    GROUP BY task.id
 ),
 task_order_link AS (
     -- order_id and source_order_id are two explicit links, never collapsed with COALESCE.
@@ -8103,21 +8121,25 @@ line_claims AS (
     WHERE at.order_line_id IS NOT NULL
 
     UNION ALL
-    SELECT marking_order_id,
-           order_id,
-           order_line_id
-    FROM unique_task_candidates
-    WHERE order_line_id IS NOT NULL
+    SELECT candidate.marking_order_id,
+           candidate.order_id,
+           candidate.order_line_id
+    FROM unique_task_candidates candidate
+    WHERE candidate.order_line_id IS NOT NULL
 ),
 line_candidate_conflicts AS (
     SELECT order_line_id,
            MIN(order_id) AS order_id,
-           COUNT(DISTINCT marking_order_id)::integer AS task_count,
-           STRING_AGG(DISTINCT marking_order_id::text, ',' ORDER BY marking_order_id::text) AS task_ids
-    FROM line_claims
-    WHERE order_line_id IS NOT NULL
-    GROUP BY order_line_id
-    HAVING COUNT(DISTINCT marking_order_id) > 1
+           COUNT(DISTINCT claims.marking_order_id)::integer AS task_count,
+           STRING_AGG(DISTINCT claims.marking_order_id::text, ',' ORDER BY claims.marking_order_id::text) AS task_ids,
+           COALESCE(SUM(evidence.applied_legacy_qty), 0)::integer AS applied_legacy_qty,
+           COALESCE(SUM(evidence.unsafe_qty), 0)::integer AS unsafe_qty,
+           BOOL_AND(COALESCE(evidence.applied_legacy_qty, 0) > 0) AS all_tasks_have_applied_evidence
+    FROM line_claims claims
+    LEFT JOIN task_code_evidence evidence ON evidence.marking_order_id = claims.marking_order_id
+    WHERE claims.order_line_id IS NOT NULL
+    GROUP BY claims.order_line_id
+    HAVING COUNT(DISTINCT claims.marking_order_id) > 1
 ),
 line_code_counts AS (
     SELECT ml.order_id,
@@ -8128,11 +8150,11 @@ line_code_counts AS (
            )::integer AS real_code_qty,
            COUNT(*) FILTER (
                WHERE c.origin = 'LegacySynthetic'
-                 AND c.status <> 'Voided'
+                 AND c.status = 'Applied'
            )::integer AS legacy_synthetic_qty
     FROM markable_lines ml
-    LEFT JOIN active_tasks at ON at.order_line_id = ml.order_line_id
-    LEFT JOIN marking_code c ON c.marking_order_id = at.id
+    LEFT JOIN line_claims claim ON claim.order_line_id = ml.order_line_id
+    LEFT JOIN marking_code c ON c.marking_order_id = claim.marking_order_id
     GROUP BY ml.order_id, ml.order_line_id
 ),
 open_prd_lines AS (
@@ -8145,35 +8167,66 @@ open_prd_lines AS (
       AND d.status <> 'CLOSED'
       AND COALESCE(d.order_id, ol.order_id) IS NOT NULL
       AND COALESCE(d.order_id, ol.order_id) IN (SELECT id FROM open_orders)
+      AND EXISTS (
+          SELECT 1 FROM markable_lines applicable
+          WHERE applicable.order_line_id = dl.order_line_id
+      )
+),
+pallet_plan_classification AS (
+    SELECT COALESCE(pp.order_id, d.order_id, ol.order_id) AS order_id,
+           COALESCE(pll.order_line_id, pp.order_line_id) AS order_line_id,
+           pp.status,
+           (
+               pp.status IN ('PLANNED', 'PRINTED')
+               AND d.status <> 'CLOSED'
+               AND COALESCE(subject.lifecycle, '') = 'ACTIVE'
+               AND pp.filled_at IS NULL
+               AND COALESCE(pll.filled_qty, 0) <= 0
+               AND pll.filled_at IS NULL
+           ) AS is_approvable_active_plan,
+           (
+               pp.status = 'FILLED'
+               OR pp.filled_at IS NOT NULL
+               OR COALESCE(pll.filled_qty, 0) > 0
+               OR pll.filled_at IS NOT NULL
+           ) AS has_filling_progress,
+           (
+               pp.status = 'FILLED'
+               AND d.status = 'CLOSED'
+               AND COALESCE(subject.lifecycle, '') = 'COMPLETED'
+           ) AS is_completed_closed_history
+    FROM production_pallets pp
+    INNER JOIN docs d ON d.id = pp.prd_doc_id
+    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    LEFT JOIN marking_production_subject subject
+           ON subject.id = pll.marking_subject_id
+          AND subject.current_production_pallet_id = pp.id
+          AND subject.current_component_id = pll.id
+          AND subject.current_doc_id = d.id
+    LEFT JOIN order_lines ol ON ol.id = COALESCE(pll.order_line_id, pp.order_line_id)
+    WHERE pp.status IN ('PLANNED', 'PRINTED', 'FILLED')
+      AND COALESCE(pp.order_id, d.order_id, ol.order_id) IS NOT NULL
+      AND COALESCE(pp.order_id, d.order_id, ol.order_id) IN (SELECT id FROM open_orders)
+      AND EXISTS (
+          SELECT 1 FROM markable_lines applicable
+          WHERE applicable.order_line_id = COALESCE(pll.order_line_id, pp.order_line_id)
+      )
 ),
 filling_progress AS (
-    SELECT DISTINCT COALESCE(pp.order_id, d.order_id, ol.order_id) AS order_id,
-           COALESCE(pll.order_line_id, pp.order_line_id) AS order_line_id
-    FROM production_pallets pp
-    INNER JOIN docs d ON d.id = pp.prd_doc_id
-    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
-    LEFT JOIN order_lines ol ON ol.id = COALESCE(pll.order_line_id, pp.order_line_id)
-    WHERE pp.status IN ('PLANNED', 'PRINTED', 'FILLED')
-      AND (
-          pp.status = 'FILLED'
-          OR pp.filled_at IS NOT NULL
-          OR COALESCE(pll.filled_qty, 0) > 0
-          OR pll.filled_at IS NOT NULL
-      )
-      AND COALESCE(pp.order_id, d.order_id, ol.order_id) IS NOT NULL
-      AND COALESCE(pp.order_id, d.order_id, ol.order_id) IN (SELECT id FROM open_orders)
+    SELECT DISTINCT plan.order_id,
+           plan.order_line_id
+    FROM pallet_plan_classification plan
+    WHERE plan.has_filling_progress
+      AND NOT plan.is_completed_closed_history
 ),
 active_pallet_plan AS (
-    SELECT DISTINCT COALESCE(pp.order_id, d.order_id, ol.order_id) AS order_id,
-           COALESCE(pll.order_line_id, pp.order_line_id) AS order_line_id,
-           pp.status
-    FROM production_pallets pp
-    INNER JOIN docs d ON d.id = pp.prd_doc_id
-    LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
-    LEFT JOIN order_lines ol ON ol.id = COALESCE(pll.order_line_id, pp.order_line_id)
-    WHERE pp.status IN ('PLANNED', 'PRINTED', 'FILLED')
-      AND COALESCE(pp.order_id, d.order_id, ol.order_id) IS NOT NULL
-      AND COALESCE(pp.order_id, d.order_id, ol.order_id) IN (SELECT id FROM open_orders)
+    SELECT plan.order_id,
+           plan.order_line_id,
+           plan.status,
+           BOOL_AND(plan.is_approvable_active_plan) AS is_approvable_active_plan
+    FROM pallet_plan_classification plan
+    WHERE NOT plan.is_completed_closed_history
+    GROUP BY plan.order_id, plan.order_line_id, plan.status
 ),
 duplicate_real_hash AS (
     SELECT LOWER(BTRIM(code_hash)) AS normalized_code_hash,
@@ -8275,8 +8328,38 @@ issues AS (
     FROM open_order_tasks at
     INNER JOIN marking_code c ON c.marking_order_id = at.id
     WHERE c.origin = 'LegacySynthetic'
-      AND c.status <> 'Voided'
+      AND c.status = 'Applied'
     GROUP BY at.scope_order_id, at.order_line_id, at.requested_quantity, at.id
+
+    UNION ALL
+    SELECT at.scope_order_id,
+           at.order_line_id,
+           'MARKING_LEGACY_STATUS_UNSAFE',
+           'error',
+           NULL::double precision,
+           NULL::integer,
+           COUNT(*)::integer,
+           'marking_order=' || at.id::text,
+           'Resolve unsupported legacy synthetic statuses before cutover.'
+    FROM open_order_tasks at
+    INNER JOIN marking_code c ON c.marking_order_id = at.id
+    WHERE c.origin = 'LegacySynthetic'
+      AND c.status NOT IN ('Applied', 'Reserved', 'Voided')
+    GROUP BY at.scope_order_id, at.order_line_id, at.id
+
+    UNION ALL
+    SELECT counts.order_id,
+           counts.order_line_id,
+           'MARKING_LEGACY_APPLIED_EXCEEDS_TARGET',
+           'error',
+           line.qty_ordered,
+           counts.real_code_qty,
+           counts.legacy_synthetic_qty,
+           'applied=' || counts.legacy_synthetic_qty::text || '; target=' || line.qty_ordered::text,
+           'Resolve excess Applied legacy evidence; automatic clamp is forbidden.'
+    FROM line_code_counts counts
+    INNER JOIN open_lines line ON line.order_line_id = counts.order_line_id
+    WHERE counts.legacy_synthetic_qty > line.qty_ordered + 0.000001
 
     UNION ALL
     SELECT line.order_id,
@@ -8346,20 +8429,26 @@ issues AS (
     SELECT summary.order_id,
            NULL::bigint,
            'MARKING_LEGACY_TASK_LINE_NOT_FOUND',
-           'error',
+           CASE WHEN COALESCE(evidence.applied_legacy_qty, 0) > 0
+                     OR COALESCE(evidence.unsafe_qty, 0) > 0
+                THEN 'error' ELSE 'warning' END,
            NULL::double precision,
            NULL::integer,
            NULL::integer,
            'marking_order=' || summary.marking_order_id::text || '; candidates=0',
            'Resolve legacy task-to-line mapping before cutover.'
     FROM task_candidate_summary summary
+    LEFT JOIN task_code_evidence evidence ON evidence.marking_order_id = summary.marking_order_id
     WHERE summary.candidate_count = 0
 
     UNION ALL
     SELECT conflicts.order_id,
            conflicts.order_line_id,
-           'MARKING_LEGACY_TASK_LINE_CONFLICT',
-           'error',
+           CASE WHEN conflicts.unsafe_qty = 0 AND conflicts.all_tasks_have_applied_evidence
+                THEN 'MARKING_LEGACY_TASKS_AGGREGATABLE'
+                ELSE 'MARKING_LEGACY_TASK_LINE_CONFLICT' END,
+           CASE WHEN conflicts.unsafe_qty = 0 AND conflicts.all_tasks_have_applied_evidence
+                THEN 'warning' ELSE 'error' END,
            NULL::double precision,
            NULL::integer,
            NULL::integer,
@@ -8422,7 +8511,7 @@ issues AS (
     SELECT plan.order_id,
            plan.order_line_id,
            'MARKING_ACTIVE_PALLET_PLAN',
-           CASE WHEN plan.status = 'PLANNED' THEN 'warning' ELSE 'error' END,
+           CASE WHEN plan.is_approvable_active_plan THEN 'warning' ELSE 'error' END,
            NULL::double precision,
            NULL::integer,
            NULL::integer,
@@ -8450,6 +8539,8 @@ issues AS (
                || '; covered=' || COALESCE(covered.covered_qty, 0)::text,
            'Approve only the exact legitimate legacy subject quantity or provide real operational coverage.'
     FROM marking_production_subject subject
+    INNER JOIN items subject_item ON subject_item.id = subject.item_id
+    INNER JOIN item_types subject_item_type ON subject_item_type.id = subject_item.item_type_id
     LEFT JOIN (
         SELECT coverage.marking_subject_id, SUM(consumption.active_quantity) AS covered_qty
         FROM marking_operational_coverage coverage
@@ -8460,6 +8551,8 @@ issues AS (
         GROUP BY coverage.marking_subject_id
     ) covered ON covered.marking_subject_id = subject.id
     WHERE subject.lifecycle IN ('ACTIVE', 'COMPLETED')
+      AND COALESCE(subject_item_type.enable_marking, FALSE)
+      AND NOT COALESCE(subject_item.chz_marking_exempt, FALSE)
 )
 SELECT order_id,
        order_line_id,
@@ -8494,6 +8587,356 @@ ORDER BY order_id NULLS LAST,
 
             return entries;
         });
+    }
+
+    public MarkingCutoverLineApprovalResult ApproveMarkingCutoverLine(
+        long orderLineId,
+        int? allowedQuantity,
+        string expectedPreflightHash,
+        string approvedBy,
+        DateTime approvedAt)
+    {
+        if (orderLineId <= 0
+            || string.IsNullOrWhiteSpace(expectedPreflightHash)
+            || string.IsNullOrWhiteSpace(approvedBy)
+            || allowedQuantity < 0)
+        {
+            throw new InvalidOperationException("MARKING_CUTOVER_APPROVAL_INVALID");
+        }
+
+        MarkingCutoverLineApprovalResult? result = null;
+        ExecuteInTransaction(scopedStore =>
+        {
+            var store = (PostgresDataStore)scopedStore;
+            var expectedHash = expectedPreflightHash.Trim().ToLowerInvariant();
+            long orderId;
+            using (var scopeLockCommand = store.CreateCommand(store._connection!, @"
+SELECT line.order_id
+FROM order_lines line
+INNER JOIN orders order_row ON order_row.id = line.order_id
+WHERE line.id = @order_line_id
+FOR UPDATE OF order_row, line;"))
+            {
+                scopeLockCommand.Parameters.AddWithValue("@order_line_id", orderLineId);
+                var value = scopeLockCommand.ExecuteScalar();
+                if (value == null)
+                {
+                    throw new InvalidOperationException("MARKING_LEGACY_LINE_NOT_APPLICABLE");
+                }
+                orderId = Convert.ToInt64(value, CultureInfo.InvariantCulture);
+            }
+
+            // Freeze every acquisition envelope and code that can contribute evidence for this
+            // order. The order row lock also prevents FK-respecting writers from adding a new
+            // request until the approval transaction commits.
+            using (var requestLockCommand = store.CreateCommand(store._connection!, @"
+SELECT request.id
+FROM marking_order request
+WHERE request.order_id = @order_id OR request.source_order_id = @order_id
+ORDER BY request.id
+FOR UPDATE;"))
+            {
+                requestLockCommand.Parameters.AddWithValue("@order_id", orderId);
+                using var reader = requestLockCommand.ExecuteReader();
+                while (reader.Read()) { }
+            }
+            using (var codeLockCommand = store.CreateCommand(store._connection!, @"
+SELECT code.id
+FROM marking_code code
+INNER JOIN marking_order request ON request.id = code.marking_order_id
+WHERE request.order_id = @order_id OR request.source_order_id = @order_id
+ORDER BY code.id
+FOR UPDATE OF code;"))
+            {
+                codeLockCommand.Parameters.AddWithValue("@order_id", orderId);
+                using var reader = codeLockCommand.ExecuteReader();
+                while (reader.Read()) { }
+            }
+
+            var current = new MarkingCutoverPreflightService(store).Run(approvedAt);
+
+            using (var existingCommand = store.CreateCommand(store._connection!, @"
+SELECT id, allowed_synthetic_qty, target_qty_at_cutover, preflight_hash
+FROM marking_synthetic_legacy_allowlist
+WHERE order_line_id = @order_line_id
+FOR UPDATE;"))
+            {
+                existingCommand.Parameters.AddWithValue("@order_line_id", orderLineId);
+                using var reader = existingCommand.ExecuteReader();
+                if (reader.Read())
+                {
+                    var existingId = reader.GetInt64(0);
+                    var existingQuantity = reader.GetInt32(1);
+                    var originalHash = reader.GetString(3);
+                    if (!string.Equals(originalHash, expectedHash, StringComparison.OrdinalIgnoreCase)
+                        || (allowedQuantity.HasValue && allowedQuantity.Value != existingQuantity))
+                    {
+                        throw new InvalidOperationException("MARKING_LEGACY_LINE_ALREADY_APPROVED");
+                    }
+
+                    result = new MarkingCutoverLineApprovalResult(
+                        existingId,
+                        orderLineId,
+                        existingQuantity,
+                        originalHash,
+                        current.Hash,
+                        WasAlreadyApproved: true);
+                    return;
+                }
+            }
+
+            if (!string.Equals(current.Hash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("MARKING_CUTOVER_PREFLIGHT_HASH_MISMATCH");
+            }
+
+            var disallowedIssue = current.Entries.FirstOrDefault(entry =>
+                entry.OrderLineId == orderLineId
+                && string.Equals(entry.Level, "error", StringComparison.OrdinalIgnoreCase)
+                && entry.IssueCode is not ("MARKING_OPEN_PRD" or "MARKING_SUBJECT_SNAPSHOT"));
+            if (disallowedIssue != null)
+            {
+                throw new InvalidOperationException($"MARKING_LEGACY_LINE_NOT_APPROVABLE:{disallowedIssue.IssueCode}");
+            }
+
+            decimal targetQuantity;
+            int appliedQuantity;
+            int unsafeQuantity;
+            using (var evidenceCommand = store.CreateCommand(store._connection!, @"
+WITH target AS (
+    SELECT line.id, line.order_id, line.item_id, line.qty_ordered,
+           NULLIF(BTRIM(item.gtin), '') AS gtin
+    FROM order_lines line
+    INNER JOIN items item ON item.id = line.item_id
+    INNER JOIN item_types item_type ON item_type.id = item.item_type_id
+    WHERE line.id = @order_line_id
+      AND line.cancelled_at IS NULL
+      AND line.qty_ordered > 0.000001
+      AND COALESCE(item_type.enable_marking, FALSE)
+      AND NOT COALESCE(item.chz_marking_exempt, FALSE)
+    FOR UPDATE OF line
+), candidate_tasks AS (
+    SELECT request.id
+    FROM marking_order request
+    CROSS JOIN target
+    WHERE request.status NOT IN ('Cancelled', 'Failed')
+      AND COALESCE(request.order_id, request.source_order_id) = target.order_id
+      AND (
+          request.order_line_id = target.id
+          OR (
+              request.order_line_id IS NULL
+              AND (
+                  request.item_id = target.item_id
+                  OR (NULLIF(BTRIM(request.gtin), '') IS NOT NULL
+                      AND request.gtin = target.gtin)
+              )
+              AND 1 = (
+                  SELECT COUNT(*)
+                  FROM order_lines possible
+                  INNER JOIN items possible_item ON possible_item.id = possible.item_id
+                  INNER JOIN item_types possible_type ON possible_type.id = possible_item.item_type_id
+                  WHERE possible.order_id = target.order_id
+                    AND possible.cancelled_at IS NULL
+                    AND possible.qty_ordered > 0.000001
+                    AND COALESCE(possible_type.enable_marking, FALSE)
+                    AND NOT COALESCE(possible_item.chz_marking_exempt, FALSE)
+                    AND (
+                        request.item_id = possible.item_id
+                        OR (NULLIF(BTRIM(request.gtin), '') IS NOT NULL
+                            AND request.gtin = NULLIF(BTRIM(possible_item.gtin), ''))
+                    )
+              )
+          )
+      )
+)
+SELECT target.qty_ordered::numeric,
+       COUNT(*) FILTER (
+           WHERE code.origin = 'LegacySynthetic' AND code.status = 'Applied')::integer,
+       COUNT(*) FILTER (
+           WHERE code.origin <> 'LegacySynthetic'
+              OR code.status NOT IN ('Applied', 'Reserved', 'Voided'))::integer
+FROM target
+LEFT JOIN candidate_tasks task ON TRUE
+LEFT JOIN marking_code code ON code.marking_order_id = task.id
+GROUP BY target.qty_ordered;"))
+            {
+                evidenceCommand.Parameters.AddWithValue("@order_line_id", orderLineId);
+                using var reader = evidenceCommand.ExecuteReader();
+                if (!reader.Read())
+                {
+                    throw new InvalidOperationException("MARKING_LEGACY_LINE_NOT_APPLICABLE");
+                }
+
+                targetQuantity = reader.GetDecimal(0);
+                appliedQuantity = reader.GetInt32(1);
+                unsafeQuantity = reader.GetInt32(2);
+            }
+
+            if (unsafeQuantity > 0)
+            {
+                throw new InvalidOperationException("MARKING_LEGACY_EVIDENCE_UNSAFE");
+            }
+            if (appliedQuantity <= 0)
+            {
+                throw new InvalidOperationException("MARKING_LEGACY_APPLIED_EVIDENCE_REQUIRED");
+            }
+            if (appliedQuantity > targetQuantity + 0.000001m)
+            {
+                throw new InvalidOperationException("MARKING_LEGACY_APPLIED_EXCEEDS_TARGET");
+            }
+
+            var approvedQuantity = allowedQuantity ?? appliedQuantity;
+            if (approvedQuantity <= 0
+                || approvedQuantity > appliedQuantity
+                || approvedQuantity > targetQuantity + 0.000001m)
+            {
+                throw new InvalidOperationException("MARKING_LEGACY_APPROVAL_EXCEEDS_EVIDENCE");
+            }
+
+            long allowlistId;
+            using (var insertCommand = store.CreateCommand(store._connection!, @"
+INSERT INTO marking_synthetic_legacy_allowlist(
+    order_line_id, allowed_synthetic_qty, target_qty_at_cutover,
+    approved_at, approved_by, preflight_hash)
+VALUES(@order_line_id, @approved_quantity, @target_quantity,
+       @approved_at, @approved_by, @preflight_hash)
+RETURNING id;"))
+            {
+                insertCommand.Parameters.AddWithValue("@order_line_id", orderLineId);
+                insertCommand.Parameters.AddWithValue("@approved_quantity", approvedQuantity);
+                insertCommand.Parameters.AddWithValue("@target_quantity", targetQuantity);
+                insertCommand.Parameters.AddWithValue("@approved_at", ToDbDate(approvedAt));
+                insertCommand.Parameters.AddWithValue("@approved_by", approvedBy.Trim());
+                insertCommand.Parameters.AddWithValue("@preflight_hash", expectedHash);
+                allowlistId = Convert.ToInt64(insertCommand.ExecuteScalar(), CultureInfo.InvariantCulture);
+            }
+
+            var afterInsert = new MarkingCutoverPreflightService(store).Run(approvedAt);
+            if (string.Equals(afterInsert.Hash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("MARKING_CUTOVER_PARENT_HASH_DID_NOT_CHANGE");
+            }
+
+            result = new MarkingCutoverLineApprovalResult(
+                allowlistId,
+                orderLineId,
+                approvedQuantity,
+                expectedHash,
+                afterInsert.Hash,
+                WasAlreadyApproved: false);
+        });
+
+        return result ?? throw new InvalidOperationException("MARKING_CUTOVER_APPROVAL_FAILED");
+    }
+
+    public MarkingCutoverSubjectApprovalResult ApproveMarkingCutoverSubjects(
+        long allowlistId,
+        IReadOnlyList<MarkingCutoverSubjectApprovalIntent> subjects,
+        string expectedPreflightHash,
+        string approvedBy,
+        DateTime approvedAt)
+    {
+        if (allowlistId <= 0
+            || subjects == null
+            || subjects.Count == 0
+            || subjects.Any(subject => subject.SubjectId == Guid.Empty || subject.ApprovedQuantity <= 0)
+            || subjects.Select(subject => subject.SubjectId).Distinct().Count() != subjects.Count
+            || string.IsNullOrWhiteSpace(expectedPreflightHash)
+            || string.IsNullOrWhiteSpace(approvedBy))
+        {
+            throw new InvalidOperationException("MARKING_CUTOVER_SUBJECT_APPROVAL_INVALID");
+        }
+
+        MarkingCutoverSubjectApprovalResult? result = null;
+        ExecuteInTransaction(scopedStore =>
+        {
+            var store = (PostgresDataStore)scopedStore;
+            var expectedHash = expectedPreflightHash.Trim().ToLowerInvariant();
+            var current = new MarkingCutoverPreflightService(store).Run(approvedAt);
+            if (!string.Equals(current.Hash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("MARKING_CUTOVER_PREFLIGHT_HASH_MISMATCH");
+            }
+
+            using (var parentCommand = store.CreateCommand(store._connection!, @"
+SELECT order_line_id
+FROM marking_synthetic_legacy_allowlist
+WHERE id = @allowlist_id
+FOR UPDATE;"))
+            {
+                parentCommand.Parameters.AddWithValue("@allowlist_id", allowlistId);
+                if (parentCommand.ExecuteScalar() == null)
+                {
+                    throw new InvalidOperationException("MARKING_GRANDFATHER_PARENT_NOT_FOUND");
+                }
+            }
+
+            var approvalIds = new List<Guid>();
+            var alreadyApproved = true;
+            foreach (var intent in subjects.OrderBy(subject => subject.SubjectId))
+            {
+                using var existingCommand = store.CreateCommand(store._connection!, @"
+SELECT id, allowlist_id, approved_quantity, preflight_hash
+FROM marking_synthetic_legacy_allowlist_subject
+WHERE marking_subject_id = @subject_id
+FOR UPDATE;");
+                existingCommand.Parameters.AddWithValue("@subject_id", intent.SubjectId);
+                using (var reader = existingCommand.ExecuteReader())
+                {
+                    if (reader.Read())
+                    {
+                        if (reader.GetInt64(1) != allowlistId
+                            || reader.GetDecimal(2) != intent.ApprovedQuantity
+                            || !string.Equals(reader.GetString(3), expectedHash, StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new InvalidOperationException("MARKING_GRANDFATHER_SUBJECT_ALREADY_APPROVED");
+                        }
+                        approvalIds.Add(reader.GetGuid(0));
+                        continue;
+                    }
+                }
+
+                alreadyApproved = false;
+                var approvalId = Guid.NewGuid();
+                using var insertCommand = store.CreateCommand(store._connection!, @"
+INSERT INTO marking_synthetic_legacy_allowlist_subject(
+    id, allowlist_id, marking_subject_id, component_id_snapshot,
+    item_id_snapshot, gtin_snapshot, subject_revision_at_cutover, subject_quantity_at_cutover,
+    approved_quantity, preflight_hash, approved_at, approved_by)
+SELECT @approval_id, @allowlist_id, subject.id, subject.current_component_id,
+       subject.item_id, subject.gtin, subject.revision, subject.subject_quantity,
+       @approved_quantity, @preflight_hash, @approved_at, @approved_by
+FROM marking_production_subject subject
+WHERE subject.id = @subject_id
+  AND subject.lifecycle = 'ACTIVE';");
+                insertCommand.Parameters.AddWithValue("@approval_id", approvalId);
+                insertCommand.Parameters.AddWithValue("@allowlist_id", allowlistId);
+                insertCommand.Parameters.AddWithValue("@subject_id", intent.SubjectId);
+                insertCommand.Parameters.AddWithValue("@approved_quantity", intent.ApprovedQuantity);
+                insertCommand.Parameters.AddWithValue("@preflight_hash", expectedHash);
+                insertCommand.Parameters.AddWithValue("@approved_at", ToDbDate(approvedAt));
+                insertCommand.Parameters.AddWithValue("@approved_by", approvedBy.Trim());
+                if (insertCommand.ExecuteNonQuery() != 1)
+                {
+                    throw new InvalidOperationException("MARKING_GRANDFATHER_SUBJECT_NOT_FOUND");
+                }
+                approvalIds.Add(approvalId);
+            }
+
+            var afterInsert = new MarkingCutoverPreflightService(store).Run(approvedAt);
+            if (!string.Equals(afterInsert.Hash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("MARKING_CUTOVER_CHILD_HASH_CHANGED");
+            }
+
+            result = new MarkingCutoverSubjectApprovalResult(
+                allowlistId,
+                expectedHash,
+                approvalIds,
+                alreadyApproved);
+        });
+
+        return result ?? throw new InvalidOperationException("MARKING_CUTOVER_SUBJECT_APPROVAL_FAILED");
     }
 
     public void EnforceMarkingCutover(string expectedPreflightHash, string approvedBy, DateTime enforcedAt)
@@ -8556,8 +8999,17 @@ ORDER BY order_id NULLS LAST,
 SELECT COUNT(*)
 FROM marking_synthetic_legacy_allowlist_subject approval
 INNER JOIN marking_production_subject subject ON subject.id = approval.marking_subject_id
+INNER JOIN marking_synthetic_legacy_allowlist parent ON parent.id = approval.allowlist_id
 WHERE subject.lifecycle = 'ACTIVE'
-  AND approval.preflight_hash <> @preflight_hash;"))
+  AND (
+      approval.preflight_hash <> @preflight_hash
+      OR approval.subject_revision_at_cutover IS DISTINCT FROM subject.revision
+      OR approval.item_id_snapshot IS DISTINCT FROM subject.item_id
+      OR approval.gtin_snapshot IS DISTINCT FROM subject.gtin
+      OR approval.subject_quantity_at_cutover IS DISTINCT FROM subject.subject_quantity
+      OR approval.component_id_snapshot IS DISTINCT FROM subject.current_component_id
+      OR parent.order_line_id IS DISTINCT FROM subject.current_order_line_id
+  );"))
             {
                 staleApprovalCommand.Parameters.AddWithValue("@preflight_hash", preflightHash);
                 var staleApprovals = Convert.ToInt32(
@@ -8601,10 +9053,10 @@ WHERE existing_coverage + approved_legacy + 0.000001 < subject_quantity;"))
             using (var allowanceCommand = CreateCommand(connection, @"
 INSERT INTO marking_grandfather_operational_allowance(
     id, allowlist_subject_id, marking_subject_id, approved_quantity,
-    cutover_subject_revision, preflight_hash, created_at)
+    usable_quantity_cap, cutover_subject_revision, preflight_hash, created_at)
 SELECT (md5('grandfather-allowance:' || approval.id::text))::uuid,
        approval.id, approval.marking_subject_id, approval.approved_quantity,
-       subject.revision, approval.preflight_hash, @enforced_at
+       approval.approved_quantity, subject.revision, approval.preflight_hash, @enforced_at
 FROM marking_synthetic_legacy_allowlist_subject approval
 INNER JOIN marking_production_subject subject ON subject.id = approval.marking_subject_id
 WHERE subject.lifecycle = 'ACTIVE'
@@ -8815,6 +9267,7 @@ LEFT JOIN shipped ON shipped.order_line_id = ol.id
 LEFT JOIN reserved_filled ON reserved_filled.order_line_id = ol.id
 WHERE o.status IN (@in_progress_status, @accepted_status)
   AND COALESCE(it.enable_marking, FALSE) = TRUE
+  AND NOT COALESCE(i.chz_marking_exempt, FALSE)
   AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
 ORDER BY i.name, BTRIM(i.gtin), ol.id;
 ");
@@ -9004,6 +9457,7 @@ SELECT EXISTS (
     INNER JOIN item_types item_type ON item_type.id = item.item_type_id
     WHERE component.production_pallet_id = @pallet_id
       AND COALESCE(item_type.enable_marking, FALSE) = TRUE
+      AND NOT COALESCE(item.chz_marking_exempt, FALSE)
 );" );
             command.Parameters.AddWithValue("@pallet_id", productionPalletId);
             return Convert.ToBoolean(command.ExecuteScalar(), CultureInfo.InvariantCulture);
@@ -9815,7 +10269,8 @@ SELECT EXISTS(
     INNER JOIN items item ON item.id = component.item_id
     INNER JOIN item_types item_type ON item_type.id = item.item_type_id
     WHERE pallet.prd_doc_id = @doc_id
-      AND COALESCE(item_type.enable_marking, FALSE) = TRUE); ");
+      AND COALESCE(item_type.enable_marking, FALSE) = TRUE
+      AND NOT COALESCE(item.chz_marking_exempt, FALSE)); ");
                 applicabilityCommand.Parameters.AddWithValue("@doc_id", productionReceiptDocId);
                 if (Convert.ToBoolean(applicabilityCommand.ExecuteScalar() ?? false, CultureInfo.InvariantCulture))
                 {
@@ -9856,6 +10311,7 @@ WITH components AS (
            ON consumption.operational_coverage_id = coverage.id
     WHERE pallet.prd_doc_id = @doc_id
       AND COALESCE(item_type.enable_marking, FALSE) = TRUE
+      AND NOT COALESCE(item.chz_marking_exempt, FALSE)
     GROUP BY component.id, component.planned_qty, component.marking_subject_id
 )
 SELECT COUNT(*)
@@ -9963,7 +10419,8 @@ SELECT EXISTS(
     INNER JOIN items item ON item.id = component.item_id
     INNER JOIN item_types item_type ON item_type.id = item.item_type_id
     WHERE (pallet.prd_doc_id = @source_doc_id OR pallet.id = @replacement_pallet_id)
-      AND COALESCE(item_type.enable_marking, FALSE) = TRUE); ");
+      AND COALESCE(item_type.enable_marking, FALSE) = TRUE
+      AND NOT COALESCE(item.chz_marking_exempt, FALSE)); ");
                 applicabilityCommand.Parameters.AddWithValue("@source_doc_id", sourceProductionReceiptDocId);
                 applicabilityCommand.Parameters.AddWithValue("@replacement_pallet_id", replacementPalletId);
                 if (Convert.ToBoolean(applicabilityCommand.ExecuteScalar() ?? false, CultureInfo.InvariantCulture))
@@ -17049,7 +17506,8 @@ RETURNING id;
             DefaultSaleVatRateId = reader.IsDBNull(22) ? null : reader.GetInt64(22),
             DefaultSaleVatRateName = reader.IsDBNull(23) ? null : reader.GetString(23),
             DefaultSaleVatRate = reader.IsDBNull(24) ? null : reader.GetDecimal(24),
-            DefaultSaleVatRateIsActive = reader.IsDBNull(25) ? null : reader.GetBoolean(25)
+            DefaultSaleVatRateIsActive = reader.IsDBNull(25) ? null : reader.GetBoolean(25),
+            ChzMarkingExempt = reader.FieldCount > 26 && !reader.IsDBNull(26) && reader.GetBoolean(26)
         };
     }
 
@@ -18366,6 +18824,7 @@ LIMIT 1;";
             || !ColumnExists(connection, "items", "storage_conditions")
             || !ColumnExists(connection, "items", "default_sale_price_gross")
             || !ColumnExists(connection, "items", "default_sale_vat_rate_id")
+            || !ColumnExists(connection, "items", "chz_marking_exempt")
             || !ColumnExists(connection, "locations", "auto_hu_distribution_enabled")
             || !ColumnExists(connection, "item_types", "is_visible_in_product_catalog")
             || !ColumnExists(connection, "item_types", "enable_min_stock_control")
@@ -18522,10 +18981,10 @@ WHERE COALESCE(i.is_marked, 0) = 0
     {
         if (string.IsNullOrWhiteSpace(search))
         {
-            return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id ORDER BY i.name";
+            return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active, COALESCE(i.chz_marking_exempt, FALSE) FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id ORDER BY i.name";
         }
 
-        return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
+        return "SELECT i.id, i.name, i.is_active, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name, i.item_type_id, it.name, it.is_visible_in_product_catalog, it.enable_min_stock_control, COALESCE(it.enable_marking, FALSE), i.min_stock_qty, i.storage_conditions, i.default_sale_price_gross, i.default_sale_vat_rate_id, vr.name, vr.rate, vr.is_active, COALESCE(i.chz_marking_exempt, FALSE) FROM items i LEFT JOIN taras t ON t.id = i.tara_id LEFT JOIN item_types it ON it.id = i.item_type_id LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
     }
 
     private static string BuildStockQuery(string? search)

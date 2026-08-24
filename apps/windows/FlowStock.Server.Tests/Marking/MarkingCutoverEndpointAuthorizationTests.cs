@@ -85,6 +85,38 @@ public sealed class MarkingCutoverEndpointAuthorizationTests
             "abc", "PC:admin", It.IsAny<DateTime>()), Times.Once);
     }
 
+    [Fact]
+    public async Task LineApproval_WpfAdmin_DerivesActorAndDoesNotAcceptCallerActor()
+    {
+        var store = CreateStore();
+        var approvals = CreateApprovalStore();
+        approvals.Setup(value => value.ApproveMarkingCutoverLine(
+                42,
+                300,
+                "H1",
+                "WPF:maintenance-operator",
+                It.IsAny<DateTime>()))
+            .Returns(new MarkingCutoverLineApprovalResult(7, 42, 300, "h1", "h2", false));
+        await using var host = await Host.StartAsync(store, pcIdentity: null, approvals);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/admin/marking/cutover/line-approvals")
+        {
+            Content = JsonContent.Create(new
+            {
+                order_line_id = 42,
+                allowed_synthetic_qty = 300,
+                preflight_hash = "H1",
+                actor = "spoofed"
+            })
+        };
+        request.Headers.Add(WpfMachineAuthorization.KeyHeader, WpfKey);
+        request.Headers.Add(WpfMachineAuthorization.AuditActorHeader, "maintenance-operator");
+
+        using var response = await host.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        approvals.VerifyAll();
+    }
+
     private static Mock<IMarkingCutoverPreflightStore> CreateStore()
     {
         var store = new Mock<IMarkingCutoverPreflightStore>(MockBehavior.Strict);
@@ -92,6 +124,9 @@ public sealed class MarkingCutoverEndpointAuthorizationTests
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTime>()));
         return store;
     }
+
+    private static Mock<IMarkingCutoverApprovalStore> CreateApprovalStore()
+        => new(MockBehavior.Strict);
 
     private sealed class Host : IAsyncDisposable
     {
@@ -107,13 +142,15 @@ public sealed class MarkingCutoverEndpointAuthorizationTests
 
         public static async Task<Host> StartAsync(
             Mock<IMarkingCutoverPreflightStore> store,
-            PcWebIdentity? pcIdentity)
+            PcWebIdentity? pcIdentity,
+            Mock<IMarkingCutoverApprovalStore>? approvals = null)
         {
             var sessions = new Mock<IPcWebSessionResolver>(MockBehavior.Strict);
             sessions.Setup(value => value.Resolve(It.IsAny<HttpRequest>())).Returns(pcIdentity);
             var builder = WebApplication.CreateBuilder();
             builder.WebHost.UseKestrel().UseUrls("http://127.0.0.1:0");
             builder.Services.AddSingleton(store.Object);
+            builder.Services.AddSingleton((approvals ?? CreateApprovalStore()).Object);
             builder.Services.AddSingleton(new WpfMachineAuthorization(WpfKey));
             builder.Services.AddSingleton(sessions.Object);
             var app = builder.Build();

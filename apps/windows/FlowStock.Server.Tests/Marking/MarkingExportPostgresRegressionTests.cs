@@ -461,10 +461,11 @@ WHERE code = @code;
 WITH source AS (
     SELECT pll.id AS component_id, pll.marking_subject_id AS subject_id,
            pll.order_line_id, pll.item_id, i.gtin,
-           pp.id AS pallet_id
+           pp.id AS pallet_id, subject.revision AS subject_revision
     FROM production_pallet_lines pll
     INNER JOIN production_pallets pp ON pp.id = pll.production_pallet_id
     INNER JOIN items i ON i.id = pll.item_id
+    INNER JOIN marking_production_subject subject ON subject.id = pll.marking_subject_id
     WHERE pp.order_id = @order_id
     LIMIT 1
 ), parent AS (
@@ -476,17 +477,17 @@ WITH source AS (
 ), approval AS (
     INSERT INTO marking_synthetic_legacy_allowlist_subject(
         id, allowlist_id, marking_subject_id, component_id_snapshot,
-        item_id_snapshot, gtin_snapshot, subject_quantity_at_cutover,
+        item_id_snapshot, gtin_snapshot, subject_revision_at_cutover, subject_quantity_at_cutover,
         approved_quantity, preflight_hash, approved_at, approved_by)
     SELECT @approval_id, parent.id, source.subject_id, source.component_id,
-           source.item_id, source.gtin, 3000, 3000, @hash, @now, 'test'
+           source.item_id, source.gtin, source.subject_revision, 3000, 3000, @hash, @now, 'test'
     FROM source CROSS JOIN parent
     RETURNING marking_subject_id
 ), allowance AS (
     INSERT INTO marking_grandfather_operational_allowance(
         id, allowlist_subject_id, marking_subject_id, approved_quantity,
-        cutover_subject_revision, preflight_hash, created_at)
-    SELECT @allowance_id, @approval_id, approval.marking_subject_id, 3000,
+        usable_quantity_cap, cutover_subject_revision, preflight_hash, created_at)
+    SELECT @allowance_id, @approval_id, approval.marking_subject_id, 3000, 3000,
            subject.revision, @hash, @now
     FROM approval
     INNER JOIN marking_production_subject subject ON subject.id = approval.marking_subject_id

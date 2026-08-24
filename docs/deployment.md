@@ -8,6 +8,10 @@
 
 Переход маркировки в `ENFORCED` не имеет отдельного короткого deploy-пути. Он выполняется только по обычному FlowStock deployment process и `docs/marking-cutover.md`: dev rehearsal, свежий проверенный PostgreSQL backup, остановленные writers, final preflight/hash, trusted admin-only maintenance-команда `POST /api/admin/marking/cutover/enforce` с повторной проверкой exact hash внутри одной транзакции, health/diagnostics/smoke и только затем возврат writers. После запуска runtime с V0036 состояние `SHADOW` является maintenance/fail-closed: новые marking export/import, наполнение маркируемых production pallets и проведение соответствующего выпуска запрещены с `MARKING_CUTOVER_MAINTENANCE_REQUIRED`; preflight и enforce доступны только авторизованному WPF/PC admin. Ручные production SQL edits запрещены. Если preflight/enforce не завершён, writers не возвращаются: recovery — восстановление свежего pre-deploy backup и предыдущего runtime. После commit применяется canonical restore либо fix-forward при остановленных writers.
 
+Repair-миграция `V0037__repair_historical_synthetic_origin.sql` является обычной pending migration того же marking maintenance release. Её применяет one-shot `migrator`, запускаемый внутри канонического PowerShell deployment с explicit `docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml ...`; самостоятельный запуск migrator не является альтернативным production deploy. Для V0037 не используются `deploy_from_git.sh`, `deploy_update.sh`, короткий SSH deploy или ручной production SQL. После миграции выполняется новый preflight и формируется новый approval hash; прежний hash не переиспользуется.
+
+Additive `V0038__marking_catalog_exemption_and_approval_guards.sql` входит в тот же обычный maintenance release и применяется тем же one-shot `migrator` только внутри канонического PowerShell deployment. До запуска проверяются duplicate parent allowlists по `order_line_id` и duplicate child approvals по subject; конфликт aborts migration, без merge/delete. После V0038 обязателен новый preflight и lifecycle `H1 → единственный parent → H2 → child → H2 → enforce(H2)`. Для V0038 также запрещены helper/legacy scripts, короткий SSH deploy, отдельный migrator deploy и ручной production SQL.
+
 ## Обзор
 
 - Production deploy выполняется через `deploy/docker-compose.yml`.
@@ -587,7 +591,7 @@ $DC restart nginx
 
 Процедуры, привязанные к конкретным миграциям или разовым переходам, описаны отдельно:
 
-- Cutover ЧЗ real-code workflow (`V0027` + subject aggregate schema, `marking_cutover_state`, preflight, enforcement) — [`docs/marking-cutover.md`](marking-cutover.md)
+- Cutover ЧЗ real-code workflow (`V0027` + subject aggregate V0036 + historical repair V0037 + applicability/approval guards V0038, `marking_cutover_state`, preflight, enforcement) — [`docs/marking-cutover.md`](marking-cutover.md)
 - Production backfill статусов ЧЗ (`backfill_marking_status.sh`) — `deploy/docs/operations/marking-backfill.md`
 - Полная проверка UDP discovery — `deploy/docs/operations/discovery-smoke.md`
 

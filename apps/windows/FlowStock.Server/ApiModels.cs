@@ -738,6 +738,9 @@ public sealed class UpsertItemRequest
 
     [JsonPropertyName("default_sale_vat_rate_id")]
     public long? DefaultSaleVatRateId { get; set; }
+
+    [JsonPropertyName("chz_marking_exempt")]
+    public bool? ChzMarkingExempt { get; set; }
 }
 
 public sealed class UpsertVatRateRequest
