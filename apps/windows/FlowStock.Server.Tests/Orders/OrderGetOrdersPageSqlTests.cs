@@ -53,14 +53,14 @@ public sealed class OrderGetOrdersPageSqlTests
     }
 
     [Fact]
-    public void OrderListMarkingRollup_DoesNotCompleteZeroNeedMarkedOrders()
+    public void OrderListMarkingRollup_UsesApplicabilityAndAggregateCoverageInEnforcedMode()
     {
         var sql = File.ReadAllText(GetPostgresDataStorePath()).Replace("\r\n", "\n", StringComparison.Ordinal);
 
-        Assert.Contains(
-            "COALESCE(mof.marking_applies, FALSE)\n           AND COALESCE(mof.has_ordered_markable_qty, FALSE)\n           AND NOT COALESCE(mcb.has_uncovered_positive_need, FALSE) AS marking_completed",
-            sql,
-            StringComparison.Ordinal);
+        Assert.Contains("aggregate_marking_rollup AS", sql, StringComparison.Ordinal);
+        Assert.Contains("CASE WHEN mode.state = 'ENFORCED' THEN aggregate.marking_completed", sql, StringComparison.Ordinal);
+        Assert.Contains("line.gtin IS NULL", sql, StringComparison.Ordinal);
+        Assert.Contains("marking_ready_hu_fact", sql, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -109,7 +109,7 @@ public sealed class OrderGetOrdersPageSqlTests
     {
         var sql = File.ReadAllText(GetPostgresDataStorePath()).Replace("\r\n", "\n", StringComparison.Ordinal);
         var coverageStart = sql.IndexOf("free_code_buckets AS", StringComparison.Ordinal);
-        var rollupStart = sql.IndexOf("marking_rollup AS", StringComparison.Ordinal);
+        var rollupStart = sql.IndexOf("\nmarking_rollup AS", StringComparison.Ordinal);
         var coverageSection = sql[coverageStart..rollupStart];
         var rollupEnd = sql.IndexOf(")\nSELECT ob.id", rollupStart, StringComparison.Ordinal);
         var rollupSection = sql[rollupStart..rollupEnd];
@@ -131,7 +131,7 @@ public sealed class OrderGetOrdersPageSqlTests
         Assert.Contains("AND bucket.item_id <> need.item_id", coverageSection, StringComparison.Ordinal);
         Assert.Contains("AND NULLIF(BTRIM(need.gtin), '') IS NOT NULL", coverageSection, StringComparison.Ordinal);
         Assert.Contains("LEFT JOIN marking_code_covered_by_order mcb ON mcb.order_id = ob.id", rollupSection, StringComparison.Ordinal);
-        Assert.Contains("AND NOT COALESCE(mcb.has_uncovered_positive_need, FALSE) AS marking_completed", rollupSection, StringComparison.Ordinal);
+        Assert.Contains("CASE WHEN mode.state = 'ENFORCED' THEN aggregate.marking_completed", rollupSection, StringComparison.Ordinal);
         Assert.DoesNotContain("SELECT DISTINCT c.id", coverageSection, StringComparison.Ordinal);
         Assert.DoesNotContain("COUNT(DISTINCT c.id)", coverageSection, StringComparison.Ordinal);
         Assert.DoesNotContain("FROM markable_item_need need\n    INNER JOIN selected_marking_orders", coverageSection, StringComparison.Ordinal);

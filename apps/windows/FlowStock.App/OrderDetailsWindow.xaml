@@ -150,9 +150,10 @@
                 </GroupBox>
 
                 <GroupBox Grid.Row="1" Grid.Column="1" Header="Маркировка ЧЗ" Margin="8,0,0,0" Padding="8">
-                    <Grid>
+                    <StackPanel>
                         <Button x:Name="ExportMarkingButton" Style="{StaticResource OrderActionButtonStyle}" Content="Сформировать Excel ЧЗ" Click="ExportMarking_Click" TabIndex="15" Margin="0" />
-                    </Grid>
+                        <Button x:Name="ImportMarkingButton" Style="{StaticResource OrderActionButtonStyle}" Content="Загрузить ответ КМ" Click="ImportMarking_Click" TabIndex="16" Margin="0,6,0,0" />
+                    </StackPanel>
                 </GroupBox>
             </Grid>
             <Grid Grid.Row="1" VerticalAlignment="Stretch" HorizontalAlignment="Stretch">

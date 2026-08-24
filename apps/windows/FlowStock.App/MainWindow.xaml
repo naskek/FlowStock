@@ -1083,32 +1083,6 @@
                     </DataGrid>
                 </Grid>
             </TabItem>
-            <TabItem Header="Маркировка (КМ)" Visibility="Collapsed">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                        <Button Content="Импорт файла..." Click="KmImport_Click" />
-                        <Button Content="Открыть пакет" Click="KmOpenBatch_Click" Margin="8,0,0,0" />
-                        <Button Content="Редактировать" Click="KmEditBatch_Click" Margin="8,0,0,0" />
-                        <Button x:Name="KmDeleteBatchButton" Content="Удалить пакет" Click="KmDeleteBatch_Click" Margin="8,0,0,0" />
-                    </StackPanel>
-                    <DataGrid x:Name="KmBatchesGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
-                              SelectionChanged="KmBatchesGrid_SelectionChanged"
-                              MouseDoubleClick="KmBatchesGrid_MouseDoubleClick">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="Дата" Binding="{Binding ImportedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="200" />
-                            <DataGridTextColumn Header="Заказ" Binding="{Binding OrderRef}" Width="Auto" MaxWidth="200" />
-                            <DataGridTextColumn Header="Статус пакета" Binding="{Binding BatchStatusDisplay}" Width="Auto" MaxWidth="280" />
-                            <DataGridTextColumn Header="Файл" Binding="{Binding FileName}" Width="*" />
-                            <DataGridTextColumn Header="Кодов" Binding="{Binding TotalCodes}" Width="Auto" MaxWidth="120" />
-                            <DataGridTextColumn Header="Ошибок" Binding="{Binding ErrorCount}" Width="Auto" MaxWidth="120" />
-                        </DataGrid.Columns>
-                    </DataGrid>
-                </Grid>
-            </TabItem>
             </TabControl>
         </Border>
     </DockPanel>

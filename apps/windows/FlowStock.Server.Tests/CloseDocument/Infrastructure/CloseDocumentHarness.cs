@@ -35,6 +35,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, IReadOnlyDictionary<long, double>> _shippedTotalsByOrderLine = new();
     private readonly Dictionary<Guid, MarkingOrder> _markingOrders = new();
     private readonly Dictionary<Guid, MarkingCode> _markingCodes = new();
+    private readonly Dictionary<Guid, MarkingCodeImport> _markingCodeImports = new();
     private readonly Dictionary<long, int> _kmCodeCountByReceiptLine = new();
     private readonly HashSet<long> _ordersWithOutboundDocs = new();
     private readonly HashSet<long> _commerciallyLockedOrderLineIds = new();
@@ -73,6 +74,20 @@ internal sealed class CloseDocumentHarness
     public int TransactionExecutionCount => _transactionExecutionCount;
     public IReadOnlyList<MarkingOrder> MarkingOrders => _markingOrders.Values.OrderBy(order => order.CreatedAt).ToArray();
     public IReadOnlyList<MarkingCode> MarkingCodes => _markingCodes.Values.OrderBy(code => code.CreatedAt).ToArray();
+    public IReadOnlyList<MarkingCodeImport> MarkingCodeImports => _markingCodeImports.Values.OrderBy(value => value.CreatedAt).ToArray();
+
+    public void FailMarkingRequestScopeCreation(string message)
+    {
+        _store.As<IMarkingAggregateStore>()
+            .Setup(store => store.CreateImmutableRequestScopes(
+                It.IsAny<Guid>(),
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+                It.IsAny<DateTime>()))
+            .Throws(new InvalidOperationException(message));
+    }
 
     public void VerifyNoGlobalHuFateReads()
     {
@@ -362,6 +377,7 @@ internal sealed class CloseDocumentHarness
             PartnerCode = order.PartnerCode,
             UseReservedStock = order.UseReservedStock,
             AllowPartialOutbound = order.AllowPartialOutbound,
+            MarkingResponsibility = order.MarkingResponsibility,
             MarkingStatus = order.MarkingStatus,
             IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
             MarkingRequired = order.MarkingRequired,
@@ -458,7 +474,11 @@ internal sealed class CloseDocumentHarness
             OrderId = order.OrderId,
             ItemId = order.ItemId,
             Gtin = order.Gtin,
+            RequiredQuantity = order.RequiredQuantity,
+            ReserveQuantity = order.ReserveQuantity,
             RequestedQuantity = order.RequestedQuantity,
+            OriginalOrderId = order.OriginalOrderId,
+            OriginalOrderLineId = order.OriginalOrderLineId,
             RequestNumber = order.RequestNumber,
             Status = order.Status,
             Notes = order.Notes,
@@ -468,6 +488,54 @@ internal sealed class CloseDocumentHarness
             CodesBoundAt = order.CodesBoundAt,
             CreatedAt = order.CreatedAt,
             UpdatedAt = order.UpdatedAt
+        };
+    }
+
+    private static MarkingCode CloneMarkingCode(MarkingCode code)
+    {
+        return new MarkingCode
+        {
+            Id = code.Id,
+            Code = code.Code,
+            CodeHash = code.CodeHash,
+            Gtin = code.Gtin,
+            MarkingOrderId = code.MarkingOrderId,
+            ImportId = code.ImportId,
+            Status = code.Status,
+            Origin = code.Origin,
+            ReceiptDocId = code.ReceiptDocId,
+            ReceiptLineId = code.ReceiptLineId,
+            SourceRowNumber = code.SourceRowNumber,
+            PrintedAt = code.PrintedAt,
+            AppliedAt = code.AppliedAt,
+            ReportedAt = code.ReportedAt,
+            IntroducedAt = code.IntroducedAt,
+            CreatedAt = code.CreatedAt,
+            UpdatedAt = code.UpdatedAt
+        };
+    }
+
+    private static MarkingCodeImport CloneMarkingCodeImport(MarkingCodeImport import)
+    {
+        return new MarkingCodeImport
+        {
+            Id = import.Id,
+            OriginalFilename = import.OriginalFilename,
+            StoragePath = import.StoragePath,
+            FileHash = import.FileHash,
+            SourceType = import.SourceType,
+            DetectedRequestNumber = import.DetectedRequestNumber,
+            DetectedGtin = import.DetectedGtin,
+            DetectedQuantity = import.DetectedQuantity,
+            MatchedMarkingOrderId = import.MatchedMarkingOrderId,
+            MatchConfidence = import.MatchConfidence,
+            Status = import.Status,
+            ImportedRows = import.ImportedRows,
+            ValidCodeRows = import.ValidCodeRows,
+            DuplicateCodeRows = import.DuplicateCodeRows,
+            ErrorMessage = import.ErrorMessage,
+            CreatedAt = import.CreatedAt,
+            ProcessedAt = import.ProcessedAt
         };
     }
 
@@ -517,6 +585,9 @@ internal sealed class CloseDocumentHarness
                 pair => (IReadOnlyList<OrderReceiptPlanLine>)pair.Value.Select(CloneOrderReceiptPlanLine).ToArray()),
             _productionPallets.ToDictionary(pair => pair.Key, pair => CloneProductionPallet(pair.Value)),
             _productionFillingCompletions.Select(CloneProductionFillingCompletion).ToList(),
+            _markingOrders.ToDictionary(pair => pair.Key, pair => CloneMarkingOrder(pair.Value)),
+            _markingCodes.ToDictionary(pair => pair.Key, pair => CloneMarkingCode(pair.Value)),
+            _markingCodeImports.ToDictionary(pair => pair.Key, pair => CloneMarkingCodeImport(pair.Value)),
             _postedLedger.Select(CloneLedgerEntry).ToList());
     }
 
@@ -566,6 +637,24 @@ internal sealed class CloseDocumentHarness
 
         _productionFillingCompletions.Clear();
         _productionFillingCompletions.AddRange(snapshot.ProductionFillingCompletions.Select(CloneProductionFillingCompletion));
+
+        _markingOrders.Clear();
+        foreach (var pair in snapshot.MarkingOrders)
+        {
+            _markingOrders[pair.Key] = CloneMarkingOrder(pair.Value);
+        }
+
+        _markingCodes.Clear();
+        foreach (var pair in snapshot.MarkingCodes)
+        {
+            _markingCodes[pair.Key] = CloneMarkingCode(pair.Value);
+        }
+
+        _markingCodeImports.Clear();
+        foreach (var pair in snapshot.MarkingCodeImports)
+        {
+            _markingCodeImports[pair.Key] = CloneMarkingCodeImport(pair.Value);
+        }
 
         _postedLedger.Clear();
         _postedLedger.AddRange(snapshot.PostedLedger.Select(CloneLedgerEntry));
@@ -625,6 +714,9 @@ internal sealed class CloseDocumentHarness
         Dictionary<long, IReadOnlyList<OrderReceiptPlanLine>> OrderReceiptPlanLines,
         Dictionary<long, ProductionPallet> ProductionPallets,
         List<ProductionFillingCompletion> ProductionFillingCompletions,
+        Dictionary<Guid, MarkingOrder> MarkingOrders,
+        Dictionary<Guid, MarkingCode> MarkingCodes,
+        Dictionary<Guid, MarkingCodeImport> MarkingCodeImports,
         List<LedgerEntry> PostedLedger);
 
     public void SeedDoc(Doc doc)
@@ -894,6 +986,40 @@ internal sealed class CloseDocumentHarness
 
     private void ConfigureStore()
     {
+        _store.As<IMarkingAggregateStore>()
+            .Setup(store => store.GetAggregateMarkingCoverageByOrderLine(It.IsAny<long>()))
+            .Returns(new Dictionary<long, MarkingLineAggregateCoverage>());
+        _store.As<IMarkingAggregateStore>()
+            .Setup(store => store.GetActiveMarkingRequestScopeQuantityByItem(It.IsAny<long>()))
+            .Returns(new Dictionary<long, double>());
+        _store.As<IMarkingAggregateStore>()
+            .Setup(store => store.GetDefaultMarkingReserveQuantity())
+            .Returns(5);
+        _store.As<IMarkingAggregateStore>()
+            .Setup(store => store.CreateImmutableRequestScopes(
+                It.IsAny<Guid>(),
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+                It.IsAny<DateTime>()));
+        _store.As<IMarkingAggregateStore>()
+            .Setup(store => store.RecordConfirmedRealImportAndActivateCoverage(
+                It.IsAny<Guid>(),
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<long>(),
+                It.IsAny<int>(),
+                It.IsAny<DateTime>()));
+        _store.As<IMarkingAggregateStore>()
+            .Setup(store => store.ValidateAndCreateReadyHuFacts(It.IsAny<long>(), It.IsAny<DateTime>()));
+        _store.As<IMarkingAggregateStore>()
+            .Setup(store => store.SupersedeReadyHuFactsForCorrection(
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>()));
         _store.As<IHuTransactionLockStore>()
             .Setup(store => store.LockNormalizedHus(It.IsAny<IReadOnlyCollection<string>>()));
         _store.As<IHuTransactionLockStore>()
@@ -1198,7 +1324,11 @@ internal sealed class CloseDocumentHarness
                         OrderId = current.OrderId,
                         ItemId = current.ItemId,
                         Gtin = current.Gtin,
+                        RequiredQuantity = current.RequiredQuantity,
+                        ReserveQuantity = current.ReserveQuantity,
                         RequestedQuantity = current.RequestedQuantity,
+                        OriginalOrderId = current.OriginalOrderId,
+                        OriginalOrderLineId = current.OriginalOrderLineId,
                         RequestNumber = current.RequestNumber,
                         Status = MarkingOrderStatus.Printed,
                         Notes = current.Notes,
@@ -1215,7 +1345,11 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.MarkOrdersPrinted(It.IsAny<IReadOnlyCollection<long>>(), It.IsAny<DateTime>()));
 
         _store.Setup(store => store.AddMarkingCodeImport(It.IsAny<MarkingCodeImport>()))
-            .Returns<MarkingCodeImport>(import => import.Id);
+            .Returns<MarkingCodeImport>(import =>
+            {
+                _markingCodeImports[import.Id] = import;
+                return import.Id;
+            });
 
         _store.Setup(store => store.AddMarkingCodes(It.IsAny<IReadOnlyList<MarkingCode>>()))
             .Callback<IReadOnlyList<MarkingCode>>(codes =>
@@ -3029,79 +3163,11 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.CountKmCodesByShipmentLine(It.IsAny<long>()))
             .Returns(0);
 
-        _store.Setup(store => store.CountProductionMarkingCodesByReceiptLine(It.IsAny<long>()))
-            .Returns<long>(docLineId => _markingCodes.Values.Count(code => code.ReceiptLineId == docLineId));
-
         _store.Setup(store => store.CountMarkingCodesByMarkingOrder(It.IsAny<Guid>()))
             .Returns<Guid>(markingOrderId => _markingCodes.Values.Count(code =>
                 code.MarkingOrderId == markingOrderId
                 && code.Status != MarkingCodeStatus.Voided));
 
-        _store.Setup(store => store.CountFreeProductionMarkingCodesByItem(It.IsAny<long>(), It.IsAny<string?>()))
-            .Returns<long, string?>((itemId, gtin) =>
-            {
-                var normalizedGtin = NormalizeText(gtin);
-                return _markingCodes.Values
-                    .Where(code => code.ReceiptDocId == null
-                                   && code.ReceiptLineId == null
-                                   && code.Status is MarkingCodeStatus.Reserved or MarkingCodeStatus.Printed)
-                    .Select(code => (Code: code, Order: _markingOrders.TryGetValue(code.MarkingOrderId, out var order) ? order : null))
-                    .Count(pair => pair.Order != null
-                                   && pair.Order.Status is not MarkingOrderStatus.Cancelled and not MarkingOrderStatus.Failed
-                                   && (pair.Order.ItemId == itemId
-                                       || (!string.IsNullOrWhiteSpace(normalizedGtin)
-                                           && (string.Equals(NormalizeText(pair.Order.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)
-                                               || string.Equals(NormalizeText(pair.Code.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)))));
-            });
-
-        _store.Setup(store => store.CountAvailableProductionMarkingCodesForReceipt(It.IsAny<long?>(), It.IsAny<long>(), It.IsAny<string?>()))
-            .Returns<long?, long, string?>((sourceOrderId, itemId, gtin) =>
-                GetAvailableProductionMarkingCodes(sourceOrderId, itemId, gtin, int.MaxValue).Count);
-
-        _store.Setup(store => store.GetAvailableProductionMarkingCodeIdsForReceipt(It.IsAny<long?>(), It.IsAny<long>(), It.IsAny<string?>(), It.IsAny<int>()))
-            .Returns<long?, long, string?, int>((sourceOrderId, itemId, gtin, take) =>
-                GetAvailableProductionMarkingCodes(sourceOrderId, itemId, gtin, take)
-                    .Select(code => code.Id)
-                    .ToArray());
-
-        _store.Setup(store => store.AssignProductionMarkingCodesToReceipt(It.IsAny<IReadOnlyList<Guid>>(), It.IsAny<long>(), It.IsAny<long>(), It.IsAny<DateTime>()))
-            .Returns<IReadOnlyList<Guid>, long, long, DateTime>((codeIds, docId, lineId, appliedAt) =>
-            {
-                var updated = 0;
-                foreach (var codeId in codeIds)
-                {
-                    if (!_markingCodes.TryGetValue(codeId, out var code)
-                        || code.ReceiptLineId.HasValue
-                        || code.ReceiptDocId.HasValue
-                        || code.Status is not MarkingCodeStatus.Reserved and not MarkingCodeStatus.Printed)
-                    {
-                        continue;
-                    }
-
-                    _markingCodes[codeId] = new MarkingCode
-                    {
-                        Id = code.Id,
-                        Code = code.Code,
-                        CodeHash = code.CodeHash,
-                        Gtin = code.Gtin,
-                        MarkingOrderId = code.MarkingOrderId,
-                        ImportId = code.ImportId,
-                        Status = MarkingCodeStatus.Applied,
-                        ReceiptDocId = docId,
-                        ReceiptLineId = lineId,
-                        SourceRowNumber = code.SourceRowNumber,
-                        PrintedAt = code.PrintedAt,
-                        AppliedAt = appliedAt,
-                        ReportedAt = code.ReportedAt,
-                        IntroducedAt = code.IntroducedAt,
-                        CreatedAt = code.CreatedAt,
-                        UpdatedAt = appliedAt
-                    };
-                    updated++;
-                }
-
-                return updated;
-            });
     }
 
     private double GetBalance(long itemId, long locationId, string? huCode)
@@ -3257,6 +3323,7 @@ internal sealed class CloseDocumentHarness
             PartnerCode = order.PartnerCode,
             UseReservedStock = order.UseReservedStock,
             AllowPartialOutbound = order.AllowPartialOutbound,
+            MarkingResponsibility = order.MarkingResponsibility,
             MarkingStatus = order.MarkingStatus,
             IsLegacyExcelGeneratedMarkingStatus = order.IsLegacyExcelGeneratedMarkingStatus,
             MarkingRequired = markingApplies && !markingCodeCovered,
@@ -4638,35 +4705,6 @@ internal sealed class CloseDocumentHarness
                     LastMovementAt = lastEntry?.Timestamp
                 };
             })
-            .ToArray();
-    }
-
-    private IReadOnlyList<MarkingCode> GetAvailableProductionMarkingCodes(long? sourceOrderId, long itemId, string? gtin, int take)
-    {
-        var normalizedGtin = NormalizeText(gtin);
-        return _markingCodes.Values
-            .Where(code => code.ReceiptDocId == null
-                           && code.ReceiptLineId == null
-                           && code.Status is MarkingCodeStatus.Reserved or MarkingCodeStatus.Printed)
-            .Select(code => (Code: code, Order: _markingOrders.TryGetValue(code.MarkingOrderId, out var order) ? order : null))
-            .Where(pair => pair.Order != null
-                           && pair.Order.Status is not MarkingOrderStatus.Cancelled and not MarkingOrderStatus.Failed)
-            .Where(pair => pair.Order!.ItemId == itemId
-                           || (!string.IsNullOrWhiteSpace(normalizedGtin)
-                               && (string.Equals(NormalizeText(pair.Order.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase)
-                                   || string.Equals(NormalizeText(pair.Code.Gtin), normalizedGtin, StringComparison.OrdinalIgnoreCase))))
-            .Where(pair =>
-                string.Equals(pair.Order!.SourceType, MarkingNeedCreationService.ProductionNeedSourceType, StringComparison.OrdinalIgnoreCase)
-                && (!pair.Order.SourceOrderId.HasValue || (sourceOrderId.HasValue && pair.Order.SourceOrderId == sourceOrderId))
-                || string.Equals(pair.Order!.SourceType, MarkingNeedCreationService.ProductionOrderSourceType, StringComparison.OrdinalIgnoreCase)
-                && sourceOrderId.HasValue
-                && pair.Order.SourceOrderId == sourceOrderId
-                || sourceOrderId.HasValue
-                && pair.Order.OrderId == sourceOrderId)
-            .OrderBy(pair => pair.Order!.CreatedAt)
-            .ThenBy(pair => pair.Code.SourceRowNumber ?? int.MaxValue)
-            .Select(pair => pair.Code)
-            .Take(take)
             .ToArray();
     }
 

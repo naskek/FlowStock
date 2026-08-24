@@ -88,16 +88,23 @@ public sealed class WpfOperatorPresentationSourceTests
     }
 
     [Fact]
-    public void MarkingList_UsesAdditiveOrderStatusPresentation()
+    public void LegacyMarkingWindow_IsDeletedWhileOrderCardRemainsCanonical()
     {
         var server = ReadRepoFile("apps", "windows", "FlowStock.Server", "Program.cs");
         var client = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfMarkingApiService.cs");
-        var window = ReadRepoFile("apps", "windows", "FlowStock.App", "MarkingWindow.xaml.cs");
+        var orderCard = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml");
+        var root = FindRepoRoot();
 
         Assert.Contains("order_status_presentation = OrderOperatorStatusResolver.Resolve", server, StringComparison.Ordinal);
         Assert.Contains("OperatorStatusPresentation = MapOrderStatusPresentation(element)", client, StringComparison.Ordinal);
-        Assert.Contains("_row.OperatorStatusPresentation.Label", window, StringComparison.Ordinal);
-        Assert.DoesNotContain("?? OrderStatusMapper.StatusToDisplayName(_row.OrderStatus)", window, StringComparison.Ordinal);
+        Assert.Contains("ImportMarkingButton", orderCard, StringComparison.Ordinal);
+        Assert.Contains("marking/import/preview", client, StringComparison.Ordinal);
+        Assert.Contains("marking/import/confirm", client, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(root, "apps", "windows", "FlowStock.App", "MarkingWindow.xaml")));
+        Assert.False(File.Exists(Path.Combine(root, "apps", "windows", "FlowStock.App", "MarkingWindow.xaml.cs")));
+        Assert.False(File.Exists(Path.Combine(root, "apps", "windows", "FlowStock.App", "KmImportWindow.xaml")));
+        Assert.DoesNotContain("Маркировка (КМ)", ReadRepoFile("apps", "windows", "FlowStock.App", "MainWindow.xaml"), StringComparison.Ordinal);
+        Assert.DoesNotContain("KmUiEnabled", ReadRepoFile("apps", "windows", "FlowStock.App", "OperationDetailsWindow.xaml.cs"), StringComparison.Ordinal);
     }
 
     private static string SliceMethod(string source, string startMarker, string endMarker)
@@ -125,5 +132,16 @@ public sealed class WpfOperatorPresentationSourceTests
         }
 
         throw new FileNotFoundException("Не удалось найти файл в репозитории.", Path.Combine(parts));
+    }
+
+    private static string FindRepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "AGENTS.md")))
+        {
+            dir = dir.Parent;
+        }
+
+        return dir?.FullName ?? throw new InvalidOperationException("Repository root not found.");
     }
 }

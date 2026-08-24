@@ -8,7 +8,7 @@ public sealed class WpfPrdDeleteGuardSourceTests
     public void OperationDetailsWindow_HidesAndBlocksProductionReceiptLineDelete()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OperationDetailsWindow.xaml.cs");
-        var deleteMethod = SliceMethod(source, "private async void DocDeleteLine_Click", "    private void KmCodes_Click");
+        var deleteMethod = SliceMethod(source, "private async void DocDeleteLine_Click", "    private async void DocEditLine_Click");
         var buttonMethod = SliceMethod(source, "private void UpdateLineButtons", "    private void UpdateOutboundHuButton");
 
         Assert.Contains("if (_doc?.Type == DocType.ProductionReceipt)", deleteMethod, StringComparison.Ordinal);

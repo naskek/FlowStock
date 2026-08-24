@@ -41,7 +41,6 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<StockLocationFilterOption> _stockLocationFilters = new();
     private readonly ObservableCollection<StockHuFilterOption> _stockHuFilters = new();
     private readonly ObservableCollection<StockItemTypeFilterOption> _stockItemTypeFilters = new();
-    private readonly ObservableCollection<KmCodeBatch> _kmBatches = new();
     private readonly IDisposable _liveRefreshSubscription;
     private readonly HashSet<int> _pendingLiveRefreshTabs = new();
     private readonly HashSet<long> _expandedStockItemIds = new();
@@ -99,7 +98,6 @@ public partial class MainWindow : Window
     private const int TabItemsIndex = 6;
     private const int TabLocationsIndex = 7;
     private const int TabPartnersIndex = 8;
-    private const int TabKmIndex = 9;
     private const int OrdersPageSize = 15;
     private readonly CommercialStatisticsViewState _commercialStatisticsState = new(pageSize: 100);
     private readonly CommercialStatisticsAutoRefreshCoordinator _commercialStatisticsAutoRefresh = new();
@@ -159,7 +157,6 @@ public partial class MainWindow : Window
         StockLocationFilter.ItemsSource = _stockLocationFilters;
         StockHuFilter.ItemsSource = _stockHuFilters;
         StockItemTypeFilter.ItemsSource = _stockItemTypeFilters;
-        KmBatchesGrid.ItemsSource = _kmBatches;
         DocsTypeFilter.ItemsSource = _docTypeFilters;
         DocsTypeFilter.SelectedIndex = 0;
         DocsStatusFilter.ItemsSource = _docStatusFilters;
@@ -170,7 +167,7 @@ public partial class MainWindow : Window
         foreach (var grid in new[]
                  {
                      StockGrid, WarehouseProductionStateGrid, ProductionNeedGrid, DocsGrid, OrdersGrid,
-                     WarehouseBundlesGrid, ItemsGrid, LocationsGrid, PartnersGrid, KmBatchesGrid
+                     WarehouseBundlesGrid, ItemsGrid, LocationsGrid, PartnersGrid
                  })
         {
             grid.CellEditEnding += (_, _) => Dispatcher.BeginInvoke(RefreshPendingActiveTab);
@@ -273,10 +270,6 @@ public partial class MainWindow : Window
                 : "Контроль можно создать только для выбранных клиентских заказов в статусе Готов.";
         }
 
-        if (KmDeleteBatchButton != null)
-        {
-            KmDeleteBatchButton.IsEnabled = _adminDeleteModeEnabled && KmBatchesGrid.SelectedItem is KmCodeBatch;
-        }
     }
 
     private bool EnsureDeleteModeEnabled(string caption)
@@ -543,7 +536,6 @@ public partial class MainWindow : Window
             TabItemsIndex => WpfLiveRefreshGuard.IsDataGridEditing(ItemsGrid),
             TabLocationsIndex => WpfLiveRefreshGuard.IsDataGridEditing(LocationsGrid),
             TabPartnersIndex => WpfLiveRefreshGuard.IsDataGridEditing(PartnersGrid),
-            TabKmIndex => WpfLiveRefreshGuard.IsDataGridEditing(KmBatchesGrid),
             _ => false
         };
     }
@@ -556,7 +548,7 @@ public partial class MainWindow : Window
 
     private void MarkAllTabsPendingLiveRefresh()
     {
-        for (var tabIndex = TabStatusIndex; tabIndex <= TabKmIndex; tabIndex++)
+        for (var tabIndex = TabStatusIndex; tabIndex <= TabPartnersIndex; tabIndex++)
         {
             _pendingLiveRefreshTabs.Add(tabIndex);
         }
@@ -638,9 +630,6 @@ public partial class MainWindow : Window
                     break;
                 case TabPartnersIndex:
                     LoadPartners();
-                    break;
-                case TabKmIndex:
-                    LoadKmBatches();
                     break;
             }
         }
@@ -2391,35 +2380,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void LoadKmBatches()
-    {
-        var selectedId = (KmBatchesGrid.SelectedItem as KmCodeBatch)?.Id;
-        _kmBatches.Clear();
-        foreach (var batch in _services.Km.GetBatches())
-        {
-            _kmBatches.Add(batch);
-        }
-        RestoreKmBatchSelection(selectedId);
-        UpdateDeleteButtonsAvailability();
-    }
-
-    private void RestoreKmBatchSelection(long? batchId)
-    {
-        if (!batchId.HasValue)
-        {
-            return;
-        }
-
-        var batch = _kmBatches.FirstOrDefault(item => item.Id == batchId.Value);
-        if (batch == null)
-        {
-            return;
-        }
-
-        KmBatchesGrid.SelectedItem = batch;
-        KmBatchesGrid.ScrollIntoView(batch);
-    }
-
     private void ItemPackaging_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedItem == null)
@@ -3012,101 +2972,6 @@ public partial class MainWindow : Window
         SelectTab(TabPartnersIndex);
     }
 
-    private void KmImport_Click(object sender, RoutedEventArgs e)
-    {
-        var window = new KmImportWindow(_services, () =>
-        {
-            LoadKmBatches();
-        });
-        window.Owner = this;
-        window.ShowDialog();
-    }
-
-    private void KmOpenBatch_Click(object sender, RoutedEventArgs e)
-    {
-        OpenSelectedKmBatch();
-    }
-
-    private void KmEditBatch_Click(object sender, RoutedEventArgs e)
-    {
-        if (KmBatchesGrid.SelectedItem is not KmCodeBatch batch)
-        {
-            MessageBox.Show("Выберите пакет.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var window = new KmBatchEditWindow(_services, batch, LoadKmBatches)
-        {
-            Owner = this
-        };
-        window.ShowDialog();
-    }
-
-    private void KmDeleteBatch_Click(object sender, RoutedEventArgs e)
-    {
-        if (!EnsureDeleteModeEnabled("Маркировка"))
-        {
-            return;
-        }
-
-        if (KmBatchesGrid.SelectedItem is not KmCodeBatch batch)
-        {
-            MessageBox.Show("Выберите пакет.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var confirm = MessageBox.Show(
-            $"Удалить пакет \"{batch.FileName}\" и доступные коды в статусе \"В пуле\"?",
-            "Маркировка",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            MessageBoxResult.No);
-        if (confirm != MessageBoxResult.Yes)
-        {
-            return;
-        }
-
-        try
-        {
-            _services.Km.DeleteBatch(batch.Id);
-            LoadKmBatches();
-        }
-        catch (InvalidOperationException ex)
-        {
-            MessageBox.Show(ex.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void KmBatchesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
-    {
-        UpdateDeleteButtonsAvailability();
-    }
-
-    private void KmBatchesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        OpenSelectedKmBatch();
-    }
-
-    private void OpenSelectedKmBatch()
-    {
-        if (KmBatchesGrid.SelectedItem is not KmCodeBatch batch)
-        {
-            MessageBox.Show("Выберите пакет.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var window = new KmBatchDetailsWindow(_services, batch, _adminDeleteModeEnabled, LoadKmBatches)
-        {
-            Owner = this
-        };
-        window.ShowDialog();
-        LoadKmBatches();
-    }
-
     private void OpenDataFolder_Click(object sender, RoutedEventArgs e)
     {
         var dataDir = _services.BaseDir;
@@ -3276,7 +3141,6 @@ public partial class MainWindow : Window
                 LoadDocs();
                 LoadOrders();
                 LoadStock(StatusSearchBox.Text);
-                LoadKmBatches();
                 ScheduleItemRequestsBadgeUpdate();
                 RefreshHuCorrectionAvailability();
             });
@@ -3992,18 +3856,6 @@ public partial class MainWindow : Window
         StatisticsPageText.Text = _commercialStatisticsState.RangeText;
         StatisticsGroupsBox.Header = _commercialStatisticsState.DetailLabel;
         UpdateCommercialStatisticsStatusFilter();
-    }
-
-    // Legacy: отдельное окно/очередь "Маркировка" больше не выводится в главное меню WPF.
-    // Обработчик и MarkingWindow сохраняются для совместимости и возможной диагностики.
-    private void OpenMarking_Click(object sender, RoutedEventArgs e)
-    {
-        var window = new MarkingWindow(_services)
-        {
-            Owner = this
-        };
-        window.ShowDialog();
-        LoadOrders();
     }
 
     private void ImportErrors_Click(object sender, RoutedEventArgs e)

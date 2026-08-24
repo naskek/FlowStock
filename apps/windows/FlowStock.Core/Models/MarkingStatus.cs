@@ -2,9 +2,14 @@ namespace FlowStock.Core.Models;
 
 public enum MarkingStatus
 {
-    NotRequired,
-    Required,
-    Printed
+    NotRequired = 0,
+    NotApplied = 1,
+    Applied = 2,
+
+    // Internal compatibility sentinels for historical persisted values. API output
+    // always goes through the canonical mapper below.
+    Required = 3,
+    Printed = 4
 }
 
 public static class MarkingStatusMapper
@@ -13,9 +18,11 @@ public static class MarkingStatusMapper
     {
         return status?.Trim().ToUpperInvariant() switch
         {
-            "REQUIRED" => MarkingStatus.Required,
-            "EXCEL_GENERATED" => MarkingStatus.Printed,
-            "PRINTED" => MarkingStatus.Printed,
+            "NOT_APPLIED" => MarkingStatus.NotApplied,
+            "REQUIRED" => MarkingStatus.NotApplied,
+            "APPLIED" => MarkingStatus.Applied,
+            "EXCEL_GENERATED" => MarkingStatus.NotApplied,
+            "PRINTED" => MarkingStatus.NotApplied,
             _ => MarkingStatus.NotRequired
         };
     }
@@ -24,8 +31,8 @@ public static class MarkingStatusMapper
     {
         return status switch
         {
-            MarkingStatus.Required => "REQUIRED",
-            MarkingStatus.Printed => "PRINTED",
+            MarkingStatus.NotApplied or MarkingStatus.Required or MarkingStatus.Printed => "NOT_APPLIED",
+            MarkingStatus.Applied => "APPLIED",
             _ => "NOT_REQUIRED"
         };
     }
@@ -34,8 +41,8 @@ public static class MarkingStatusMapper
     {
         return status switch
         {
-            MarkingStatus.Required => "Маркировка не проведена",
-            MarkingStatus.Printed => "Маркировка проведена",
+            MarkingStatus.NotApplied or MarkingStatus.Required or MarkingStatus.Printed => "Маркировка не проведена",
+            MarkingStatus.Applied => "Маркировка проведена",
             _ => string.Empty
         };
     }
@@ -49,8 +56,8 @@ public static class MarkingStatusMapper
     {
         return status switch
         {
-            MarkingStatus.Required => "Маркировка не проведена",
-            MarkingStatus.Printed => "Маркировка проведена",
+            MarkingStatus.NotApplied or MarkingStatus.Required or MarkingStatus.Printed => "Маркировка не проведена",
+            MarkingStatus.Applied => "Маркировка проведена",
             _ => string.Empty
         };
     }

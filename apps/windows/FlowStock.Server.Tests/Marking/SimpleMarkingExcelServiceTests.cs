@@ -13,14 +13,16 @@ public sealed class SimpleMarkingExcelServiceTests
     [Theory]
     [InlineData(false, MarkingStatus.NotRequired, "")]
     [InlineData(true, MarkingStatus.NotRequired, "Маркировка не проведена")]
-    [InlineData(true, MarkingStatus.Required, "Маркировка не проведена")]
-    [InlineData(true, MarkingStatus.Printed, "Маркировка проведена")]
-    [InlineData(false, MarkingStatus.Printed, "Маркировка проведена")]
+    [InlineData(true, MarkingStatus.NotApplied, "Маркировка не проведена")]
+    [InlineData(true, MarkingStatus.Applied, "Маркировка проведена")]
+    [InlineData(false, MarkingStatus.Applied, "")]
     public void OrderList_UsesEffectiveShortMarkingStatusLabels(bool markingRequired, MarkingStatus status, string expected)
     {
         var order = new Order
         {
             MarkingRequired = markingRequired,
+            MarkingApplies = markingRequired,
+            MarkingCodeCovered = markingRequired && status == MarkingStatus.Applied,
             MarkingStatus = status
         };
 
@@ -29,8 +31,8 @@ public sealed class SimpleMarkingExcelServiceTests
 
     [Theory]
     [InlineData(true, "04601234567890", true, MarkingStatus.NotRequired, "Маркировка не проведена")]
-    [InlineData(true, "04601234567890", true, MarkingStatus.Printed, "Маркировка проведена")]
-    [InlineData(true, "", false, MarkingStatus.NotRequired, "")]
+    [InlineData(true, "04601234567890", true, MarkingStatus.NotApplied, "Маркировка не проведена")]
+    [InlineData(true, "", false, MarkingStatus.NotRequired, "Маркировка не проведена")]
     [InlineData(false, "04601234567890", false, MarkingStatus.NotRequired, "")]
     public void OrderLabel_UsesMarkableOrderLinesRequirement(
         bool itemTypeEnableMarking,
@@ -47,6 +49,8 @@ public sealed class SimpleMarkingExcelServiceTests
         var order = new Order
         {
             MarkingRequired = item.IsChestnyZnakMarkingRequired && markingRequired,
+            MarkingApplies = itemTypeEnableMarking,
+            MarkingCodeCovered = itemTypeEnableMarking && markingRequired && status == MarkingStatus.Applied,
             MarkingStatus = status
         };
 
@@ -54,11 +58,11 @@ public sealed class SimpleMarkingExcelServiceTests
     }
 
     [Fact]
-    public void LegacyExcelGeneratedRawStatus_ParsesAsPrinted()
+    public void LegacyExcelGeneratedRawStatus_DoesNotClaimAggregateApplication()
     {
-        Assert.Equal(MarkingStatus.Printed, MarkingStatusMapper.FromString("EXCEL_GENERATED"));
-        Assert.Equal("PRINTED", MarkingStatusMapper.ToString(MarkingStatusMapper.FromString("EXCEL_GENERATED")));
-        Assert.Equal("Маркировка проведена", MarkingStatusMapper.ToDisplayName(MarkingStatusMapper.FromString("EXCEL_GENERATED")));
+        Assert.Equal(MarkingStatus.NotApplied, MarkingStatusMapper.FromString("EXCEL_GENERATED"));
+        Assert.Equal("NOT_APPLIED", MarkingStatusMapper.ToString(MarkingStatusMapper.FromString("EXCEL_GENERATED")));
+        Assert.Equal("Маркировка не проведена", MarkingStatusMapper.ToDisplayName(MarkingStatusMapper.FromString("EXCEL_GENERATED")));
     }
 
     [Fact]
@@ -100,7 +104,7 @@ public sealed class SimpleMarkingExcelServiceTests
         Assert.Equal("Маркируемый", row.ItemName);
         Assert.Equal("04601234567890", row.Gtin);
         Assert.Equal(5, row.Qty);
-        store.Verify(s => s.MarkOrdersPrinted(It.Is<IReadOnlyCollection<long>>(ids => ids.SequenceEqual(new[] { 1L })), It.IsAny<DateTime>()), Times.Once);
+        store.Verify(s => s.MarkOrdersPrinted(It.IsAny<IReadOnlyCollection<long>>(), It.IsAny<DateTime>()), Times.Never);
     }
 
     [Fact]
@@ -129,7 +133,7 @@ public sealed class SimpleMarkingExcelServiceTests
         Assert.Equal("04607186951520", row.Gtin);
         Assert.Equal(4800, row.Qty);
         Assert.Contains(taskId, result.MarkedMarkingOrderIds);
-        store.Verify(s => s.MarkMarkingOrdersPrinted(It.Is<IReadOnlyCollection<Guid>>(ids => ids.SequenceEqual(new[] { taskId })), It.IsAny<DateTime>()), Times.Once);
+        store.Verify(s => s.MarkMarkingOrdersPrinted(It.IsAny<IReadOnlyCollection<Guid>>(), It.IsAny<DateTime>()), Times.Never);
     }
 
     [Fact]
@@ -157,7 +161,7 @@ public sealed class SimpleMarkingExcelServiceTests
     }
 
     [Fact]
-    public void Export_ByProductionNeedMarkingTask_CreatesTemporaryCodesWhenMissing()
+    public void Export_ByProductionNeedMarkingTask_DoesNotCreateTemporaryCodes()
     {
         var taskId = Guid.Parse("11111111-1111-1111-1111-111111111111");
         IReadOnlyList<MarkingCode>? createdCodes = null;
@@ -185,20 +189,8 @@ public sealed class SimpleMarkingExcelServiceTests
         var result = new MarkingExcelService(store.Object).Export(new[] { taskId }, Array.Empty<long>(), DateTime.Parse("2026-05-01T10:00:00"));
 
         Assert.True(result.IsSuccess);
-        Assert.NotNull(createdImport);
-        Assert.Equal(MarkingCodeImportStatus.Bound, createdImport!.Status);
-        Assert.Equal(taskId, createdImport.MatchedMarkingOrderId);
-        Assert.NotNull(createdCodes);
-        Assert.Equal(600, createdCodes!.Count);
-        Assert.All(createdCodes, code =>
-        {
-            Assert.Equal(taskId, code.MarkingOrderId);
-            Assert.Equal(createdImport.Id, code.ImportId);
-            Assert.Equal("04607186951520", code.Gtin);
-            Assert.Equal(MarkingCodeStatus.Reserved, code.Status);
-            Assert.StartsWith($"TEMP-CHZ-{taskId:D}-", code.Code, StringComparison.Ordinal);
-            Assert.False(string.IsNullOrWhiteSpace(code.CodeHash));
-        });
+        Assert.Null(createdImport);
+        Assert.Null(createdCodes);
     }
 
     [Fact]
@@ -228,7 +220,7 @@ public sealed class SimpleMarkingExcelServiceTests
     }
 
     [Fact]
-    public void Export_ByProductionNeedMarkingTask_CreatesOnlyMissingTemporaryCodes()
+    public void Export_ByProductionNeedMarkingTask_NeverFillsMissingTemporaryCodes()
     {
         var taskId = Guid.Parse("11111111-1111-1111-1111-111111111111");
         IReadOnlyList<MarkingCode>? createdCodes = null;
@@ -254,14 +246,11 @@ public sealed class SimpleMarkingExcelServiceTests
         var result = new MarkingExcelService(store.Object).Export(new[] { taskId }, Array.Empty<long>(), DateTime.Now);
 
         Assert.True(result.IsSuccess);
-        Assert.NotNull(createdCodes);
-        Assert.Equal(300, createdCodes!.Count);
-        Assert.Equal(301, createdCodes.First().SourceRowNumber);
-        Assert.Equal(600, createdCodes.Last().SourceRowNumber);
+        Assert.Null(createdCodes);
     }
 
     [Fact]
-    public void Export_ByOrderBasedMarkingTask_MarksTaskAndOrderPrinted()
+    public void Export_ByOrderBasedMarkingTask_DoesNotApplyTaskOrOrder()
     {
         var taskId = Guid.Parse("33333333-3333-3333-3333-333333333333");
         var store = CreateTaskStore(new MarkingOrder
@@ -282,7 +271,8 @@ public sealed class SimpleMarkingExcelServiceTests
         Assert.True(result.IsSuccess);
         Assert.Equal(7, Assert.Single(result.Rows).Qty);
         Assert.Contains(42, result.MarkedOrderIds);
-        store.Verify(s => s.MarkOrdersPrinted(It.Is<IReadOnlyCollection<long>>(ids => ids.SequenceEqual(new[] { 42L })), It.IsAny<DateTime>()), Times.Once);
+        store.Verify(s => s.MarkOrdersPrinted(It.IsAny<IReadOnlyCollection<long>>(), It.IsAny<DateTime>()), Times.Never);
+        store.Verify(s => s.MarkMarkingOrdersPrinted(It.IsAny<IReadOnlyCollection<Guid>>(), It.IsAny<DateTime>()), Times.Never);
     }
 
     [Fact]
@@ -415,7 +405,7 @@ public sealed class SimpleMarkingExcelServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal(new[] { 1L }, result.MarkedOrderIds);
-        store.Verify(s => s.MarkOrdersPrinted(It.Is<IReadOnlyCollection<long>>(ids => ids.SequenceEqual(new[] { 1L })), It.IsAny<DateTime>()), Times.Once);
+        store.Verify(s => s.MarkOrdersPrinted(It.IsAny<IReadOnlyCollection<long>>(), It.IsAny<DateTime>()), Times.Never);
     }
 
     [Fact]
@@ -444,7 +434,7 @@ public sealed class SimpleMarkingExcelServiceTests
     }
 
     [Fact]
-    public void Queue_ShowsRequiredWhenOrderHasMarkingRows()
+    public void Queue_PreservesCanonicalNotAppliedStatus()
     {
         var store = CreateStore();
         store.Setup(s => s.GetMarkingOrderQueue(false))
@@ -455,7 +445,7 @@ public sealed class SimpleMarkingExcelServiceTests
                     OrderId = 1,
                     OrderRef = "38",
                     OrderStatus = OrderStatus.InProgress,
-                    MarkingStatus = MarkingStatus.NotRequired,
+                    MarkingStatus = MarkingStatus.NotApplied,
                     MarkingLineCount = 1,
                     MarkingCodeCount = 2
                 }
@@ -463,7 +453,7 @@ public sealed class SimpleMarkingExcelServiceTests
 
         var row = Assert.Single(new MarkingExcelService(store.Object).GetOrderQueue(includeCompleted: false));
 
-        Assert.Equal(MarkingStatus.Required, row.MarkingStatus);
+        Assert.Equal(MarkingStatus.NotApplied, row.MarkingStatus);
     }
 
     [Fact]
@@ -478,7 +468,7 @@ public sealed class SimpleMarkingExcelServiceTests
                     OrderId = 1,
                     OrderRef = "38",
                     OrderStatus = OrderStatus.InProgress,
-                    MarkingStatus = MarkingStatus.NotRequired,
+                    MarkingStatus = MarkingStatus.NotApplied,
                     MarkingLineCount = 1,
                     MarkingCodeCount = 2
                 }
@@ -492,6 +482,7 @@ public sealed class SimpleMarkingExcelServiceTests
             Status = queueRow.OrderStatus,
             MarkingStatus = MarkingStatus.NotRequired,
             MarkingRequired = true,
+            MarkingApplies = true,
             CreatedAt = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc)
         };
 
@@ -499,7 +490,7 @@ public sealed class SimpleMarkingExcelServiceTests
     }
 
     [Fact]
-    public void Queue_KeepsPrintedPriorityWhenCurrentNeedIsZero()
+    public void Queue_PreservesCanonicalServerStatusWhenCurrentNeedIsZero()
     {
         var store = CreateStore();
         store.Setup(s => s.GetMarkingOrderQueue(true))
@@ -510,14 +501,14 @@ public sealed class SimpleMarkingExcelServiceTests
                     OrderId = 1,
                     OrderRef = "38",
                     OrderStatus = OrderStatus.Shipped,
-                    MarkingStatus = MarkingStatus.Printed,
+                    MarkingStatus = MarkingStatus.Applied,
                     MarkingLineCount = 0
                 }
             });
 
         var row = Assert.Single(new MarkingExcelService(store.Object).GetOrderQueue(includeCompleted: true));
 
-        Assert.Equal(MarkingStatus.Printed, row.MarkingStatus);
+        Assert.Equal(MarkingStatus.Applied, row.MarkingStatus);
         Assert.Equal("Маркировка проведена", MarkingStatusMapper.ToDisplayName(row.MarkingStatus));
     }
 
@@ -540,7 +531,7 @@ public sealed class SimpleMarkingExcelServiceTests
                     CodesFree = 600,
                     CodesBound = 0,
                     OrderStatus = OrderStatus.InProgress,
-                    MarkingStatus = MarkingStatus.Printed,
+                    MarkingStatus = MarkingStatus.Applied,
                     MarkingLineCount = 1,
                     MarkingCodeCount = 600
                 }
@@ -570,7 +561,7 @@ public sealed class SimpleMarkingExcelServiceTests
                     CodesFree = 600,
                     CodesBound = 0,
                     OrderStatus = OrderStatus.InProgress,
-                    MarkingStatus = MarkingStatus.Printed,
+                    MarkingStatus = MarkingStatus.Applied,
                     MarkingLineCount = 1,
                     MarkingCodeCount = 600
                 }
@@ -581,11 +572,11 @@ public sealed class SimpleMarkingExcelServiceTests
         Assert.Equal(taskId, row.MarkingOrderId);
         Assert.Equal(MarkingOrderStatus.Completed, row.EffectiveStatus);
         Assert.Equal("Выполнена", row.DisplayStatus);
-        Assert.Equal(MarkingStatus.Printed, row.MarkingStatus);
+        Assert.Equal(MarkingStatus.Applied, row.MarkingStatus);
     }
 
     [Fact]
-    public void Queue_DoesNotHidePrintedProductionNeedTaskWithoutOrderId()
+    public void Queue_DoesNotReinterpretCanonicalStatusForTaskWithoutOrderId()
     {
         var taskId = Guid.Parse("44444444-4444-4444-4444-444444444444");
         var store = CreateStore();
@@ -608,7 +599,7 @@ public sealed class SimpleMarkingExcelServiceTests
                     CodesFree = 0,
                     CodesBound = 0,
                     OrderStatus = OrderStatus.InProgress,
-                    MarkingStatus = MarkingStatus.Printed,
+                    MarkingStatus = MarkingStatus.NotApplied,
                     MarkingLineCount = 1,
                     MarkingCodeCount = 600
                 }
@@ -627,7 +618,7 @@ public sealed class SimpleMarkingExcelServiceTests
         Assert.Equal(0, row.CodesTotal);
         Assert.Equal(0, row.CodesFree);
         Assert.Equal(0, row.CodesBound);
-        Assert.Equal(MarkingStatus.Printed, row.MarkingStatus);
+        Assert.Equal(MarkingStatus.NotApplied, row.MarkingStatus);
     }
 
     [Fact]
@@ -647,7 +638,7 @@ public sealed class SimpleMarkingExcelServiceTests
                     SourceType = MarkingNeedCreationService.ProductionOrderSourceType,
                     DisplaySource = "Производственный заказ",
                     OrderStatus = OrderStatus.InProgress,
-                    MarkingStatus = MarkingStatus.Required,
+                    MarkingStatus = MarkingStatus.NotApplied,
                     MarkingLineCount = 1,
                     MarkingCodeCount = 100
                 }
@@ -677,7 +668,7 @@ public sealed class SimpleMarkingExcelServiceTests
                     OrderRef = "CO-10",
                     SourceType = null,
                     OrderStatus = OrderStatus.InProgress,
-                    MarkingStatus = MarkingStatus.Required,
+                    MarkingStatus = MarkingStatus.NotApplied,
                     MarkingLineCount = 1,
                     MarkingCodeCount = 50
                 }
@@ -707,7 +698,6 @@ public sealed class SimpleMarkingExcelServiceTests
 
         store.Verify(s => s.GetKmCodeBatches(), Times.Never);
         store.Verify(s => s.GetAvailableKmCodeIds(It.IsAny<long?>(), It.IsAny<long?>(), It.IsAny<long>(), It.IsAny<string?>(), It.IsAny<int>()), Times.Never);
-        store.Verify(s => s.FindMarkingOrderByRequestNumber(It.IsAny<string>()), Times.Never);
     }
 
     private static Mock<IDataStore> CreateStore(params MarkingOrderLineCandidate[] lines)

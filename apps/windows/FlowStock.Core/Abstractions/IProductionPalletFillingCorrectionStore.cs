@@ -13,21 +13,6 @@ public interface ILedgerEntryIdStore
     long AddLedgerEntryReturningId(LedgerEntry entry);
 }
 
-public interface ILineScopedMarkingCodeStore
-{
-    int CountAvailableProductionMarkingCodesForReceipt(
-        long? sourceOrderId,
-        long itemId,
-        string? gtin,
-        long? orderLineId);
-    IReadOnlyList<Guid> GetAvailableProductionMarkingCodeIdsForReceipt(
-        long? sourceOrderId,
-        long itemId,
-        string? gtin,
-        int take,
-        long? orderLineId);
-}
-
 public interface IProductionPalletFillingCorrectionStore : IHuTransactionLockStore
 {
     ProductionPalletFillingAdjustment? GetFillingAdjustment(Guid requestId);
@@ -58,16 +43,6 @@ public interface IProductionPalletFillingCorrectionStore : IHuTransactionLockSto
     IReadOnlyList<LedgerEntry> GetLedgerEntriesForHu(string normalizedHu);
     bool HasActiveReservationForHu(string normalizedHu);
     bool HasActiveDraftReference(string normalizedHu, long? excludedDocId);
-    IReadOnlyList<ProductionPalletCorrectionMarkingCode> LockReceiptMarkingCodes(long sourcePrdDocId);
-    int RollbackReceiptMarkingCodes(
-        long adjustmentId,
-        long sourcePrdDocId,
-        long corDocId,
-        IReadOnlyList<ProductionPalletCorrectionMarkingCode> codes,
-        string reasonText,
-        string? actorName,
-        string? deviceName,
-        DateTime changedAt);
     void MarkProductionPalletCorrected(long palletId);
     void ResetPartialProductionPallet(long palletId);
     ProductionPalletReplacementResult CreateReplacementProductionPallet(

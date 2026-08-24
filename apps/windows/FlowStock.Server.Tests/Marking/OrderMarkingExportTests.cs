@@ -10,7 +10,52 @@ namespace FlowStock.Server.Tests.Marking;
 public sealed class OrderMarkingExportTests
 {
     [Fact]
-    public async Task FirstInternalOrderExport_With6000Codes_CreatesSingleTaskAndWorkbook()
+    public void CustomerResponsibility_UsesReserveZeroImportEnvelopeAndNeverCreatesExcel()
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "01", Name = "Склад 01" });
+        harness.SeedItem(CreateMarkableItem(1));
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "CO-CUSTOMER-KM",
+            Type = OrderType.Customer,
+            Status = OrderStatus.InProgress,
+            MarkingResponsibility = MarkingResponsibility.Customer,
+            CreatedAt = DateTime.UtcNow
+        });
+        harness.SeedOrderLine(new OrderLine { Id = 100, OrderId = 10, ItemId = 1, QtyOrdered = 1200 });
+
+        var excel = new OrderMarkingExportService(harness.Store).Export(10, DateTime.UtcNow);
+        var envelope = new OrderMarkingExportService(harness.Store).EnsureCustomerImportEnvelope(10, DateTime.UtcNow);
+
+        Assert.False(excel.IsSuccess);
+        Assert.Contains("CUSTOMER", excel.Message, StringComparison.Ordinal);
+        Assert.True(envelope.IsSuccess, envelope.Message);
+        Assert.Null(envelope.FileBytes);
+        var request = Assert.Single(harness.MarkingOrders);
+        Assert.Equal(1200, request.RequiredQuantity);
+        Assert.Equal(0, request.ReserveQuantity);
+        Assert.Equal(1200, request.RequestedQuantity);
+    }
+
+    [Fact]
+    public void Export_WhenProductionPlanIsIncomplete_ReturnsFailureAndRollsBackRequest()
+    {
+        var harness = CreateOrderHarness(OrderType.Internal, qty: 1200);
+        harness.FailMarkingRequestScopeCreation(
+            "MARKING_PRODUCTION_PLAN_INCOMPLETE: требуется 1200, полностью спланировано 0.");
+
+        var result = new OrderMarkingExportService(harness.Store).Export(10, DateTime.UtcNow);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("MARKING_PRODUCTION_PLAN_INCOMPLETE", result.Message, StringComparison.Ordinal);
+        Assert.Empty(harness.MarkingOrders);
+        Assert.Empty(harness.MarkingCodes);
+    }
+
+    [Fact]
+    public async Task FirstInternalOrderExport_CreatesRequestOnlyWorkbook_WithDefaultReserve()
     {
         var harness = CreateOrderHarness(OrderType.Internal, qty: 6000);
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
@@ -24,9 +69,13 @@ public sealed class OrderMarkingExportTests
             response.Content.Headers.ContentType?.MediaType);
         Assert.NotEmpty(workbook);
         var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(6000, markingOrder.RequestedQuantity);
-        Assert.Equal(6000, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
-        Assert.Single(harness.MarkingCodes.Select(code => code.ImportId).Distinct());
+        Assert.Equal(6000, markingOrder.RequiredQuantity);
+        Assert.Equal(5, markingOrder.ReserveQuantity);
+        Assert.Equal(6005, markingOrder.RequestedQuantity);
+        Assert.Empty(harness.MarkingCodes);
+        Assert.Empty(harness.MarkingCodeImports);
+        Assert.False(harness.GetOrder(10).MarkingCompleted);
+        Assert.Equal(MarkingStatus.NotApplied, harness.GetOrder(10).EffectiveMarkingStatus);
     }
 
     [Fact]
@@ -45,12 +94,14 @@ public sealed class OrderMarkingExportTests
             .Export(10, new DateTime(2026, 5, 8, 13, 0, 0, DateTimeKind.Utc));
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(12, Assert.Single(harness.MarkingOrders).RequestedQuantity);
-        Assert.Equal(12, harness.MarkingCodes.Count);
+        var request = Assert.Single(harness.MarkingOrders);
+        Assert.Equal(12, request.RequiredQuantity);
+        Assert.Equal(17, request.RequestedQuantity);
+        Assert.Empty(harness.MarkingCodes);
     }
 
     [Fact]
-    public async Task InternalOrderExport_CreatesProductionOrderSyntheticCodes()
+    public async Task InternalOrderExport_DoesNotCreateSyntheticCodesOrApplyMarking()
     {
         var harness = CreateOrderHarness(OrderType.Internal, qty: 3600);
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
@@ -59,14 +110,15 @@ public sealed class OrderMarkingExportTests
 
         Assert.True(response.IsSuccessStatusCode);
         var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(3600, markingOrder.RequestedQuantity);
+        Assert.Equal(3600, markingOrder.RequiredQuantity);
+        Assert.Equal(3605, markingOrder.RequestedQuantity);
         Assert.Equal(MarkingNeedCreationService.ProductionOrderSourceType, markingOrder.SourceType);
         Assert.Equal(10, markingOrder.SourceOrderId);
         Assert.Equal(10, markingOrder.OrderId);
         Assert.Null(markingOrder.OrderLineId);
-        Assert.Equal(3600, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
-        Assert.True(harness.GetOrder(10).MarkingCompleted);
-        Assert.Equal(MarkingStatus.Printed, harness.GetOrder(10).EffectiveMarkingStatus);
+        Assert.Empty(harness.MarkingCodes);
+        Assert.False(harness.GetOrder(10).MarkingCompleted);
+        Assert.Equal(MarkingStatus.NotApplied, harness.GetOrder(10).EffectiveMarkingStatus);
     }
 
     [Fact]
@@ -86,9 +138,9 @@ public sealed class OrderMarkingExportTests
 
         Assert.True(response.IsSuccessStatusCode);
         var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(12, markingOrder.RequestedQuantity);
+        Assert.Equal(17, markingOrder.RequestedQuantity);
         Assert.Null(markingOrder.OrderLineId);
-        Assert.Equal(12, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
+        Assert.Empty(harness.MarkingCodes);
     }
 
     [Fact]
@@ -111,7 +163,7 @@ public sealed class OrderMarkingExportTests
         Assert.True(second.IsSuccessStatusCode);
         var markingOrder = Assert.Single(harness.MarkingOrders);
         Assert.Null(markingOrder.OrderLineId);
-        Assert.Equal(12, markingOrder.RequestedQuantity);
+        Assert.Equal(17, markingOrder.RequestedQuantity);
     }
 
     [Fact]
@@ -163,7 +215,7 @@ public sealed class OrderMarkingExportTests
         Assert.True(order.MarkingApplies);
         Assert.True(order.MarkingRequired);
         Assert.False(order.MarkingCompleted);
-        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
+        Assert.Equal(MarkingStatus.NotApplied, order.EffectiveMarkingStatus);
         Assert.Equal("Маркировка не проведена", order.MarkingLabel);
     }
 
@@ -177,7 +229,7 @@ public sealed class OrderMarkingExportTests
         Assert.True(order.MarkingApplies);
         Assert.True(order.MarkingRequired);
         Assert.False(order.MarkingCompleted);
-        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
+        Assert.Equal(MarkingStatus.NotApplied, order.EffectiveMarkingStatus);
         Assert.Equal("Маркировка не проведена", order.MarkingLabel);
     }
 
@@ -206,7 +258,7 @@ public sealed class OrderMarkingExportTests
         Assert.True(order.MarkingApplies);
         Assert.True(order.MarkingRequired);
         Assert.False(order.MarkingCompleted);
-        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
+        Assert.Equal(MarkingStatus.NotApplied, order.EffectiveMarkingStatus);
     }
 
     [Fact]
@@ -254,7 +306,7 @@ public sealed class OrderMarkingExportTests
         Assert.True(order.MarkingApplies);
         Assert.True(order.MarkingRequired);
         Assert.False(order.MarkingCompleted);
-        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
+        Assert.Equal(MarkingStatus.NotApplied, order.EffectiveMarkingStatus);
     }
 
     [Fact]
@@ -272,8 +324,8 @@ public sealed class OrderMarkingExportTests
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             second.Content.Headers.ContentType?.MediaType);
         var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(3600, markingOrder.RequestedQuantity);
-        Assert.Equal(3600, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
+        Assert.Equal(3605, markingOrder.RequestedQuantity);
+        Assert.Empty(harness.MarkingCodes);
     }
 
     [Fact]
@@ -294,8 +346,8 @@ public sealed class OrderMarkingExportTests
             second.Content.Headers.ContentType?.MediaType);
         Assert.Single(harness.MarkingOrders);
         Assert.Equal(codeCountAfterFirst, harness.MarkingCodes.Count);
-        Assert.True(harness.GetOrder(10).MarkingCompleted);
-        Assert.Equal("Маркировка проведена", harness.GetOrder(10).MarkingLabel);
+        Assert.False(harness.GetOrder(10).MarkingCompleted);
+        Assert.Equal("Маркировка не проведена", harness.GetOrder(10).MarkingLabel);
     }
 
     [Fact]
@@ -329,7 +381,7 @@ public sealed class OrderMarkingExportTests
 
         Assert.True(export.IsSuccessStatusCode);
         Assert.True(close.Success, string.Join("; ", close.Errors));
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 21));
+        Assert.DoesNotContain(harness.MarkingCodes, code => code.ReceiptLineId == 21);
         Assert.Equal(OrderStatus.Shipped, harness.GetOrder(10).Status);
     }
 
@@ -352,8 +404,8 @@ public sealed class OrderMarkingExportTests
 
         Assert.True(response.IsSuccessStatusCode);
         var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(3600, markingOrder.RequestedQuantity);
-        Assert.Equal(3600, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
+        Assert.Equal(3605, markingOrder.RequestedQuantity);
+        Assert.Empty(harness.MarkingCodes);
     }
 
     [Fact]
@@ -436,8 +488,8 @@ public sealed class OrderMarkingExportTests
 
         Assert.True(response.IsSuccessStatusCode);
         var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(100, markingOrder.RequestedQuantity);
-        Assert.Equal(100, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
+        Assert.Equal(105, markingOrder.RequestedQuantity);
+        Assert.Empty(harness.MarkingCodes);
     }
 
     [Fact]
@@ -492,7 +544,7 @@ public sealed class OrderMarkingExportTests
 
         Assert.True(response.IsSuccessStatusCode);
         var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(200, markingOrder.RequestedQuantity);
+        Assert.Equal(205, markingOrder.RequestedQuantity);
     }
 
     [Fact]
@@ -540,7 +592,7 @@ public sealed class OrderMarkingExportTests
 
         Assert.True(response.IsSuccessStatusCode);
         var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(100, markingOrder.RequestedQuantity);
+        Assert.Equal(105, markingOrder.RequestedQuantity);
     }
 
     [Fact]
@@ -588,10 +640,10 @@ public sealed class OrderMarkingExportTests
 
         Assert.True(response.IsSuccessStatusCode);
         var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(600, markingOrder.RequestedQuantity);
-        Assert.True(harness.GetOrder(10).MarkingCompleted);
-        Assert.Equal(MarkingStatus.Printed, harness.GetOrder(10).EffectiveMarkingStatus);
-        Assert.Equal("Маркировка проведена", harness.GetOrder(10).MarkingLabel);
+        Assert.Equal(605, markingOrder.RequestedQuantity);
+        Assert.False(harness.GetOrder(10).MarkingCompleted);
+        Assert.Equal(MarkingStatus.NotApplied, harness.GetOrder(10).EffectiveMarkingStatus);
+        Assert.Equal("Маркировка не проведена", harness.GetOrder(10).MarkingLabel);
     }
 
     [Fact]

@@ -17,7 +17,7 @@ public static class OrderApiMapper
         OrderShipmentProgress? shipmentProgress = null)
     {
         var markingStatus = order.MarkingCompleted
-            ? MarkingStatus.Printed
+            ? MarkingStatus.Applied
             : order.EffectiveMarkingStatus;
         var markingLabel = order.MarkingLabel;
         palletSummary ??= new ProductionPalletSummary();

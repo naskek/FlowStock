@@ -99,7 +99,6 @@
             <Button x:Name="AssignHuButton" Content="Назначить HU..." Click="AssignHuButton_Click" Margin="8,0,0,0" />
             <Button x:Name="FillPalletButton" Content="Наполнить паллет" Click="FillPalletButton_Click" Margin="8,0,0,0" Visibility="Collapsed" />
             <Button x:Name="DeleteLineButton" Content="Удалить строки" Click="DocDeleteLine_Click" Margin="8,0,0,0" />
-            <Button x:Name="KmCodesButton" Content="Коды КМ..." Click="KmCodes_Click" Margin="8,0,0,0" />
             <TextBlock x:Name="PalletizedPrdBadge" Text="Паллетный выпуск по плану" Margin="12,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="#2D6A3D" Visibility="Collapsed" />
         </StackPanel>
         <DataGrid x:Name="DocLinesGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
@@ -150,16 +149,6 @@
                                       HorizontalAlignment="Center"
                                       IsEnabled="{Binding RelativeSource={RelativeSource AncestorType=DataGrid}, Path=Tag}"
                                       ToolTip="Не дробить строку. При автораспределении отмеченные строки могут попасть на один общий HU, если суммарная загрузка паллеты не превышена." />
-                        </DataTemplate>
-                    </DataGridTemplateColumn.CellTemplate>
-                </DataGridTemplateColumn>
-                <DataGridTemplateColumn x:Name="DocKmColumn" Header="КМ" Width="220">
-                    <DataGridTemplateColumn.CellTemplate>
-                        <DataTemplate>
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="{Binding KmDisplay}" Margin="0,0,8,0" VerticalAlignment="Center" />
-                                <Button Content="Распределить" Click="KmDistribute_Click" IsEnabled="{Binding KmDistributeEnabled}" />
-                            </StackPanel>
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>

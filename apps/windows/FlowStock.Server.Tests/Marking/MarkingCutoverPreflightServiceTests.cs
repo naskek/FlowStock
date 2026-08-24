@@ -136,5 +136,8 @@ public sealed class MarkingCutoverPreflightServiceTests
         }
 
         public IReadOnlyList<MarkingCutoverPreflightEntry> GetMarkingCutoverPreflightEntries() => _entries;
+
+        public void EnforceMarkingCutover(string expectedPreflightHash, string approvedBy, DateTime enforcedAt) =>
+            throw new NotSupportedException();
     }
 }

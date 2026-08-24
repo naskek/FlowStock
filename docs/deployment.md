@@ -6,6 +6,8 @@
 
 Этот документ — постоянный runbook деплоя. Разовые операционные процедуры (cutover ЧЗ, backfill статусов маркировки) вынесены в `deploy/docs/operations/`.
 
+Переход маркировки в `ENFORCED` не имеет отдельного короткого deploy-пути. Он выполняется только по обычному FlowStock deployment process и `docs/marking-cutover.md`: dev rehearsal, свежий проверенный PostgreSQL backup, остановленные writers, final preflight/hash, trusted admin-only maintenance-команда `POST /api/admin/marking/cutover/enforce` с повторной проверкой exact hash внутри одной транзакции, health/diagnostics/smoke и только затем возврат writers. После запуска runtime с V0036 состояние `SHADOW` является maintenance/fail-closed: новые marking export/import, наполнение маркируемых production pallets и проведение соответствующего выпуска запрещены с `MARKING_CUTOVER_MAINTENANCE_REQUIRED`; preflight и enforce доступны только авторизованному WPF/PC admin. Ручные production SQL edits запрещены. Если preflight/enforce не завершён, writers не возвращаются: recovery — восстановление свежего pre-deploy backup и предыдущего runtime. После commit применяется canonical restore либо fix-forward при остановленных writers.
+
 ## Обзор
 
 - Production deploy выполняется через `deploy/docker-compose.yml`.
@@ -585,7 +587,7 @@ $DC restart nginx
 
 Процедуры, привязанные к конкретным миграциям или разовым переходам, описаны отдельно:
 
-- Cutover ЧЗ real-code workflow (`V0027`, `marking_cutover_state`, preflight, enforcement) — `deploy/docs/operations/marking-cutover.md`
+- Cutover ЧЗ real-code workflow (`V0027` + subject aggregate schema, `marking_cutover_state`, preflight, enforcement) — [`docs/marking-cutover.md`](marking-cutover.md)
 - Production backfill статусов ЧЗ (`backfill_marking_status.sh`) — `deploy/docs/operations/marking-backfill.md`
 - Полная проверка UDP discovery — `deploy/docs/operations/discovery-smoke.md`
 

@@ -7,7 +7,11 @@ public sealed class MarkingOrder
     public long? OrderLineId { get; init; }
     public long? ItemId { get; init; }
     public string? Gtin { get; init; }
+    public int RequiredQuantity { get; init; }
+    public int ReserveQuantity { get; init; }
     public int RequestedQuantity { get; init; }
+    public long? OriginalOrderId { get; init; }
+    public long? OriginalOrderLineId { get; init; }
     public string RequestNumber { get; init; } = string.Empty;
     public string Status { get; init; } = MarkingOrderStatus.Draft;
     public string RequestStatus { get; init; } = MarkingRequestStatus.NotRequested;

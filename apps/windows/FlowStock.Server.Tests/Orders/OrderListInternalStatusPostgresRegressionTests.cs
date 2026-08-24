@@ -222,7 +222,6 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
 
             var bound = SeedMarkableOrder(scopedStore, $"{prefix}-bound", itemId, qty: 1);
             var boundTask = AddMarkingOrder(scopedStore, bound.OrderId, itemId, requestedQty: 1);
-            var boundCodeId = AddMarkingCode(scopedStore, importId, boundTask, "BOUND-R", MarkingCodeStatus.Reserved, gtin);
             var docId = scopedStore.AddDoc(new Doc
             {
                 DocRef = $"{prefix}-prd",
@@ -240,7 +239,7 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
                 Qty = 1,
                 ProductionPurpose = ProductionLinePurpose.InternalStock
             });
-            Assert.Equal(1, scopedStore.AssignProductionMarkingCodesToReceipt([boundCodeId], docId, docLineId, DateTime.UtcNow));
+            AddMarkingCode(scopedStore, importId, boundTask, "BOUND-R", MarkingCodeStatus.Applied, gtin, docId, docLineId);
 
             var cancelled = SeedMarkableOrder(scopedStore, $"{prefix}-cancelled", itemId, qty: 1);
             var cancelledTask = AddMarkingOrder(scopedStore, cancelled.OrderId, itemId, requestedQty: 1, status: MarkingOrderStatus.Cancelled);
@@ -260,12 +259,12 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
 
             AssertMarking(ReadSingleOrderPageRow(scopedStore, covered.OrderRef), required: true, covered: true);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, missing.OrderRef), required: true, covered: false);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, bound.OrderRef), required: true, covered: true);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, bound.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, cancelled.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, sourceLinked.OrderRef), required: true, covered: true);
 
             var printedRow = ReadSingleOrderPageRow(scopedStore, printed.OrderRef);
-            Assert.Equal(MarkingStatus.Printed, printedRow.MarkingStatus);
+            Assert.Equal(MarkingStatus.NotApplied, printedRow.MarkingStatus);
             Assert.NotNull(printedRow.MarkingExcelGeneratedAt);
             Assert.NotNull(printedRow.MarkingPrintedAt);
             return Task.CompletedTask;
@@ -403,7 +402,7 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
             AssertMarking(ReadSingleOrderPageRow(scopedStore, emptyGtinDoesNotFallback.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, sharedNeed.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, multiNeed.OrderRef), required: true, covered: false);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, freeAndBound.OrderRef), required: true, covered: true);
+            AssertMarking(ReadSingleOrderPageRow(scopedStore, freeAndBound.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, boundOnlyNeedsTwo.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, voidedBound.OrderRef), required: true, covered: false);
             AssertMarking(ReadSingleOrderPageRow(scopedStore, failedTaskOrder.OrderRef), required: true, covered: false);
@@ -626,9 +625,7 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
             return AddMarkingCode(store, importId, markingOrderId, suffix, status, gtin, docId, docLineId);
         }
 
-        var codeId = AddMarkingCode(store, importId, markingOrderId, suffix, status, gtin);
-        Assert.Equal(1, store.AssignProductionMarkingCodesToReceipt([codeId], docId, docLineId, DateTime.UtcNow));
-        return codeId;
+        return AddMarkingCode(store, importId, markingOrderId, suffix, MarkingCodeStatus.Applied, gtin, docId, docLineId);
     }
 
     private static Guid AddBoundMarkingCode(
@@ -665,9 +662,7 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
             return AddMarkingCode(store, importId, markingOrderId, suffix, status, gtin, docId, docLineId);
         }
 
-        var codeId = AddMarkingCode(store, importId, markingOrderId, suffix, status, gtin);
-        Assert.Equal(1, store.AssignProductionMarkingCodesToReceipt([codeId], docId, docLineId, DateTime.UtcNow));
-        return codeId;
+        return AddMarkingCode(store, importId, markingOrderId, suffix, MarkingCodeStatus.Applied, gtin, docId, docLineId);
     }
 
     private static void SeedReservedLedgerHu(

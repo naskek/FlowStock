@@ -86,7 +86,7 @@ public sealed class MarkingValidationTests
 
         Assert.True(result.Success);
         Assert.Empty(result.Errors);
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Equal(0, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
         Assert.Single(harness.LedgerEntries);
         Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
     }
@@ -100,14 +100,14 @@ public sealed class MarkingValidationTests
             .Export(new[] { markingOrderId }, Array.Empty<long>(), DateTime.Parse("2026-05-01T10:00:00"));
 
         Assert.True(export.IsSuccess);
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrderId));
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.Status == FlowStock.Core.Models.Marking.MarkingCodeStatus.Reserved));
+        Assert.Equal(0, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrderId));
+        Assert.Equal(0, harness.MarkingCodes.Count(code => code.Status == FlowStock.Core.Models.Marking.MarkingCodeStatus.Reserved));
 
         var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
 
         Assert.True(result.Success);
         Assert.Empty(result.Errors);
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Equal(0, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
         Assert.Single(harness.LedgerEntries);
         Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
     }
@@ -164,7 +164,7 @@ public sealed class MarkingValidationTests
 
         Assert.True(result.Success);
         Assert.Empty(result.Errors);
-        Assert.Equal(3, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Equal(0, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
         Assert.Single(harness.LedgerEntries);
     }
 
@@ -180,7 +180,7 @@ public sealed class MarkingValidationTests
 
         Assert.True(result.Success);
         Assert.Empty(result.Errors);
-        Assert.Equal(4, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Equal(0, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
         Assert.Equal(1, harness.MarkingCodes.Count(code => code.ReceiptLineId == 777));
         Assert.Single(harness.LedgerEntries);
     }
@@ -196,7 +196,7 @@ public sealed class MarkingValidationTests
         var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
 
         Assert.True(result.Success);
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Equal(2, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
         Assert.Single(harness.LedgerEntries);
     }
 
@@ -222,7 +222,7 @@ public sealed class MarkingValidationTests
         var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
 
         Assert.True(result.Success);
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Equal(0, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
         Assert.Single(harness.LedgerEntries);
     }
 

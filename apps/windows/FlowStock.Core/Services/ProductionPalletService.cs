@@ -2058,8 +2058,7 @@ public sealed class ProductionPalletService
             .OrderBy(doc => doc.Id)
             .ToArray();
         var docsById = docs.ToDictionary(doc => doc.Id, doc => doc);
-        var markingGenerated = order.EffectiveMarkingStatus == MarkingStatus.Printed
-                               || order.MarkingExcelGeneratedAt.HasValue
+        var markingGenerated = order.MarkingExcelGeneratedAt.HasValue
                                || order.MarkingPrintedAt.HasValue;
         var rows = docs
             .SelectMany(doc => _data.GetProductionPalletsByDoc(doc.Id))
@@ -2915,6 +2914,23 @@ public sealed class ProductionPalletService
                     result = ProductionPalletFillResult.Failure(
                         ProductionFillingErrorCodes.PalletNotFound, "Паллета не найдена в плане выпуска.");
                     return;
+                }
+
+                if (store is IMarkingCutoverRuntimeGuard cutoverGuard)
+                {
+                    try
+                    {
+                        cutoverGuard.RequireEnforcedMarkingWorkflowForPallet(
+                            pallet.Id,
+                            "production_pallet_fill");
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        result = ProductionPalletFillResult.Failure(
+                            MarkingCutoverRuntimeErrors.MaintenanceRequired,
+                            ex.Message);
+                        return;
+                    }
                 }
 
                 // Same unified classification as Scan. A stale prdDocId within the same

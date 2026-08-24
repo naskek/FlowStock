@@ -46,20 +46,6 @@ public sealed class UomCatalogTests
         store.Verify(data => data.RenameUom(7, "Коробка"), Times.Once);
     }
 
-    [Fact]
-    public void KmEnsureItemMarked_UsesCanonicalUpdateItemPathAndPreservesBaseUom()
-    {
-        var source = ReadRepoFile("apps", "windows", "FlowStock.Core", "Services", "KmService.cs");
-        var methodStart = source.IndexOf("private static void EnsureItemMarked", StringComparison.Ordinal);
-        Assert.True(methodStart >= 0);
-        var methodEnd = source.IndexOf("private static Item? ResolveItemByGtin", methodStart, StringComparison.Ordinal);
-
-        Assert.True(methodEnd > methodStart);
-        var method = source[methodStart..methodEnd];
-        Assert.Contains("store.UpdateItem(new Item", method, StringComparison.Ordinal);
-        Assert.Contains("BaseUom = item.BaseUom", method, StringComparison.Ordinal);
-    }
-
     private static string ReadRepoFile(params string[] parts)
     {
         var current = AppContext.BaseDirectory;

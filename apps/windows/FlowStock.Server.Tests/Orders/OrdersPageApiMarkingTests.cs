@@ -48,8 +48,8 @@ public sealed class OrdersPageApiMarkingTests
         Assert.Equal(77, row.GetProperty("id").GetInt64());
         Assert.True(row.GetProperty("marking_required").GetBoolean());
         Assert.False(row.GetProperty("marking_completed").GetBoolean());
-        Assert.NotEqual("PRINTED", row.GetProperty("marking_status").GetString());
-        Assert.Equal("REQUIRED", row.GetProperty("marking_effective_status").GetString());
+        Assert.NotEqual("APPLIED", row.GetProperty("marking_status").GetString());
+        Assert.Equal("NOT_APPLIED", row.GetProperty("marking_effective_status").GetString());
         Assert.Equal("Маркировка не проведена", row.GetProperty("marking_label").GetString());
         Assert.Equal("Маркировка не проведена", row.GetProperty("marking_status_display").GetString());
         Assert.Equal(string.Empty, row.GetProperty("marking_excel_generated_at").GetString() ?? string.Empty);

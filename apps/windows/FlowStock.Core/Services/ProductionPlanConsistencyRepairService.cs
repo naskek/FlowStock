@@ -326,44 +326,6 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
             }
         }
 
-        var docLinesByHu = store.GetDocLines(context.DraftPrd067.Id)
-            .Where(line => line.ItemId == MustardItemId && line.Qty > StockQuantityRules.QtyTolerance)
-            .GroupBy(line => NormalizeHu(line.ToHu), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.OrderBy(line => line.Id).First(), StringComparer.OrdinalIgnoreCase);
-
-        foreach (var pallet in context.Pallets067)
-        {
-            if (!docLinesByHu.TryGetValue(NormalizeHu(pallet.HuCode), out var docLine))
-            {
-                continue;
-            }
-
-            var required = (int)Math.Round(PalletQty);
-            var assigned = store.CountProductionMarkingCodesByReceiptLine(docLine.Id);
-            var missing = required - assigned;
-            if (missing <= 0)
-            {
-                continue;
-            }
-
-            var item = store.FindItemById(MustardItemId);
-            var codeIds = store is ILineScopedMarkingCodeStore scopedStore
-                ? scopedStore.GetAvailableProductionMarkingCodeIdsForReceipt(
-                    context.Order067.Id,
-                    MustardItemId,
-                    item?.Gtin,
-                    missing,
-                    docLine.OrderLineId)
-                : store.GetAvailableProductionMarkingCodeIdsForReceipt(
-                    context.Order067.Id,
-                    MustardItemId,
-                    item?.Gtin,
-                    missing);
-            if (codeIds.Count > 0)
-            {
-                store.AssignProductionMarkingCodesToReceipt(codeIds, context.DraftPrd067.Id, docLine.Id, appliedAt);
-            }
-        }
     }
 
     private static void ApplyOrder072EmptyPallets(

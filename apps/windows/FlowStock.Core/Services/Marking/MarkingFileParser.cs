@@ -56,14 +56,30 @@ public sealed class MarkingFileParser
             }
 
             totalRows++;
-            var parts = line.Split(delimiter);
+            var parts = ParseDelimitedRow(line, delimiter);
+            if (delimiter != '\t' && parts.Length > 1)
+            {
+                invalidRows++;
+                warnings.Add($"Row {totalRows}: production Kontur rows must use a tab delimiter.");
+                continue;
+            }
             var normalizedCode = parts.Length > 0
                 ? MarkingCodeNormalizer.NormalizeCode(parts[0])
                 : string.Empty;
 
-            if (string.IsNullOrWhiteSpace(normalizedCode))
+            if (string.IsNullOrWhiteSpace(normalizedCode)
+                || !TryExtractGs1Gtin(normalizedCode, out var dmGtin))
             {
                 invalidRows++;
+                continue;
+            }
+
+            // Three columns are the observed Kontur contract. A one-column row is
+            // intentionally supported by FlowStock as a compatibility extension.
+            if (parts.Length != 1 && parts.Length != 3)
+            {
+                invalidRows++;
+                warnings.Add($"Row {totalRows}: expected one compatibility column or three Kontur columns.");
                 continue;
             }
 
@@ -73,19 +89,19 @@ public sealed class MarkingFileParser
                 continue;
             }
 
-            if (parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1]))
+            if (parts.Length == 3)
             {
                 var normalizedGtin = MarkingCodeNormalizer.NormalizeGtin(parts[1]);
-                if (normalizedGtin == null)
+                if (normalizedGtin == null || !string.Equals(normalizedGtin, dmGtin, StringComparison.Ordinal))
                 {
                     invalidGtinRows++;
-                }
-                else
-                {
-                    detectedGtins.Add(normalizedGtin);
+                    invalidRows++;
+                    warnings.Add($"Row {totalRows}: GTIN column does not match DataMatrix AI(01).");
+                    continue;
                 }
             }
 
+            detectedGtins.Add(dmGtin);
             acceptedCodes.Add(normalizedCode);
             validRows++;
         }
@@ -154,5 +170,65 @@ public sealed class MarkingFileParser
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n')
             .Split('\n');
+    }
+
+    private static string[] ParseDelimitedRow(string row, char delimiter)
+    {
+        var fields = new List<string>();
+        var field = new StringBuilder();
+        var quoted = false;
+        for (var index = 0; index < row.Length; index++)
+        {
+            var ch = row[index];
+            if (ch == '"')
+            {
+                if (quoted && index + 1 < row.Length && row[index + 1] == '"')
+                {
+                    field.Append('"');
+                    index++;
+                }
+                else
+                {
+                    quoted = !quoted;
+                }
+
+                continue;
+            }
+
+            if (ch == delimiter && !quoted)
+            {
+                fields.Add(field.ToString());
+                field.Clear();
+                continue;
+            }
+
+            field.Append(ch);
+        }
+
+        fields.Add(field.ToString());
+        return fields.ToArray();
+    }
+
+    public static bool TryExtractGs1Gtin(string code, out string gtin)
+    {
+        gtin = string.Empty;
+        if (code.Length < 24
+            || !code.StartsWith("01", StringComparison.Ordinal)
+            || !code.AsSpan(2, 14).ToString().All(char.IsDigit)
+            || !code.AsSpan(16).StartsWith("21", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var groupSeparator = code.IndexOf('\u001D', 18);
+        if (groupSeparator <= 18
+            || groupSeparator + 3 >= code.Length
+            || !code.AsSpan(groupSeparator + 1).StartsWith("93", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        gtin = code.Substring(2, 14);
+        return true;
     }
 }

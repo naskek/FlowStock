@@ -528,9 +528,10 @@ SELECT
     }
 
     [Fact]
-    public async Task CorrectFilled_RollsBackCompleteAppliedMarkingSetAndWritesImmutableAudit()
+    public async Task CorrectFilled_DoesNotMutateLegacyCodeToHuHistory()
     {
         var connectionString = ResolveRequiredPostgresTestConnectionString();
+        await using var cutoverState = await TemporaryEnforcedMarkingCutover.EnterAsync(connectionString);
 
         var prefix = $"MARK-COR-{Guid.NewGuid():N}";
         await using var fixture = await Fixture.Create(connectionString, prefix);
@@ -611,27 +612,13 @@ VALUES(
             command.CommandText = @"
 SELECT
     COUNT(*) FILTER (
-        WHERE status = 'Reserved'
-          AND receipt_doc_id IS NULL
-          AND receipt_line_id IS NULL
-          AND applied_at IS NULL),
+        WHERE status = 'Applied'
+          AND receipt_doc_id = @source_prd_doc_id
+          AND receipt_line_id = @source_doc_line_id
+          AND applied_at IS NOT NULL),
     (SELECT COUNT(*)
      FROM production_marking_transition_audit
-     WHERE adjustment_id = @adjustment_id
-       AND marking_order_id = @marking_order_id
-       AND import_id = @import_id
-       AND origin = 'LegacySynthetic'
-       AND source_prd_doc_id = @source_prd_doc_id
-       AND cor_doc_id = @cor_doc_id
-       AND old_receipt_doc_id = @source_prd_doc_id
-       AND old_receipt_line_id = @source_doc_line_id
-       AND old_applied_at IS NOT NULL
-       AND old_status = 'Applied'
-       AND new_status = 'Reserved'
-       AND reason_text = 'Перемаркировка не требуется'
-       AND actor_name = 'marking-operator'
-       AND device_name = 'marking-pc'
-       AND changed_at IS NOT NULL)
+     WHERE adjustment_id = @adjustment_id)
 FROM marking_code
 WHERE marking_order_id = @marking_order_id;
 ";
@@ -644,38 +631,8 @@ WHERE marking_order_id = @marking_order_id;
             await using var reader = await command.ExecuteReaderAsync();
             Assert.True(await reader.ReadAsync());
             Assert.Equal(10L, reader.GetInt64(0));
-            Assert.Equal(10L, reader.GetInt64(1));
+            Assert.Equal(0L, reader.GetInt64(1));
         }
-
-        var store = new PostgresDataStore(connectionString);
-        var documents = new DocumentService(store);
-        var fill = new ProductionPalletService(
-            store,
-            new ProductionFillCloseService(
-                store,
-                documents,
-                new FlowStockLedgerFlowOptions { ProductionAutoCloseOnFill = true }))
-            .Fill(fixture.Hu, "integration-test", fixture.OrderId, result.ReplacementPrdDocId);
-        Assert.True(fill.Success, fill.ErrorMessage);
-        Assert.True(fill.PrdAutoClosed);
-
-        await using var reapplied = new NpgsqlConnection(connectionString);
-        await reapplied.OpenAsync();
-        await using var reapplyCommand = reapplied.CreateCommand();
-        reapplyCommand.CommandText = @"
-SELECT COUNT(*)
-FROM marking_code
-WHERE marking_order_id = @marking_order_id
-  AND status = 'Applied'
-  AND receipt_doc_id = @replacement_prd_doc_id
-  AND receipt_line_id IN (
-      SELECT id FROM doc_lines WHERE doc_id = @replacement_prd_doc_id AND order_line_id = @order_line_id
-  );
-";
-        reapplyCommand.Parameters.AddWithValue("@marking_order_id", markingOrderId);
-        reapplyCommand.Parameters.AddWithValue("@replacement_prd_doc_id", result.ReplacementPrdDocId!.Value);
-        reapplyCommand.Parameters.AddWithValue("@order_line_id", fixture.OrderLineId);
-        Assert.Equal(10L, Convert.ToInt64(await reapplyCommand.ExecuteScalarAsync()));
     }
 
     [Theory]
@@ -686,12 +643,13 @@ WHERE marking_order_id = @marking_order_id
     [InlineData("UnexpectedLifecycle", false, false)]
     [InlineData("Applied", true, false)]
     [InlineData("Applied", false, true)]
-    public async Task CorrectFilled_DownstreamMarkingStatusOrHiddenTimestampBlocksWholeCorrection(
+    public async Task CorrectFilled_DownstreamLegacyCodeStateIsPreservedAndDoesNotBlockAggregateCorrection(
         string status,
         bool hasReportedAt,
         bool hasIntroducedAt)
     {
         var connectionString = ResolveRequiredPostgresTestConnectionString();
+        await using var cutoverState = await TemporaryEnforcedMarkingCutover.EnterAsync(connectionString);
 
         var prefix = $"MARK-BLOCK-{Guid.NewGuid():N}";
         await using var fixture = await Fixture.Create(connectionString, prefix);
@@ -758,20 +716,14 @@ VALUES(
         }
 
         var service = new ProductionPalletFillingCorrectionService(new PostgresDataStore(connectionString));
-        var preview = service.Preview(fixture.Hu);
-        Assert.Contains(
-            preview.Blockers,
-            blocker => blocker.Code == ProductionPalletFillingCorrectionErrorCodes.MarkingRollbackBlocked);
-
         var result = service.Confirm(new ProductionPalletFillingCorrectionConfirmRequest
         {
             RequestId = Guid.NewGuid().ToString(),
             HuCode = fixture.Hu,
             ExpectedAction = ProductionPalletFillingCorrectionAction.CorrectFilled,
-            ReasonText = "Must be blocked"
+            ReasonText = "Aggregate correction"
         });
-        Assert.False(result.Success);
-        Assert.Equal(ProductionPalletFillingCorrectionErrorCodes.MarkingRollbackBlocked, result.ErrorCode);
+        Assert.True(result.Success, result.Message);
 
         await using var verify = new NpgsqlConnection(connectionString);
         await verify.OpenAsync();
@@ -790,7 +742,7 @@ WHERE id = @code_id;
         Assert.Equal(status, reader.GetString(0));
         Assert.Equal(fixture.SourcePrdDocId, reader.GetInt64(1));
         Assert.Equal(fixture.SourceDocLineId, reader.GetInt64(2));
-        Assert.Equal(0L, reader.GetInt64(3));
+        Assert.Equal(1L, reader.GetInt64(3));
     }
 
     [Fact]
@@ -1768,9 +1720,10 @@ WHERE id = @order_id;",
     }
 
     [Fact]
-    public async Task CorrectFilled_ConcurrentMarkingTransition_BlocksWholeRollback()
+    public async Task CorrectFilled_DoesNotLockOrMutateConcurrentLegacyCodeTransition()
     {
         var connectionString = ResolveRequiredPostgresTestConnectionString();
+        await using var cutoverState = await TemporaryEnforcedMarkingCutover.EnterAsync(connectionString);
         await using var fixture = await Fixture.Create(
             connectionString,
             $"CONCURRENT-MARKING-{Guid.NewGuid():N}");
@@ -1806,17 +1759,10 @@ WHERE id = ANY(@ids);";
                     ExpectedAction = ProductionPalletFillingCorrectionAction.CorrectFilled,
                     ReasonText = "Concurrent marking transition"
                 }));
-        await WaitUntilPostgresSessionWaitsForLock(
-            connectionString,
-            correctionBuilder.ApplicationName!,
-            TimeSpan.FromSeconds(10));
-        await transitionTx.CommitAsync();
         var correction = await correctionTask.WaitAsync(TimeSpan.FromSeconds(10));
+        await transitionTx.CommitAsync();
 
-        Assert.False(correction.Success);
-        Assert.Equal(
-            ProductionPalletFillingCorrectionErrorCodes.MarkingRollbackBlocked,
-            correction.ErrorCode);
+        Assert.True(correction.Success, correction.Message);
         await using var verify = new NpgsqlConnection(connectionString);
         await verify.OpenAsync();
         await using var command = verify.CreateCommand();
@@ -1830,7 +1776,7 @@ SELECT
         await using var reader = await command.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
         Assert.Equal(10L, reader.GetInt64(0));
-        Assert.Equal(0L, reader.GetInt64(1));
+        Assert.Equal(1L, reader.GetInt64(1));
     }
 
     [Fact]
@@ -2449,8 +2395,54 @@ WHERE marking_order_id IN (SELECT id FROM marking_order WHERE order_id = @order_
 DELETE FROM marking_order WHERE order_id = @order_id;
 DELETE FROM marking_code_import WHERE original_filename = @marking_filename;
 DELETE FROM ledger WHERE doc_id IN (SELECT id FROM docs WHERE order_id = @order_id);
+DELETE FROM marking_ready_hu_fact_lineage
+WHERE ready_hu_fact_id IN (
+    SELECT id FROM marking_ready_hu_fact
+    WHERE marking_subject_id IN (
+        SELECT id FROM marking_production_subject
+        WHERE original_order_id = @order_id OR current_order_id = @order_id
+    )
+);
+DELETE FROM marking_ready_hu_grandfather_lineage
+WHERE ready_hu_fact_id IN (
+    SELECT id FROM marking_ready_hu_fact
+    WHERE marking_subject_id IN (
+        SELECT id FROM marking_production_subject
+        WHERE original_order_id = @order_id OR current_order_id = @order_id
+    )
+);
+DELETE FROM marking_ready_hu_fact
+WHERE marking_subject_id IN (
+    SELECT id FROM marking_production_subject
+    WHERE original_order_id = @order_id OR current_order_id = @order_id
+);
+DELETE FROM marking_operational_coverage_import_lineage
+WHERE operational_coverage_id IN (
+    SELECT id FROM marking_operational_coverage
+    WHERE marking_subject_id IN (
+        SELECT id FROM marking_production_subject
+        WHERE original_order_id = @order_id OR current_order_id = @order_id
+    )
+);
+DELETE FROM marking_operational_coverage
+WHERE marking_subject_id IN (
+    SELECT id FROM marking_production_subject
+    WHERE original_order_id = @order_id OR current_order_id = @order_id
+);
+DELETE FROM marking_grandfather_operational_allowance
+WHERE marking_subject_id IN (
+    SELECT id FROM marking_production_subject
+    WHERE original_order_id = @order_id OR current_order_id = @order_id
+);
+DELETE FROM marking_subject_ownership_audit
+WHERE marking_subject_id IN (
+    SELECT id FROM marking_production_subject
+    WHERE original_order_id = @order_id OR current_order_id = @order_id
+);
 DELETE FROM production_pallet_lines
 WHERE production_pallet_id IN (SELECT id FROM production_pallets WHERE order_id = @order_id);
+DELETE FROM marking_production_subject
+WHERE original_order_id = @order_id OR current_order_id = @order_id;
 DELETE FROM production_pallets WHERE order_id = @order_id;
 DELETE FROM doc_lines WHERE doc_id IN (SELECT id FROM docs WHERE order_id = @order_id);
 DELETE FROM docs WHERE order_id = @order_id;
@@ -2803,6 +2795,51 @@ SELECT EXISTS(
         }
 
         return connectionString.Trim();
+    }
+
+    private sealed class TemporaryEnforcedMarkingCutover : IAsyncDisposable
+    {
+        private readonly string _connectionString;
+        private readonly string _previousState;
+
+        private TemporaryEnforcedMarkingCutover(string connectionString, string previousState)
+        {
+            _connectionString = connectionString;
+            _previousState = previousState;
+        }
+
+        public static async Task<TemporaryEnforcedMarkingCutover> EnterAsync(string connectionString)
+        {
+            await using var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand("""
+UPDATE marking_cutover_state
+SET state = 'ENFORCED', updated_at = @now
+WHERE id = TRUE
+RETURNING state;
+""", connection);
+            command.Parameters.AddWithValue("@now", "2026-08-24T09:00:00Z");
+            await using var previousCommand = new NpgsqlCommand(
+                "SELECT state FROM marking_cutover_state WHERE id = TRUE",
+                connection);
+            var previousState = Convert.ToString(
+                await previousCommand.ExecuteScalarAsync(),
+                System.Globalization.CultureInfo.InvariantCulture) ?? "SHADOW";
+            Assert.Equal(1, await command.ExecuteNonQueryAsync());
+            return new TemporaryEnforcedMarkingCutover(connectionString, previousState);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "UPDATE marking_cutover_state SET state = @state, updated_at = @now WHERE id = TRUE",
+                connection);
+            command.Parameters.AddWithValue("@state", _previousState);
+            command.Parameters.AddWithValue("@now", "2026-08-24T09:30:00Z");
+            await command.ExecuteNonQueryAsync();
+        }
     }
 
     private sealed class PartialFixture : IAsyncDisposable

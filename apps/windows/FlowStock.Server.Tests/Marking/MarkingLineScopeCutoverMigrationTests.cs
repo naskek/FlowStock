@@ -20,7 +20,7 @@ public sealed class MarkingLineScopeCutoverMigrationTests
     }
 
     [Fact]
-    public void ServerExposesReadOnlyCutoverPreflightEndpoint()
+    public void ServerExposesPreflightAndHashCheckedEnforcementEndpoints()
     {
         var root = FindRepoRoot();
         var endpoint = File.ReadAllText(Path.Combine(root, "apps", "windows", "FlowStock.Server", "MarkingCutoverEndpoints.cs"));
@@ -29,9 +29,12 @@ public sealed class MarkingLineScopeCutoverMigrationTests
         Assert.Contains("/api/admin/marking/cutover/preflight", endpoint);
         Assert.Contains("preflight_hash", endpoint);
         Assert.Contains("canonical_json", endpoint);
+        Assert.Contains("/api/admin/marking/cutover/enforce", endpoint);
+        Assert.Contains("EnforceMarkingCutover", endpoint);
+        Assert.Contains("PreflightHash", endpoint);
         Assert.Contains("MarkingCutoverEndpoints.Map(app)", program);
         Assert.DoesNotContain("PREFLIGHT_READY", endpoint);
-        Assert.DoesNotContain("ENFORCED", endpoint);
+        Assert.Contains("ENFORCED", endpoint);
     }
 
     [Fact]

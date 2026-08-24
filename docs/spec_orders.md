@@ -26,7 +26,7 @@
 - `comment` TEXT NULL
 - `created_at` TEXT NOT NULL
 - `bind_reserved_stock` BOOLEAN NOT NULL DEFAULT `FALSE` // legacy/compatibility flag; не запускает фоновую привязку HU
-- `marking_status` TEXT NOT NULL DEFAULT `NOT_REQUIRED` // `NOT_REQUIRED` | `REQUIRED` | `PRINTED`
+- `marking_status` TEXT NOT NULL DEFAULT `NOT_REQUIRED` // canonical API: `NOT_REQUIRED` | `NOT_APPLIED` | `APPLIED`; legacy `REQUIRED`/`PRINTED` принимаются только при чтении старых данных
 - `marking_excel_generated_at` TEXT NULL
 - `marking_printed_at` TEXT NULL
 - `marking_responsibility` TEXT NOT NULL DEFAULT `FLOWSTOCK` // `FLOWSTOCK` | `CUSTOMER`
@@ -270,17 +270,15 @@ Read-контракт строки возвращает `unit_price_gross`, `vat
   - затем `POST /api/orders/{orderId}/marking/export`
 - Кнопка `Сформировать Excel ЧЗ` в WPF **не** должна вызывать legacy/global `POST /api/marking/export` из окна `Маркировка`.
 - Источник расчёта — серверные `orders` и `order_lines`, а не очередь производственной потребности и не клиентский пересчёт qty.
-- Складские HU, уже физически готовые (`ledger` > 0) и привязанные к `CUSTOMER`, **не создают** новую ЧЗ-потребность: такой товар считается уже промаркированным на складе.
-- Excel для `CUSTOMER` — только на production shortage / planned production pallets, с учётом уже созданных кодов; повторный export **идемпотентен** (без дублей кодов/задач).
+- Складской HU покрывает marking quantity только при положительном `ledger`, текущей привязке и valid `marking_ready_hu_fact`; один `ledger` без aggregate fact маркировку не доказывает.
+- Excel для `CUSTOMER` создаётся только на полностью спланированный `remaining_to_produce`; outstanding immutable scope не дублируется.
   - `GET /api/orders/{orderId}/marking/preview` использует ту же логику расчета, что и export, но не создает `marking_order`, `marking_code`, XLSX и не привязывает коды. В preview попадают строки, где `export_qty + existing_code_qty > 0`; поле `qty` строки = `export_qty + existing_code_qty` (включая переиспользование уже созданных кодов при `export_qty = 0`). Ответ: `order_id`, `order_ref`, `line_count`, `total_qty`, `lines[]` (`order_line_id`, `item_id`, `item_name`, `gtin`, `qty`, `hu_count`, `hu_codes` из активных `production_pallets` заказа).
-  - Для `CUSTOMER` Excel ЧЗ создается только на нехватку маркируемых строк после учета уже покрытого объема: `export_qty = max(0, qty_ordered - shipped_qty - reserved_filled_hu_qty - existing_order_code_qty)`.
-  - Складские HU, привязанные к `CUSTOMER` через `order_receipt_plan_lines`, не попадают в новую выгрузку ЧЗ. Если по строке есть активные `production_pallets`, Excel ЧЗ создается только на объем этих производственных паллет (`PLANNED`/`PRINTED`/`FILLED`, кроме `CANCELLED`) с учетом уже созданных кодов; иначе используется оставшаяся производственная нехватка после отгрузки и складского HU-резерва.
-  - `reserved_filled_hu_qty` учитывает только строки `order_receipt_plan_lines` с `to_hu`, для которых HU имеет `production_pallets.status = FILLED`; planned/unfilled резерв в маркировку не входит, а наличие ledger balance для этой проверки не обязательно.
-  - Для `INTERNAL` Excel ЧЗ создается на объем выпуска внутреннего заказа: `export_qty = max(0, qty_ordered - existing_codes_for_this_internal_order)`.
-  - Новый endpoint создает/переиспользует `marking_order` с `source_type = PRODUCTION_ORDER`, `source_order_id = order.id` и временные synthetic `marking_code` через существующий Excel workflow.
-  - Повторный export идемпотентен: если коды по этому заказу уже покрывают расчетный объем, новые задачи и коды не создаются.
+  - Preview различает full applicability, aggregate coverage, `remaining_to_produce`, planned/unplanned, scoped/requested/imported quantities и reserve; ready-HU fact не отменяет applicability.
+  - Для `CUSTOMER` и `INTERNAL` export разрешён только когда весь текущий markable `remaining_to_produce` представлен stable subjects production pallet plan.
+  - Endpoint создаёт/переиспользует request-only `marking_order` и immutable scopes; Excel export не создаёт `marking_code`, import, operational coverage или status transition.
+  - Повторный export идемпотентен: outstanding scopes покрывают уже запрошенное количество, а quantity increase создаёт request только на uncovered delta.
   - Для заказа в финальном статусе `SHIPPED` (`Выполнен`) Excel ЧЗ не формируется: WPF не дает нажать кнопку, а backend `POST /api/orders/{orderId}/marking/export` возвращает отказ без создания `marking_order` и `marking_code`.
-  - Отдельное окно/очередь `Маркировка` больше не отображается в главной навигации WPF; legacy-окно `MarkingWindow` и его обработчик сохраняются только для совместимости и возможной диагностики. Ручной `POST /api/marking/create-from-production-needs` и остальные `/api/marking/*` endpoints сохраняются для совместимости, но не являются основным способом формирования ЧЗ.
+  - Отдельное окно `MarkingWindow`, его обработчик, ручной `POST /api/marking/create-from-production-needs` и legacy global/item mutation endpoints удалены после caller/dependency audit.
   - Web-список заказов показывает бинарный статус ЧЗ из server-side DTO как icon-only индикатор с подсказкой `Маркировка не проведена` / `Маркировка проведена`.
 - На этапе создания/обновления `CUSTOMER`-заказа сервер больше не создает новые HU-резервы из свободного stock. Refresh/rebuild может читать кандидатов, валидировать отображение и сохранять уже существующие ручные reservations, но не должен заново привязывать ранее отвязанный HU и не должен удалять ручные reservations без явной причины.
 - В WPF refresh кандидатов HU для `CUSTOMER` не делает свободные HU выбранными автоматически: `AutoSelected` из candidate API является только подсказкой/кандидатом для picker. В выбранные HU (`SelectedHuCodes`) попадают только уже сохраненные `order_receipt_plan_lines` или явное действие оператора в HU picker / ready-HU binding.
@@ -367,87 +365,22 @@ Production Docker Compose wrapper:
 
 ## Маркировка ЧЗ из заказа
 
-Новая ЧЗ-модель не использует старый ручной флаг `items.is_marked`. Позиция заказа попадает в расчет только если тип номенклатуры имеет `item_types.enable_marking = true`, а у товара заполнен непустой `items.gtin`.
+### Текущий канонический контракт
 
-Основной workflow маркировки теперь order-based: оператор открывает заказ и запускает `Сформировать Excel ЧЗ`; WPF сначала показывает предпросмотр через `GET /api/orders/{orderId}/marking/preview`, после подтверждения вызывает `POST /api/orders/{orderId}/marking/export`, а сервер сам читает заказ и строки.
-
-Для marking preview/export WPF использует отдельный timeout `marking_timeout_seconds`: default `120` секунд, диапазон `1..600`, env override `FLOWSTOCK_SERVER_MARKING_TIMEOUT_SECONDS`. Он не изменяет `close_timeout_seconds` и timeout проведения документов.
-
-`POST /api/orders/{orderId}/marking/export` выполняется атомарно в одной PostgreSQL-транзакции. После открытия транзакции сервер блокирует строку `orders` через `SELECT ... FOR UPDATE` и только после получения блокировки заново читает заказ, строки, задачи маркировки, существующие коды и остальные данные покрытия. Расчёт нехватки, создание/переиспользование `marking_order`, создание `marking_code_import` и `marking_code`, перевод задач и заказа в `PRINTED`, а также заполнение `marking_printed_at` и `marking_excel_generated_at` входят в эту транзакцию. Ошибка откатывает все перечисленные изменения.
-
-Два конкурентных export одного заказа сериализуются этой блокировкой. Второй запрос после commit первого перечитывает состояние, не создаёт вторую логическую задачу/import и возвращает согласованный идемпотентный результат.
-
-Если WPF не получил ответ после отправки `POST` из-за timeout, отмены или сетевого разрыва, сервер мог уже завершить или ещё выполнять транзакцию. WPF не повторяет `POST` автоматически: оператору предлагается подождать и обновить либо переоткрыть заказ. После завершения серверной операции ручной повтор безопасен благодаря идемпотентности и блокировке. Timeout preview является определённым read-only сбоем, поэтому preview можно повторить сразу.
-
-Для `CUSTOMER`-заказа расчет идет по маркируемым строкам заказа. `required_qty = qty_ordered`; покрытым считается уже отгруженный объем, резерв готовых HU (`reserved_filled_hu_qty`: FILLED паллета, зарезервированная под CUSTOMER) и уже созданные коды, явно связанные с этим заказом. Excel создается только на нехватку: если заказано `7200`, а `3600` уже покрыто таким резервом, в Excel попадает `3600`. Плановый резерв без FILLED shortage не уменьшает.
-
-Для `INTERNAL`-заказа расчет идет на весь объем выпуска строк внутреннего заказа. Уже созданные коды для этого production order не дублируются, а новые order-based задачи создаются с `source_type = PRODUCTION_ORDER`, `source_order_id = order.id` и `order_id = order.id`.
-
-Раздел `/api/marking/orders` и legacy-окно WPF `Маркировка` являются журналом/legacy-view задач маркировки, а не основным местом генерации ЧЗ. Отдельный пункт меню `Маркировка` убран из главного меню WPF; основной операторский workflow формирования Excel ЧЗ выполняется из карточки заказа кнопкой `Сформировать Excel ЧЗ`. Окно `MarkingWindow`, его обработчик и API `/api/marking/*` сохраняются для совместимости. Старый `POST /api/marking/create-from-production-needs` также сохраняется для совместимости: он может создавать production-based `marking_order`, но основной операторский workflow должен идти из карточки заказа.
-
-Полноценный импорт КМ/DM из Честного Знака включается отдельными implementation PR и operational cutover. До состояния `ENFORCED` временный workflow сохраняется: после успешного формирования Excel ЧЗ сервер создает technical/synthetic `marking_code` со значениями `TEMP-CHZ-{marking_order_id}-{NNNNNN}` и статусом, доступным для автопривязки к выпуску, пока количество кодов по задаче не достигнет `requested_quantity`. Повторное формирование Excel не создает дубли, а при частичном наличии кодов создает только недостающее количество. После `ENFORCED` Excel должен стать request-only: без новых `TEMP-CHZ-*`, без `orders.marking_status = PRINTED`, без `marking_printed_at`, без coverage и без открытия TSD filling.
-
-`status = Printed` у `marking_order` означает сформированный Excel/печать, но не отключает close validation. Для контроля выпуска используются счетчики кодов в `marking_code`: `codes_total`, `codes_free`, `codes_bound`.
-
-Пока `codes_total < requested_quantity`, заказ и задача маркировки должны считаться `Маркировка не проведена` даже если `marking_order` уже существует.
-
-Задача маркировки считается выполненной/обеспеченной, когда `codes_total >= requested_quantity`. В активном списке `Маркировка` такие задачи скрываются, если не включен режим `Показать выполненные`; в режиме выполненных они отображаются как обеспеченные.
-
-При закрытии `INTERNAL PRODUCTION_RECEIPT` маркируемой продукции сервер использует свободные ЧЗ/КМ-коды из `marking_code`, включая временные synthetic-коды до реализации настоящего импорта: товар и GTIN должны совпадать, код не должен быть уже привязан к другой строке выпуска, `PRODUCTION_ORDER` сопоставляется по `source_order_id`, а `PRODUCTION_NEED` без `source_order_id` может покрывать выпуск по `item_id`/GTIN. Недостающие коды автопривязываются к `doc_lines.id` в транзакции закрытия до записи `ledger`; при нехватке кодов закрытие блокируется.
-
-Legacy production-based `marking_order` может иметь `order_id = NULL` и `source_type = PRODUCTION_NEED`; ее нельзя складывать с open `INTERNAL` draft как две независимые потребности, если это один и тот же будущий выпуск. Уже использованные/привязанные коды не гасят новую будущую потребность.
-
-Статусы маркировки заказа:
-- `NOT_REQUIRED` = индикатор не показывается
-- `REQUIRED` = `Маркировка не проведена`
-- `PRINTED` = `Маркировка проведена`
-
-В основном списке заказов WPF и в выборе заказа для `PRODUCTION_RECEIPT` показывается effective-статус ЧЗ. Для `CUSTOMER` он считается по нехватке после отгрузки/резерва; для `INTERNAL` - по наличию достаточных кодов для production order. Наличие самой задачи `marking_order` не должно маскировать отсутствие кодов: до Excel/synthetic codes effective-статус остается `REQUIRED`.
-Сохраненный lifecycle-статус `PRINTED` имеет приоритет над текущей вычисленной потребностью: текущий `marking_required = false` не должен превращать такой заказ в `NOT_REQUIRED`. Старое значение БД/API `EXCEL_GENERATED` читается как `PRINTED` и не записывается новыми операциями.
-
-Короткая колонка `Маркировка ЧЗ` в заказах бинарная:
-- `REQUIRED` = `Маркировка не проведена` красным
-- `PRINTED` = `Маркировка проведена` зеленым
-
-Если в заказе нет маркируемых товаров, индикатор можно не показывать. Статусы `требуется`, `в работе`, `частично`, `не требуется` рядом с заказом не выводятся.
-
-Очередь WPF `Маркировка` по умолчанию показывает задачи маркировки как журнал/legacy-view. Production-based `marking_order` с `order_id = NULL` отображается как обычная задача; для старых order-based строк источник остается клиентским заказом. Новую генерацию Excel ЧЗ оператор запускает из окна заказа.
-
-Legacy-расчет задач маркировки из производственной потребности:
-- сервер берет строки `Потребность производства`;
-- для маркируемых товаров (`item_types.enable_marking = true` и непустой `items.gtin`) считает полный производимый объем;
-- открытые `INTERNAL` drafts/orders участвуют в расчете как server-side представление будущего выпуска, но не должны автоматически удваивать тот же объем относительно production need report;
-- уже созданные задачи маркировки с production-source вычитаются из нового объема;
-- исторические/использованные `marking_order` без `source_type` не вычитаются, даже если GTIN совпадает.
-
-При order-based export или выборе нескольких задач маркировки сервер формирует Excel-файл и агрегирует строки с одинаковыми GTIN и наименованием. Основной лист Excel не содержит строку заголовков: первая строка является первой строкой данных. Формат строго состоит из трех колонок в фиксированном порядке: `Наименование`, `GTIN`, `Кол-во`.
-
-После успешного формирования файла выбранные задачи `marking_order`, по которым реально были строки ЧЗ, переводятся в `PRINTED`. Для order-based задач и legacy order-candidates дополнительно сохраняется прежнее поведение: заказы, по которым реально были строки ЧЗ, получают `marking_status = PRINTED`, `marking_printed_at` и `marking_excel_generated_at`. Заказы без строк ЧЗ не блокируют формирование по другим выбранным задачам и не переводятся в `PRINTED`. Если строк ЧЗ нет по всем выбранным задачам, файл не создается и данные не мутируют.
-
-Повторное формирование доступно в WPF через `Показать выполненные`, где отображаются ранее обработанные `PRINTED` заказы. Legacy `EXCEL_GENERATED` отображается в этом режиме как `PRINTED`.
-
-Формирование Excel ЧЗ не меняет `ledger`, `docs`, `doc_lines`, не редактирует закрытые документы и не запускает автоматический backfill.
-
-Закрытие `PRODUCTION_RECEIPT` с фактическими строками маркируемой продукции разрешено только при достаточном количестве КМ/DM-кодов по строкам выпуска:
-- маркируемость определяется товаром: `item_types.enable_marking = true` и непустой `items.gtin`;
-- тип заказа `CUSTOMER`/`INTERNAL`, контрагент, `production_purpose` и наличие `order_line_id` не отменяют требование маркировки;
-- внутренний выпуск на склад маркируемого товара требует КМ/DM-коды так же, как выпуск под клиентский заказ;
-- если `Потребность производства` создала `INTERNAL`-черновик с маркируемым товаром, связанный выпуск тоже блокируется без достаточных КМ/DM-кодов;
-- если в строках нет маркируемых товаров, документ закрывается по прежним правилам;
-- проверка выполняется на сервере до записи `ledger` и до изменения статуса документа.
-
-В WPF и PC Web рядом с заказом используется только бинарная подсказка ЧЗ: `Маркировка проведена` или `Маркировка не проведена`. В разделе маркировки production-based задачи с `order_id = NULL` не скрываются и получают тот же бинарный effective-статус. Заказ без маркируемых товаров может не показывать индикатор.
-
-Индексы:
-- `orders(order_ref)`
-- `orders(partner_id)`
-- `order_lines(order_id)`
-- `docs(order_id)`
-- `production_pallets(prd_doc_id, hu_code)` уникальный для активных паллет
-- `production_pallet_lines(production_pallet_id, doc_line_id)` уникальный
-- `production_pallets(hu_code)` уникальный для активных, не отмененных паллет
-- `production_pallets(order_line_id, status)`
-- `ledger(item_id, location_id)` (уже было)
+- Applicability считается по каждой неотменённой строке с `qty_ordered > 0` и `item_types.enable_marking=true`; `remaining_to_produce`, plan и ready stock applicability не отменяют. Пустой GTIN даёт `NOT_APPLIED` и configuration error.
+- Статусы: `NOT_REQUIRED` — маркируемого активного количества нет; `NOT_APPLIED` — оно есть, но полного aggregate coverage нет; `APPLIED` — всё текущее relevant quantity покрыто real operational coverage, bounded grandfather coverage и/или ledger-backed `marking_ready_hu_fact`. Пользовательского `PARTIAL` нет.
+- Preview возвращает applicability, coverage, `remaining_to_produce`, planned/unplanned, scoped/requested/imported quantity и reserve. Export разрешён только при полном pallet plan текущего markable `remaining_to_produce`; ready-HU с valid fact остаётся applicable, но нового Excel не требует.
+- Export — request-only атомарная операция. Он создаёт immutable `marking_order`/`marking_request_scope` и XLSX, но ноль `marking_code`, imports, coverage и status transitions. Default reserve равен DB-настройке `5`; повтор с тем же snapshot/hash идемпотентен.
+- Для `marking_responsibility=CUSTOMER` order export отклоняется и XLSX не создаётся. Первый явный upload/preview из related order card идемпотентно создаёт acquisition envelope и immutable scopes с reserve `0`; уже scoped shared quantity повторно не запрашивается, а до Confirm codes и operational coverage отсутствуют.
+- Scope фиксирует stable `marking_production_subject`, component/pallet/doc-line identity, item, GTIN, quantity и original ownership. Quantity increase запрашивает только uncovered delta; decrease/cancel не переписывает provenance и не переиспользует excess. Item/GTIN mutation после request отклоняется; adoption меняет current ownership subject, сохраняя IDs и immutable request/import provenance.
+- Immutable scope и aggregate coverage имеют отдельную монотонную active/consumable quantity. При уменьшении subject излишек `REAL_IMPORT` и `GRANDFATHER_ALLOWANCE` необратимо retire/cap-ится; последующее увеличение того же subject не восстанавливает его и требует нового real request на delta. Cancellation обнуляет consumable quantity без возможности повторного увеличения. Controlled correction атомарно переносит только оставшуюся active quantity в successor lineage; для одного grandfather allowance допустим ровно один active consumer и никогда не больше `approved_quantity`.
+- Real import создаёт immutable `marking_code(origin=RealImport,status=Imported)` только внутри request scope. Нормальный ответ Kontur содержит `requested_quantity` и подтверждается целиком. `valid < required` доступен лишь как recovery/anomaly Confirm: codes сохраняются для supplement, но allocations отсутствуют, `NOT_APPLIED`, filling закрыт. Все scopes активируются вместе при достижении required; `required <= valid < requested` — `APPLIED` с reserve-short warning.
+- Confirm shared request атомарен/идемпотентен для всех current allocations; request виден в каждой карточке связанных после adoption заказов, upload разрешён из любой, duplicate Excel на inherited outstanding quantity запрещён.
+- Карточка заказа WPF выполняет multi-select upload через order-scoped `import/preview`, показывает распределение `imported_after / requested_qty`, reserve-short и отдельное предупреждение recovery; `import/confirm` отправляет тот же набор файлов, `batch_id`, `idempotency_key` и `snapshot_hash`. Имя файла не выбирает request. Server mapping выполняется по GTIN из AI(01) только среди currently related outstanding scopes; ambiguity блокирует Confirm.
+- `marking_import_batch_request` делает один multi-file/multi-GTIN Confirm общим parent для всех requests. Вся проверка snapshot и запись `marking_import_file`, `marking_code_import`, immutable RealImport codes, batch/request lineage и aggregate coverage выполняются атомарно. При `valid < required` WPF требует явного recovery-подтверждения; это не создаёт pallet allocation и не открывает filling.
+- Production close не выбирает КМ. После блокировки документа/subjects/coverage он проверяет полное aggregate coverage, создаёт `marking_ready_hu_fact` и lineage и в той же транзакции пишет ledger/закрывает документ. Любая ошибка откатывает fact и ledger.
+- CUSTOMER `1200` + bound `1200` ledger-backed ready HU с valid fact => `APPLIED`, хотя `remaining_to_produce=0`; plan/Excel отсутствуют. Bind/unbind/rebind fact не меняют.
+- `SHADOW` после deploy V0036 — maintenance/fail-closed, а не рабочий смешанный режим: новые marking export/import, filling маркируемых production pallets и соответствующий production close запрещены до атомарного `ENFORCED`; synthetic fallback не существует.
 
 ## WPF: паллеты по строке заказа
 
@@ -760,8 +693,8 @@ Legacy-расчет задач маркировки из производств�
   - для клиентского заказа с резервом HU/паллет под заказ подсказка показывает готовность к отгрузке в формате `К отгрузке готово X из Y паллет по заказу`;
   - для заказов с потребностью в плане без созданного плана показывает `План не сформирован`; для заказов без паллетного workflow индикатор не выводится.
 - В списке заказов PC web есть компактный icon-only индикатор `ЧЗ`:
-  - красная иконка с подсказкой `Маркировка не проведена`, если effective-статус `REQUIRED`;
-  - зеленая иконка с подсказкой `Маркировка проведена`, если effective-статус `PRINTED`.
+  - красная иконка с подсказкой `Маркировка не проведена`, если effective-статус `NOT_APPLIED`;
+  - зеленая иконка с подсказкой `Маркировка проведена`, если effective-статус `APPLIED`.
   - Индикатор использует только `marking_effective_status` и `marking_status_display` из `/api/orders`, не пересчитывая ЧЗ по строкам на frontend.
   - Если effective-статус `NOT_REQUIRED`, индикатор не выводится.
 - В строках заказа в WPF и PC web отображаются наименование, SKU/штрихкод и GTIN. Модальное окно деталей заказа PC web:

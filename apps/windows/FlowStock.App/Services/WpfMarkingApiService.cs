@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text;
@@ -27,65 +28,6 @@ public sealed class WpfMarkingApiService
         _settings = settings;
         _logger = logger;
         _handlerFactory = handlerFactory ?? CreateHandler;
-    }
-
-    public bool TryGetOrders(bool includeCompleted, out IReadOnlyList<MarkingOrderQueueRow> orders)
-    {
-        orders = Array.Empty<MarkingOrderQueueRow>();
-        var path = includeCompleted ? "/api/marking/orders?include_completed=1" : "/api/marking/orders";
-        return TryRead(
-            path,
-            root => root.ValueKind == JsonValueKind.Array
-                ? root.EnumerateArray().Select(MapOrder).ToList()
-                : new List<MarkingOrderQueueRow>(),
-            "marking-orders",
-            out orders);
-    }
-
-    public async Task<(bool IsSuccess, byte[]? FileBytes, string? FileName, string? Error)> TryExportAsync(
-        IReadOnlyCollection<Guid> markingOrderIds,
-        IReadOnlyCollection<long> orderIds,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var configuration = LoadConfiguration();
-            if (!configuration.IsConfigured)
-            {
-                _logger.Info("Marking export skipped: server base URL is not configured.");
-                return (false, null, null, "FlowStock Server API не настроен.");
-            }
-
-            using var handler = _handlerFactory(configuration);
-            using var client = new HttpClient(handler)
-            {
-                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
-                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
-            };
-            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/marking/export")
-            {
-                Content = new StringContent(
-                    JsonSerializer.Serialize(new { marking_order_ids = markingOrderIds, order_ids = orderIds }),
-                    Encoding.UTF8,
-                    "application/json")
-            };
-            using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                return (false, null, null, await ReadApiErrorAsync(response).ConfigureAwait(false));
-            }
-
-            var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
-            var fileName = response.Content.Headers.ContentDisposition?.FileNameStar
-                           ?? response.Content.Headers.ContentDisposition?.FileName?.Trim('"')
-                           ?? $"chestny_znak_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
-            return (true, bytes, fileName, null);
-        }
-        catch (Exception ex)
-        {
-            _logger.Error("Marking export failed", ex);
-            return (false, null, null, "Не удалось сформировать Excel ЧЗ.");
-        }
     }
 
     public async Task<OrderMarkingExportPreviewApiResult> TryPreviewOrderAsync(
@@ -255,7 +197,9 @@ public sealed class WpfMarkingApiService
         }
     }
 
-    public async Task<(bool IsSuccess, string Message, int CreatedTaskCount, double CreatedQty)> TryCreateFromProductionNeedsAsync(
+    public async Task<OrderMarkingImportPreviewApiResult> TryPreviewOrderImportAsync(
+        long orderId,
+        IReadOnlyList<string> filePaths,
         CancellationToken cancellationToken = default)
     {
         try
@@ -263,8 +207,7 @@ public sealed class WpfMarkingApiService
             var configuration = LoadConfiguration();
             if (!configuration.IsConfigured)
             {
-                _logger.Info("Marking creation skipped: server base URL is not configured.");
-                return (false, "FlowStock Server API не настроен.", 0, 0);
+                return OrderMarkingImportPreviewApiResult.Failure("FlowStock Server API не настроен.");
             }
 
             using var handler = _handlerFactory(configuration);
@@ -273,26 +216,112 @@ public sealed class WpfMarkingApiService
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
                 Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             };
-            using var response = await client.PostAsJsonAsync("/api/marking/create-from-production-needs", new { }, cancellationToken)
+            using var content = BuildImportMultipart(filePaths);
+            using var response = await client
+                .PostAsync($"/api/orders/{orderId}/marking/import/preview", content, cancellationToken)
                 .ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                return (false, await ReadApiErrorAsync(response).ConfigureAwait(false), 0, 0);
+                return OrderMarkingImportPreviewApiResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
             }
 
-            var payload = await response.Content.ReadFromJsonAsync<CreateMarkingResponse>(JsonOptions, cancellationToken)
+            var payload = await response.Content
+                .ReadFromJsonAsync<OrderMarkingImportPreviewResponse>(JsonOptions, cancellationToken)
                 .ConfigureAwait(false);
-            return (
-                true,
-                payload?.Message ?? "Маркировка создана.",
-                payload?.CreatedTaskCount ?? 0,
-                payload?.CreatedQty ?? 0);
+            return payload == null
+                ? OrderMarkingImportPreviewApiResult.Failure("Пустой ответ сервера.")
+                : new OrderMarkingImportPreviewApiResult(
+                    true,
+                    payload.Message ?? "Импорт готов к подтверждению.",
+                    payload.SnapshotHash ?? string.Empty,
+                    payload.RequiresRecoveryConfirmation,
+                    payload.Warnings ?? Array.Empty<string>(),
+                    payload.Files?.Select(file => new OrderMarkingImportFileApiResult(
+                        file.Filename ?? string.Empty, file.ValidRows, file.InvalidRows, file.DuplicateRows)).ToArray()
+                        ?? Array.Empty<OrderMarkingImportFileApiResult>(),
+                    payload.Requests?.Select(request => new OrderMarkingImportRequestApiResult(
+                        request.MarkingOrderId,
+                        request.RequestNumber ?? string.Empty,
+                        request.Gtin ?? string.Empty,
+                        request.RequiredQuantity,
+                        request.RequestedQuantity,
+                        request.ImportedAfter,
+                        request.CoverageWillActivate,
+                        request.ReserveShort)).ToArray()
+                        ?? Array.Empty<OrderMarkingImportRequestApiResult>());
         }
         catch (Exception ex)
         {
-            _logger.Error("Marking creation failed", ex);
-            return (false, "Не удалось создать задачи маркировки.", 0, 0);
+            _logger.Error("Order marking import preview failed", ex);
+            return OrderMarkingImportPreviewApiResult.Failure("Не удалось проверить файлы КМ.");
         }
+    }
+
+    public async Task<OrderMarkingImportConfirmApiResult> TryConfirmOrderImportAsync(
+        long orderId,
+        IReadOnlyList<string> filePaths,
+        OrderMarkingImportPreviewApiResult preview,
+        bool confirmRecovery,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configuration = LoadConfiguration();
+            if (!configuration.IsConfigured)
+            {
+                return OrderMarkingImportConfirmApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            var batchId = Guid.NewGuid();
+            using var handler = _handlerFactory(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            using var content = BuildImportMultipart(filePaths);
+            content.Add(new StringContent(batchId.ToString("D")), "batch_id");
+            content.Add(new StringContent(preview.SnapshotHash), "snapshot_hash");
+            content.Add(new StringContent($"wpf-{batchId:N}"), "idempotency_key");
+            content.Add(new StringContent(confirmRecovery.ToString(CultureInfo.InvariantCulture)), "confirm_recovery");
+            using var response = await client
+                .PostAsync($"/api/orders/{orderId}/marking/import/confirm", content, cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return OrderMarkingImportConfirmApiResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            var payload = await response.Content
+                .ReadFromJsonAsync<OrderMarkingImportConfirmResponse>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            return payload == null
+                ? OrderMarkingImportConfirmApiResult.Failure("Пустой ответ сервера.")
+                : new OrderMarkingImportConfirmApiResult(
+                    true,
+                    $"Импортировано реальных КМ: {payload.PersistedCodeCount}. "
+                    + $"Активировано requests: {payload.ActivatedMarkingOrderIds?.Length ?? 0}.",
+                    payload.BatchId,
+                    payload.PersistedCodeCount,
+                    payload.ActivatedMarkingOrderIds?.Length ?? 0);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Order marking import confirm failed", ex);
+            return OrderMarkingImportConfirmApiResult.Failure("Не удалось подтвердить импорт КМ; проверьте состояние заказа на сервере.");
+        }
+    }
+
+    private static MultipartFormDataContent BuildImportMultipart(IReadOnlyList<string> filePaths)
+    {
+        var content = new MultipartFormDataContent();
+        foreach (var filePath in filePaths)
+        {
+            var bytes = File.ReadAllBytes(filePath);
+            content.Add(new ByteArrayContent(bytes), "files", Path.GetFileName(filePath));
+        }
+
+        return content;
     }
 
     private bool TryRead<T>(string relativePath, Func<JsonElement, T> map, string operationName, out T value)
@@ -698,6 +727,43 @@ public sealed class WpfMarkingApiService
         [JsonPropertyName("reused_code_qty")]
         public double ReusedCodeQty { get; init; }
     }
+
+    private sealed class OrderMarkingImportPreviewResponse
+    {
+        [JsonPropertyName("message")] public string? Message { get; init; }
+        [JsonPropertyName("snapshot_hash")] public string? SnapshotHash { get; init; }
+        [JsonPropertyName("requires_recovery_confirmation")] public bool RequiresRecoveryConfirmation { get; init; }
+        [JsonPropertyName("warnings")] public string[]? Warnings { get; init; }
+        [JsonPropertyName("files")] public OrderMarkingImportFileResponse[]? Files { get; init; }
+        [JsonPropertyName("requests")] public OrderMarkingImportRequestResponse[]? Requests { get; init; }
+    }
+
+    private sealed class OrderMarkingImportFileResponse
+    {
+        [JsonPropertyName("filename")] public string? Filename { get; init; }
+        [JsonPropertyName("valid_rows")] public int ValidRows { get; init; }
+        [JsonPropertyName("invalid_rows")] public int InvalidRows { get; init; }
+        [JsonPropertyName("duplicate_rows")] public int DuplicateRows { get; init; }
+    }
+
+    private sealed class OrderMarkingImportRequestResponse
+    {
+        [JsonPropertyName("marking_order_id")] public Guid MarkingOrderId { get; init; }
+        [JsonPropertyName("request_number")] public string? RequestNumber { get; init; }
+        [JsonPropertyName("gtin")] public string? Gtin { get; init; }
+        [JsonPropertyName("required_qty")] public int RequiredQuantity { get; init; }
+        [JsonPropertyName("requested_qty")] public int RequestedQuantity { get; init; }
+        [JsonPropertyName("imported_after")] public int ImportedAfter { get; init; }
+        [JsonPropertyName("coverage_will_activate")] public bool CoverageWillActivate { get; init; }
+        [JsonPropertyName("reserve_short")] public bool ReserveShort { get; init; }
+    }
+
+    private sealed class OrderMarkingImportConfirmResponse
+    {
+        [JsonPropertyName("batch_id")] public Guid BatchId { get; init; }
+        [JsonPropertyName("persisted_code_count")] public int PersistedCodeCount { get; init; }
+        [JsonPropertyName("activated_marking_order_ids")] public Guid[]? ActivatedMarkingOrderIds { get; init; }
+    }
 }
 
 public sealed record WpfMarkingApiConfiguration(string? BaseUrl, int TimeoutSeconds, bool AllowInvalidTls)
@@ -779,4 +845,45 @@ public enum OrderMarkingExportOutcome
     Cancelled,
     OutcomeUnknown,
     CancelledOutcomeUnknown
+}
+
+public sealed record OrderMarkingImportPreviewApiResult(
+    bool IsSuccess,
+    string Message,
+    string SnapshotHash,
+    bool RequiresRecoveryConfirmation,
+    IReadOnlyList<string> Warnings,
+    IReadOnlyList<OrderMarkingImportFileApiResult> Files,
+    IReadOnlyList<OrderMarkingImportRequestApiResult> Requests)
+{
+    public static OrderMarkingImportPreviewApiResult Failure(string message) =>
+        new(false, message, string.Empty, false, Array.Empty<string>(),
+            Array.Empty<OrderMarkingImportFileApiResult>(), Array.Empty<OrderMarkingImportRequestApiResult>());
+}
+
+public sealed record OrderMarkingImportFileApiResult(
+    string Filename,
+    int ValidRows,
+    int InvalidRows,
+    int DuplicateRows);
+
+public sealed record OrderMarkingImportRequestApiResult(
+    Guid MarkingOrderId,
+    string RequestNumber,
+    string Gtin,
+    int RequiredQuantity,
+    int RequestedQuantity,
+    int ImportedAfter,
+    bool CoverageWillActivate,
+    bool ReserveShort);
+
+public sealed record OrderMarkingImportConfirmApiResult(
+    bool IsSuccess,
+    string Message,
+    Guid BatchId,
+    int PersistedCodeCount,
+    int ActivatedRequestCount)
+{
+    public static OrderMarkingImportConfirmApiResult Failure(string message) =>
+        new(false, message, Guid.Empty, 0, 0);
 }

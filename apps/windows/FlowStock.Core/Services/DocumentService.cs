@@ -16,7 +16,6 @@ public sealed class DocumentService
     private const string ProductionPalletHuDistributionMessage = "Для выпуска с планом паллет распределение HU выполняется через план паллет";
     private const double QtyTolerance = 0.000001;
     private static readonly HashSet<string> EmptyHuSet = new(StringComparer.OrdinalIgnoreCase);
-    private static bool KmWorkflowEnabled => false;
 
     public DocumentService(IDataStore data)
     {
@@ -527,14 +526,9 @@ public sealed class DocumentService
                 }
             }
 
-            if (KmWorkflowEnabled && doc.Type == DocType.Outbound)
+            if (doc.Type == DocType.ProductionReceipt && store is IMarkingAggregateStore markingStore)
             {
-                AutoAssignOutboundKmCodes(store, doc, lines, docHu, docId);
-            }
-
-            if (doc.Type == DocType.ProductionReceipt)
-            {
-                AutoAssignProductionReceiptMarkingCodes(store, doc, lines, closedAt);
+                markingStore.ValidateAndCreateReadyHuFacts(docId, closedAt);
             }
 
             foreach (var line in lines)
@@ -1260,7 +1254,6 @@ public sealed class DocumentService
         var normalizedFromHu = NormalizeHuValue(fromHu);
         var normalizedToHu = NormalizeHuValue(toHu);
         ValidateLineLocations(doc.Type, line.FromLocationId, line.ToLocationId, normalizedFromHu, normalizedToHu);
-        EnsureHuAssignmentAllowed(_data, doc.Type, line.Id);
 
         if (qty > line.Qty + 0.000001)
         {
@@ -1375,7 +1368,6 @@ public sealed class DocumentService
             throw new InvalidOperationException("Количество в строке должно быть больше 0.");
         }
 
-        EnsureHuAssignmentAllowed(_data, doc.Type, line.Id);
 
         if (line.PackSingleHu && line.Qty > maxQtyPerHu + 0.000001)
         {
@@ -1634,7 +1626,6 @@ public sealed class DocumentService
             var wholeLines = new List<DocLine>();
             foreach (var line in targetLines)
             {
-                EnsureHuAssignmentAllowed(store, doc.Type, line.Id);
 
                 if (!itemsById.TryGetValue(line.ItemId, out var item))
                 {
@@ -2133,69 +2124,6 @@ public sealed class DocumentService
             {
                 check.Errors.Add(
                     $"{rowLabel}: количество {FormatQty(line.Qty)} превышает лимит {FormatQty(maxQtyPerHu)} на один HU. Разбейте строку на несколько HU.");
-            }
-
-            if (KmWorkflowEnabled
-                && doc.Type == DocType.ProductionReceipt
-                && item?.IsChestnyZnakMarkingRequired == true)
-            {
-                var rounded = Math.Round(line.Qty);
-                if (Math.Abs(line.Qty - rounded) > 0.0001)
-                {
-                    check.Errors.Add($"{rowLabel}: количество для маркируемого товара должно быть целым.");
-                }
-                else
-                {
-                    var required = (int)rounded;
-                    var assigned = CountReceiptMarkingCodes(_data, line.Id);
-                    if (assigned < required)
-                    {
-                        var available = _data.CountAvailableProductionMarkingCodesForReceipt(
-                            doc.OrderId,
-                            line.ItemId,
-                            item.Gtin);
-                        if (assigned + available < required)
-                        {
-                            check.Errors.Add(
-                                $"{rowLabel}: требуется {required} код(ов) КМ, привязано {assigned}, доступно свободных {available}.");
-                        }
-                    }
-                }
-            }
-
-            if (KmWorkflowEnabled
-                && item?.IsChestnyZnakMarkingRequired == true
-                && doc.Type == DocType.Outbound)
-            {
-                var rounded = Math.Round(line.Qty);
-                if (Math.Abs(line.Qty - rounded) > 0.0001)
-                {
-                    check.Errors.Add($"{rowLabel}: количество для маркируемого товара должно быть целым.");
-                }
-                else
-                {
-                    var required = (int)rounded;
-                    var assigned = _data.CountKmCodesByShipmentLine(line.Id);
-                    if (assigned > required)
-                    {
-                        check.Errors.Add($"{rowLabel}: привязано больше кодов КМ ({assigned}), чем количество в строке ({required}).");
-                        continue;
-                    }
-
-                    var missing = required - assigned;
-                    if (missing > 0)
-                    {
-                        var gtin14 = NormalizeGtinForKm(item.Gtin);
-                        var huId = ResolveHuId(_data, fromHu);
-                        var availableForAuto = GetAvailableKmForOutbound(_data, doc.OrderId, line.ItemId, gtin14, line.FromLocationId, huId, missing).Count;
-                        if (availableForAuto < missing)
-                        {
-                            check.Errors.Add(
-                                $"{rowLabel}: недостаточно КМ для авто-отгрузки. " +
-                                $"Нужно {required}, уже привязано {assigned}, доступно {assigned + availableForAuto}.");
-                        }
-                    }
-                }
             }
 
             if (doc.Type == DocType.Outbound && line.OrderLineId.HasValue)
@@ -3529,170 +3457,12 @@ public sealed class DocumentService
         };
     }
 
-    private static void AutoAssignOutboundKmCodes(
-        IDataStore store,
-        Doc doc,
-        IReadOnlyList<DocLine> lines,
-        string? docHu,
-        long docId)
-    {
-        var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
-        for (var index = 0; index < lines.Count; index++)
-        {
-            var line = lines[index];
-            if (!itemsById.TryGetValue(line.ItemId, out var item) || !item.IsMarked)
-            {
-                continue;
-            }
-
-            var rounded = Math.Round(line.Qty);
-            if (Math.Abs(line.Qty - rounded) > 0.0001)
-            {
-                continue;
-            }
-
-            var required = (int)rounded;
-            var assigned = store.CountKmCodesByShipmentLine(line.Id);
-            var missing = required - assigned;
-            if (missing <= 0)
-            {
-                continue;
-            }
-
-            var (fromHu, _) = ResolveLedgerHu(doc, line, docHu);
-            var huId = ResolveHuId(store, fromHu);
-            var gtin14 = NormalizeGtinForKm(item.Gtin);
-            var ids = GetAvailableKmForOutbound(store, doc.OrderId, line.ItemId, gtin14, line.FromLocationId, huId, missing);
-            if (ids.Count < missing)
-            {
-                throw new InvalidOperationException(
-                    $"Строка {index + 1} ({item.Name}): недостаточно КМ для авто-отгрузки. " +
-                    $"Нужно {required}, уже привязано {assigned}, доступно {assigned + ids.Count}.");
-            }
-
-            foreach (var codeId in ids)
-            {
-                store.MarkKmCodeShipped(codeId, docId, line.Id, doc.OrderId);
-            }
-        }
-    }
-
-    private static void AutoAssignProductionReceiptMarkingCodes(
-        IDataStore store,
-        Doc doc,
-        IReadOnlyList<DocLine> lines,
-        DateTime appliedAt)
-    {
-        var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
-        for (var index = 0; index < lines.Count; index++)
-        {
-            var line = lines[index];
-            if (!itemsById.TryGetValue(line.ItemId, out var item) || !item.IsChestnyZnakMarkingRequired)
-            {
-                continue;
-            }
-
-            var rounded = Math.Round(line.Qty);
-            if (Math.Abs(line.Qty - rounded) > 0.0001)
-            {
-                throw new InvalidOperationException($"Строка {index + 1} ({item.Name}): количество для маркируемого товара должно быть целым.");
-            }
-
-            var required = (int)rounded;
-            var assigned = CountReceiptMarkingCodes(store, line.Id);
-            var missing = required - assigned;
-            if (missing <= 0)
-            {
-                continue;
-            }
-
-            var ids = store is ILineScopedMarkingCodeStore scopedStore
-                ? scopedStore.GetAvailableProductionMarkingCodeIdsForReceipt(
-                    doc.OrderId,
-                    line.ItemId,
-                    item.Gtin,
-                    missing,
-                    line.OrderLineId)
-                : store.GetAvailableProductionMarkingCodeIdsForReceipt(
-                    doc.OrderId,
-                    line.ItemId,
-                    item.Gtin,
-                    missing);
-            if (ids.Count == 0)
-            {
-                continue;
-            }
-
-            store.AssignProductionMarkingCodesToReceipt(ids, doc.Id, line.Id, appliedAt);
-        }
-    }
-
-    private static void EnsureHuAssignmentAllowed(IDataStore store, DocType type, long docLineId)
-    {
-        if (!KmWorkflowEnabled)
-        {
-            return;
-        }
-
-        if (type == DocType.ProductionReceipt && store.CountKmCodesByReceiptLine(docLineId) > 0)
-        {
-            throw new InvalidOperationException("Нельзя менять HU строки после привязки КМ.");
-        }
-
-        if (type == DocType.Outbound && store.CountKmCodesByShipmentLine(docLineId) > 0)
-        {
-            throw new InvalidOperationException("Нельзя менять HU строки после привязки КМ.");
-        }
-    }
-
     private static void EnsureNoProductionPalletPlanForHuDistribution(IDataStore store, Doc doc)
     {
         if (doc.Type == DocType.ProductionReceipt && store.HasProductionPallets(doc.Id))
         {
             throw new InvalidOperationException(ProductionPalletHuDistributionMessage);
         }
-    }
-
-    private static int CountReceiptMarkingCodes(IDataStore store, long receiptLineId)
-    {
-        return store.CountKmCodesByReceiptLine(receiptLineId)
-               + store.CountProductionMarkingCodesByReceiptLine(receiptLineId);
-    }
-
-    private static long? ResolveHuId(IDataStore store, string? huCode)
-    {
-        if (string.IsNullOrWhiteSpace(huCode))
-        {
-            return null;
-        }
-
-        var record = store.GetHuByCode(huCode.Trim());
-        return record?.Id;
-    }
-
-    private static IReadOnlyList<long> GetAvailableKmForOutbound(
-        IDataStore store,
-        long? orderId,
-        long itemId,
-        string? gtin14,
-        long? locationId,
-        long? huId,
-        int take)
-    {
-        var onHand = store.GetAvailableKmOnHandCodeIds(orderId, itemId, gtin14, locationId, huId, take);
-        if (onHand.Count >= take)
-        {
-            return onHand;
-        }
-
-        var missing = take - onHand.Count;
-        var inPool = store.GetAvailableKmCodeIds(null, orderId, itemId, gtin14, missing);
-        if (onHand.Count == 0)
-        {
-            return inPool;
-        }
-
-        return onHand.Concat(inPool).ToArray();
     }
 
     private static void AddOutboundLedgerEntriesFromLocation(
@@ -3888,27 +3658,6 @@ public sealed class DocumentService
     private static bool ProductionPalletContainsItem(ProductionPallet pallet, long itemId)
     {
         return pallet.ItemId == itemId || pallet.Lines.Any(line => line.ItemId == itemId);
-    }
-
-    private static string? NormalizeGtinForKm(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        var trimmed = value.Trim();
-        if (!trimmed.All(char.IsDigit))
-        {
-            return null;
-        }
-
-        if (trimmed.Length == 14)
-        {
-            return trimmed;
-        }
-
-        return trimmed.Length == 13 ? "0" + trimmed : null;
     }
 
     private readonly record struct StockKey(long ItemId, long LocationId, string? Hu);

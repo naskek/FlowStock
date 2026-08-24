@@ -83,11 +83,11 @@ public sealed class OrderApiMapperTests
     }
 
     [Theory]
-    [InlineData(OrderStatus.InProgress, MarkingStatus.Printed, false, false, "PRINTED", "Маркировка проведена")]
-    [InlineData(OrderStatus.InProgress, MarkingStatus.NotRequired, true, false, "REQUIRED", "Маркировка не проведена")]
+    [InlineData(OrderStatus.InProgress, MarkingStatus.Applied, false, false, "NOT_REQUIRED", "")]
+    [InlineData(OrderStatus.InProgress, MarkingStatus.NotRequired, true, false, "NOT_APPLIED", "Маркировка не проведена")]
     [InlineData(OrderStatus.InProgress, MarkingStatus.NotRequired, false, false, "NOT_REQUIRED", "")]
     [InlineData(OrderStatus.Cancelled, MarkingStatus.NotRequired, true, false, "NOT_REQUIRED", "")]
-    [InlineData(OrderStatus.Cancelled, MarkingStatus.Printed, true, false, "NOT_REQUIRED", "")]
+    [InlineData(OrderStatus.Cancelled, MarkingStatus.Applied, true, false, "NOT_REQUIRED", "")]
     public void MapOrder_ReturnsEffectiveMarkingStatusForOrderApi(
         OrderStatus orderStatus,
         MarkingStatus storedStatus,
@@ -118,7 +118,7 @@ public sealed class OrderApiMapperTests
     }
 
     [Fact]
-    public void MapOrder_ReturnsPrintedForLegacyExcelGeneratedRawStatus()
+    public void MapOrder_DoesNotTreatLegacyExcelGeneratedAsCoverage()
     {
         var order = new Order
         {
@@ -133,11 +133,11 @@ public sealed class OrderApiMapperTests
 
         var json = JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(order));
 
-        Assert.Equal("PRINTED", json.GetProperty("marking_status").GetString());
-        Assert.Equal("PRINTED", json.GetProperty("marking_effective_status").GetString());
-        Assert.Equal("Маркировка проведена", json.GetProperty("marking_status_display").GetString());
-        Assert.True(json.GetProperty("marking_completed").GetBoolean());
-        Assert.Equal("Маркировка проведена", json.GetProperty("marking_label").GetString());
+        Assert.Equal("NOT_REQUIRED", json.GetProperty("marking_status").GetString());
+        Assert.Equal("NOT_REQUIRED", json.GetProperty("marking_effective_status").GetString());
+        Assert.Equal("", json.GetProperty("marking_status_display").GetString());
+        Assert.False(json.GetProperty("marking_completed").GetBoolean());
+        Assert.Equal("", json.GetProperty("marking_label").GetString());
     }
 
     [Fact]
@@ -160,7 +160,7 @@ public sealed class OrderApiMapperTests
 
         Assert.True(json.GetProperty("marking_applies").GetBoolean());
         Assert.True(json.GetProperty("marking_completed").GetBoolean());
-        Assert.Equal("PRINTED", json.GetProperty("marking_effective_status").GetString());
+        Assert.Equal("APPLIED", json.GetProperty("marking_effective_status").GetString());
         Assert.Equal("Маркировка проведена", json.GetProperty("marking_label").GetString());
     }
 
@@ -183,7 +183,7 @@ public sealed class OrderApiMapperTests
 
         Assert.True(json.GetProperty("marking_applies").GetBoolean());
         Assert.False(json.GetProperty("marking_completed").GetBoolean());
-        Assert.Equal("REQUIRED", json.GetProperty("marking_effective_status").GetString());
+        Assert.Equal("NOT_APPLIED", json.GetProperty("marking_effective_status").GetString());
         Assert.Equal("Маркировка не проведена", json.GetProperty("marking_label").GetString());
     }
 
@@ -206,7 +206,7 @@ public sealed class OrderApiMapperTests
         var json = JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(order));
 
         Assert.False(json.GetProperty("marking_completed").GetBoolean());
-        Assert.Equal("REQUIRED", json.GetProperty("marking_effective_status").GetString());
+        Assert.Equal("NOT_APPLIED", json.GetProperty("marking_effective_status").GetString());
         Assert.Equal("Маркировка не проведена", json.GetProperty("marking_label").GetString());
     }
 

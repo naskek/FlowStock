@@ -8,7 +8,7 @@ namespace FlowStock.Server.Tests.Marking;
 public sealed class OrderServiceMarkingStatusTests
 {
     [Fact]
-    public void GetOrders_PreservesPersistedPrintedMarkingStatusAndTimestamps()
+    public void GetOrders_DoesNotTreatPersistedPrintedAsCurrentCoverage()
     {
         var printedAt = new DateTime(2026, 4, 30, 10, 30, 0, DateTimeKind.Utc);
         var order = CreatePrintedOrder(printedAt);
@@ -17,15 +17,15 @@ public sealed class OrderServiceMarkingStatusTests
         var result = Assert.Single(new OrderService(store.Object).GetOrders());
 
         Assert.Equal(MarkingStatus.Printed, result.MarkingStatus);
-        Assert.Equal(MarkingStatus.Printed, result.EffectiveMarkingStatus);
+        Assert.Equal(MarkingStatus.NotRequired, result.EffectiveMarkingStatus);
         Assert.False(result.MarkingRequired);
         Assert.Equal(printedAt, result.MarkingExcelGeneratedAt);
         Assert.Equal(printedAt, result.MarkingPrintedAt);
-        Assert.Equal("Маркировка проведена", result.MarkingStatusDisplay);
+        Assert.Equal("", result.MarkingStatusDisplay);
     }
 
     [Fact]
-    public void GetOrder_PreservesPersistedPrintedMarkingStatusAndTimestamps()
+    public void GetOrder_DoesNotTreatPersistedPrintedAsCurrentCoverage()
     {
         var printedAt = new DateTime(2026, 4, 30, 10, 30, 0, DateTimeKind.Utc);
         var order = CreatePrintedOrder(printedAt);
@@ -35,11 +35,11 @@ public sealed class OrderServiceMarkingStatusTests
 
         Assert.NotNull(result);
         Assert.Equal(MarkingStatus.Printed, result.MarkingStatus);
-        Assert.Equal(MarkingStatus.Printed, result.EffectiveMarkingStatus);
+        Assert.Equal(MarkingStatus.NotRequired, result.EffectiveMarkingStatus);
         Assert.False(result.MarkingRequired);
         Assert.Equal(printedAt, result.MarkingExcelGeneratedAt);
         Assert.Equal(printedAt, result.MarkingPrintedAt);
-        Assert.Equal("Маркировка проведена", result.MarkingStatusDisplay);
+        Assert.Equal("", result.MarkingStatusDisplay);
     }
 
     private static Mock<IDataStore> CreateStore(Order order)

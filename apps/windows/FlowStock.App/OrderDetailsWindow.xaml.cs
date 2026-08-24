@@ -473,6 +473,90 @@ public partial class OrderDetailsWindow : Window
         }
     }
 
+    private async void ImportMarking_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_orderId.HasValue || _hasUnsavedChanges)
+        {
+            if (!TrySaveOrder(showFeedback: false))
+            {
+                return;
+            }
+        }
+
+        if (!_orderId.HasValue)
+        {
+            MessageBox.Show("Сначала сохраните заказ.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dialog = new OpenFileDialog
+        {
+            Title = "Выберите ответ Контур с кодами маркировки",
+            Filter = "Kontur TSV/CSV (*.tsv;*.csv)|*.tsv;*.csv|Все файлы (*.*)|*.*",
+            Multiselect = true,
+            CheckFileExists = true
+        };
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        ImportMarkingButton.IsEnabled = false;
+        try
+        {
+            var preview = await _services.WpfMarkingApi
+                .TryPreviewOrderImportAsync(_orderId.Value, dialog.FileNames)
+                .ConfigureAwait(true);
+            if (!preview.IsSuccess)
+            {
+                MessageBox.Show(preview.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var validRows = preview.Files.Sum(file => file.ValidRows);
+            var requestSummary = string.Join(
+                Environment.NewLine,
+                preview.Requests.Select(request =>
+                    $"{request.RequestNumber}: {request.ImportedAfter}/{request.RequestedQuantity}, required {request.RequiredQuantity}"));
+            var recoveryWarning = preview.RequiresRecoveryConfirmation
+                ? Environment.NewLine + Environment.NewLine
+                  + "ВНИМАНИЕ: кодов меньше required_qty. Это исключительный recovery/anomaly Confirm: "
+                  + "коды сохранятся, но маркировка останется NOT_APPLIED и filling будет полностью закрыт."
+                : string.Empty;
+            var confirmation = MessageBox.Show(
+                $"Файлов: {preview.Files.Count}, валидных КМ: {validRows}.\n{requestSummary}{recoveryWarning}\n\nПодтвердить импорт?",
+                "Подтверждение импорта КМ",
+                MessageBoxButton.YesNo,
+                preview.RequiresRecoveryConfirmation ? MessageBoxImage.Warning : MessageBoxImage.Question);
+            if (confirmation != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            var result = await _services.WpfMarkingApi
+                .TryConfirmOrderImportAsync(
+                    _orderId.Value,
+                    dialog.FileNames,
+                    preview,
+                    preview.RequiresRecoveryConfirmation)
+                .ConfigureAwait(true);
+            MessageBox.Show(
+                result.Message,
+                "Маркировка",
+                MessageBoxButton.OK,
+                result.IsSuccess ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            if (result.IsSuccess)
+            {
+                LoadOrder();
+                OrderStateChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+        finally
+        {
+            ImportMarkingButton.IsEnabled = true;
+        }
+    }
+
     private async void PlanPallets_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsurePalletPlanningReady())

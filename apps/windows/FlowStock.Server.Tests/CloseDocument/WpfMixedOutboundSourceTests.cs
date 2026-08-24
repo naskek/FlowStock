@@ -6,7 +6,7 @@ public sealed class WpfMixedOutboundSourceTests
     public void OperationDetailsWindow_DeletesWholeMixedHuAfterConfirmation_AndBlocksQuantityEdit()
     {
         var source = ReadOperationDetailsSource();
-        var deleteMethod = SliceMethod(source, "private async void DocDeleteLine_Click", "    private void KmCodes_Click");
+        var deleteMethod = SliceMethod(source, "private async void DocDeleteLine_Click", "    private async void DocEditLine_Click");
         var editMethod = SliceMethod(source, "private async void DocEditLine_Click", "    private static MessageBoxImage ResolveServerUpdateLineMessageImage");
 
         Assert.Contains("Микс-паллета отгружается только целиком.", deleteMethod, StringComparison.Ordinal);

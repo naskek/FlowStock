@@ -16,7 +16,6 @@ namespace FlowStock.App;
 
 public partial class OperationDetailsWindow : Window
 {
-    private static bool KmUiEnabled => false;
     private readonly AppServices _services;
     private readonly ObservableCollection<Location> _locations = new();
     private readonly ObservableCollection<Partner> _partners = new();
@@ -424,11 +423,6 @@ public partial class OperationDetailsWindow : Window
             .GroupBy(location => location.Code)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         var packagingLookup = new Dictionary<long, IReadOnlyList<ItemPackaging>>();
-        var itemsById = (_services.WpfReadApi.TryGetItems(null, out var apiItems)
-                ? apiItems
-                : Array.Empty<Item>())
-            .ToDictionary(item => item.Id, item => item);
-
         var lines = _services.WpfReadApi.TryGetDocLines(_docId, out var apiLines)
             ? apiLines
             : Array.Empty<DocLineView>();
@@ -488,9 +482,6 @@ public partial class OperationDetailsWindow : Window
             var inputQty = ResolveInputQty(line, selectedPackaging);
             var hasShortage = checkOutboundAvailability && shortageByItem.ContainsKey(line.ItemId);
             var huDisplay = ResolveLineHuDisplay(_doc?.Type ?? DocType.Inbound, line);
-            var isMarked = KmUiEnabled && itemsById.TryGetValue(line.ItemId, out var item) && item.IsMarked;
-            var kmDisplay = string.Empty;
-            var kmEnabled = false;
             var inventoryDbQty = (double?)null;
             var inventoryDiffQty = (double?)null;
             var hasInventoryDiff = false;
@@ -575,13 +566,10 @@ public partial class OperationDetailsWindow : Window
                 InventoryDbQtyDisplay = inventoryDbQty.HasValue ? FormatQty(inventoryDbQty.Value) : string.Empty,
                 InventoryDiffQtyDisplay = inventoryDiffQty.HasValue ? FormatQty(inventoryDiffQty.Value) : string.Empty,
                 HasInventoryDiff = hasInventoryDiff,
-                IsMarked = isMarked,
                 ProductionPurpose = line.ProductionPurpose,
                 OrderLineDisplay = orderLineDisplay,
                 OrderLineHint = orderLineHint,
                 PackSingleHu = line.PackSingleHu,
-                KmDisplay = kmDisplay,
-                KmDistributeEnabled = kmEnabled,
                 HasProductionPalletPlanLine = hasProductionPalletPlanLine,
                 IsProductionPalletFilled = isProductionPalletFilled,
                 ProductionPalletStatusDisplay = palletStatusDisplay,
@@ -1332,161 +1320,6 @@ public partial class OperationDetailsWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void KmCodes_Click(object sender, RoutedEventArgs e)
-    {
-        if (!KmUiEnabled)
-        {
-            MessageBox.Show("Маркировка в WPF временно заморожена.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (_doc == null || _selectedDocLine == null)
-        {
-            MessageBox.Show("Выберите строку документа.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (_doc.Type != DocType.ProductionReceipt && _doc.Type != DocType.Outbound)
-        {
-            return;
-        }
-
-        var line = FindCurrentDocLine(_selectedDocLine.Id);
-        if (line == null)
-        {
-            MessageBox.Show("Строка не найдена.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var item = FindItem(line.ItemId);
-        if (item == null || !item.IsMarked)
-        {
-            MessageBox.Show("Товар не маркируемый.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (_doc.Type == DocType.ProductionReceipt)
-        {
-            if (!line.ToLocationId.HasValue)
-            {
-                MessageBox.Show("Выберите локацию приемки.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(line.ToHu))
-            {
-                MessageBox.Show("Для выпуска продукции требуется HU.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            var window = new KmAssignReceiptWindow(_services, _doc, line, item)
-            {
-                Owner = this
-            };
-            window.ShowDialog();
-            LoadDocLines();
-        }
-        else if (_doc.Type == DocType.Outbound)
-        {
-            var window = new KmAssignShipmentWindow(_services, _doc, line, item)
-            {
-                Owner = this
-            };
-            window.ShowDialog();
-            LoadDocLines();
-        }
-    }
-
-    private void KmDistribute_Click(object sender, RoutedEventArgs e)
-    {
-        if (!KmUiEnabled)
-        {
-            MessageBox.Show("Маркировка в WPF временно заморожена.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (_doc == null || (_doc.Type != DocType.ProductionReceipt && _doc.Type != DocType.Outbound))
-        {
-            return;
-        }
-
-        if (sender is not FrameworkElement element || element.DataContext is not DocLineDisplay lineDisplay)
-        {
-            return;
-        }
-
-        var line = FindCurrentDocLine(lineDisplay.Id);
-        if (line == null)
-        {
-            MessageBox.Show("Строка не найдена.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var item = FindItem(line.ItemId);
-        if (item == null || !item.IsMarked)
-        {
-            MessageBox.Show("Товар не маркируемый.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (_doc.Type == DocType.ProductionReceipt)
-        {
-            if (!line.ToLocationId.HasValue)
-            {
-                MessageBox.Show("Выберите локацию приемки.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(line.ToHu))
-            {
-                MessageBox.Show("Для выпуска продукции требуется HU.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-        }
-
-        try
-        {
-            if (_doc.Type == DocType.ProductionReceipt)
-            {
-                if (_doc.OrderId.HasValue)
-                {
-                    var assigned = _services.Km.AssignCodesToReceipt(_doc.Id, line, item, null, _doc.OrderId.Value);
-                    MessageBox.Show($"Распределено кодов: {assigned}.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
-                }
-                else
-                {
-                    var window = new KmAssignReceiptWindow(_services, _doc, line, item)
-                    {
-                        Owner = this
-                    };
-                    window.ShowDialog();
-                }
-            }
-            else
-            {
-                if (_doc.OrderId.HasValue)
-                {
-                    var assigned = _services.Km.AssignCodesToShipment(_doc.Id, line, item, _doc.OrderId);
-                    MessageBox.Show($"Распределено кодов: {assigned}.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
-                }
-                else
-                {
-                    var window = new KmAssignShipmentWindow(_services, _doc, line, item)
-                    {
-                        Owner = this
-                    };
-                    window.ShowDialog();
-                }
-            }
-
-            LoadDocLines();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -2843,9 +2676,6 @@ public partial class OperationDetailsWindow : Window
         DocHuColumn.Visibility = doc.Type == DocType.ProductionReceipt || showHuColumn
             ? Visibility.Visible
             : Visibility.Collapsed;
-        DocKmColumn.Visibility = KmUiEnabled && (doc.Type is DocType.ProductionReceipt or DocType.Outbound)
-            ? Visibility.Visible
-            : Visibility.Collapsed;
         DocProductionPurposeColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocOrderLineColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocPackSingleHuColumn.Visibility = doc.Type == DocType.ProductionReceipt && _hasProductionPalletPlan
@@ -2856,9 +2686,6 @@ public partial class OperationDetailsWindow : Window
             ? Visibility.Visible
             : Visibility.Collapsed;
         DocToColumn.Visibility = showTo && doc.Type is not (DocType.Inbound or DocType.ProductionReceipt)
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        KmCodesButton.Visibility = KmUiEnabled && (doc.Type is DocType.ProductionReceipt or DocType.Outbound)
             ? Visibility.Visible
             : Visibility.Collapsed;
         AutoHuButton.Visibility = doc.Type == DocType.ProductionReceipt && !_hasProductionPalletPlan
@@ -2936,11 +2763,6 @@ public partial class OperationDetailsWindow : Window
             ? Visibility.Collapsed
             : Visibility.Visible;
         DeleteLineButton.IsEnabled = isEditable && hasSelection && _doc?.Type != DocType.ProductionReceipt;
-        KmCodesButton.IsEnabled = KmUiEnabled
-                                  && isEditable
-                                  && hasSingleSelection
-                                  && _selectedDocLine?.IsMarked == true
-                                  && (_doc?.Type == DocType.ProductionReceipt || _doc?.Type == DocType.Outbound);
         FillFromOrderButton.IsEnabled = false;
         UpdateOutboundHuButton();
     }
@@ -5399,14 +5221,11 @@ public partial class OperationDetailsWindow : Window
         public string InventoryDbQtyDisplay { get; init; } = string.Empty;
         public string InventoryDiffQtyDisplay { get; init; } = string.Empty;
         public bool HasInventoryDiff { get; init; }
-        public bool IsMarked { get; init; }
         public ProductionLinePurpose ProductionPurpose { get; init; }
         public string ProductionPurposeDisplay => ProductionLinePurposeMapper.ToDisplayName(ProductionPurpose);
         public string OrderLineDisplay { get; init; } = string.Empty;
         public string OrderLineHint { get; set; } = string.Empty;
         public bool PackSingleHu { get; init; }
-        public string KmDisplay { get; init; } = string.Empty;
-        public bool KmDistributeEnabled { get; init; }
         public bool HasProductionPalletPlanLine { get; set; }
         public bool IsProductionPalletFilled { get; set; }
         public string ProductionPalletStatusDisplay { get; set; } = string.Empty;
@@ -5470,12 +5289,12 @@ public partial class OperationDetailsWindow : Window
 
         private string ProductionReceiptMarkingLabel => MarkingStatus switch
         {
-            MarkingStatus.Printed => "проведена",
+            MarkingStatus.Applied => "проведена",
             MarkingStatus.NotRequired => string.Empty,
             _ => "не проведена"
         };
 
-        private string ProblemMarker => MarkingStatus == MarkingStatus.Required
+        private string ProblemMarker => MarkingStatus == MarkingStatus.NotApplied
             ? " [ЧЗ не проведена]"
             : string.Empty;
     }

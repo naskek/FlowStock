@@ -138,7 +138,9 @@ public sealed class OrderMarkingExportPreviewTests
         Assert.True(export.IsSuccessStatusCode);
         Assert.NotNull(previewPayload);
         Assert.Equal(600, Assert.Single(previewPayload.Lines).Qty);
-        Assert.Equal(600, Assert.Single(harness.MarkingOrders).RequestedQuantity);
+        var request = Assert.Single(harness.MarkingOrders);
+        Assert.Equal(600, request.RequiredQuantity);
+        Assert.Equal(605, request.RequestedQuantity);
     }
 
     [Fact]
@@ -178,7 +180,7 @@ public sealed class OrderMarkingExportPreviewTests
     }
 
     [Fact]
-    public void CustomerOrderPreview_IncludesReusedCodeQty_WhenExportQtyIsZero()
+    public void CustomerOrderPreview_DoesNotTreatImportedRowsAsOperationalCoverage()
     {
         var harness = CreateOrderHarness(OrderType.Customer, qty: 1890);
         harness.SeedDoc(new Doc
@@ -222,8 +224,8 @@ public sealed class OrderMarkingExportPreviewTests
 
         var service = new OrderMarkingExportService(harness.Store);
         var summary = Assert.Single(service.Export(10, new DateTime(2026, 5, 8, 13, 0, 0, DateTimeKind.Utc)).Lines);
-        Assert.Equal(0, summary.ExportQty);
-        Assert.Equal(1890, summary.ExistingCodeQty);
+        Assert.Equal(1890, summary.ExportQty);
+        Assert.Equal(0, summary.ExistingCodeQty);
 
         var preview = service.Preview(10);
 
@@ -235,7 +237,7 @@ public sealed class OrderMarkingExportPreviewTests
     }
 
     [Fact]
-    public async Task CustomerOrderPreview_AndExportXlsx_HaveMatchingTotalQty_WhenCodesAreReused()
+    public async Task CustomerOrderPreview_AndRepeatedRequestOnlyExport_CreateNoCodeCoverage()
     {
         var harness = CreateOrderHarness(OrderType.Customer, qty: 600);
         harness.SeedDoc(new Doc
@@ -279,7 +281,7 @@ public sealed class OrderMarkingExportPreviewTests
             "0",
             secondExport.Headers.GetValues("X-FlowStock-Marking-Created-Qty").Single());
         Assert.Equal(
-            "600",
+            "0",
             secondExport.Headers.GetValues("X-FlowStock-Marking-Reused-Qty").Single());
     }
 

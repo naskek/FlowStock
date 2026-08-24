@@ -131,13 +131,11 @@ public sealed class ItemStorageConditionsTests
     }
 
     [Fact]
-    public void NonCatalogItemUpdatePaths_PreserveExistingStorageConditions()
+    public void ImportItemUpdatePath_PreservesExistingStorageConditions()
     {
         var importService = ReadRepoFile("apps", "windows", "FlowStock.Core", "Services", "ImportService.cs");
-        var kmService = ReadRepoFile("apps", "windows", "FlowStock.Core", "Services", "KmService.cs");
 
         Assert.Contains("StorageConditions = existing.StorageConditions", importService, StringComparison.Ordinal);
-        Assert.Contains("StorageConditions = item.StorageConditions", kmService, StringComparison.Ordinal);
     }
 
     private static string ReadRepoFile(params string[] parts)

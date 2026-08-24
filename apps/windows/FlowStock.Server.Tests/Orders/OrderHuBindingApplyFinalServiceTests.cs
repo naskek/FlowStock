@@ -245,7 +245,7 @@ public sealed class OrderHuBindingApplyFinalServiceTests
         var markingPrintedAt = DateTime.UtcNow;
         var scenario = CreateScenario(
             orderQty: 600,
-            orderMarkingStatus: MarkingStatus.Printed,
+            orderMarkingStatus: MarkingStatus.Applied,
             markingExcelGeneratedAt: markingPrintedAt,
             markingPrintedAt: markingPrintedAt);
         scenario.Harness.SeedBalance(Scenario.ItemId, Scenario.LocationId, 600, "HU-READY");

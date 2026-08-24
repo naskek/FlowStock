@@ -69,4 +69,14 @@ public sealed record OrderMarkingExportPreviewLine(
     string Gtin,
     double Qty,
     int HuCount,
-    IReadOnlyList<string> HuCodes);
+    IReadOnlyList<string> HuCodes,
+    bool MarkingApplicable = true,
+    double RequiredQty = 0,
+    double CoveredQty = 0,
+    double RemainingToProduce = 0,
+    double PlannedQty = 0,
+    double UnplannedQty = 0,
+    double ScopedQty = 0,
+    double RequestedQty = 0,
+    double ImportedQty = 0,
+    double ReserveQty = 0);

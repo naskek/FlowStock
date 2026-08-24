@@ -1,3 +1,5 @@
+using FlowStock.Core.Services.Marking;
+
 namespace FlowStock.Core.Models;
 
 public sealed class Order
@@ -67,27 +69,14 @@ public sealed class Order
         {
             if (Status == OrderStatus.Cancelled)
             {
-                return MarkingCodeCovered || (!MarkingApplies && MarkingStatus == MarkingStatus.Printed)
-                    ? MarkingStatus.Printed
-                    : MarkingStatus.NotRequired;
+                return MarkingStatus.NotRequired;
             }
 
-            if (MarkingCodeCovered)
-            {
-                return MarkingStatus.Printed;
-            }
-
-            if (MarkingApplies)
-            {
-                return MarkingStatus.Required;
-            }
-
-            return MarkingStatusResolver.Resolve(MarkingStatus, MarkingRequired, Status);
+            return MarkingApplicationStatusCalculator.Calculate(MarkingApplies, MarkingCodeCovered);
         }
     }
 
-    public bool MarkingCompleted => MarkingCodeCovered
-                                    || (!MarkingApplies && EffectiveMarkingStatus == MarkingStatus.Printed);
+    public bool MarkingCompleted => EffectiveMarkingStatus == MarkingStatus.Applied;
     public string MarkingLabel => MarkingCompleted
         ? "Маркировка проведена"
         : Status != OrderStatus.Cancelled && (MarkingRequired || MarkingApplies)

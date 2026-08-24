@@ -74,19 +74,16 @@ public sealed class ProductionPlanConsistencyRepairTests
     }
 
     [Fact]
-    public void Repair_Apply_AssignsMarkingCodesToReceiptLines()
+    public void Repair_Apply_DoesNotFabricateMarkingCodeReceiptAssignments()
     {
         var harness = SeedRepairScenario();
 
         new ProductionPlanConsistencyRepairService(harness.Store)
             .Repair(ProductionPlanConsistencyRepairService.Repair067072MustardMode, apply: true);
 
-        var applied = harness.MarkingCodes
-            .Where(code => code.ReceiptDocId == 171)
-            .ToArray();
-        Assert.Equal(1200, applied.Length);
-        Assert.Equal(600, applied.Count(code => code.ReceiptLineId == 17101));
-        Assert.Equal(600, applied.Count(code => code.ReceiptLineId == 17102));
+        Assert.DoesNotContain(
+            harness.MarkingCodes,
+            code => code.ReceiptDocId == 171 || code.ReceiptLineId is 17101 or 17102);
     }
 
     [Fact]

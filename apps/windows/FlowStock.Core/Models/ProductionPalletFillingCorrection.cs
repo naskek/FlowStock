@@ -42,7 +42,6 @@ public static class ProductionPalletFillingCorrectionErrorCodes
     public const string ActiveOrderControl = "ACTIVE_ORDER_CONTROL";
     public const string ActiveDraftReference = "ACTIVE_DRAFT_REFERENCE";
     public const string CustomerShipped = "CUSTOMER_SHIPPED";
-    public const string MarkingRollbackBlocked = "MARKING_ROLLBACK_BLOCKED";
     public const string AmbiguousReplacementPrd = "AMBIGUOUS_REPLACEMENT_PRD";
     public const string CorPostingFailed = "COR_POSTING_FAILED";
     public const string CorLedgerMismatch = "COR_LEDGER_MISMATCH";

@@ -100,6 +100,7 @@ builder.Services.AddSingleton<PostgresDataStore>(sp =>
             explainDiagnostics.IncludeCancelledMerged));
 });
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
+builder.Services.AddSingleton<FlowStock.Core.Abstractions.IOrderScopedMarkingImportStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton(new PcWebSessionStore(postgresConnectionString));
 builder.Services.AddSingleton<IPcWebSessionResolver>(sp => sp.GetRequiredService<PcWebSessionStore>());
 builder.Services.AddSingleton(new WpfMachineAuthorization(wpfAdminApiKey));
@@ -2594,32 +2595,6 @@ app.MapGet("/api/marking/orders", (HttpRequest request, MarkingExcelService mark
         })
         .ToList();
     return Results.Ok(rows);
-});
-
-MarkingCreateFromProductionNeedsEndpoint.Map(app);
-
-app.MapPost("/api/marking/export", async (HttpRequest request, MarkingExcelService marking) =>
-{
-    var parsed = await ParseJsonBody<MarkingExportRequest>(request);
-    if (!parsed.IsSuccess)
-    {
-        return parsed.Error!;
-    }
-
-    var result = marking.Export(
-        parsed.Value?.MarkingOrderIds ?? (IReadOnlyCollection<Guid>)Array.Empty<Guid>(),
-        parsed.Value?.OrderIds ?? (IReadOnlyCollection<long>)Array.Empty<long>(),
-        DateTime.Now);
-    if (!result.IsSuccess || result.FileBytes == null)
-    {
-        return Results.BadRequest(new ApiResult(false, result.Error ?? "Нет строк для формирования файла ЧЗ."));
-    }
-
-    var fileName = $"chestny_znak_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
-    return Results.File(
-        result.FileBytes,
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        fileName);
 });
 
 app.MapGet("/api/stock/by-barcode/{barcode}", (string barcode, IDataStore store) =>

@@ -396,7 +396,11 @@ VALUES
 
     private static IReadOnlyDictionary<string, long> ReadTableCounts(string connectionString)
     {
-        using var connection = new NpgsqlConnection(connectionString);
+        var connectionBuilder = new NpgsqlConnectionStringBuilder(connectionString)
+        {
+            PersistSecurityInfo = true
+        };
+        using var connection = new NpgsqlConnection(connectionBuilder.ConnectionString);
         connection.Open();
 
         using var command = connection.CreateCommand();
@@ -442,7 +446,11 @@ SELECT 'marking_cutover_state', COUNT(*) FROM marking_cutover_state;";
             return;
         }
 
-        using var connection = new NpgsqlConnection(connectionString);
+        var connectionBuilder = new NpgsqlConnectionStringBuilder(connectionString)
+        {
+            PersistSecurityInfo = true
+        };
+        using var connection = new NpgsqlConnection(connectionBuilder.ConnectionString);
         connection.Open();
         EnsureDisposableDatabase(connection);
         CleanupTestRows(connection);
@@ -485,17 +493,10 @@ SELECT 'marking_cutover_state', COUNT(*) FROM marking_cutover_state;";
     private static void CleanupTestRows(NpgsqlConnection connection)
     {
         Execute(connection, @"
-DELETE FROM production_pallet_lines WHERE production_pallet_id BETWEEN 9100 AND 9499;
-DELETE FROM production_pallets WHERE id BETWEEN 9100 AND 9499;
-DELETE FROM doc_lines WHERE id BETWEEN 9100 AND 9499;
-DELETE FROM docs WHERE id BETWEEN 9100 AND 9499;
-DELETE FROM marking_code WHERE code LIKE 'TEST-PR1-%';
-DELETE FROM marking_code_import WHERE file_hash LIKE 'TEST-PR1-%';
-DELETE FROM marking_order WHERE request_number LIKE 'TEST-PR1-%';
-DELETE FROM order_lines WHERE id BETWEEN 9100 AND 9499;
-DELETE FROM orders WHERE id BETWEEN 9100 AND 9499;
-DELETE FROM items WHERE id BETWEEN 9100 AND 9499;
-DELETE FROM item_types WHERE id BETWEEN 9100 AND 9499;");
+TRUNCATE TABLE production_pallet_lines, production_pallets, doc_lines, docs,
+               orders, items, item_types, locations,
+               marking_order, marking_code_import, marking_code
+CASCADE;");
     }
 
     private static void Execute(NpgsqlConnection connection, string sql)
