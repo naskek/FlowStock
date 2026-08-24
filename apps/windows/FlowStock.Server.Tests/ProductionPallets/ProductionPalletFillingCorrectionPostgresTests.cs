@@ -540,6 +540,9 @@ SELECT
         await using (var connection = new NpgsqlConnection(connectionString))
         {
             await connection.OpenAsync();
+            await Fixture.Execute(connection, "UPDATE items SET gtin = @gtin WHERE id = @item_id;",
+                ("@gtin", "04601234567890"),
+                ("@item_id", fixture.ItemId));
             var itemTypeId = await Fixture.Scalar(connection, @"
 UPDATE item_types
 SET enable_marking = TRUE
@@ -659,6 +662,9 @@ WHERE marking_order_id = @marking_order_id;
         await using (var connection = new NpgsqlConnection(connectionString))
         {
             await connection.OpenAsync();
+            await Fixture.Execute(connection, "UPDATE items SET gtin = @gtin WHERE id = @item_id;",
+                ("@gtin", "04601234567890"),
+                ("@item_id", fixture.ItemId));
             var itemTypeId = await Fixture.Scalar(connection, @"
 UPDATE item_types
 SET enable_marking = TRUE
@@ -2316,6 +2322,9 @@ VALUES(
             var now = DateTime.Now.ToString("O");
             var markingOrderId = Guid.NewGuid();
             var importId = Guid.NewGuid();
+            await Execute(connection, "UPDATE items SET gtin = @gtin WHERE id = @item_id;",
+                ("@gtin", "04601234567890"),
+                ("@item_id", ItemId));
             var itemTypeId = await Scalar(connection, @"
 UPDATE item_types
 SET enable_marking = TRUE
