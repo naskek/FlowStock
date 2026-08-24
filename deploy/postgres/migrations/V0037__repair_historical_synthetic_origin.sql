@@ -1,0 +1,9 @@
+UPDATE marking_code AS code
+SET origin = 'LegacySynthetic'
+FROM marking_code_import AS import
+WHERE code.origin = 'HistoricalUnknown'
+  AND code.code LIKE 'TEMP-CHZ-%'
+  AND code.status <> 'Quarantined'
+  AND code.import_id = import.id
+  AND import.source_type = 'temporary-chz-export'
+  AND import.storage_path = '<temporary-chz-export>';
