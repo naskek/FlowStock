@@ -365,7 +365,25 @@ Production Docker Compose wrapper:
 
 ## Маркировка ЧЗ из заказа
 
-### Текущий канонический контракт
+### Канонический контракт V0040
+
+- Legacy cohort является exemption от требования real KM для immutable frozen line scope, а не marking coverage. `LegacySynthetic`/`TEMP-CHZ-*`, старые allowlists, grandfather allowances и V0039 audit сохраняются только как история и не участвуют в cohort/hash/status/runtime gates.
+- Для active line: `legacy_exempt_qty = min(current applicable qty, frozen_quantity)`, `real_required_qty = max(0, current applicable qty - legacy_exempt_qty)`. Новая line получает exemption `0`; увеличение старой line выше frozen cap требует real KM только на delta.
+- Order status агрегируется только по real-required quantity: сумма `0` → `NOT_REQUIRED`; вся real-required quantity каждой line покрыта valid real coverage → `APPLIED`; иначе → `NOT_APPLIED`. `has_marking_applicable_quantity` публикуется отдельно и может быть true для полностью frozen `NOT_REQUIRED` order. Legacy line никогда не скрывает uncovered real-required line mixed order.
+- `marking_operational_coverage` и transferable `marking_ready_hu_fact` после cutover имеют только `REAL_IMPORT`. Legacy exemption не создаёт request scope, import, code, coverage или ready fact. Production close может пропустить frozen component по subject exemption, но создаёт ready fact только для whole HU, полностью обеспеченной real coverage.
+- Frozen CUSTOMER scope сохраняет `shipped_quantity_at_cutover` и `frozen_unshipped_legacy_quantity = frozen_quantity - shipped_quantity_at_cutover`. Post-cutover расход считается только по immutable CLOSED OUTBOUND attribution с basis `LEGACY_EXEMPT`; `REAL_READY`, DRAFT/rollback и binding/reservation quota не расходуют.
+- Exact formula: `remaining_legacy_fulfillment = max(0, frozen_unshipped_legacy_quantity - SUM(LEGACY_EXEMPT attribution.quantity))`.
+- Binding — reservation, а не consumption. Full-real-ready whole HU не расходует legacy quota. Сумма bound non-real-ready whole HU ограничена current remaining legacy fulfillment. Новый order без frozen scope не получает legacy HU ни через candidates, ни через direct write.
+- Authoritative OUTBOUND close под locks выбирает exact basis каждой whole HU: полный active `REAL_IMPORT` ready fact + positive exact ledger composition → `REAL_READY`; иначе допускается только `LEGACY_EXEMPT` в remaining frozen quantity. Partial/mixed/ambiguous HU fail-closed. Document status, ledger и immutable attribution commit/rollback выполняются одной транзакцией.
+- Порядок отгрузок не влияет на итог: для frozen `100`, current `150` оба порядка `REAL50→LEGACY100` и `LEGACY100→REAL50` требуют ровно `50` real и расходуют ровно `100` legacy exemption.
+- Safe decrease/cancel/replan использует existing production/physical guards. Request/import/code provenance не переписывается; excess active REAL_IMPORT coverage retire/cap-ится и не восстанавливается. Subject exemption trim/release выполняется в той же transaction и может восстановиться только внутри frozen cap/current canonical need. Committed filling/ledger/CLOSED production требует existing controlled correction/release.
+- `marking_legacy_cutover_subject_exemption` — bounded subject gate, не второй production balance. Производственная потребность и plan остаются existing authoritative server calculations. Active exemption still-valid stable subject сохраняется в пределах immutable grant/current subject quantity/frozen line cap; функция не обнуляет и не перераспределяет allocations заново. Новый independent safe-replan subject получает immutable grant только из реально свободного остатка той же frozen line scope и не отнимает exemption у существующего subject. Controlled correction использует только canonical `predecessor_subject_id`/root lineage. UUID, item/GTIN/HU similarity и новая/adopted CUSTOMER line не определяют наследование или allocation priority.
+- Preflight/hash не зависят от количества/статуса synthetic codes. Coherent DRAFT PRD, PLANNED/PRINTED subject и fully FILLED output входят во frozen snapshot без real KM; ambiguous/missing lineage, invalid quantity, partial filling, missing GTIN и unsafe real/unknown provenance остаются fail-closed.
+- Cutover enforce выполняется после остановки writers в `SERIALIZABLE` transaction: повторный exact snapshot/hash → immutable cohort/line scopes/subject exemptions → `ENFORCED`. Serialization conflict возвращает `409`, без automatic retry.
+
+Полная maintenance-процедура и rehearsal: [`marking-cutover.md`](marking-cutover.md).
+
+### Исторический контракт V0027–V0039 (не является runtime authority после V0040)
 
 - Applicability считается по каждой неотменённой строке с `qty_ordered > 0` и `item_types.enable_marking=true`; `remaining_to_produce`, plan и ready stock applicability не отменяют. Пустой GTIN даёт `NOT_APPLIED` и configuration error.
 - Статусы: `NOT_REQUIRED` — маркируемого активного количества нет; `NOT_APPLIED` — оно есть, но полного aggregate coverage нет; `APPLIED` — всё текущее relevant quantity покрыто real operational coverage, bounded grandfather coverage и/или ledger-backed `marking_ready_hu_fact`. Пользовательского `PARTIAL` нет.

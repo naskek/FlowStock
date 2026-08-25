@@ -5,6 +5,64 @@ namespace FlowStock.Server.Tests.Marking;
 
 public sealed class MarkingApplicationStatusCalculatorTests
 {
+    [Fact]
+    public void Calculate_OrderRequirements_AggregatesOnlyRealRequiredQuantity()
+    {
+        var legacyOnly = MarkingApplicationStatusCalculator.Calculate(
+        [
+            new MarkingLineRequirement(100, 100, 0, null),
+            new MarkingLineRequirement(50, 50, 0, null)
+        ]);
+        var mixedUncovered = MarkingApplicationStatusCalculator.Calculate(
+        [
+            new MarkingLineRequirement(100, 100, 0, null),
+            new MarkingLineRequirement(50, 0, 49, null)
+        ]);
+        var mixedCovered = MarkingApplicationStatusCalculator.Calculate(
+        [
+            new MarkingLineRequirement(100, 100, 0, null),
+            new MarkingLineRequirement(50, 0, 50, null)
+        ]);
+
+        Assert.Equal(MarkingStatus.NotRequired, legacyOnly);
+        Assert.Equal(MarkingStatus.NotApplied, mixedUncovered);
+        Assert.Equal(MarkingStatus.Applied, mixedCovered);
+    }
+
+    [Fact]
+    public void Calculate_ConfigurationError_RemainsFailClosedForRealRequiredLine()
+    {
+        var status = MarkingApplicationStatusCalculator.Calculate(
+        [new MarkingLineRequirement(10, 0, 10, "GTIN_REQUIRED")]);
+
+        Assert.Equal(MarkingStatus.NotApplied, status);
+    }
+
+    [Fact]
+    public void Calculate_MultipleRealRequiredLines_OneUncoveredCannotBeHiddenByLegacyOrCoveredLines()
+    {
+        var status = MarkingApplicationStatusCalculator.Calculate(
+        [
+            new MarkingLineRequirement(100, 100, 0, null),
+            new MarkingLineRequirement(40, 0, 40, null),
+            new MarkingLineRequirement(25, 0, 24, null)
+        ]);
+
+        Assert.Equal(MarkingStatus.NotApplied, status);
+    }
+
+    [Fact]
+    public void Calculate_NonMarkingAndCancelledLinesAreOmittedAndLegacyConfigurationDoesNotClaimApplied()
+    {
+        // Non-marking and cancelled lines do not enter the requirement sequence. A fully
+        // frozen legacy line remains applicable in the separate API flag, but requires no
+        // real marking and therefore aggregates to NOT_REQUIRED.
+        var status = MarkingApplicationStatusCalculator.Calculate(
+        [new MarkingLineRequirement(80, 80, 0, null)]);
+
+        Assert.Equal(MarkingStatus.NotRequired, status);
+    }
+
     [Theory]
     [InlineData(false, false, MarkingStatus.NotRequired)]
     [InlineData(false, true, MarkingStatus.NotRequired)]

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Diagnostics;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using FlowStock.Core.Models.Marking;
 
 namespace FlowStock.Core.Services;
 
@@ -379,6 +380,8 @@ public sealed class DocumentService
         var closedAt = DateTime.Now;
         var transactionErrors = new List<string>();
         var generatedLedgerEntries = new List<GeneratedLedgerEntry>();
+        IReadOnlyList<MarkingOutboundFulfillmentDecision> outboundMarkingDecisions =
+            Array.Empty<MarkingOutboundFulfillmentDecision>();
         var partialOutboundPermissionAutoReset = false;
 
         var transactionStopwatch = Stopwatch.StartNew();
@@ -506,6 +509,22 @@ public sealed class DocumentService
                 if (transactionErrors.Count > 0)
                 {
                     return;
+                }
+
+                if (store is IMarkingOutboundFulfillmentStore outboundDecisionStore)
+                {
+                    try
+                    {
+                        outboundMarkingDecisions = outboundDecisionStore.DecideOutboundMarkingEligibility(
+                            docId,
+                            "SERVER:document-close",
+                            closedAt);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        transactionErrors.Add(ex.Message);
+                        return;
+                    }
                 }
             }
 
@@ -764,6 +783,12 @@ public sealed class DocumentService
                 .ToDictionary(order => order!.Id, order => order!.AllowPartialOutbound);
 
             store.UpdateDocStatus(docId, DocStatus.Closed, closedAt);
+            if (doc.Type == DocType.Outbound
+                && store is IMarkingOutboundFulfillmentStore outboundAttributionStore
+                && outboundMarkingDecisions.Count > 0)
+            {
+                outboundAttributionStore.RecordOutboundMarkingAttribution(outboundMarkingDecisions);
+            }
             TryRefreshLinkedOrderStatus(store, doc, lines, timing);
             partialOutboundPermissionAutoReset = permissionBeforeByOrderId.Any(entry =>
                 entry.Value && store.GetOrder(entry.Key)?.AllowPartialOutbound == false);

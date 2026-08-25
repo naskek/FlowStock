@@ -18,6 +18,24 @@ public sealed class MarkingCutoverPreflightServiceTests
     }
 
     [Fact]
+    public void FrozenShipmentSnapshot_ParticipatesInHashAndIsSortedDeterministically()
+    {
+        var first = new MarkingCutoverPreflightService(new FakePreflightStore([], [
+            LegacyLine(2, 20, 2), LegacyLine(1, 10, 1)
+        ])).Run(DateTime.UtcNow);
+        var second = new MarkingCutoverPreflightService(new FakePreflightStore([], [
+            LegacyLine(1, 10, 1), LegacyLine(2, 20, 2)
+        ])).Run(DateTime.UtcNow.AddMinutes(1));
+        var changed = new MarkingCutoverPreflightService(new FakePreflightStore([], [
+            LegacyLine(1, 10, 0), LegacyLine(2, 20, 2)
+        ])).Run(DateTime.UtcNow);
+
+        Assert.Equal(first.Hash, second.Hash);
+        Assert.NotEqual(first.Hash, changed.Hash);
+        Assert.Equal([10L, 20L], first.LegacyLineSnapshots!.Select(row => row.OrderLineId));
+    }
+
+    [Fact]
     public void GeneratedAt_DoesNotParticipateInHash()
     {
         var entries = new[] { Entry(1, 10, "A") };
@@ -126,16 +144,25 @@ public sealed class MarkingCutoverPreflightServiceTests
             "fix");
     }
 
+    private static MarkingLegacyCutoverLineSnapshot LegacyLine(long orderId, long lineId, decimal shipped) =>
+        new(orderId, lineId, "CUSTOMER", "FLOWSTOCK", 0, lineId, "04600000000000",
+            10, shipped, 10 - shipped, 10 - shipped);
+
     private sealed class FakePreflightStore : IMarkingCutoverPreflightStore
     {
         private readonly IReadOnlyList<MarkingCutoverPreflightEntry> _entries;
+        private readonly IReadOnlyList<MarkingLegacyCutoverLineSnapshot> _lines;
 
-        public FakePreflightStore(IReadOnlyList<MarkingCutoverPreflightEntry> entries)
+        public FakePreflightStore(
+            IReadOnlyList<MarkingCutoverPreflightEntry> entries,
+            IReadOnlyList<MarkingLegacyCutoverLineSnapshot>? lines = null)
         {
             _entries = entries;
+            _lines = lines ?? [];
         }
 
         public IReadOnlyList<MarkingCutoverPreflightEntry> GetMarkingCutoverPreflightEntries() => _entries;
+        public IReadOnlyList<MarkingLegacyCutoverLineSnapshot> GetMarkingLegacyCutoverLineSnapshots() => _lines;
 
         public void EnforceMarkingCutover(string expectedPreflightHash, string approvedBy, DateTime enforcedAt) =>
             throw new NotSupportedException();

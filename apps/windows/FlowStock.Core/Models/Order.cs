@@ -72,14 +72,14 @@ public sealed class Order
                 return MarkingStatus.NotRequired;
             }
 
-            return MarkingApplicationStatusCalculator.Calculate(MarkingApplies, MarkingCodeCovered);
+            return MarkingApplicationStatusCalculator.Calculate(MarkingRequired, MarkingCodeCovered);
         }
     }
 
     public bool MarkingCompleted => EffectiveMarkingStatus == MarkingStatus.Applied;
     public string MarkingLabel => MarkingCompleted
         ? "Маркировка проведена"
-        : Status != OrderStatus.Cancelled && (MarkingRequired || MarkingApplies)
+        : Status != OrderStatus.Cancelled && EffectiveMarkingStatus == MarkingStatus.NotApplied
             ? "Маркировка не проведена"
             : string.Empty;
     public string MarkingStatusDisplay => MarkingStatusMapper.ToDisplayName(EffectiveMarkingStatus);

@@ -15,6 +15,10 @@ public sealed class MarkingCutoverPreflightPostgresRegressionTests
         RunMutatingPostgresTest(connection =>
         {
             SeedLegacyTaskRetirementConflict(connection);
+            if (AssertV0040IgnoresSyntheticTaskHistory(connection))
+            {
+                return;
+            }
             var store = new PostgresDataStore(connection.ConnectionString);
             var before = new MarkingCutoverPreflightService(store).Run(
                 new DateTime(2026, 8, 25, 10, 0, 0, DateTimeKind.Utc));
@@ -174,6 +178,10 @@ VALUES ('95010000-0000-0000-0000-000000000901',
         RunMutatingPostgresTest(connection =>
         {
             SeedLegacyTaskRetirementConflict(connection);
+            if (AssertV0040IgnoresSyntheticTaskHistory(connection))
+            {
+                return;
+            }
             Execute(connection, @"
 UPDATE marking_code
 SET status = 'Reserved'
@@ -235,6 +243,10 @@ FROM generate_series(1, 2) value;");
         RunMutatingPostgresTest(connection =>
         {
             SeedLegacyTaskRetirementConflict(connection);
+            if (AssertV0040IgnoresSyntheticTaskHistory(connection))
+            {
+                return;
+            }
             var store = new PostgresDataStore(connection.ConnectionString);
             var before = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
             var candidateId = Guid.Parse("95010000-0000-0000-0000-000000000001");
@@ -293,6 +305,10 @@ FROM generate_series(1, 2) value;");
         RunMutatingPostgresTest(connection =>
         {
             SeedLegacyTaskRetirementConflict(connection);
+            if (AssertV0040IgnoresSyntheticTaskHistory(connection))
+            {
+                return;
+            }
             var store = new PostgresDataStore(connection.ConnectionString);
             var before = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
             var candidateId = Guid.Parse("95010000-0000-0000-0000-000000000001");
@@ -387,6 +403,11 @@ DROP FUNCTION IF EXISTS test_pause_v0039_retirement_update();");
             for (var index = 0; index < shapes.Length; index++)
             {
                 SeedRepresentativeRetirementShape(connection, shapes[index], index);
+            }
+
+            if (AssertV0040IgnoresSyntheticTaskHistory(connection))
+            {
+                return;
             }
 
             var store = new PostgresDataStore(connection.ConnectionString);
@@ -495,7 +516,7 @@ VALUES
 
             var entries = ReadPreflightEntries(connection.ConnectionString);
 
-            Assert.Contains(entries, entry =>
+            Assert.DoesNotContain(entries, entry =>
                 entry.IssueCode == "MARKING_LEGACY_TASK_LINE_UNASSIGNED"
                 && entry.OrderId == 9101
                 && entry.OrderLineId == 9101);
@@ -526,7 +547,7 @@ VALUES
     }
 
     [Fact]
-    public void CompletedFilledClosed_WithSufficientLedger_IsNotActiveProgressAndEnforceCreatesReadyHuFact()
+    public void CompletedFilledClosed_WithSufficientLedger_IsFrozenWithoutFakeReadyHuFact()
     {
         RunMutatingPostgresTest(connection =>
         {
@@ -566,11 +587,17 @@ VALUES
 
             Assert.Equal(1, ExecuteScalarInt(connection, @"
 SELECT COUNT(*)
+FROM marking_legacy_cutover_line_scope
+WHERE order_id = 9401 AND order_line_id = 9401;"));
+            Assert.Equal(0, ExecuteScalarInt(connection, @"
+SELECT COUNT(*)
 FROM marking_ready_hu_fact fact
 INNER JOIN marking_production_subject subject ON subject.id = fact.marking_subject_id
-WHERE subject.current_order_id = 9401
-  AND fact.provenance = 'GRANDFATHERED'
-  AND fact.reversed_at IS NULL;"));
+WHERE subject.current_order_id = 9401;"));
+            Assert.Equal(0, ExecuteScalarInt(connection, @"
+SELECT COUNT(*)
+FROM marking_operational_coverage
+WHERE source_type <> 'REAL_IMPORT';"));
         });
     }
 
@@ -623,7 +650,7 @@ WHERE subject.current_order_id = 9401
     }
 
     [Fact]
-    public void FilledPallet_WithOpenProductionDocument_RemainsFillingBlocker()
+    public void CoherentFilledPallet_WithOpenProductionDocument_IsFrozenLegacyCandidate()
     {
         RunMutatingPostgresTest(connection =>
         {
@@ -639,10 +666,9 @@ WHERE subject.current_order_id = 9401
 
             var entries = ReadPreflightEntries(connection.ConnectionString);
 
-            Assert.Contains(entries, entry =>
+            Assert.DoesNotContain(entries, entry =>
                 entry.OrderId == 9401
                 && entry.OrderLineId == 9401
-                && entry.IssueCode == "MARKING_FILLING_PROGRESS"
                 && entry.Level == "error");
         });
     }
@@ -672,11 +698,6 @@ WHERE current_order_id = 9401;");
                 entry.OrderId == 9401
                 && entry.OrderLineId == 9401
                 && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN"
-                && entry.Level == "error");
-            Assert.Contains(entries, entry =>
-                entry.OrderId == 9401
-                && entry.OrderLineId == 9401
-                && entry.IssueCode == "MARKING_FILLING_PROGRESS"
                 && entry.Level == "error");
         });
     }
@@ -750,12 +771,12 @@ WHERE current_order_id = 9401;");
                 entry.OrderId == 9401
                 && entry.OrderLineId == 9401
                 && entry.IssueCode == "MARKING_SUBJECT_SNAPSHOT"
-                && entry.Level == "error");
+                && entry.Level == "info");
             Assert.Contains(entries, entry =>
                 entry.OrderId == 9401
                 && entry.OrderLineId == 9401
                 && entry.IssueCode == "MARKING_OPEN_PRD"
-                && entry.Level == "error");
+                && entry.Level == "warning");
         });
     }
 
@@ -959,13 +980,8 @@ VALUES
                 && entry.Details.Contains("93040000-0000-0000-0000-000000000001", StringComparison.Ordinal)));
             Assert.Contains("count=2", unknownIssue.Details);
 
-            var conflictIssue = Assert.Single(entries.Where(entry =>
-                entry.IssueCode == "MARKING_LEGACY_TASK_LINE_CONFLICT"
-                && entry.OrderId == 9301
-                && entry.OrderLineId == 9301));
-            // The scoped task already bound to the line (93010000-...-001) must be part of the
-            // conflict claims alongside the unscoped candidates.
-            Assert.Contains("93010000-0000-0000-0000-000000000001", conflictIssue.Details, StringComparison.Ordinal);
+            Assert.DoesNotContain(entries, entry =>
+                entry.IssueCode.StartsWith("MARKING_LEGACY_", StringComparison.Ordinal));
             Assert.Equal(entries.Count, entries.Distinct().Count());
         });
     }
@@ -996,21 +1012,9 @@ VALUES
 
             var entries = ReadPreflightEntries(connection.ConnectionString);
 
-            // A line already bound to a scoped active task plus a second unscoped task whose only
-            // candidate is that same (already occupied) line is a real SHADOW conflict that the
-            // ux_marking_order_active_order_line unique index would otherwise block at enforcement.
-            var conflict = Assert.Single(entries.Where(entry =>
-                entry.IssueCode == "MARKING_LEGACY_TASK_LINE_CONFLICT"
-                && entry.OrderId == 9350
-                && entry.OrderLineId == 9350));
-            Assert.Contains("93500000-0000-0000-0000-000000000001", conflict.Details, StringComparison.Ordinal);
-            Assert.Contains("93510000-0000-0000-0000-000000000001", conflict.Details, StringComparison.Ordinal);
-
-            // The conflict is the stronger diagnosis: the unscoped task must not also be reported as
-            // merely UNASSIGNED.
             Assert.DoesNotContain(entries, entry =>
-                entry.IssueCode == "MARKING_LEGACY_TASK_LINE_UNASSIGNED"
-                && entry.Details.Contains("93510000-0000-0000-0000-000000000001", StringComparison.Ordinal));
+                entry.IssueCode.StartsWith("MARKING_LEGACY_", StringComparison.Ordinal)
+                || entry.IssueCode == "MARKING_TASK_ORDER_LINK_CONFLICT");
 
             Assert.Equal(entries.Count, entries.Distinct().Count());
         });
@@ -1058,6 +1062,11 @@ VALUES
  '04600000009360', '93600000-0000-0000-0000-000000000010', '93600000-0000-0000-0000-000000000020',
  'Applied', 'LegacySynthetic', '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z');
 ");
+
+            if (AssertV0040IgnoresSyntheticTaskHistory(connection))
+            {
+                return;
+            }
 
             var store = new PostgresDataStore(connection.ConnectionString);
             var service = new MarkingCutoverPreflightService(store);
@@ -1126,13 +1135,8 @@ VALUES ('91500000-0000-0000-0000-000000000001', 9150, NULL, 9150, '0460000000915
             // line-level marking issue.
             Assert.DoesNotContain(entries, entry => entry.OrderLineId == 9150);
 
-            // The unscoped legacy task still surfaces as having no markable candidate line, proving
-            // the non-markable line was not silently bound to it.
-            Assert.Contains(entries, entry =>
-                entry.IssueCode == "MARKING_LEGACY_TASK_LINE_NOT_FOUND"
-                && entry.OrderId == 9150
-                && entry.OrderLineId == null
-                && entry.Details.Contains("91500000-0000-0000-0000-000000000001", StringComparison.Ordinal));
+            Assert.DoesNotContain(entries, entry =>
+                entry.IssueCode.StartsWith("MARKING_LEGACY_", StringComparison.Ordinal));
         });
     }
 
@@ -1174,47 +1178,9 @@ VALUES
 
             var entries = ReadPreflightEntries(connection.ConnectionString);
 
-            // order_id only -> open via order_id.
-            Assert.Contains(entries, entry =>
-                entry.IssueCode == "MARKING_LEGACY_TASK_LINE_UNASSIGNED"
-                && entry.OrderId == 9201
-                && entry.OrderLineId == 9201
-                && entry.Details.Contains("92010000-0000-0000-0000-000000000001", StringComparison.Ordinal));
-
-            // source_order_id only -> open via source_order_id.
-            Assert.Contains(entries, entry =>
-                entry.IssueCode == "MARKING_LEGACY_TASK_LINE_UNASSIGNED"
-                && entry.OrderId == 9202
-                && entry.OrderLineId == 9202
-                && entry.Details.Contains("92020000-0000-0000-0000-000000000001", StringComparison.Ordinal));
-
-            // both links set to the same id -> open.
-            Assert.Contains(entries, entry =>
-                entry.IssueCode == "MARKING_LEGACY_TASK_LINE_UNASSIGNED"
-                && entry.OrderId == 9205
-                && entry.OrderLineId == 9205
-                && entry.Details.Contains("92050000-0000-0000-0000-000000000001", StringComparison.Ordinal));
-
-            // order_id terminal, source_order_id open, both set and different -> conflict, no silent
-            // mapping to the open source order.
-            Assert.Contains(entries, entry =>
-                entry.IssueCode == "MARKING_TASK_ORDER_LINK_CONFLICT"
-                && entry.Details.Contains("92030000-0000-0000-0000-000000000001", StringComparison.Ordinal)
-                && entry.Details.Contains("order_id=9203", StringComparison.Ordinal)
-                && entry.Details.Contains("source_order_id=9204", StringComparison.Ordinal));
             Assert.DoesNotContain(entries, entry =>
-                entry.IssueCode.StartsWith("MARKING_LEGACY_TASK_LINE", StringComparison.Ordinal)
-                && entry.Details.Contains("92030000-0000-0000-0000-000000000001", StringComparison.Ordinal));
-
-            // both links open but different -> conflict, no arbitrary mapping.
-            Assert.Contains(entries, entry =>
-                entry.IssueCode == "MARKING_TASK_ORDER_LINK_CONFLICT"
-                && entry.Details.Contains("92060000-0000-0000-0000-000000000001", StringComparison.Ordinal)
-                && entry.Details.Contains("order_id=9201", StringComparison.Ordinal)
-                && entry.Details.Contains("source_order_id=9202", StringComparison.Ordinal));
-            Assert.DoesNotContain(entries, entry =>
-                entry.IssueCode.StartsWith("MARKING_LEGACY_TASK_LINE", StringComparison.Ordinal)
-                && entry.Details.Contains("92060000-0000-0000-0000-000000000001", StringComparison.Ordinal));
+                entry.IssueCode.StartsWith("MARKING_LEGACY_", StringComparison.Ordinal)
+                || entry.IssueCode == "MARKING_TASK_ORDER_LINK_CONFLICT");
         });
     }
 
@@ -1266,6 +1232,847 @@ VALUES
         });
     }
 
+    [Fact]
+    public void V0040_OutboundAttribution_RealReadyDoesNotConsumeFrozenLegacyFulfillment()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedV0040OutboundScenario(connection);
+            var store = new PostgresDataStore(connection.ConnectionString);
+
+            Assert.Equal("APPLIED", ExecuteScalarString(connection,
+                "SELECT calculate_order_marking_status(9701);"));
+            store.ValidateFinalMarkingHuBinding(9701,
+                new Dictionary<string, double> { ["V0040-LEGACY-HU"] = 100 });
+            store.ValidateFinalMarkingHuBinding(9701,
+                new Dictionary<string, double> { ["V0040-REAL-HU"] = 50 });
+            var newOrderError = Assert.Throws<InvalidOperationException>(() =>
+                store.ValidateFinalMarkingHuBinding(9702,
+                    new Dictionary<string, double> { ["V0040-LEGACY-HU"] = 100 }));
+            Assert.Equal("MARKING_HU_REAL_ELIGIBILITY_REQUIRED", newOrderError.Message);
+
+            var documents = new DocumentService(store);
+            var realClose = documents.TryCloseDoc(9711, allowNegative: false);
+            Assert.True(realClose.Success, string.Join(" | ", realClose.Errors));
+            Assert.Equal(MarkingOutboundBasis.RealReady, ExecuteScalarString(connection, @"
+SELECT basis FROM marking_outbound_fulfillment_attribution
+WHERE outbound_doc_line_id = 9711;"));
+
+            Assert.Equal(100, ExecuteScalarInt(connection, @"
+SELECT frozen_unshipped_legacy_quantity - COALESCE((
+    SELECT SUM(quantity)
+    FROM marking_outbound_fulfillment_attribution attribution
+    WHERE attribution.frozen_line_scope_id = scope.id
+      AND attribution.basis = 'LEGACY_EXEMPT'), 0)
+FROM marking_legacy_cutover_line_scope scope
+WHERE scope.order_line_id = 9701;"));
+            Assert.Equal("APPLIED", ExecuteScalarString(connection,
+                "SELECT calculate_order_marking_status(9701);"));
+
+            var legacyClose = documents.TryCloseDoc(9712, allowNegative: false);
+            Assert.True(legacyClose.Success, string.Join(" | ", legacyClose.Errors));
+            Assert.Equal(MarkingOutboundBasis.LegacyExempt, ExecuteScalarString(connection, @"
+SELECT basis FROM marking_outbound_fulfillment_attribution
+WHERE outbound_doc_line_id = 9712;"));
+            Assert.Equal(0, ExecuteScalarInt(connection, @"
+SELECT frozen_unshipped_legacy_quantity - COALESCE((
+    SELECT SUM(quantity)
+    FROM marking_outbound_fulfillment_attribution attribution
+    WHERE attribution.frozen_line_scope_id = scope.id
+      AND attribution.basis = 'LEGACY_EXEMPT'), 0)
+FROM marking_legacy_cutover_line_scope scope
+WHERE scope.order_line_id = 9701;"));
+
+            _ = documents.TryCloseDoc(9711, allowNegative: false);
+            _ = documents.TryCloseDoc(9712, allowNegative: false);
+            Assert.Equal(2, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_outbound_fulfillment_attribution;"));
+            Assert.Equal(1, ExecuteScalarInt(connection, @"
+SELECT COUNT(*) FROM marking_outbound_fulfillment_attribution
+WHERE basis = 'REAL_READY';"));
+            Assert.Equal(1, ExecuteScalarInt(connection, @"
+SELECT COUNT(*) FROM marking_outbound_fulfillment_attribution
+WHERE basis = 'LEGACY_EXEMPT';"));
+
+            Assert.Throws<InvalidOperationException>(() =>
+                store.ValidateFinalMarkingHuBinding(9701,
+                    new Dictionary<string, double> { ["V0040-LEGACY-HU"] = 100 }));
+
+            Execute(connection, @"
+UPDATE marking_ready_hu_fact
+SET reversed_at = '2026-08-25T12:00:00.000Z', correction_reference = 'TEST-V0040-REVERSAL'
+WHERE id = '97010000-0000-0000-0000-000000000040';");
+            Assert.Equal("REAL_READY", ExecuteScalarString(connection, @"
+SELECT basis FROM marking_outbound_fulfillment_attribution
+WHERE outbound_doc_line_id = 9711;"));
+            var reversedError = Assert.Throws<InvalidOperationException>(() =>
+                store.ValidateFinalMarkingHuBinding(9701,
+                    new Dictionary<string, double> { ["V0040-REAL-HU"] = 50 }));
+            Assert.Equal("MARKING_HU_REAL_ELIGIBILITY_REQUIRED", reversedError.Message);
+
+            var obsoleteLineApproval = Assert.Throws<InvalidOperationException>(() =>
+                store.ApproveMarkingCutoverLine(
+                    9701, null, "TEST-V0040-PREFLIGHT", "SERVER:test", DateTime.UtcNow));
+            Assert.Equal("MARKING_SYNTHETIC_CUTOVER_WORKFLOW_OBSOLETE", obsoleteLineApproval.Message);
+            var obsoleteSubjectApproval = Assert.Throws<InvalidOperationException>(() =>
+                store.ApproveMarkingCutoverSubjects(
+                    1,
+                    [new MarkingCutoverSubjectApprovalIntent(
+                        Guid.Parse("97010000-0000-0000-0000-000000000030"), 1)],
+                    "TEST-V0040-PREFLIGHT",
+                    "SERVER:test",
+                    DateTime.UtcNow));
+            Assert.Equal("MARKING_SYNTHETIC_CUTOVER_WORKFLOW_OBSOLETE", obsoleteSubjectApproval.Message);
+            var obsoleteRetirement = Assert.Throws<InvalidOperationException>(() =>
+                store.Apply(
+                    9701,
+                    Guid.Parse("97010000-0000-0000-0000-000000000099"),
+                    "TEST-V0040-PREFLIGHT",
+                    "TEST-V0040-ELIGIBILITY",
+                    "TEST-V0040-RETIREMENT",
+                    "SERVER:test",
+                    DateTime.UtcNow));
+            Assert.Equal("MARKING_SYNTHETIC_CUTOVER_WORKFLOW_OBSOLETE", obsoleteRetirement.Message);
+        });
+    }
+
+    [Fact]
+    public void V0040_MixedPhysicalHu_WithFullRealFact_IsRejectedByBindingAndOutboundWithoutWrites()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedV0040OutboundScenario(connection);
+            AddV0040MixedPhysicalComposition(connection, "V0040-REAL-HU");
+            var store = new PostgresDataStore(connection.ConnectionString);
+
+            var bindingError = Assert.Throws<InvalidOperationException>(() =>
+                store.ValidateFinalMarkingHuBinding(9701,
+                    new Dictionary<string, double> { ["V0040-REAL-HU"] = 50 }));
+            Assert.Equal("MARKING_HU_REAL_ELIGIBILITY_AMBIGUOUS", bindingError.Message);
+
+            var decisionError = Assert.Throws<InvalidOperationException>(() =>
+                store.DecideOutboundMarkingEligibility(
+                    9711,
+                    "SERVER:test",
+                    new DateTime(2026, 8, 25, 12, 0, 0, DateTimeKind.Utc)));
+            Assert.Equal("MARKING_HU_REAL_ELIGIBILITY_AMBIGUOUS", decisionError.Message);
+
+            var ledgerBefore = ExecuteScalarString(connection, @"
+SELECT md5(string_agg(item_id::text || ':' || location_id::text || ':' ||
+                      qty_delta::text || ':' || COALESCE(hu_code, ''),
+                      ',' ORDER BY id))
+FROM ledger;");
+            var close = new DocumentService(store).TryCloseDoc(9711, allowNegative: false);
+
+            Assert.False(close.Success);
+            Assert.Equal("DRAFT", ExecuteScalarString(connection,
+                "SELECT status FROM docs WHERE id = 9711;"));
+            Assert.Equal(ledgerBefore, ExecuteScalarString(connection, @"
+SELECT md5(string_agg(item_id::text || ':' || location_id::text || ':' ||
+                      qty_delta::text || ':' || COALESCE(hu_code, ''),
+                      ',' ORDER BY id))
+FROM ledger;"));
+            Assert.Equal(0, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_outbound_fulfillment_attribution;"));
+        });
+    }
+
+    [Fact]
+    public void V0040_MixedPhysicalHu_WithLegacyAllowance_IsRejectedByOutboundWithoutWrites()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedV0040OutboundScenario(connection);
+            AddV0040MixedPhysicalComposition(connection, "V0040-LEGACY-HU");
+            var store = new PostgresDataStore(connection.ConnectionString);
+
+            var decisionError = Assert.Throws<InvalidOperationException>(() =>
+                store.DecideOutboundMarkingEligibility(
+                    9712,
+                    "SERVER:test",
+                    new DateTime(2026, 8, 25, 12, 0, 0, DateTimeKind.Utc)));
+            Assert.Equal("MARKING_HU_REAL_ELIGIBILITY_AMBIGUOUS", decisionError.Message);
+
+            var ledgerBefore = ExecuteScalarString(connection, @"
+SELECT md5(string_agg(item_id::text || ':' || location_id::text || ':' ||
+                      qty_delta::text || ':' || COALESCE(hu_code, ''),
+                      ',' ORDER BY id))
+FROM ledger;");
+            var close = new DocumentService(store).TryCloseDoc(9712, allowNegative: false);
+
+            Assert.False(close.Success);
+            Assert.Equal("DRAFT", ExecuteScalarString(connection,
+                "SELECT status FROM docs WHERE id = 9712;"));
+            Assert.Equal(ledgerBefore, ExecuteScalarString(connection, @"
+SELECT md5(string_agg(item_id::text || ':' || location_id::text || ':' ||
+                      qty_delta::text || ':' || COALESCE(hu_code, ''),
+                      ',' ORDER BY id))
+FROM ledger;"));
+            Assert.Equal(0, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_outbound_fulfillment_attribution;"));
+        });
+    }
+
+    [Fact]
+    public void V0040_FinalBinding_NonexistentOrderLineFailsAsStaleContext()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedV0040OutboundScenario(connection);
+            var store = new PostgresDataStore(connection.ConnectionString);
+
+            var error = Assert.Throws<InvalidOperationException>(() =>
+                store.ValidateFinalMarkingHuBinding(9799,
+                    new Dictionary<string, double> { ["V0040-REAL-HU"] = 50 }));
+
+            Assert.Equal("MARKING_HU_ELIGIBILITY_CHANGED", error.Message);
+
+            Execute(connection, @"
+INSERT INTO item_types(id, name, code, enable_marking)
+VALUES (9798, 'TEST-V0040-NON-MARKING-TYPE', 'TEST-V0040-NON-MARKING-TYPE', FALSE);
+INSERT INTO items(id, name, barcode, item_type_id)
+VALUES (9798, 'TEST-V0040-NON-MARKING-ITEM', 'TEST-V0040-NON-MARKING-ITEM', 9798);
+INSERT INTO order_lines(id, order_id, item_id, qty_ordered)
+VALUES (9798, 9702, 9798, 1);");
+
+            store.ValidateFinalMarkingHuBinding(9798,
+                new Dictionary<string, double> { ["V0040-REAL-HU"] = 50 });
+        });
+    }
+
+    [Fact]
+    public void V0040_RepresentativeTwelveLinesAndTwentySixSubjects_FormFrozenCohortWithoutCoverage()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            Execute(connection, @"
+INSERT INTO item_types(id, name, code, enable_marking)
+VALUES (9800, 'TEST-V0040-REP-TYPE', 'TEST-V0040-REP-TYPE', TRUE);
+INSERT INTO locations(id, code, name)
+VALUES (9800, 'TEST-V0040-REP-LOC', 'TEST-V0040-REP-LOC');
+INSERT INTO orders(id, order_ref, order_type, status, created_at, marking_responsibility)
+VALUES (9800, 'TEST-V0040-REP-ORDER', 'INTERNAL', 'ACCEPTED',
+        '2026-08-25T08:00:00.000Z', 'FLOWSTOCK');
+INSERT INTO docs(id, doc_ref, type, status, created_at, order_id, order_ref)
+VALUES (9800, 'TEST-V0040-REP-PRD', 'PRODUCTION_RECEIPT', 'DRAFT',
+        '2026-08-25T08:00:00.000Z', 9800, 'TEST-V0040-REP-ORDER');");
+
+            var subjectOrdinal = 0;
+            for (var lineOrdinal = 1; lineOrdinal <= 12; lineOrdinal++)
+            {
+                var itemId = 9800 + lineOrdinal;
+                var lineId = 9800 + lineOrdinal;
+                var subjectCount = lineOrdinal <= 2 ? 3 : 2;
+                using (var line = connection.CreateCommand())
+                {
+                    line.CommandText = @"
+INSERT INTO items(id, name, barcode, gtin, item_type_id)
+VALUES (@item_id, @name, @barcode, @gtin, 9800);
+INSERT INTO order_lines(id, order_id, item_id, qty_ordered)
+VALUES (@line_id, 9800, @item_id, @quantity);";
+                    line.Parameters.AddWithValue("@item_id", itemId);
+                    line.Parameters.AddWithValue("@line_id", lineId);
+                    line.Parameters.AddWithValue("@name", $"TEST-V0040-REP-ITEM-{lineOrdinal}");
+                    line.Parameters.AddWithValue("@barcode", $"TEST-V0040-REP-BARCODE-{lineOrdinal}");
+                    line.Parameters.AddWithValue("@gtin", $"0460000000{lineOrdinal:D4}");
+                    line.Parameters.AddWithValue("@quantity", subjectCount);
+                    line.ExecuteNonQuery();
+                }
+
+                for (var localSubject = 0; localSubject < subjectCount; localSubject++)
+                {
+                    subjectOrdinal++;
+                    var rowId = 980000 + subjectOrdinal;
+                    var hu = $"TEST-V0040-REP-HU-{subjectOrdinal:D2}";
+                    using var subject = connection.CreateCommand();
+                    subject.CommandText = @"
+INSERT INTO hus(hu_code, status, created_at)
+VALUES (@hu, 'ACTIVE', '2026-08-25T08:00:00.000Z');
+INSERT INTO doc_lines(id, doc_id, order_line_id, item_id, qty, to_location_id, to_hu)
+VALUES (@row_id, 9800, @line_id, @item_id, 1, 9800, @hu);
+INSERT INTO production_pallets(
+    id, prd_doc_id, doc_line_id, order_id, order_line_id, item_id,
+    hu_code, planned_qty, to_location_id, status, created_at)
+VALUES (@row_id, 9800, @row_id, 9800, @line_id, @item_id,
+        @hu, 1, 9800, 'PLANNED', '2026-08-25T08:00:00.000Z');
+INSERT INTO production_pallet_lines(
+    id, production_pallet_id, doc_line_id, order_line_id, item_id,
+    planned_qty, filled_qty, created_at)
+VALUES (@row_id, @row_id, @row_id, @line_id, @item_id,
+        1, 0, '2026-08-25T08:00:00.000Z');";
+                    subject.Parameters.AddWithValue("@row_id", rowId);
+                    subject.Parameters.AddWithValue("@line_id", lineId);
+                    subject.Parameters.AddWithValue("@item_id", itemId);
+                    subject.Parameters.AddWithValue("@hu", hu);
+                    subject.ExecuteNonQuery();
+                }
+            }
+
+            Assert.Equal(26, subjectOrdinal);
+            var store = new PostgresDataStore(connection.ConnectionString);
+            var preflight = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
+            Assert.Equal(12, preflight.LegacyLineSnapshots!.Count);
+            Assert.Equal(26, preflight.LegacySubjectSnapshots!.Count);
+            Assert.DoesNotContain(preflight.Entries, entry =>
+                string.Equals(entry.Level, "error", StringComparison.OrdinalIgnoreCase));
+
+            store.EnforceMarkingCutover(preflight.Hash, "SERVER:test", DateTime.UtcNow);
+            Assert.Equal(12, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_legacy_cutover_line_scope;"));
+            Assert.Equal(26, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_legacy_cutover_subject_exemption;"));
+            Assert.Equal(26, ExecuteScalarInt(connection, @"
+SELECT SUM(active_quantity) FROM marking_legacy_cutover_subject_exemption;"));
+            Assert.Equal(0, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_operational_coverage;"));
+            Assert.Equal(0, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_ready_hu_fact;"));
+            Assert.Equal(0, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_code;"));
+        });
+    }
+
+    [Fact]
+    public void V0040_OutboundAttribution_LegacyThenRealHasSameFinalAccounting()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedV0040OutboundScenario(connection);
+            var documents = new DocumentService(new PostgresDataStore(connection.ConnectionString));
+
+            var legacyClose = documents.TryCloseDoc(9712, allowNegative: false);
+            Assert.True(legacyClose.Success, string.Join(" | ", legacyClose.Errors));
+            var realClose = documents.TryCloseDoc(9711, allowNegative: false);
+            Assert.True(realClose.Success, string.Join(" | ", realClose.Errors));
+
+            Assert.Equal(100, ExecuteScalarInt(connection, @"
+SELECT SUM(quantity) FROM marking_outbound_fulfillment_attribution
+WHERE basis = 'LEGACY_EXEMPT';"));
+            Assert.Equal(50, ExecuteScalarInt(connection, @"
+SELECT SUM(quantity) FROM marking_outbound_fulfillment_attribution
+WHERE basis = 'REAL_READY';"));
+            Assert.Equal(0, ExecuteScalarInt(connection, @"
+SELECT frozen_unshipped_legacy_quantity - COALESCE((
+    SELECT SUM(quantity)
+    FROM marking_outbound_fulfillment_attribution attribution
+    WHERE attribution.frozen_line_scope_id = scope.id
+      AND attribution.basis = 'LEGACY_EXEMPT'), 0)
+FROM marking_legacy_cutover_line_scope scope
+WHERE scope.order_line_id = 9701;"));
+        });
+    }
+
+    [Fact]
+    public void V0040_OutboundAttributionFailure_RollsBackDocumentLedgerAndAttribution()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedV0040OutboundScenario(connection);
+            Execute(connection, @"
+CREATE OR REPLACE FUNCTION test_v0040_reject_attribution()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'TEST_V0040_ATTRIBUTION_FAILURE';
+END;
+$$;
+CREATE TRIGGER test_v0040_reject_attribution
+BEFORE INSERT ON marking_outbound_fulfillment_attribution
+FOR EACH ROW EXECUTE FUNCTION test_v0040_reject_attribution();");
+
+            try
+            {
+                var documents = new DocumentService(new PostgresDataStore(connection.ConnectionString));
+                var exception = Assert.ThrowsAny<Exception>(() =>
+                    documents.TryCloseDoc(9711, allowNegative: false));
+                Assert.Contains("TEST_V0040_ATTRIBUTION_FAILURE", exception.ToString(), StringComparison.Ordinal);
+
+                Assert.Equal("DRAFT", ExecuteScalarString(connection,
+                    "SELECT status FROM docs WHERE id = 9711;"));
+                Assert.Equal(2, ExecuteScalarInt(connection,
+                    "SELECT COUNT(*) FROM ledger;"));
+                Assert.Equal(50, ExecuteScalarInt(connection, @"
+SELECT SUM(qty_delta) FROM ledger
+WHERE item_id = 9701 AND hu_code = 'V0040-REAL-HU';"));
+                Assert.Equal(0, ExecuteScalarInt(connection,
+                    "SELECT COUNT(*) FROM marking_outbound_fulfillment_attribution;"));
+            }
+            finally
+            {
+                Execute(connection, @"
+DROP TRIGGER IF EXISTS test_v0040_reject_attribution
+ON marking_outbound_fulfillment_attribution;
+DROP FUNCTION IF EXISTS test_v0040_reject_attribution();");
+            }
+        });
+    }
+
+    [Fact]
+    public void V0040_SafeDecreaseAndIncrease_RebalancesSubjectExemptionWithinFrozenCap()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "PLANNED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+            var store = new PostgresDataStore(connection.ConnectionString);
+            var preflight = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
+            store.EnforceMarkingCutover(preflight.Hash, "SERVER:test", DateTime.UtcNow);
+
+            Assert.Equal(100, ExecuteScalarInt(connection, @"
+SELECT active_quantity FROM marking_legacy_cutover_subject_exemption;"));
+
+            Execute(connection, @"
+UPDATE order_lines SET qty_ordered = 80 WHERE id = 9401;
+UPDATE production_pallet_lines SET planned_qty = 80 WHERE id = 9401;");
+            Assert.Equal(80, ExecuteScalarInt(connection, @"
+SELECT active_quantity FROM marking_legacy_cutover_subject_exemption;"));
+
+            Execute(connection, @"
+UPDATE order_lines SET qty_ordered = 100 WHERE id = 9401;
+UPDATE production_pallet_lines SET planned_qty = 100 WHERE id = 9401;");
+            Assert.Equal(100, ExecuteScalarInt(connection, @"
+SELECT active_quantity FROM marking_legacy_cutover_subject_exemption;"));
+            Assert.Equal(100, ExecuteScalarInt(connection, @"
+SELECT frozen_quantity FROM marking_legacy_cutover_line_scope WHERE order_line_id = 9401;"));
+
+            Execute(connection, @"
+UPDATE order_lines
+SET cancelled_at = '2026-08-25T13:00:00.000Z'
+WHERE id = 9401;");
+            Assert.Equal(0, ExecuteScalarInt(connection, @"
+SELECT active_quantity FROM marking_legacy_cutover_subject_exemption;"));
+        });
+    }
+
+    [Fact]
+    public void V0040_DecreaseWithRealRequest_RetiresConsumablesWithoutRestoringThemOnIncrease()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "PLANNED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+            var store = new PostgresDataStore(connection.ConnectionString);
+            var preflight = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
+            store.EnforceMarkingCutover(preflight.Hash, "SERVER:test", DateTime.UtcNow);
+
+            Execute(connection, @"
+UPDATE order_lines SET qty_ordered = 120 WHERE id = 9401;
+UPDATE production_pallet_lines SET planned_qty = 120 WHERE id = 9401;");
+            var firstExport = new OrderMarkingExportService(store).Export(9401, DateTime.UtcNow);
+            Assert.True(firstExport.IsSuccess, firstExport.Message);
+            Assert.Equal(20, Assert.Single(firstExport.Lines).ExportQty);
+
+            Execute(connection, @"
+WITH request AS (
+    SELECT scope.id AS scope_id, scope.marking_subject_id,
+           request.id AS request_id, request.order_id, request.order_line_id
+    FROM marking_request_scope scope
+    INNER JOIN marking_order request ON request.id = scope.marking_order_id
+    WHERE request.order_id = 9401
+    ORDER BY scope.created_at
+    LIMIT 1
+), batch AS (
+    INSERT INTO marking_import_batch(
+        id, order_id, order_line_id, marking_order_id, original_filename,
+        file_hash, file_size_bytes, row_count, status,
+        target_marking_qty_snapshot, coverage_snapshot_hash,
+        idempotency_key, created_at, confirmed_at)
+    SELECT '94010000-0000-0000-0000-000000000401', order_id, order_line_id,
+           request_id, 'test-v0040-real.tsv', 'TEST-V0040-REAL-FILE', 20, 20,
+           'Confirmed', 20, 'TEST-V0040-REAL-SNAPSHOT',
+           'test-v0040-real-confirm', '2026-08-25T12:00:00.000Z',
+           '2026-08-25T12:00:00.000Z'
+    FROM request
+    RETURNING id
+)
+INSERT INTO marking_operational_coverage(
+    id, marking_subject_id, marking_request_scope_id, source_type,
+    covered_quantity, import_batch_id, created_at)
+SELECT '94010000-0000-0000-0000-000000000402', request.marking_subject_id,
+       request.scope_id, 'REAL_IMPORT', 20, batch.id, '2026-08-25T12:00:00.000Z'
+FROM request CROSS JOIN batch;");
+            Assert.Equal("APPLIED", ExecuteScalarString(connection,
+                "SELECT calculate_order_marking_status(9401);"));
+
+            Execute(connection, @"
+BEGIN;
+UPDATE order_lines SET qty_ordered = 80 WHERE id = 9401;
+UPDATE production_pallet_lines SET planned_qty = 80 WHERE id = 9401;
+COMMIT;");
+            Assert.Equal(80, ExecuteScalarInt(connection, @"
+SELECT SUM(active_quantity) FROM marking_legacy_cutover_subject_exemption;"));
+            Assert.Equal(0, ExecuteScalarInt(connection, @"
+SELECT SUM(active_quantity) FROM marking_request_scope_consumption;"));
+            Assert.Equal(0, ExecuteScalarInt(connection, @"
+SELECT SUM(active_quantity) FROM marking_operational_coverage_consumption;"));
+            Assert.Equal(20, ExecuteScalarInt(connection, @"
+SELECT covered_quantity FROM marking_operational_coverage;"));
+            Assert.Equal("NOT_REQUIRED", ExecuteScalarString(connection,
+                "SELECT calculate_order_marking_status(9401);"));
+
+            Execute(connection, @"
+BEGIN;
+UPDATE order_lines SET qty_ordered = 120 WHERE id = 9401;
+UPDATE production_pallet_lines SET planned_qty = 120 WHERE id = 9401;
+COMMIT;");
+            Assert.Equal(100, ExecuteScalarInt(connection, @"
+SELECT SUM(active_quantity) FROM marking_legacy_cutover_subject_exemption;"));
+            Assert.Equal(0, ExecuteScalarInt(connection, @"
+SELECT SUM(active_quantity) FROM marking_request_scope_consumption;"));
+            Assert.Equal(0, ExecuteScalarInt(connection, @"
+SELECT SUM(active_quantity) FROM marking_operational_coverage_consumption;"));
+            Assert.Equal("NOT_APPLIED", ExecuteScalarString(connection,
+                "SELECT calculate_order_marking_status(9401);"));
+
+            var secondExport = new OrderMarkingExportService(store).Export(9401, DateTime.UtcNow.AddMinutes(1));
+            Assert.True(secondExport.IsSuccess, secondExport.Message);
+            Assert.Equal(20, Assert.Single(secondExport.Lines).ExportQty);
+            Assert.Equal(2, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_order WHERE order_id = 9401;"));
+            Assert.Equal(2, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_request_scope scope INNER JOIN marking_order request ON request.id = scope.marking_order_id WHERE request.order_id = 9401;"));
+        });
+    }
+
+    [Fact]
+    public void V0040_SafeReplan_GrantsOnlyBoundedExemptionToNewCanonicalSubject()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "PLANNED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+            var store = new PostgresDataStore(connection.ConnectionString);
+            var preflight = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
+            store.EnforceMarkingCutover(preflight.Hash, "SERVER:test", DateTime.UtcNow);
+
+            Execute(connection, "UPDATE production_pallets SET status = 'CANCELLED' WHERE id = 9401;");
+            Assert.Equal(0, ExecuteScalarInt(connection, @"
+SELECT COALESCE(SUM(active_quantity), 0)
+FROM marking_legacy_cutover_subject_exemption;"));
+
+            Execute(connection, @"
+INSERT INTO doc_lines(id, doc_id, order_line_id, item_id, qty, to_location_id, to_hu)
+VALUES (9402, 9401, 9401, 9401, 100, 9401, 'TEST-CUTOVER-REPLAN-HU');
+INSERT INTO hus(hu_code, status, created_at)
+VALUES ('TEST-CUTOVER-REPLAN-HU', 'ACTIVE', '2026-08-25T14:00:00.000Z');
+INSERT INTO production_pallets(
+    id, prd_doc_id, doc_line_id, order_id, order_line_id, item_id,
+    hu_code, planned_qty, to_location_id, status, created_at)
+VALUES (9402, 9401, 9402, 9401, 9401, 9401,
+        'TEST-CUTOVER-REPLAN-HU', 100, 9401, 'PLANNED', '2026-08-25T14:00:00.000Z');
+INSERT INTO production_pallet_lines(
+    id, production_pallet_id, doc_line_id, order_line_id, item_id,
+    planned_qty, filled_qty, created_at)
+VALUES (9402, 9402, 9402, 9401, 9401, 100, 0, '2026-08-25T14:00:00.000Z');");
+
+            Assert.Equal(2, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_legacy_cutover_subject_exemption;"));
+            Assert.Equal(100, ExecuteScalarInt(connection, @"
+SELECT COALESCE(SUM(active_quantity), 0)
+FROM marking_legacy_cutover_subject_exemption;"));
+            Assert.Equal("POST_CUTOVER_FROZEN_LINE_PLAN", ExecuteScalarString(connection, @"
+SELECT exemption.basis
+FROM marking_legacy_cutover_subject_exemption exemption
+INNER JOIN production_pallet_lines component
+        ON component.marking_subject_id = exemption.marking_subject_id
+WHERE component.id = 9402;"));
+            Assert.Equal(100, ExecuteScalarInt(connection, @"
+SELECT exemption.granted_quantity
+FROM marking_legacy_cutover_subject_exemption exemption
+INNER JOIN production_pallet_lines component
+        ON component.marking_subject_id = exemption.marking_subject_id
+WHERE component.id = 9402;"));
+        });
+    }
+
+    [Fact]
+    public void V0040_NewIndependentSubject_UsesOnlyFreeCapacityAndPreservesExistingCutoverSubject()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            var subjects = SeedV0040StableSubjectAllocationScenario(
+                connection,
+                newSubjectSortsBeforeExisting: false);
+
+            AssertV0040StableSubjectAllocation(connection, subjects);
+        });
+    }
+
+    [Fact]
+    public void V0040_StableSubjectAllocation_IsIndependentOfSubjectUuidOrder()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            var subjects = SeedV0040StableSubjectAllocationScenario(
+                connection,
+                newSubjectSortsBeforeExisting: true);
+
+            AssertV0040StableSubjectAllocation(connection, subjects);
+        });
+    }
+
+    [Fact]
+    public void V0040_CancelledSubject_ReleasesCapacityOnlyToCanonicalCorrectionSuccessor()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            var subjects = SeedV0040StableSubjectAllocationScenario(
+                connection,
+                newSubjectSortsBeforeExisting: true);
+            var successorId = Guid.Parse("20000000-0000-0000-0000-000000000003");
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+UPDATE marking_production_subject
+SET lifecycle = 'CANCELLED', cancelled_at = '2026-08-25T13:00:00.000Z'
+WHERE id = @existing_subject_id;
+
+INSERT INTO marking_production_subject(
+    id, lifecycle, revision, predecessor_subject_id,
+    original_production_pallet_id, original_component_id,
+    original_order_id, original_order_line_id,
+    current_production_pallet_id, current_component_id,
+    current_order_id, current_order_line_id,
+    item_id, gtin, subject_quantity, created_at)
+VALUES (@successor_id, 'ACTIVE', 1, @existing_subject_id,
+        9803, 9803, 9701, 9701, NULL, 9803, 9701, 9701,
+        9701, '04600000009701', 90, '2026-08-25T13:00:00.000Z');
+
+SELECT rebalance_marking_legacy_line_exemptions(
+    9701, '2026-08-25T13:00:00.000Z', 'controlled_correction');";
+            command.Parameters.AddWithValue("@existing_subject_id", subjects.ExistingSubjectId);
+            command.Parameters.AddWithValue("@successor_id", successorId);
+            command.ExecuteNonQuery();
+
+            Assert.Equal(0, ReadV0040SubjectExemption(connection, subjects.ExistingSubjectId));
+            Assert.Equal(40, ReadV0040SubjectExemption(connection, subjects.NewSubjectId));
+            Assert.Equal(60, ReadV0040SubjectExemption(connection, successorId));
+            Assert.Equal(60, ReadV0040SubjectExemptionGrant(connection, successorId));
+            Assert.Equal(100, ExecuteScalarInt(connection, @"
+SELECT SUM(active_quantity)
+FROM marking_legacy_cutover_subject_exemption
+WHERE frozen_line_scope_id = (
+    SELECT id FROM marking_legacy_cutover_line_scope WHERE order_line_id = 9701);"));
+            Assert.Equal(subjects.ExistingSubjectId.ToString(), ExecuteScalarString(connection, @"
+SELECT root_subject_id::text
+FROM marking_legacy_cutover_subject_exemption
+WHERE marking_subject_id = '20000000-0000-0000-0000-000000000003';"));
+        });
+    }
+
+    [Fact]
+    public void V0040_IncreaseAboveFrozenCap_DoesNotMoveExistingSubjectExemptions()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            var subjects = SeedV0040StableSubjectAllocationScenario(
+                connection,
+                newSubjectSortsBeforeExisting: true);
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+UPDATE order_lines SET qty_ordered = 200 WHERE id = 9701;
+UPDATE marking_production_subject SET subject_quantity = 140 WHERE id = @new_subject_id;
+SELECT rebalance_marking_legacy_line_exemptions(
+    9701, '2026-08-25T14:00:00.000Z', 'line_increased_above_frozen_cap');";
+            command.Parameters.AddWithValue("@new_subject_id", subjects.NewSubjectId);
+            command.ExecuteNonQuery();
+
+            Assert.Equal(60, ReadV0040SubjectExemption(connection, subjects.ExistingSubjectId));
+            Assert.Equal(40, ReadV0040SubjectExemption(connection, subjects.NewSubjectId));
+            Assert.Equal(100, ExecuteScalarInt(connection, @"
+SELECT subject.subject_quantity - exemption.active_quantity
+FROM marking_production_subject subject
+INNER JOIN marking_legacy_cutover_subject_exemption exemption
+        ON exemption.marking_subject_id = subject.id
+WHERE subject.id = @new_subject_id;", ("@new_subject_id", subjects.NewSubjectId)));
+        });
+    }
+
+    [Fact]
+    public void V0040_SubjectAllocationMutationFault_RollsBackSubjectExemptionAndRealConsumables()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "PLANNED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+            var store = new PostgresDataStore(connection.ConnectionString);
+            var preflight = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
+            store.EnforceMarkingCutover(preflight.Hash, "SERVER:test", DateTime.UtcNow);
+
+            Execute(connection, @"
+UPDATE order_lines SET qty_ordered = 120 WHERE id = 9401;
+UPDATE production_pallet_lines SET planned_qty = 120 WHERE id = 9401;");
+            var export = new OrderMarkingExportService(store).Export(9401, DateTime.UtcNow);
+            Assert.True(export.IsSuccess, export.Message);
+
+            Execute(connection, @"
+WITH request AS (
+    SELECT scope.id AS scope_id, scope.marking_subject_id,
+           request.id AS request_id, request.order_id, request.order_line_id
+    FROM marking_request_scope scope
+    INNER JOIN marking_order request ON request.id = scope.marking_order_id
+    WHERE request.order_id = 9401
+    ORDER BY scope.created_at
+    LIMIT 1
+), batch AS (
+    INSERT INTO marking_import_batch(
+        id, order_id, order_line_id, marking_order_id, original_filename,
+        file_hash, file_size_bytes, row_count, status,
+        target_marking_qty_snapshot, coverage_snapshot_hash,
+        idempotency_key, created_at, confirmed_at)
+    SELECT '94010000-0000-0000-0000-000000000411', order_id, order_line_id,
+           request_id, 'test-v0040-rollback.tsv', 'TEST-V0040-ROLLBACK-FILE', 20, 20,
+           'Confirmed', 20, 'TEST-V0040-ROLLBACK-SNAPSHOT',
+           'test-v0040-rollback-confirm', '2026-08-25T12:00:00.000Z',
+           '2026-08-25T12:00:00.000Z'
+    FROM request
+    RETURNING id
+)
+INSERT INTO marking_operational_coverage(
+    id, marking_subject_id, marking_request_scope_id, source_type,
+    covered_quantity, import_batch_id, created_at)
+SELECT '94010000-0000-0000-0000-000000000412', request.marking_subject_id,
+       request.scope_id, 'REAL_IMPORT', 20, batch.id, '2026-08-25T12:00:00.000Z'
+FROM request CROSS JOIN batch;
+
+CREATE OR REPLACE FUNCTION test_v0040_reject_deferred_status_update()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.id = 9401 THEN
+        RAISE EXCEPTION 'TEST_V0040_DEFERRED_MUTATION_FAILURE';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+CREATE CONSTRAINT TRIGGER test_v0040_reject_deferred_status_update
+AFTER UPDATE ON orders
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION test_v0040_reject_deferred_status_update();");
+
+            try
+            {
+                var exception = Assert.Throws<PostgresException>(() => Execute(connection, @"
+BEGIN;
+UPDATE order_lines SET qty_ordered = 80 WHERE id = 9401;
+UPDATE production_pallet_lines SET planned_qty = 80 WHERE id = 9401;
+COMMIT;"));
+                Assert.Contains("TEST_V0040_DEFERRED_MUTATION_FAILURE", exception.MessageText, StringComparison.Ordinal);
+
+                Assert.Equal(120, ExecuteScalarInt(connection,
+                    "SELECT qty_ordered FROM order_lines WHERE id = 9401;"));
+                Assert.Equal(120, ExecuteScalarInt(connection,
+                    "SELECT planned_qty FROM production_pallet_lines WHERE id = 9401;"));
+                Assert.Equal(120, ExecuteScalarInt(connection, @"
+SELECT subject_quantity FROM marking_production_subject
+WHERE id = (SELECT marking_subject_id FROM production_pallet_lines WHERE id = 9401);"));
+                Assert.Equal(100, ExecuteScalarInt(connection,
+                    "SELECT active_quantity FROM marking_legacy_cutover_subject_exemption;"));
+                Assert.Equal(20, ExecuteScalarInt(connection,
+                    "SELECT SUM(active_quantity) FROM marking_request_scope_consumption;"));
+                Assert.Equal(20, ExecuteScalarInt(connection,
+                    "SELECT SUM(active_quantity) FROM marking_operational_coverage_consumption;"));
+            }
+            finally
+            {
+                Execute(connection, @"
+DROP TRIGGER IF EXISTS test_v0040_reject_deferred_status_update ON orders;
+DROP FUNCTION IF EXISTS test_v0040_reject_deferred_status_update();");
+            }
+        });
+    }
+
+    [Fact]
+    public void V0040_Enforce_ConcurrentLineDriftCannotCommitStaleCohort()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "PLANNED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+            var before = new MarkingCutoverPreflightService(
+                new PostgresDataStore(connection.ConnectionString)).Run(DateTime.UtcNow);
+
+            using var gateConnection = new NpgsqlConnection(connection.ConnectionString);
+            gateConnection.Open();
+            using var gateTransaction = gateConnection.BeginTransaction();
+            using (var gate = gateConnection.CreateCommand())
+            {
+                gate.Transaction = gateTransaction;
+                gate.CommandText = "SELECT state FROM marking_cutover_state WHERE id = TRUE FOR UPDATE;";
+                _ = gate.ExecuteScalar();
+            }
+
+            var enforce = Task.Run<Exception?>(() =>
+            {
+                try
+                {
+                    new PostgresDataStore(connection.ConnectionString).EnforceMarkingCutover(
+                        before.Hash, "SERVER:test", DateTime.UtcNow);
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    return ex;
+                }
+            });
+            Assert.True(SpinWait.SpinUntil(
+                () => CountCutoverStateLockWaiters(connection.ConnectionString) >= 1,
+                TimeSpan.FromSeconds(5)));
+
+            using (var driftConnection = new NpgsqlConnection(connection.ConnectionString))
+            {
+                driftConnection.Open();
+                Execute(driftConnection, "UPDATE order_lines SET qty_ordered = 120 WHERE id = 9401;");
+            }
+            gateTransaction.Commit();
+
+            Assert.True(enforce.Wait(TimeSpan.FromSeconds(10)));
+            Assert.NotNull(enforce.Result);
+            Assert.True(
+                enforce.Result is PostgresException { SqlState: PostgresErrorCodes.SerializationFailure }
+                || enforce.Result is InvalidOperationException { Message: "MARKING_CUTOVER_PREFLIGHT_HASH_MISMATCH" },
+                enforce.Result.ToString());
+            Assert.Equal("SHADOW", ExecuteScalarString(connection,
+                "SELECT state FROM marking_cutover_state WHERE id = TRUE;"));
+            Assert.Equal(0, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_legacy_cutover_cohort;"));
+        });
+    }
+
     private static IReadOnlyDictionary<string, long> ReadTableCounts(string connectionString)
     {
         var connectionBuilder = new NpgsqlConnectionStringBuilder(connectionString)
@@ -1300,6 +2107,22 @@ SELECT 'marking_cutover_state', COUNT(*) FROM marking_cutover_state;";
     private static IReadOnlyList<MarkingCutoverPreflightEntry> ReadPreflightEntries(string connectionString)
     {
         return new PostgresDataStore(connectionString).GetMarkingCutoverPreflightEntries();
+    }
+
+    private static bool AssertV0040IgnoresSyntheticTaskHistory(NpgsqlConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT to_regclass('marking_legacy_cutover_cohort') IS NOT NULL;";
+        if (!Convert.ToBoolean(command.ExecuteScalar()))
+        {
+            return false;
+        }
+
+        var entries = ReadPreflightEntries(connection.ConnectionString);
+        Assert.DoesNotContain(entries, entry =>
+            entry.IssueCode.StartsWith("MARKING_LEGACY_", StringComparison.Ordinal)
+            || entry.IssueCode == "MARKING_TASK_ORDER_LINK_CONFLICT");
+        return true;
     }
 
     private static void RunMutatingPostgresTest(Action<NpgsqlConnection> work)
@@ -1365,8 +2188,9 @@ SELECT 'marking_cutover_state', COUNT(*) FROM marking_cutover_state;";
     private static void CleanupTestRows(NpgsqlConnection connection)
     {
         Execute(connection, @"
-TRUNCATE TABLE ledger, production_pallet_lines, production_pallets, doc_lines, docs,
-               orders, items, item_types, locations, hus,
+TRUNCATE TABLE marking_legacy_cutover_cohort,
+               ledger, production_pallet_lines, production_pallets, doc_lines, docs,
+               orders, items, item_types, locations, hus, partners,
                marking_order, marking_code_import, marking_code
 CASCADE;
 
@@ -1381,6 +2205,186 @@ SET state = 'SHADOW',
     updated_at = '2026-08-24T00:00:00.000Z'
 WHERE id = TRUE;");
     }
+
+    private static void SeedV0040OutboundScenario(NpgsqlConnection connection)
+    {
+        Execute(connection, @"
+INSERT INTO item_types(id, name, code, enable_marking)
+VALUES (9701, 'TEST-V0040-TYPE', 'TEST-V0040-TYPE', TRUE);
+INSERT INTO items(id, name, barcode, gtin, item_type_id)
+VALUES (9701, 'TEST-V0040-ITEM', 'TEST-V0040-ITEM', '04600000009701', 9701);
+INSERT INTO locations(id, code, name)
+VALUES (9701, 'TEST-V0040-LOC', 'TEST-V0040-LOC');
+INSERT INTO partners(id, name, code, created_at, partner_role)
+VALUES (9701, 'TEST-V0040-PARTNER', 'TEST-V0040-PARTNER', '2026-08-25T10:00:00.000Z', 'CLIENT');
+INSERT INTO hus(hu_code, status, created_at)
+VALUES
+('V0040-REAL-HU', 'ACTIVE', '2026-08-25T10:00:00.000Z'),
+('V0040-LEGACY-HU', 'ACTIVE', '2026-08-25T10:00:00.000Z');
+INSERT INTO orders(id, order_ref, order_type, status, created_at, marking_responsibility, partner_id)
+VALUES
+(9701, 'TEST-V0040-FROZEN', 'CUSTOMER', 'ACCEPTED', '2026-08-25T10:00:00.000Z', 'FLOWSTOCK', 9701),
+(9702, 'TEST-V0040-NEW', 'CUSTOMER', 'ACCEPTED', '2026-08-25T11:00:00.000Z', 'FLOWSTOCK', 9701);
+INSERT INTO order_lines(id, order_id, item_id, qty_ordered)
+VALUES
+(9701, 9701, 9701, 150),
+(9702, 9702, 9701, 100);
+INSERT INTO order_receipt_plan_lines(
+    order_id, order_line_id, item_id, qty_planned, to_location_id, to_hu, sort_order)
+VALUES
+(9701, 9701, 9701, 50, 9701, 'V0040-REAL-HU', 1),
+(9701, 9701, 9701, 100, 9701, 'V0040-LEGACY-HU', 2);
+
+INSERT INTO docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref)
+VALUES
+(9703, 'TEST-V0040-RECEIPT', 'PRODUCTION_RECEIPT', 'CLOSED',
+ '2026-08-25T09:00:00.000Z', '2026-08-25T09:30:00.000Z', NULL, NULL, NULL),
+(9711, 'TEST-V0040-REAL-OUT', 'OUTBOUND', 'DRAFT',
+ '2026-08-25T11:00:00.000Z', NULL, 9701, 9701, 'TEST-V0040-FROZEN'),
+(9712, 'TEST-V0040-LEGACY-OUT', 'OUTBOUND', 'DRAFT',
+ '2026-08-25T11:10:00.000Z', NULL, 9701, 9701, 'TEST-V0040-FROZEN');
+INSERT INTO doc_lines(id, doc_id, order_line_id, item_id, qty, to_location_id, to_hu)
+VALUES (9703, 9703, NULL, 9701, 50, 9701, 'V0040-REAL-HU');
+INSERT INTO doc_lines(id, doc_id, order_line_id, item_id, qty, from_location_id, from_hu)
+VALUES
+(9711, 9711, 9701, 9701, 50, 9701, 'V0040-REAL-HU'),
+(9712, 9712, 9701, 9701, 100, 9701, 'V0040-LEGACY-HU');
+INSERT INTO ledger(ts, doc_id, item_id, location_id, qty_delta, hu_code)
+VALUES
+('2026-08-25T09:30:00.000Z', 9703, 9701, 9701, 50, 'V0040-REAL-HU'),
+('2026-08-25T09:30:00.000Z', 9703, 9701, 9701, 100, 'V0040-LEGACY-HU');
+
+INSERT INTO marking_production_subject(
+    id, lifecycle, current_order_id, current_order_line_id, item_id, gtin,
+    hu_id, hu_code_snapshot, subject_quantity, created_at, completed_at)
+VALUES ('97010000-0000-0000-0000-000000000030', 'COMPLETED', NULL, NULL, 9701,
+        '04600000009701', (SELECT id FROM hus WHERE hu_code = 'V0040-REAL-HU'),
+        'V0040-REAL-HU', 50, '2026-08-25T09:00:00.000Z', '2026-08-25T09:30:00.000Z');
+INSERT INTO marking_ready_hu_fact(
+    id, marking_subject_id, receipt_doc_id, receipt_line_id, hu_id,
+    hu_code_snapshot, item_id_snapshot, gtin_snapshot, marked_quantity,
+    provenance, created_at)
+VALUES ('97010000-0000-0000-0000-000000000040',
+        '97010000-0000-0000-0000-000000000030', 9703, 9703,
+        (SELECT id FROM hus WHERE hu_code = 'V0040-REAL-HU'),
+        'V0040-REAL-HU', 9701, '04600000009701', 50, 'REAL_IMPORT',
+        '2026-08-25T09:30:00.000Z');
+
+INSERT INTO marking_legacy_cutover_cohort(
+    id, cutover_state_id, snapshot_schema_version, preflight_hash, snapshot_hash,
+    captured_by, captured_at)
+VALUES (TRUE, TRUE, 1, 'TEST-V0040-PREFLIGHT', 'TEST-V0040-SNAPSHOT',
+        'SERVER:test', '2026-08-25T10:00:00.000Z');
+INSERT INTO marking_legacy_cutover_line_scope(
+    cohort_id, order_id, order_line_id, order_type, marking_responsibility,
+    line_revision, item_id_snapshot, gtin_snapshot, frozen_quantity,
+    shipped_quantity_at_cutover, frozen_unshipped_legacy_quantity,
+    production_need_snapshot, snapshot_hash, captured_by, captured_at)
+VALUES (TRUE, 9701, 9701, 'CUSTOMER', 'FLOWSTOCK', 0, 9701, '04600000009701',
+        100, 0, 100, 100, 'TEST-V0040-LINE-SNAPSHOT', 'SERVER:test',
+        '2026-08-25T10:00:00.000Z');
+UPDATE marking_cutover_state
+SET state = 'ENFORCED', preflight_hash = 'TEST-V0040-PREFLIGHT',
+    preflight_generated_at = '2026-08-25T10:00:00.000Z',
+    preflight_approved_at = '2026-08-25T10:00:00.000Z',
+    preflight_approved_by = 'SERVER:test', enforced_at = '2026-08-25T10:00:00.000Z',
+    enforced_by = 'SERVER:test', updated_at = '2026-08-25T10:00:00.000Z'
+WHERE id = TRUE;
+");
+    }
+
+    private static void AddV0040MixedPhysicalComposition(NpgsqlConnection connection, string huCode)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+INSERT INTO items(id, name, barcode, gtin, item_type_id)
+VALUES (9703, 'TEST-V0040-MIXED-ITEM', 'TEST-V0040-MIXED-ITEM', '04600000009703', 9701);
+INSERT INTO doc_lines(id, doc_id, item_id, qty, to_location_id, to_hu)
+VALUES (9704, 9703, 9703, 50, 9701, @hu_code);
+INSERT INTO ledger(ts, doc_id, item_id, location_id, qty_delta, hu_code)
+VALUES ('2026-08-25T09:30:00.000Z', 9703, 9703, 9701, 50, @hu_code);";
+        command.Parameters.AddWithValue("@hu_code", huCode);
+        command.ExecuteNonQuery();
+    }
+
+    private static V0040StableSubjectAllocationFixture SeedV0040StableSubjectAllocationScenario(
+        NpgsqlConnection connection,
+        bool newSubjectSortsBeforeExisting)
+    {
+        SeedV0040OutboundScenario(connection);
+        var existingSubjectId = newSubjectSortsBeforeExisting
+            ? Guid.Parse("e0000000-0000-0000-0000-000000000001")
+            : Guid.Parse("10000000-0000-0000-0000-000000000001");
+        var newSubjectId = newSubjectSortsBeforeExisting
+            ? Guid.Parse("00000000-0000-0000-0000-000000000002")
+            : Guid.Parse("f0000000-0000-0000-0000-000000000002");
+
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+INSERT INTO marking_production_subject(
+    id, lifecycle, revision,
+    original_production_pallet_id, original_component_id,
+    original_order_id, original_order_line_id,
+    current_production_pallet_id, current_component_id,
+    current_order_id, current_order_line_id,
+    item_id, gtin, subject_quantity, created_at)
+VALUES
+(@existing_subject_id, 'ACTIVE', 0,
+ 9801, 9801, 9701, 9701, NULL, 9801, 9701, 9701,
+ 9701, '04600000009701', 60, '2026-08-25T09:00:00.000Z'),
+(@new_subject_id, 'ACTIVE', 0,
+ 9802, 9802, 9701, 9701, NULL, 9802, 9701, 9701,
+ 9701, '04600000009701', 90, '2026-08-25T12:00:00.000Z');
+
+INSERT INTO marking_legacy_cutover_subject_exemption(
+    id, frozen_line_scope_id, marking_subject_id, item_id_snapshot,
+    gtin_snapshot, subject_revision_snapshot, subject_quantity_snapshot,
+    granted_quantity, active_quantity, basis, root_subject_id,
+    predecessor_subject_id, allocation_hash, granted_by, granted_at)
+SELECT (md5('test-v0040-stable-existing:' || @existing_subject_id::text))::uuid,
+       scope.id, @existing_subject_id, 9701, '04600000009701', 0, 60,
+       60, 60, 'CUTOVER_EXISTING', @existing_subject_id, NULL,
+       md5('test-v0040-stable-existing-allocation:' || @existing_subject_id::text),
+       'SERVER:test', '2026-08-25T10:00:00.000Z'
+FROM marking_legacy_cutover_line_scope scope
+WHERE scope.order_line_id = 9701;
+
+SELECT rebalance_marking_legacy_line_exemptions(
+    9701, '2026-08-25T12:00:00.000Z', 'new_subject_planned');";
+        command.Parameters.AddWithValue("@existing_subject_id", existingSubjectId);
+        command.Parameters.AddWithValue("@new_subject_id", newSubjectId);
+        command.ExecuteNonQuery();
+
+        return new V0040StableSubjectAllocationFixture(existingSubjectId, newSubjectId);
+    }
+
+    private static void AssertV0040StableSubjectAllocation(
+        NpgsqlConnection connection,
+        V0040StableSubjectAllocationFixture subjects)
+    {
+        Assert.Equal(60, ReadV0040SubjectExemption(connection, subjects.ExistingSubjectId));
+        Assert.Equal(40, ReadV0040SubjectExemption(connection, subjects.NewSubjectId));
+        Assert.Equal(60, ReadV0040SubjectExemptionGrant(connection, subjects.ExistingSubjectId));
+        Assert.Equal(40, ReadV0040SubjectExemptionGrant(connection, subjects.NewSubjectId));
+        Assert.Equal(50, ExecuteScalarInt(connection, @"
+SELECT subject.subject_quantity - exemption.active_quantity
+FROM marking_production_subject subject
+INNER JOIN marking_legacy_cutover_subject_exemption exemption
+        ON exemption.marking_subject_id = subject.id
+WHERE subject.id = @new_subject_id;", ("@new_subject_id", subjects.NewSubjectId)));
+    }
+
+    private static int ReadV0040SubjectExemption(NpgsqlConnection connection, Guid subjectId)
+        => ExecuteScalarInt(connection, @"
+SELECT active_quantity
+FROM marking_legacy_cutover_subject_exemption
+WHERE marking_subject_id = @subject_id;", ("@subject_id", subjectId));
+
+    private static int ReadV0040SubjectExemptionGrant(NpgsqlConnection connection, Guid subjectId)
+        => ExecuteScalarInt(connection, @"
+SELECT granted_quantity
+FROM marking_legacy_cutover_subject_exemption
+WHERE marking_subject_id = @subject_id;", ("@subject_id", subjectId));
 
     private static void SeedMarkingPallet(
         NpgsqlConnection connection,
@@ -1484,6 +2488,20 @@ ALTER TABLE item_types ENABLE TRIGGER trg_item_types_marking_applicability_trans
     {
         using var command = connection.CreateCommand();
         command.CommandText = sql;
+        return Convert.ToInt32(command.ExecuteScalar());
+    }
+
+    private static int ExecuteScalarInt(
+        NpgsqlConnection connection,
+        string sql,
+        params (string Name, object Value)[] parameters)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        foreach (var parameter in parameters)
+        {
+            command.Parameters.AddWithValue(parameter.Name, parameter.Value);
+        }
         return Convert.ToInt32(command.ExecuteScalar());
     }
 
@@ -1691,6 +2709,10 @@ FROM generate_series(1, @reserved_quantity) value;";
         command.Parameters.AddWithValue("@reserved_quantity", reservedQuantity);
         command.ExecuteNonQuery();
     }
+
+    private sealed record V0040StableSubjectAllocationFixture(
+        Guid ExistingSubjectId,
+        Guid NewSubjectId);
 
     private sealed record RepresentativeRetirementShape(
         long LineId,

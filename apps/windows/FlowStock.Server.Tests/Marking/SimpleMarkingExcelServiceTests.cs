@@ -32,7 +32,7 @@ public sealed class SimpleMarkingExcelServiceTests
     [Theory]
     [InlineData(true, "04601234567890", true, MarkingStatus.NotRequired, "Маркировка не проведена")]
     [InlineData(true, "04601234567890", true, MarkingStatus.NotApplied, "Маркировка не проведена")]
-    [InlineData(true, "", false, MarkingStatus.NotRequired, "Маркировка не проведена")]
+    [InlineData(true, "", false, MarkingStatus.NotRequired, "")]
     [InlineData(false, "04601234567890", false, MarkingStatus.NotRequired, "")]
     public void OrderLabel_UsesMarkableOrderLinesRequirement(
         bool itemTypeEnableMarking,

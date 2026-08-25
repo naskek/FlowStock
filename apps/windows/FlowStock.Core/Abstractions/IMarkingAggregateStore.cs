@@ -4,6 +4,8 @@ namespace FlowStock.Core.Abstractions;
 public interface IMarkingAggregateStore
 {
     IReadOnlyDictionary<long, MarkingLineAggregateCoverage> GetAggregateMarkingCoverageByOrderLine(long orderId);
+    IReadOnlyDictionary<long, double> GetLegacyExemptQuantityByOrderLine(long orderId) =>
+        new Dictionary<long, double>();
     IReadOnlyDictionary<long, double> GetActiveMarkingRequestScopeQuantityByItem(long orderId);
     int GetDefaultMarkingReserveQuantity();
     void CreateImmutableRequestScopes(

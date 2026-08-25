@@ -2926,8 +2926,13 @@ public sealed class ProductionPalletService
                     }
                     catch (InvalidOperationException ex)
                     {
-                        result = ProductionPalletFillResult.Failure(
+                        var errorCode = ex.Message.StartsWith(
                             MarkingCutoverRuntimeErrors.MaintenanceRequired,
+                            StringComparison.Ordinal)
+                            ? MarkingCutoverRuntimeErrors.MaintenanceRequired
+                            : ex.Message;
+                        result = ProductionPalletFillResult.Failure(
+                            errorCode,
                             ex.Message);
                         return;
                     }

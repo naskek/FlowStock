@@ -1,5 +1,6 @@
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services.Marking;
 
 namespace FlowStock.Core.Services;
 
@@ -212,6 +213,18 @@ public sealed class OrderHuBindingApplyFinalService
                 .Where(candidate => !string.IsNullOrWhiteSpace(candidate.HuCode))
                 .GroupBy(candidate => candidate.HuCode!, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(group => group.Key, group => group.Sum(candidate => Math.Max(0, candidate.Qty)), StringComparer.OrdinalIgnoreCase);
+            if (store is IMarkingHuFulfillmentEligibilityStore markingStore)
+            {
+                try
+                {
+                    new MarkingHuFulfillmentEligibilityPolicy(markingStore)
+                        .ValidateFinal(orderLine.Id, finalBoundQtyByHu);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    throw Error(ex.Message, "HU не соответствует marking eligibility выбранной строки.");
+                }
+            }
             var futurePlanSurplus = HuBindingApplyShared.ComputeCancellableFuturePlanSurplus(
                 store, customerOrderId, orderLine, finalBoundQtyByHu);
             var cancelledPalletIds = HuBindingApplyShared.SelectFuturePlanPalletsToCancel(

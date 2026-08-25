@@ -151,7 +151,7 @@ public sealed class OrderApiMapperTests
             Status = OrderStatus.InProgress,
             CreatedAt = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc),
             MarkingStatus = MarkingStatus.NotRequired,
-            MarkingRequired = false,
+            MarkingRequired = true,
             MarkingApplies = true,
             MarkingCodeCovered = true
         };
@@ -188,7 +188,7 @@ public sealed class OrderApiMapperTests
     }
 
     [Fact]
-    public void MapOrder_DoesNotTreatMarkingTaskWithoutCodesAsCompleted()
+    public void MapOrder_ReturnsNotRequiredForFullyLegacyExemptApplicableOrder()
     {
         var order = new Order
         {
@@ -206,8 +206,9 @@ public sealed class OrderApiMapperTests
         var json = JsonSerializer.SerializeToElement(OrderApiMapper.MapOrder(order));
 
         Assert.False(json.GetProperty("marking_completed").GetBoolean());
-        Assert.Equal("NOT_APPLIED", json.GetProperty("marking_effective_status").GetString());
-        Assert.Equal("Маркировка не проведена", json.GetProperty("marking_label").GetString());
+        Assert.True(json.GetProperty("marking_applies").GetBoolean());
+        Assert.Equal("NOT_REQUIRED", json.GetProperty("marking_effective_status").GetString());
+        Assert.Equal("", json.GetProperty("marking_label").GetString());
     }
 
     [Theory]

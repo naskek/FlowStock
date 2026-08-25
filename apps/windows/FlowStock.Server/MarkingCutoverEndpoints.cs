@@ -37,6 +37,10 @@ public static class MarkingCutoverEndpoints
             preflight_hash = result.Hash,
             canonical_json = result.CanonicalJson,
             issue_count = result.Entries.Count,
+            frozen_line_count = result.LegacyLineSnapshots?.Count ?? 0,
+            frozen_subject_count = result.LegacySubjectSnapshots?.Count ?? 0,
+            frozen_lines = result.LegacyLineSnapshots,
+            frozen_subjects = result.LegacySubjectSnapshots,
             entries = result.Entries.Select(entry => new
             {
                 order_id = entry.OrderId,

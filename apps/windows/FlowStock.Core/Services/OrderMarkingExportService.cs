@@ -369,7 +369,7 @@ public sealed class OrderMarkingExportService
 
         var markableLines = orderLines
             .Select(line => (Line: line, Item: _data.FindItemById(line.ItemId)))
-            .Where(pair => pair.Item?.ItemTypeEnableMarking == true
+            .Where(pair => pair.Item?.ChzMarkingApplicable == true
                            && !string.IsNullOrWhiteSpace(pair.Item.Gtin))
             .ToList();
         if (markableLines.Count == 0)
@@ -380,12 +380,17 @@ public sealed class OrderMarkingExportService
         var aggregateCoverageByLine = _data is IMarkingAggregateStore aggregateStore
             ? aggregateStore.GetAggregateMarkingCoverageByOrderLine(order.Id)
             : new Dictionary<long, MarkingLineAggregateCoverage>();
+        var legacyExemptByLine = _data is IMarkingAggregateStore legacyStore
+            ? legacyStore.GetLegacyExemptQuantityByOrderLine(order.Id)
+            : new Dictionary<long, double>();
         foreach (var pair in markableLines)
         {
             var line = pair.Line;
             var item = pair.Item!;
             var requiredQty = Math.Max(0, line.QtyOrdered);
-            var productionBaseQty = requiredQty;
+            legacyExemptByLine.TryGetValue(line.Id, out var legacyExemptQty);
+            var realRequiredQty = Math.Max(0, requiredQty - Math.Min(requiredQty, Math.Max(0, legacyExemptQty)));
+            var productionBaseQty = realRequiredQty;
             var stockCoveredQty = 0d;
             if (order.Type == OrderType.Customer)
             {
@@ -394,8 +399,8 @@ public sealed class OrderMarkingExportService
                 stockCoveredQty = Math.Min(requiredQty, Math.Max(0, shippedQty) + Math.Max(0, reservedQty));
                 activeProductionPalletQtyByLine.TryGetValue(line.Id, out var activePalletQty);
                 productionBaseQty = activePalletQty > QtyTolerance
-                    ? Math.Min(activePalletQty, Math.Max(0, requiredQty - stockCoveredQty))
-                    : Math.Max(0, requiredQty - stockCoveredQty);
+                    ? Math.Min(activePalletQty, Math.Max(0, realRequiredQty - stockCoveredQty))
+                    : Math.Max(0, realRequiredQty - stockCoveredQty);
             }
 
             aggregateCoverageByLine.TryGetValue(line.Id, out var aggregateCoverage);
@@ -403,9 +408,9 @@ public sealed class OrderMarkingExportService
             var operationalCoveredQty = Math.Min(
                 Math.Max(0, productionBaseQty),
                 Math.Max(0, aggregateCoverage.OperationalQuantity));
-            var coveredQty = Math.Min(requiredQty, Math.Max(0, aggregateCoverage.TotalQuantity));
+            var coveredQty = Math.Min(realRequiredQty, Math.Max(0, aggregateCoverage.TotalQuantity));
             var exportQty = order.Type == OrderType.Internal
-                ? Math.Max(0, requiredQty - operationalCoveredQty)
+                ? Math.Max(0, realRequiredQty - operationalCoveredQty)
                 : Math.Max(0, productionBaseQty - operationalCoveredQty);
 
             yield return new OrderMarkingExportLineSummary(

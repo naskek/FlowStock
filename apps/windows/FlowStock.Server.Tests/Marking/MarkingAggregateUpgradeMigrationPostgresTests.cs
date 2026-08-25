@@ -88,9 +88,9 @@ WHERE pallet.id = @pallet_id;
             var currentSnapshot = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
             Assert.Equal(approvedSnapshot.Hash, currentSnapshot.Hash);
 
-            var stale = Assert.Throws<InvalidOperationException>(() =>
-                store.EnforceMarkingCutover(currentSnapshot.Hash, "upgrade-test", DateTime.UtcNow));
-            Assert.Equal("MARKING_CUTOVER_STALE_SUBJECT_APPROVAL", stale.Message);
+            Assert.DoesNotContain(currentSnapshot.Entries, entry =>
+                entry.IssueCode.StartsWith("MARKING_LEGACY_", StringComparison.Ordinal)
+                || entry.IssueCode == "MARKING_CUTOVER_STALE_SUBJECT_APPROVAL");
 
             var allowanceId = await SeedAllowanceAsync(connection, staleApprovalId, activeSubject);
             var coverageId = await AssertSingleGrandfatherConsumerUnderConcurrencyAsync(

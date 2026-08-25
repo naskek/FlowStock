@@ -409,7 +409,7 @@ public sealed class OrderMarkingExportTests
     }
 
     [Fact]
-    public async Task CustomerOrderExport_FullyCoveredByReservedStock_CreatesNoCodesAndMarksCompleted()
+    public async Task CustomerOrderExport_FullyCoveredByUnmarkedReservedStock_DoesNotClaimApplied()
     {
         var harness = CreateOrderHarness(OrderType.Customer, qty: 7200);
         SeedFilledHuReservation(
@@ -431,7 +431,7 @@ public sealed class OrderMarkingExportTests
         Assert.Equal(0, payload.CreatedCodeQty);
         Assert.Empty(harness.MarkingOrders);
         Assert.Empty(harness.MarkingCodes);
-        Assert.True(harness.GetOrder(10).MarkingCompleted);
+        Assert.False(harness.GetOrder(10).MarkingCompleted);
     }
 
     [Fact]

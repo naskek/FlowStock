@@ -1,5 +1,6 @@
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services.Marking;
 
 namespace FlowStock.Core.Services;
 
@@ -428,6 +429,23 @@ public sealed class OrderHuBindingManageApplyService
             }
 
             finalCandidates.Add((huCode, stockQty));
+        }
+
+        if (snapshot.Store is IMarkingHuFulfillmentEligibilityStore markingStore)
+        {
+            try
+            {
+                new MarkingHuFulfillmentEligibilityPolicy(markingStore).ValidateFinal(
+                    orderLine.Id,
+                    finalCandidates.ToDictionary(
+                        candidate => candidate.HuCode,
+                        candidate => candidate.Qty,
+                        StringComparer.OrdinalIgnoreCase));
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw Error(ex.Message, "HU не соответствует marking eligibility выбранной строки.");
+            }
         }
 
         var finalBoundQty = finalCandidates.Sum(candidate => Math.Max(0, candidate.Qty));

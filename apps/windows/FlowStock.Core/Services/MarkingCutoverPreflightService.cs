@@ -38,12 +38,29 @@ public sealed class MarkingCutoverPreflightService
             .ThenBy(entry => entry.SuggestedRemediation, StringComparer.Ordinal)
             .ToArray();
 
-        var canonicalJson = JsonSerializer.Serialize(entries, CanonicalJsonOptions);
+        var legacyLines = _store.GetMarkingLegacyCutoverLineSnapshots()
+            .OrderBy(row => row.OrderId)
+            .ThenBy(row => row.OrderLineId)
+            .ToArray();
+        var legacySubjects = _store.GetMarkingLegacyCutoverSubjectSnapshots()
+            .OrderBy(row => row.OrderId)
+            .ThenBy(row => row.OrderLineId)
+            .ThenBy(row => row.MarkingSubjectId)
+            .ToArray();
+        var canonicalJson = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            entries,
+            legacyLines,
+            legacySubjects
+        }, CanonicalJsonOptions);
         return new MarkingCutoverPreflightResult(
             generatedAt,
             ComputeSha256(canonicalJson),
             canonicalJson,
-            entries);
+            entries,
+            legacyLines,
+            legacySubjects);
     }
 
     private static string ComputeSha256(string value)

@@ -65,18 +65,18 @@ public sealed class MarkingLineScopeCutoverMigrationTests
     }
 
     [Fact]
-    public void PreflightSqlStaysStructuralAndDoesNotUseQtyAsCanonicalTarget()
+    public void V0040PreflightIgnoresSyntheticTaskEvidenceAndCodePrefix()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.Data", "PostgresDataStore.cs");
 
-        Assert.Contains("ml.marking_responsibility = 'FLOWSTOCK'", source);
-        Assert.Contains("c.origin = 'LegacySynthetic'", source);
+        Assert.Contains("MARKING_LEGACY_SYNTHETIC_PRESENT", source);
+        Assert.Contains("MARKING_LEGACY_TASK_LINE_CONFLICT", source);
+        Assert.Contains("return entries", source);
         Assert.DoesNotContain("AND c.code LIKE 'TEMP-CHZ-%'", source);
         Assert.Contains("origin IN ('RealImport', 'LegacyRealImport', 'HistoricalUnknown')", source);
         Assert.Contains("LOWER(BTRIM(code_hash))", source);
-        Assert.DoesNotContain("MARKING_SURPLUS_REAL_CODES", source);
-        Assert.DoesNotContain("MARKING_LINE_QTY_CHANGED_AFTER_PREVIEW", source);
-        Assert.DoesNotContain("MARKING_LINE_QTY_CHANGED_AFTER_ALLOWLIST", source);
+        Assert.Contains("or \"MARKING_LEGACY_TASK_LINE_CONFLICT\"", source);
+        Assert.Contains("or \"MARKING_LEGACY_TASKS_AGGREGATABLE\"", source);
     }
 
     [Fact]

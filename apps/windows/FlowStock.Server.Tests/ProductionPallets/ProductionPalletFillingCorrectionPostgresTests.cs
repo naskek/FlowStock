@@ -531,7 +531,6 @@ SELECT
     public async Task CorrectFilled_DoesNotMutateLegacyCodeToHuHistory()
     {
         var connectionString = ResolveRequiredPostgresTestConnectionString();
-        await using var cutoverState = await TemporaryEnforcedMarkingCutover.EnterAsync(connectionString);
 
         var prefix = $"MARK-COR-{Guid.NewGuid():N}";
         await using var fixture = await Fixture.Create(connectionString, prefix);
@@ -595,6 +594,7 @@ VALUES(
             }
         }
 
+        await using var cutoverState = await TemporaryEnforcedMarkingCutover.EnterAsync(connectionString);
         var service = new ProductionPalletFillingCorrectionService(new PostgresDataStore(connectionString));
         Assert.True(service.Preview(fixture.Hu).CanConfirm);
         var result = service.Confirm(new ProductionPalletFillingCorrectionConfirmRequest
@@ -652,7 +652,6 @@ WHERE marking_order_id = @marking_order_id;
         bool hasIntroducedAt)
     {
         var connectionString = ResolveRequiredPostgresTestConnectionString();
-        await using var cutoverState = await TemporaryEnforcedMarkingCutover.EnterAsync(connectionString);
 
         var prefix = $"MARK-BLOCK-{Guid.NewGuid():N}";
         await using var fixture = await Fixture.Create(connectionString, prefix);
@@ -721,6 +720,7 @@ VALUES(
                 ("@introduced_at", hasIntroducedAt ? DateTime.Now.ToString("O") : DBNull.Value));
         }
 
+        await using var cutoverState = await TemporaryEnforcedMarkingCutover.EnterAsync(connectionString);
         var service = new ProductionPalletFillingCorrectionService(new PostgresDataStore(connectionString));
         var result = service.Confirm(new ProductionPalletFillingCorrectionConfirmRequest
         {
@@ -1729,11 +1729,11 @@ WHERE id = @order_id;",
     public async Task CorrectFilled_DoesNotLockOrMutateConcurrentLegacyCodeTransition()
     {
         var connectionString = ResolveRequiredPostgresTestConnectionString();
-        await using var cutoverState = await TemporaryEnforcedMarkingCutover.EnterAsync(connectionString);
         await using var fixture = await Fixture.Create(
             connectionString,
             $"CONCURRENT-MARKING-{Guid.NewGuid():N}");
         var codeIds = await fixture.SeedAppliedMarkingCodes(10);
+        await using var cutoverState = await TemporaryEnforcedMarkingCutover.EnterAsync(connectionString);
 
         await using var transition = new NpgsqlConnection(connectionString);
         await transition.OpenAsync();

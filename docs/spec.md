@@ -144,7 +144,8 @@ Updater не выполняет migrations, не изменяет production DB,
 - `km_code(id, batch_id, code_raw, gtin14, sku_id, product_name, status, receipt_doc_id, receipt_line_id, hu_id, location_id, ship_doc_id, ship_line_id, order_id)`
 - `marking_order(..., required_quantity, reserve_quantity, requested_quantity, original_order_id, original_order_line_id, ...)` и immutable `marking_request_scope(...)` хранят acquisition request и stable subject scope.
 - `marking_code(..., marking_order_id, import_id, code_hash, origin, status, ...)`: новые `RealImport` являются неизменяемой request/import provenance и не получают code→HU/receipt association.
-- `marking_production_subject(...)`, `marking_operational_coverage(...)`, `marking_grandfather_operational_allowance(...)`, `marking_ready_hu_fact(...)` и lineage-таблицы хранят stable production identity и aggregate operational truth.
+- `marking_production_subject(...)`, `marking_operational_coverage(...)` и `marking_ready_hu_fact(...)` хранят stable production identity и real-only aggregate operational truth. `marking_grandfather_operational_allowance(...)` после V0040 является historical-only.
+- `marking_legacy_cutover_cohort(...)`, immutable `marking_legacy_cutover_line_scope(...)` и bounded `marking_legacy_cutover_subject_exemption(...)` хранят frozen exemption, не coverage. `marking_outbound_fulfillment_attribution(...)` неизменяемо фиксирует marking basis CLOSED whole-HU shipment, не заменяя `ledger`/документы.
 - `client_blocks(block_key, is_enabled, updated_at)`
 - Контроль готовых заказов: `order_control_tasks`, `order_control_task_orders`, `order_control_task_hus`, `order_control_task_hu_lines`, `order_control_events`.
 
@@ -456,7 +457,20 @@ Read-only `GET /api/commercial-statistics` поддерживает режимы
 
 ## Маркировка ЧЗ
 
-### Канонический aggregate workflow (заменяет переходные правила ниже)
+### Канонический V0040 workflow
+
+- Pre-cutover marking cohort — immutable exemption от real KM для frozen order-line quantity, не marking coverage. Legacy synthetic codes, allowlists, grandfather allowances и retirement audit не участвуют в status/gates/hash и не создают transferable readiness.
+- Реальными marking facts являются только `REAL_IMPORT` operational coverage и полностью real-backed `marking_ready_hu_fact`. Physical HU/ledger readiness не выводит marking eligibility: legacy HU остаётся складским stock, но новый post-cutover order не может bind/ship её как marking-ready.
+- V0040 хранит immutable cohort/line snapshots, bounded subject exemptions и immutable CLOSED OUTBOUND marking attribution (`LEGACY_EXEMPT | REAL_READY`). Attribution объясняет решение marking gate, но не заменяет CLOSED documents/ledger как shipment source of truth и не является coverage.
+- Authoritative binding write и OUTBOUND Close используют один server-owned whole-HU predicate. `REAL_READY` требует exact positive ledger composition и один active non-reversed real ready fact без non-real facts. Иначе frozen line может использовать только remaining legacy fulfillment; новый order без scope fail-closed. OUTBOUND document, ledger и attribution записываются атомарно.
+- Remaining legacy fulfillment вычитает только post-cutover CLOSED attribution `LEGACY_EXEMPT`; `REAL_READY` shipment и binding quota не расходуют. Поэтому порядок real/legacy shipments не меняет суммарную real KM requirement.
+- Статус заказа агрегируется по `real_required_qty = applicable_qty - legacy_exempt_qty`: ноль real-required → `NOT_REQUIRED`, полное valid real coverage → `APPLIED`, иначе `NOT_APPLIED`. Applicability публикуется отдельно и может быть true при frozen `NOT_REQUIRED`.
+- Safe decrease/cancel/replan атомарно trim/release subject exemption и cap/retire active real consumables, сохраняя immutable request/import/code history. Retired real coverage не восстанавливается; production/physical commitment остаётся под existing controlled correction guards.
+- Cutover snapshot/enforce выполняется после остановки writers в локальной `SERIALIZABLE` transaction с exact deterministic hash. V0040 migration создаёт только schema/guards и не снимает cohort при работающих writers.
+
+Схема и операционная процедура: [`spec_orders.md`](spec_orders.md), раздел «Маркировка ЧЗ из заказа», и [`marking-cutover.md`](marking-cutover.md).
+
+### Исторический aggregate workflow V0027–V0039 (не является runtime authority после V0040)
 
 - **Marking applicability** определяется текущими активными положительными количествами заказа по формуле `item_types.enable_marking AND NOT items.chz_marking_exempt`, независимо от `remaining_to_produce`. GTIN в applicability не входит. Пустой GTIN applicable-товара — configuration conflict `GTIN_REQUIRED`: статус `NOT_APPLIED`, preview показывает ошибку, export запрещён; explicit exempt товар non-applicable даже при пустом GTIN.
 - Catalog API возвращает persisted `chz_marking_exempt`, derived `chz_marking_applicable`, nullable `chz_marking_configuration_error` и временный compatibility alias `cz_marking_required = chz_marking_applicable`. Web/WPF/TSD не вычисляют применимость локально через GTIN. CREATE applicable-товара, переход `non-applicable→applicable` и очистка заполненного GTIN applicable-товара требуют GTIN; metadata-only update уже существующего legacy-invalid товара не блокируется только старым конфликтом. Все три пути отключения применимости — exemption, смена типа товара и `item_types.enable_marking: true→false` — защищены server- и DB-level lineage guard; обратное включение типа атомарно проверяет GTIN всех non-exempt товаров.

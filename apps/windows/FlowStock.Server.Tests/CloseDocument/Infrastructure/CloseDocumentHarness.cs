@@ -990,6 +990,9 @@ internal sealed class CloseDocumentHarness
             .Setup(store => store.GetAggregateMarkingCoverageByOrderLine(It.IsAny<long>()))
             .Returns(new Dictionary<long, MarkingLineAggregateCoverage>());
         _store.As<IMarkingAggregateStore>()
+            .Setup(store => store.GetLegacyExemptQuantityByOrderLine(It.IsAny<long>()))
+            .Returns(new Dictionary<long, double>());
+        _store.As<IMarkingAggregateStore>()
             .Setup(store => store.GetActiveMarkingRequestScopeQuantityByItem(It.IsAny<long>()))
             .Returns(new Dictionary<long, double>());
         _store.As<IMarkingAggregateStore>()

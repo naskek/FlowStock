@@ -1,5 +1,6 @@
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services.Marking;
 
 namespace FlowStock.Core.Services;
 
@@ -43,6 +44,17 @@ public sealed class HuReservationCandidatesService
         foreach (var line in query.Lines)
         {
             var candidates = BuildLineCandidates(line, sourcesByItem);
+            if (line.OrderLineId.HasValue
+                && _dataStore is IMarkingHuFulfillmentEligibilityStore markingStore)
+            {
+                candidates = new MarkingHuFulfillmentEligibilityPolicy(markingStore)
+                    .FilterCandidates(
+                        line.OrderLineId.Value,
+                        candidates,
+                        candidate => candidate.HuCode,
+                        candidate => candidate.Qty)
+                    .ToList();
+            }
             var autoSelectedQty = ApplyAutoSelection(line, candidates, autoSelectedHuKeys);
             lineResults.Add(new HuReservationCandidatesLineResult
             {
