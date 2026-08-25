@@ -674,7 +674,7 @@ WHERE subject.current_order_id = 9401
     }
 
     [Fact]
-    public void FilledClosedPallet_WithoutMatchingCurrentSubject_RemainsFailClosed()
+    public void FilledClosedPallet_WithMismatchedCurrentDocLine_RemainsFailClosed()
     {
         RunMutatingPostgresTest(connection =>
         {
@@ -689,8 +689,140 @@ WHERE subject.current_order_id = 9401
                 ledgerQuantity: 0);
             Execute(connection, @"
 UPDATE marking_production_subject
-SET current_doc_id = NULL
+SET current_doc_line_id = NULL
 WHERE current_order_id = 9401;");
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN"
+                && entry.Level == "error");
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PrintedPallet_WithExactComponentLineage_IgnoresLegacyCurrentDocSnapshot(bool useStaleDoc)
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "PRINTED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+            if (useStaleDoc)
+            {
+                AddLegacyProductionDocument(connection, 9402);
+            }
+            Execute(connection, $@"
+UPDATE marking_production_subject
+SET current_doc_id = {(useStaleDoc ? "9402" : "NULL")}
+WHERE current_order_id = 9401;");
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.DoesNotContain(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN");
+        });
+    }
+
+    [Fact]
+    public void FilledPallet_WithExactCompletedComponentLineage_IgnoresLegacyCurrentDocSnapshot()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "FILLED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 100,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+            AddLegacyProductionDocument(connection, 9402);
+            Execute(connection, @"
+UPDATE marking_production_subject
+SET current_doc_id = 9402
+WHERE current_order_id = 9401;");
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.DoesNotContain(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode is "MARKING_ACTIVE_PALLET_PLAN" or "MARKING_FILLING_PROGRESS");
+        });
+    }
+
+    [Fact]
+    public void PrintedSharedPallet_WithExactComponentLineage_IgnoresOtherComponentHeaderSnapshot()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "PRINTED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+            Execute(connection, @"
+INSERT INTO items(id, name, barcode, gtin, item_type_id)
+VALUES (9402, 'TEST-CUTOVER-HISTORY-HEADER-ITEM', 'TEST-CUTOVER-HISTORY-HEADER-ITEM',
+        '04600000009402', 9401);
+INSERT INTO order_lines(id, order_id, item_id, qty_ordered)
+VALUES (9402, 9401, 9402, 50);
+INSERT INTO doc_lines(id, doc_id, order_line_id, item_id, qty, to_location_id, to_hu)
+VALUES (9402, 9401, 9402, 9402, 50, 9401, 'TEST-CUTOVER-HISTORY-HU');
+UPDATE production_pallets
+SET order_line_id = NULL,
+    item_id = 9402,
+    doc_line_id = 9402
+WHERE id = 9401;");
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.DoesNotContain(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN");
+        });
+    }
+
+    [Fact]
+    public void PrintedPallet_WithComponentDocLineOwnedByAnotherPrd_RemainsFailClosed()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "PRINTED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+            AddLegacyProductionDocument(connection, 9402);
+            Execute(connection, @"
+INSERT INTO doc_lines(id, doc_id, order_line_id, item_id, qty, to_location_id, to_hu)
+VALUES (9402, 9402, 9401, 9401, 100, 9401, 'TEST-CUTOVER-HISTORY-HU');
+UPDATE production_pallet_lines
+SET doc_line_id = 9402
+WHERE id = 9401;");
 
             var entries = ReadPreflightEntries(connection.ConnectionString);
 
@@ -2521,6 +2653,18 @@ WHERE marking_subject_id = @subject_id;", ("@subject_id", subjectId));
 SELECT granted_quantity
 FROM marking_legacy_cutover_subject_exemption
 WHERE marking_subject_id = @subject_id;", ("@subject_id", subjectId));
+
+    private static void AddLegacyProductionDocument(NpgsqlConnection connection, long documentId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+INSERT INTO docs(id, doc_ref, type, status, created_at, order_id, order_ref)
+VALUES (@document_id, 'TEST-CUTOVER-HISTORY-PRD-' || @document_id::text,
+        'PRODUCTION_RECEIPT', 'DRAFT', '2026-08-24T09:00:00.000Z',
+        9401, 'TEST-CUTOVER-HISTORY-ORDER');";
+        command.Parameters.AddWithValue("@document_id", documentId);
+        command.ExecuteNonQuery();
+    }
 
     private static void AddMarkingPallet(
         NpgsqlConnection connection,

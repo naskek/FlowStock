@@ -8244,12 +8244,9 @@ pallet_plan_classification AS (
                AND ABS(subject.subject_quantity - pll.planned_qty) <= 0.000001
                AND (pp.order_id IS NULL OR pp.order_id = applicable.order_id)
                AND (d.order_id IS NULL OR d.order_id = applicable.order_id)
-               AND (pp.order_line_id IS NULL OR pp.order_line_id = applicable.order_line_id)
-               AND pp.item_id = applicable.item_id
                AND pll.item_id = applicable.item_id
                AND production_doc_line.order_line_id = applicable.order_line_id
                AND production_doc_line.item_id = applicable.item_id
-               AND pp.doc_line_id = pll.doc_line_id
                AND subject.current_doc_line_id = pll.doc_line_id
                AND (
                    SELECT COUNT(*)
@@ -8280,12 +8277,9 @@ pallet_plan_classification AS (
                AND ABS(subject.subject_quantity - pll.planned_qty) <= 0.000001
                AND (pp.order_id IS NULL OR pp.order_id = applicable.order_id)
                AND (d.order_id IS NULL OR d.order_id = applicable.order_id)
-               AND (pp.order_line_id IS NULL OR pp.order_line_id = applicable.order_line_id)
-               AND pp.item_id = applicable.item_id
                AND pll.item_id = applicable.item_id
                AND production_doc_line.order_line_id = applicable.order_line_id
                AND production_doc_line.item_id = applicable.item_id
-               AND pp.doc_line_id = pll.doc_line_id
                AND subject.current_doc_line_id = pll.doc_line_id
                AND ABS(COALESCE(pll.filled_qty, 0) - pll.planned_qty) <= 0.000001
                AND (
@@ -8307,7 +8301,6 @@ pallet_plan_classification AS (
            ON subject.id = pll.marking_subject_id
           AND subject.current_production_pallet_id = pp.id
           AND subject.current_component_id = pll.id
-          AND subject.current_doc_id = d.id
           AND subject.current_doc_line_id = pll.doc_line_id
     LEFT JOIN order_lines ol ON ol.id = COALESCE(pll.order_line_id, pp.order_line_id)
     INNER JOIN markable_lines applicable

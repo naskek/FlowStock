@@ -45,7 +45,7 @@ Canonical hash включает отсортированные frozen line/subje
 - полностью `FILLED` output с единственным exact `COMPLETED` subject; complete quantity и terminal pallet status являются authoritative, а отсутствие legacy fill timestamp само по себе не превращает такой output в partial progress;
 - `FILLED/CLOSED` production history независимо от текущего ledger balance.
 
-Exact subject обязан совпадать с component/pallet/document lineage, current order/order line, item, GTIN и planned quantity. Fail-closed blockers сохраняются для missing/ambiguous/mismatched lineage или lifecycle, invalid quantity, missing GTIN applicable товара, partial/inconsistent filling, orphan production structures, unsafe `RealImport`/`HistoricalUnknown` provenance и duplicate real hashes. Historical synthetic quantities не исправляют и не ухудшают classification.
+Exact subject обязан совпадать с authoritative component lineage: `production_pallet_lines`, её `doc_line`, принадлежащая текущему `production_pallets.prd_doc_id`, stable subject/component/pallet, current order/order line, item, GTIN и planned quantity. `marking_production_subject.current_doc_id` является legacy creation/backfill snapshot, а pallet header `order_line_id`/`item_id`/`doc_line_id` может быть representative для shared pallet; эти поля не заменяют и не опровергают exact component-level lineage. Fail-closed blockers сохраняются для missing/ambiguous/mismatched component/doc-line lineage или lifecycle, invalid quantity, missing GTIN applicable товара, partial/inconsistent filling, orphan production structures, unsafe `RealImport`/`HistoricalUnknown` provenance и duplicate real hashes. Historical synthetic quantities не исправляют и не ухудшают classification.
 
 ## Atomic enforce
 
