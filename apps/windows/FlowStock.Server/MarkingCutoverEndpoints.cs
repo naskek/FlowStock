@@ -1,6 +1,7 @@
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models.Marking;
 using FlowStock.Core.Services;
+using Npgsql;
 using System.Text.Json.Serialization;
 
 namespace FlowStock.Server;
@@ -12,6 +13,8 @@ public static class MarkingCutoverEndpoints
         app.MapGet("/api/admin/marking/cutover/preflight", HandlePreflight);
         app.MapPost("/api/admin/marking/cutover/line-approvals", HandleLineApproval);
         app.MapPost("/api/admin/marking/cutover/subject-approvals", HandleSubjectApproval);
+        app.MapPost("/api/admin/marking/cutover/legacy-task-retirements/dry-run", HandleLegacyTaskRetirementDryRun);
+        app.MapPost("/api/admin/marking/cutover/legacy-task-retirements/apply", HandleLegacyTaskRetirementApply);
         app.MapPost("/api/admin/marking/cutover/enforce", HandleEnforce);
     }
 
@@ -49,6 +52,105 @@ public static class MarkingCutoverEndpoints
         });
     }
 
+    private static IResult HandleLegacyTaskRetirementDryRun(
+        MarkingLegacyTaskRetirementDryRunRequest request,
+        HttpRequest httpRequest,
+        IMarkingLegacyTaskRetirementStore store,
+        WpfMachineAuthorization wpfAuthorization,
+        IPcWebSessionResolver pcSessions)
+    {
+        var authorization = AuthorizeAdmin(httpRequest, wpfAuthorization, pcSessions);
+        if (authorization.Rejection != null)
+        {
+            return authorization.Rejection;
+        }
+
+        if (request.OrderLineId <= 0
+            || request.MarkingOrderId == Guid.Empty
+            || string.IsNullOrWhiteSpace(request.PreflightHash))
+        {
+            return Results.BadRequest(new { error = "order_line_id, marking_order_id and preflight_hash are required" });
+        }
+
+        try
+        {
+            return Results.Ok(ToLegacyTaskRetirementResponse(store.DryRun(
+                request.OrderLineId,
+                request.MarkingOrderId,
+                request.PreflightHash.Trim().ToLowerInvariant(),
+                DateTime.UtcNow)));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Conflict(new { error = ex.Message });
+        }
+    }
+
+    private static IResult HandleLegacyTaskRetirementApply(
+        MarkingLegacyTaskRetirementApplyRequest request,
+        HttpRequest httpRequest,
+        IMarkingLegacyTaskRetirementStore store,
+        WpfMachineAuthorization wpfAuthorization,
+        IPcWebSessionResolver pcSessions)
+    {
+        var authorization = AuthorizeAdmin(httpRequest, wpfAuthorization, pcSessions);
+        if (authorization.Rejection != null)
+        {
+            return authorization.Rejection;
+        }
+
+        if (!string.Equals(request.Confirm, "APPLY", StringComparison.Ordinal)
+            || request.OrderLineId <= 0
+            || request.MarkingOrderId == Guid.Empty
+            || string.IsNullOrWhiteSpace(request.PreflightHash)
+            || string.IsNullOrWhiteSpace(request.EligibilityHash)
+            || string.IsNullOrWhiteSpace(request.IdempotencyKey))
+        {
+            return Results.BadRequest(new { error = "confirm=APPLY and all retirement identifiers/hashes are required" });
+        }
+
+        try
+        {
+            return Results.Ok(ToLegacyTaskRetirementResponse(store.Apply(
+                request.OrderLineId,
+                request.MarkingOrderId,
+                request.PreflightHash.Trim().ToLowerInvariant(),
+                request.EligibilityHash.Trim().ToLowerInvariant(),
+                request.IdempotencyKey.Trim(),
+                authorization.Actor!,
+                DateTime.UtcNow)));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Conflict(new { error = ex.Message });
+        }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.SerializationFailure)
+        {
+            return SerializationConflict();
+        }
+    }
+
+    private static object ToLegacyTaskRetirementResponse(MarkingLegacyTaskRetirementResult result) => new
+    {
+        mode = result.Mode,
+        eligible = result.Eligible,
+        applied = result.WasApplied,
+        blocker_codes = result.BlockerCodes,
+        order_line_id = result.OrderLineId,
+        marking_order_id = result.MarkingOrderId,
+        target_qty = result.TargetQuantity,
+        candidate_reserved_qty = result.CandidateReservedQuantity,
+        remaining_task_count = result.RemainingTaskCount,
+        remaining_applied_qty = result.RemainingAppliedQuantity,
+        remaining_reserved_qty = result.RemainingReservedQuantity,
+        remaining_voided_qty = result.RemainingVoidedQuantity,
+        preflight_hash_before = result.PreflightHashBefore,
+        preflight_hash_after = result.PreflightHashAfter,
+        eligibility_hash = result.EligibilityHash,
+        resulting_classification = result.ResultingClassification,
+        was_already_applied = result.WasAlreadyApplied
+    };
+
     private static IResult HandleLineApproval(
         MarkingCutoverLineApprovalRequest request,
         HttpRequest httpRequest,
@@ -83,6 +185,10 @@ public static class MarkingCutoverEndpoints
         catch (InvalidOperationException ex)
         {
             return Results.Conflict(new { error = ex.Message });
+        }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.SerializationFailure)
+        {
+            return SerializationConflict();
         }
     }
 
@@ -124,6 +230,10 @@ public static class MarkingCutoverEndpoints
         {
             return Results.Conflict(new { error = ex.Message });
         }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.SerializationFailure)
+        {
+            return SerializationConflict();
+        }
     }
 
     private static IResult HandleEnforce(
@@ -156,6 +266,10 @@ public static class MarkingCutoverEndpoints
         {
             return Results.Conflict(new { error = ex.Message });
         }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.SerializationFailure)
+        {
+            return SerializationConflict();
+        }
     }
 
     private static (string? Actor, IResult? Rejection) AuthorizeAdmin(
@@ -186,6 +300,9 @@ public static class MarkingCutoverEndpoints
         return ($"PC:{identity.Login}", null);
     }
 
+    private static IResult SerializationConflict() =>
+        Results.Conflict(new { error = "MARKING_CUTOVER_SERIALIZATION_CONFLICT" });
+
     private sealed record MarkingCutoverEnforceRequest(
         [property: JsonPropertyName("preflight_hash")] string PreflightHash);
 
@@ -202,4 +319,17 @@ public static class MarkingCutoverEndpoints
     private sealed record MarkingCutoverSubjectApprovalRow(
         [property: JsonPropertyName("marking_subject_id")] Guid MarkingSubjectId,
         [property: JsonPropertyName("approved_quantity")] decimal ApprovedQuantity);
+
+    private sealed record MarkingLegacyTaskRetirementDryRunRequest(
+        [property: JsonPropertyName("order_line_id")] long OrderLineId,
+        [property: JsonPropertyName("marking_order_id")] Guid MarkingOrderId,
+        [property: JsonPropertyName("preflight_hash")] string PreflightHash);
+
+    private sealed record MarkingLegacyTaskRetirementApplyRequest(
+        [property: JsonPropertyName("order_line_id")] long OrderLineId,
+        [property: JsonPropertyName("marking_order_id")] Guid MarkingOrderId,
+        [property: JsonPropertyName("preflight_hash")] string PreflightHash,
+        [property: JsonPropertyName("eligibility_hash")] string EligibilityHash,
+        [property: JsonPropertyName("idempotency_key")] string IdempotencyKey,
+        [property: JsonPropertyName("confirm")] string Confirm);
 }

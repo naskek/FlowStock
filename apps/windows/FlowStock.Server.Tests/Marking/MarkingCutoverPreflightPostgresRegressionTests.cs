@@ -10,6 +10,415 @@ public sealed class MarkingCutoverPreflightPostgresRegressionTests
     private const string DisposableDatabaseName = "flowstock_marking_cutover_test";
 
     [Fact]
+    public void LegacyTaskRetirement_ReservedOnlyCandidate_IsAtomicAndIdempotentWithoutCodePrefixPredicate()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedLegacyTaskRetirementConflict(connection);
+            var store = new PostgresDataStore(connection.ConnectionString);
+            var before = new MarkingCutoverPreflightService(store).Run(
+                new DateTime(2026, 8, 25, 10, 0, 0, DateTimeKind.Utc));
+            Assert.Contains(before.Entries, entry =>
+                entry.OrderLineId == 9501
+                && entry.IssueCode == "MARKING_LEGACY_TASK_LINE_CONFLICT");
+
+            var candidateId = Guid.Parse("95010000-0000-0000-0000-000000000001");
+            var dryRun = store.DryRun(9501, candidateId, before.Hash, DateTime.UtcNow);
+
+            Assert.True(dryRun.Eligible, string.Join(',', dryRun.BlockerCodes));
+            Assert.Equal(2, dryRun.CandidateReservedQuantity);
+            Assert.Equal(5, dryRun.RemainingAppliedQuantity);
+            Assert.Equal(0, ExecuteScalarInt(connection, "SELECT COUNT(*) FROM marking_legacy_task_retirement_audit;"));
+            Assert.Equal("Printed", ExecuteScalarString(connection,
+                "SELECT status FROM marking_order WHERE id = '95010000-0000-0000-0000-000000000001';"));
+
+            var codeSnapshot = ExecuteScalarString(connection, @"
+SELECT md5(string_agg(id::text || ':' || code || ':' || code_hash || ':' || status || ':' || origin,
+                      ',' ORDER BY id::text))
+FROM marking_code
+WHERE marking_order_id = '95010000-0000-0000-0000-000000000001';");
+            var importSnapshot = ExecuteScalarString(connection, @"
+SELECT md5(row_to_json(import_row)::text)
+FROM marking_code_import import_row
+WHERE id = '95010000-0000-0000-0000-000000000101';");
+
+            var applied = store.Apply(
+                9501,
+                candidateId,
+                before.Hash,
+                dryRun.EligibilityHash,
+                "retire-9501",
+                "WPF:test",
+                new DateTime(2026, 8, 25, 10, 1, 0, DateTimeKind.Utc));
+
+            Assert.True(applied.WasApplied);
+            Assert.False(applied.WasAlreadyApplied);
+            Assert.Equal("SINGLE_TASK", applied.ResultingClassification);
+            Assert.NotEqual(before.Hash, applied.PreflightHashAfter);
+            Assert.Equal("Cancelled", ExecuteScalarString(connection,
+                "SELECT status FROM marking_order WHERE id = '95010000-0000-0000-0000-000000000001';"));
+            Assert.Equal(1, ExecuteScalarInt(connection, "SELECT COUNT(*) FROM marking_legacy_task_retirement_audit;"));
+            Assert.Equal(codeSnapshot, ExecuteScalarString(connection, @"
+SELECT md5(string_agg(id::text || ':' || code || ':' || code_hash || ':' || status || ':' || origin,
+                      ',' ORDER BY id::text))
+FROM marking_code
+WHERE marking_order_id = '95010000-0000-0000-0000-000000000001';"));
+            Assert.Equal(importSnapshot, ExecuteScalarString(connection, @"
+SELECT md5(row_to_json(import_row)::text)
+FROM marking_code_import import_row
+WHERE id = '95010000-0000-0000-0000-000000000101';"));
+
+            var replay = store.Apply(
+                9501,
+                candidateId,
+                before.Hash,
+                dryRun.EligibilityHash,
+                "retire-9501",
+                "WPF:test",
+                DateTime.UtcNow);
+            Assert.True(replay.WasAlreadyApplied);
+            Assert.Equal(1, ExecuteScalarInt(connection, "SELECT COUNT(*) FROM marking_legacy_task_retirement_audit;"));
+            Assert.Throws<InvalidOperationException>(() => store.Apply(
+                9501, candidateId, before.Hash, "different-eligibility", "retire-9501",
+                "WPF:test", DateTime.UtcNow));
+            Assert.Throws<InvalidOperationException>(() => store.Apply(
+                9501, candidateId, applied.PreflightHashAfter!, dryRun.EligibilityHash, "retire-9501-again",
+                "WPF:test", DateTime.UtcNow));
+            Assert.Equal(1, ExecuteScalarInt(connection, "SELECT COUNT(*) FROM marking_legacy_task_retirement_audit;"));
+            Assert.DoesNotContain(new PostgresDataStore(connection.ConnectionString).GetMarkingCutoverPreflightEntries(), entry =>
+                entry.OrderLineId == 9501 && entry.IssueCode == "MARKING_LEGACY_TASK_LINE_CONFLICT");
+
+            Assert.Throws<InvalidOperationException>(() => store.MarkMarkingOrdersPrinted(
+                [candidateId], DateTime.UtcNow));
+            Execute(connection, @"
+UPDATE marking_order SET status = 'Draft'
+WHERE id = '95010000-0000-0000-0000-000000000002';");
+            Assert.Throws<InvalidOperationException>(() => store.MarkMarkingOrdersPrinted(
+                [candidateId, Guid.Parse("95010000-0000-0000-0000-000000000002")], DateTime.UtcNow));
+            Assert.Equal("Draft", ExecuteScalarString(connection,
+                "SELECT status FROM marking_order WHERE id = '95010000-0000-0000-0000-000000000002';"));
+            Assert.Throws<PostgresException>(() => Execute(connection, @"
+UPDATE marking_code
+SET status = 'Applied', updated_at = '2026-08-25T10:02:00.000Z'
+WHERE marking_order_id = '95010000-0000-0000-0000-000000000001';"));
+            Assert.Throws<PostgresException>(() => Execute(connection, @"
+UPDATE marking_code
+SET marking_order_id = '95010000-0000-0000-0000-000000000002'
+WHERE id = (SELECT id FROM marking_code
+            WHERE marking_order_id = '95010000-0000-0000-0000-000000000001'
+            ORDER BY id LIMIT 1);"));
+            Assert.Throws<PostgresException>(() => Execute(connection, @"
+UPDATE marking_code_import
+SET matched_marking_order_id = '95010000-0000-0000-0000-000000000002'
+WHERE id = '95010000-0000-0000-0000-000000000101';"));
+            Assert.Throws<PostgresException>(() => Execute(connection, @"
+INSERT INTO marking_code(id, code, code_hash, gtin, marking_order_id, import_id,
+                         status, origin, created_at, updated_at)
+VALUES ('95010000-0000-0000-0000-000000000999', 'V0039-NEW-RETIRED',
+        'V0039-NEW-RETIRED-HASH', '04600000009501',
+        '95010000-0000-0000-0000-000000000001',
+        '95010000-0000-0000-0000-000000000101', 'Reserved', 'LegacySynthetic',
+        '2026-08-25T10:02:00.000Z', '2026-08-25T10:02:00.000Z');"));
+            Assert.Throws<PostgresException>(() => Execute(connection, @"
+INSERT INTO marking_print_batch(id, marking_order_id, batch_number, status, created_at, updated_at)
+VALUES ('95010000-0000-0000-0000-000000000901',
+        '95010000-0000-0000-0000-000000000001', 1, 'Draft',
+        '2026-08-25T10:02:00.000Z', '2026-08-25T10:02:00.000Z');"));
+            Assert.Equal("Cancelled", ExecuteScalarString(connection,
+                "SELECT status FROM marking_order WHERE id = '95010000-0000-0000-0000-000000000001';"));
+        });
+    }
+
+    [Theory]
+    [InlineData("UPDATE marking_code SET status = 'Applied' WHERE id = (SELECT id FROM marking_code WHERE marking_order_id = '95010000-0000-0000-0000-000000000001' ORDER BY id LIMIT 1);", "MARKING_LEGACY_TASK_RETIREMENT_CANDIDATE_UNSAFE")]
+    [InlineData("UPDATE marking_code SET status = 'Voided' WHERE id = (SELECT id FROM marking_code WHERE marking_order_id = '95010000-0000-0000-0000-000000000001' ORDER BY id LIMIT 1);", "MARKING_LEGACY_TASK_RETIREMENT_CANDIDATE_UNSAFE")]
+    [InlineData("UPDATE marking_code SET origin = 'RealImport' WHERE id = (SELECT id FROM marking_code WHERE marking_order_id = '95010000-0000-0000-0000-000000000001' ORDER BY id LIMIT 1);", "MARKING_LEGACY_TASK_RETIREMENT_CANDIDATE_UNSAFE")]
+    [InlineData("UPDATE marking_code SET origin = 'LegacyRealImport' WHERE id = (SELECT id FROM marking_code WHERE marking_order_id = '95010000-0000-0000-0000-000000000001' ORDER BY id LIMIT 1);", "MARKING_LEGACY_TASK_RETIREMENT_CANDIDATE_UNSAFE")]
+    [InlineData("UPDATE marking_code SET origin = 'HistoricalUnknown' WHERE id = (SELECT id FROM marking_code WHERE marking_order_id = '95010000-0000-0000-0000-000000000001' ORDER BY id LIMIT 1);", "MARKING_LEGACY_TASK_RETIREMENT_CANDIDATE_UNSAFE")]
+    [InlineData("UPDATE marking_code SET origin = 'HistoricalUnknown', status = 'Quarantined' WHERE id = (SELECT id FROM marking_code WHERE marking_order_id = '95010000-0000-0000-0000-000000000001' ORDER BY id LIMIT 1);", "MARKING_LEGACY_TASK_RETIREMENT_CANDIDATE_UNSAFE")]
+    [InlineData("UPDATE marking_code SET status = 'UnexpectedStatus' WHERE id = (SELECT id FROM marking_code WHERE marking_order_id = '95010000-0000-0000-0000-000000000001' ORDER BY id LIMIT 1);", "MARKING_LEGACY_TASK_RETIREMENT_CANDIDATE_UNSAFE")]
+    [InlineData("UPDATE marking_code_import SET source_type = 'csv' WHERE id = '95010000-0000-0000-0000-000000000101';", "MARKING_LEGACY_TASK_RETIREMENT_IMPORT_UNSAFE")]
+    [InlineData("UPDATE marking_code_import SET storage_path = '<other>' WHERE id = '95010000-0000-0000-0000-000000000101';", "MARKING_LEGACY_TASK_RETIREMENT_IMPORT_UNSAFE")]
+    [InlineData("UPDATE marking_code_import SET matched_marking_order_id = '95010000-0000-0000-0000-000000000002' WHERE id = '95010000-0000-0000-0000-000000000101';", "MARKING_LEGACY_TASK_RETIREMENT_IMPORT_UNSAFE")]
+    [InlineData("UPDATE marking_code SET import_id = '95010000-0000-0000-0000-000000000101' WHERE id = (SELECT id FROM marking_code WHERE marking_order_id = '95010000-0000-0000-0000-000000000002' ORDER BY id LIMIT 1);", "MARKING_LEGACY_TASK_RETIREMENT_IMPORT_UNSAFE")]
+    [InlineData("DELETE FROM marking_code WHERE id = (SELECT id FROM marking_code WHERE marking_order_id = '95010000-0000-0000-0000-000000000002' ORDER BY id LIMIT 1);", "MARKING_LEGACY_TASK_RETIREMENT_REMAINING_EVIDENCE_MISMATCH")]
+    [InlineData("INSERT INTO marking_print_batch(id, marking_order_id, batch_number, status, created_at, updated_at) VALUES ('95010000-0000-0000-0000-000000000901', '95010000-0000-0000-0000-000000000001', 1, 'Draft', '2026-08-25T10:00:00.000Z', '2026-08-25T10:00:00.000Z');", "MARKING_LEGACY_TASK_RETIREMENT_LINEAGE_PRESENT")]
+    public void LegacyTaskRetirement_UnsafeEvidenceOrLineage_RemainsFailClosed(
+        string mutation,
+        string expectedBlocker)
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedLegacyTaskRetirementConflict(connection);
+            Execute(connection, mutation);
+            var store = new PostgresDataStore(connection.ConnectionString);
+            var preflight = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
+
+            var result = store.DryRun(
+                9501,
+                Guid.Parse("95010000-0000-0000-0000-000000000001"),
+                preflight.Hash,
+                DateTime.UtcNow);
+
+            Assert.False(result.Eligible);
+            Assert.Contains(expectedBlocker, result.BlockerCodes);
+            Assert.Equal(0, ExecuteScalarInt(connection, "SELECT COUNT(*) FROM marking_legacy_task_retirement_audit;"));
+            Assert.Equal("Printed", ExecuteScalarString(connection,
+                "SELECT status FROM marking_order WHERE id = '95010000-0000-0000-0000-000000000001';"));
+        });
+    }
+
+    [Fact]
+    public void LegacyTaskRetirement_MultipleRemainingTasks_UsesAppliedOnlyAndBecomesAggregatable()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedLegacyTaskRetirementConflict(connection);
+            Execute(connection, @"
+UPDATE marking_code
+SET status = 'Reserved'
+WHERE id IN (
+    SELECT id FROM marking_code
+    WHERE marking_order_id = '95010000-0000-0000-0000-000000000002'
+    ORDER BY id LIMIT 2);
+INSERT INTO marking_order(id, order_id, item_id, gtin, requested_quantity, request_number,
+                          status, source_type, source_order_id, request_status, created_at, updated_at)
+VALUES ('95010000-0000-0000-0000-000000000003', 9501, 9501, '04600000009501', 2,
+        'V0039-LEGITIMATE-2', 'Printed', 'PRODUCTION_ORDER', 9501, 'NotRequested',
+        '2026-08-25T09:00:00.000Z', '2026-08-25T09:00:00.000Z');
+INSERT INTO marking_code_import(id, original_filename, storage_path, file_hash, source_type,
+                                matched_marking_order_id, status, imported_rows, valid_code_rows,
+                                duplicate_code_rows, created_at, processed_at)
+VALUES ('95010000-0000-0000-0000-000000000103', 'synthetic-fixture.xlsx',
+        '<temporary-chz-export>', 'V0039-REMAINING-IMPORT-2', 'temporary-chz-export',
+        '95010000-0000-0000-0000-000000000003', 'Imported', 2, 2, 0,
+        '2026-08-25T09:00:00.000Z', '2026-08-25T09:00:00.000Z');
+INSERT INTO marking_code(id, code, code_hash, gtin, marking_order_id, import_id,
+                         status, origin, created_at, updated_at)
+SELECT ('95010000-0000-0000-0000-' || LPAD((400 + value)::text, 12, '0'))::uuid,
+       'V0039-NONPREFIX-APPLIED-EXTRA-' || value, 'V0039-APPLIED-EXTRA-HASH-' || value,
+       '04600000009501', '95010000-0000-0000-0000-000000000003',
+       '95010000-0000-0000-0000-000000000103', 'Applied', 'LegacySynthetic',
+       '2026-08-25T09:00:00.000Z', '2026-08-25T09:00:00.000Z'
+FROM generate_series(1, 2) value;");
+
+            var store = new PostgresDataStore(connection.ConnectionString);
+            var before = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
+            var candidateId = Guid.Parse("95010000-0000-0000-0000-000000000001");
+            var dryRun = store.DryRun(9501, candidateId, before.Hash, DateTime.UtcNow);
+            Assert.True(dryRun.Eligible, string.Join(',', dryRun.BlockerCodes));
+            Assert.Equal(5, dryRun.RemainingAppliedQuantity);
+            Assert.Equal(2, dryRun.RemainingReservedQuantity);
+
+            var applied = store.Apply(
+                9501, candidateId, before.Hash, dryRun.EligibilityHash,
+                "retire-9501-multiple", "WPF:test", DateTime.UtcNow);
+
+            Assert.Equal("MARKING_LEGACY_TASKS_AGGREGATABLE", applied.ResultingClassification);
+            var after = new PostgresDataStore(connection.ConnectionString).GetMarkingCutoverPreflightEntries();
+            Assert.Contains(after, entry =>
+                entry.OrderLineId == 9501
+                && entry.IssueCode == "MARKING_LEGACY_TASKS_AGGREGATABLE");
+            Assert.Equal(5, applied.RemainingAppliedQuantity);
+            Assert.Equal(2, applied.RemainingReservedQuantity);
+
+            var postRetirement = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
+            var parent = store.ApproveMarkingCutoverLine(
+                9501, null, postRetirement.Hash, "WPF:test", DateTime.UtcNow);
+            Assert.Equal(5, parent.AllowedQuantity);
+        });
+    }
+
+    [Fact]
+    public void LegacyTaskRetirement_AndEnforce_SerializeOnCutoverStateWithoutStaleEnforcement()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedLegacyTaskRetirementConflict(connection);
+            var store = new PostgresDataStore(connection.ConnectionString);
+            var before = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
+            var candidateId = Guid.Parse("95010000-0000-0000-0000-000000000001");
+            var dryRun = store.DryRun(9501, candidateId, before.Hash, DateTime.UtcNow);
+            Assert.True(dryRun.Eligible, string.Join(',', dryRun.BlockerCodes));
+
+            using var gateConnection = new NpgsqlConnection(connection.ConnectionString);
+            gateConnection.Open();
+            using var gateTransaction = gateConnection.BeginTransaction();
+            using (var gate = gateConnection.CreateCommand())
+            {
+                gate.Transaction = gateTransaction;
+                gate.CommandText = "SELECT state FROM marking_cutover_state WHERE id = TRUE FOR UPDATE;";
+                _ = gate.ExecuteScalar();
+            }
+
+            var retirement = Task.Run(() => new PostgresDataStore(connection.ConnectionString).Apply(
+                9501, candidateId, before.Hash, dryRun.EligibilityHash,
+                "retire-9501-concurrent", "WPF:test", DateTime.UtcNow));
+            Assert.True(SpinWait.SpinUntil(
+                () => CountCutoverStateLockWaiters(connection.ConnectionString) >= 1,
+                TimeSpan.FromSeconds(5)));
+
+            var enforce = Task.Run(() =>
+            {
+                try
+                {
+                    new PostgresDataStore(connection.ConnectionString).EnforceMarkingCutover(
+                        before.Hash, "WPF:test", DateTime.UtcNow);
+                    return (string?)null;
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return ex.Message;
+                }
+            });
+            Assert.True(SpinWait.SpinUntil(
+                () => CountCutoverStateLockWaiters(connection.ConnectionString) >= 2,
+                TimeSpan.FromSeconds(5)));
+
+            gateTransaction.Commit();
+            Assert.True(Task.WaitAll([retirement, enforce], TimeSpan.FromSeconds(10)));
+
+            Assert.True(retirement.Result.WasApplied);
+            Assert.NotNull(enforce.Result);
+            Assert.Equal("SHADOW", ExecuteScalarString(connection,
+                "SELECT state FROM marking_cutover_state WHERE id = TRUE;"));
+            Assert.Equal(1, ExecuteScalarInt(connection,
+                "SELECT COUNT(*) FROM marking_legacy_task_retirement_audit;"));
+        });
+    }
+
+    [Fact]
+    public void LegacyTaskRetirement_ConcurrentCatalogDrift_FailsWithoutStatusOrAuditMutation()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedLegacyTaskRetirementConflict(connection);
+            var store = new PostgresDataStore(connection.ConnectionString);
+            var before = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
+            var candidateId = Guid.Parse("95010000-0000-0000-0000-000000000001");
+            var dryRun = store.DryRun(9501, candidateId, before.Hash, DateTime.UtcNow);
+            Assert.True(dryRun.Eligible, string.Join(',', dryRun.BlockerCodes));
+
+            Execute(connection, @"
+CREATE OR REPLACE FUNCTION test_pause_v0039_retirement_update()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF OLD.status = 'Printed' AND NEW.status = 'Cancelled' THEN
+        PERFORM pg_advisory_xact_lock(95010039);
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER zz_test_pause_v0039_retirement_update
+BEFORE UPDATE OF status ON marking_order
+FOR EACH ROW
+EXECUTE FUNCTION test_pause_v0039_retirement_update();");
+
+            using var gateConnection = new NpgsqlConnection(connection.ConnectionString);
+            gateConnection.Open();
+            Execute(gateConnection, "SELECT pg_advisory_lock(95010039);");
+            Task<MarkingLegacyTaskRetirementResult>? retirement = null;
+            try
+            {
+                retirement = Task.Run(() => new PostgresDataStore(connection.ConnectionString).Apply(
+                    9501, candidateId, before.Hash, dryRun.EligibilityHash,
+                    "retire-9501-catalog-drift", "WPF:test", DateTime.UtcNow));
+                Assert.True(SpinWait.SpinUntil(
+                    () => CountAdvisoryLockWaiters(connection.ConnectionString) >= 1,
+                    TimeSpan.FromSeconds(5)));
+
+                using (var catalogConnection = new NpgsqlConnection(connection.ConnectionString))
+                {
+                    catalogConnection.Open();
+                    using var catalogTransaction = catalogConnection.BeginTransaction(
+                        System.Data.IsolationLevel.Serializable);
+                    using var catalogMutation = catalogConnection.CreateCommand();
+                    catalogMutation.Transaction = catalogTransaction;
+                    catalogMutation.CommandText = @"
+SET LOCAL session_replication_role = replica;
+SELECT status
+FROM marking_order
+WHERE id = '95010000-0000-0000-0000-000000000001';
+UPDATE items
+SET gtin = '04600000009502'
+WHERE id = 9501;";
+                    catalogMutation.ExecuteNonQuery();
+                    catalogTransaction.Commit();
+                }
+
+                Execute(gateConnection, "SELECT pg_advisory_unlock(95010039);");
+
+                var error = Assert.ThrowsAny<Exception>(() => retirement.GetAwaiter().GetResult());
+                var postgresError = Assert.IsType<PostgresException>(error);
+                Assert.Equal(PostgresErrorCodes.SerializationFailure, postgresError.SqlState);
+                Assert.Equal("Printed", ExecuteScalarString(connection,
+                    "SELECT status FROM marking_order WHERE id = '95010000-0000-0000-0000-000000000001';"));
+                Assert.Equal(0, ExecuteScalarInt(connection,
+                    "SELECT COUNT(*) FROM marking_legacy_task_retirement_audit;"));
+            }
+            finally
+            {
+                Execute(gateConnection, "SELECT pg_advisory_unlock(95010039);");
+                if (retirement is { IsCompleted: false })
+                {
+                    Assert.True(retirement.Wait(TimeSpan.FromSeconds(5)));
+                }
+                Execute(connection, @"
+DROP TRIGGER IF EXISTS zz_test_pause_v0039_retirement_update ON marking_order;
+DROP FUNCTION IF EXISTS test_pause_v0039_retirement_update();");
+            }
+        });
+    }
+
+    [Fact]
+    public void LegacyTaskRetirement_RepresentativeFourShapes_KeepExactAppliedOnlyEvidence()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            var shapes = new[]
+            {
+                new RepresentativeRetirementShape(454, Guid.Parse("bc65a644-5d31-4099-a00b-eb43e963aab2"), new[] { 5472 }, 0),
+                new RepresentativeRetirementShape(468, Guid.Parse("c701ff12-e5da-457d-85dc-cc6795eaa619"), new[] { 1800, 600 }, 0),
+                new RepresentativeRetirementShape(698, Guid.Parse("8e0e1f62-9e5c-4652-9b3b-04a24c45c918"), new[] { 1890 }, 0),
+                new RepresentativeRetirementShape(699, Guid.Parse("e5ae33e8-7bb6-42f6-a142-c39334340e8e"), new[] { 1800 }, 2400)
+            };
+            for (var index = 0; index < shapes.Length; index++)
+            {
+                SeedRepresentativeRetirementShape(connection, shapes[index], index);
+            }
+
+            var store = new PostgresDataStore(connection.ConnectionString);
+            foreach (var shape in shapes)
+            {
+                var current = new MarkingCutoverPreflightService(store).Run(DateTime.UtcNow);
+                var dryRun = store.DryRun(shape.LineId, shape.CandidateId, current.Hash, DateTime.UtcNow);
+                Assert.True(dryRun.Eligible, $"line={shape.LineId}; {string.Join(',', dryRun.BlockerCodes)}");
+                Assert.Equal(shape.AppliedQuantities.Sum(), dryRun.RemainingAppliedQuantity);
+                Assert.Equal(shape.RemainingReservedQuantity, dryRun.RemainingReservedQuantity);
+
+                var applied = store.Apply(
+                    shape.LineId,
+                    shape.CandidateId,
+                    current.Hash,
+                    dryRun.EligibilityHash,
+                    $"representative-{shape.LineId}",
+                    "WPF:test",
+                    DateTime.UtcNow);
+                Assert.Equal(
+                    shape.AppliedQuantities.Length > 1
+                        ? "MARKING_LEGACY_TASKS_AGGREGATABLE"
+                        : "SINGLE_TASK",
+                    applied.ResultingClassification);
+                Assert.DoesNotContain(store.GetMarkingCutoverPreflightEntries(), entry =>
+                    entry.OrderLineId == shape.LineId
+                    && entry.IssueCode == "MARKING_LEGACY_TASK_LINE_CONFLICT");
+            }
+        });
+    }
+
+    [Fact]
     public void PreflightReadModel_DoesNotMutateDatabase()
     {
         var connectionString = ResolveCutoverTestConnectionString();
@@ -1077,6 +1486,217 @@ ALTER TABLE item_types ENABLE TRIGGER trg_item_types_marking_applicability_trans
         command.CommandText = sql;
         return Convert.ToInt32(command.ExecuteScalar());
     }
+
+    private static string ExecuteScalarString(NpgsqlConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToString(command.ExecuteScalar()) ?? string.Empty;
+    }
+
+    private static int CountCutoverStateLockWaiters(string connectionString)
+    {
+        using var connection = new NpgsqlConnection(connectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT COUNT(*)
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND wait_event_type = 'Lock'
+  AND query LIKE '%marking_cutover_state%';";
+        return Convert.ToInt32(command.ExecuteScalar());
+    }
+
+    private static int CountAdvisoryLockWaiters(string connectionString)
+    {
+        using var connection = new NpgsqlConnection(connectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT COUNT(*)
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND wait_event_type = 'Lock'
+  AND wait_event = 'advisory'
+  AND query LIKE '%UPDATE marking_order%';";
+        return Convert.ToInt32(command.ExecuteScalar());
+    }
+
+    private static void SeedLegacyTaskRetirementConflict(NpgsqlConnection connection)
+    {
+        Execute(connection, @"
+INSERT INTO item_types(id, name, code, sort_order, is_active, is_visible_in_product_catalog,
+                       enable_min_stock_control, enable_hu_distribution, enable_marking)
+VALUES (9501, 'V0039 type', 'V0039-TYPE', 1, TRUE, TRUE, FALSE, FALSE, TRUE);
+INSERT INTO items(id, name, barcode, gtin, item_type_id)
+VALUES (9501, 'V0039 item', 'V0039-ITEM', '04600000009501', 9501);
+INSERT INTO orders(id, order_ref, order_type, status, created_at, marking_responsibility)
+VALUES (9501, 'V0039-ORDER', 'INTERNAL', 'ACCEPTED', '2026-08-25T09:00:00.000Z', 'FLOWSTOCK');
+INSERT INTO order_lines(id, order_id, item_id, qty_ordered)
+VALUES (9501, 9501, 9501, 5);
+
+INSERT INTO marking_order(id, order_id, item_id, gtin, requested_quantity, request_number,
+                          status, source_type, source_order_id, request_status, created_at, updated_at)
+VALUES
+('95010000-0000-0000-0000-000000000001', 9501, 9501, '04600000009501', 2,
+ 'V0039-REDUNDANT', 'Printed', 'PRODUCTION_ORDER', 9501, 'NotRequested',
+ '2026-08-25T09:00:00.000Z', '2026-08-25T09:00:00.000Z'),
+('95010000-0000-0000-0000-000000000002', 9501, 9501, '04600000009501', 5,
+ 'V0039-LEGITIMATE', 'Printed', 'PRODUCTION_ORDER', 9501, 'NotRequested',
+ '2026-08-25T09:00:00.000Z', '2026-08-25T09:00:00.000Z');
+
+INSERT INTO marking_code_import(id, original_filename, storage_path, file_hash, source_type,
+                                matched_marking_order_id, status, imported_rows, valid_code_rows,
+                                duplicate_code_rows, created_at, processed_at)
+VALUES
+('95010000-0000-0000-0000-000000000101', 'synthetic-fixture.xlsx', '<temporary-chz-export>',
+ 'V0039-CANDIDATE-IMPORT', 'temporary-chz-export', '95010000-0000-0000-0000-000000000001',
+ 'Imported', 2, 2, 0, '2026-08-25T09:00:00.000Z', '2026-08-25T09:00:00.000Z'),
+('95010000-0000-0000-0000-000000000102', 'synthetic-fixture.xlsx', '<temporary-chz-export>',
+ 'V0039-REMAINING-IMPORT', 'temporary-chz-export', '95010000-0000-0000-0000-000000000002',
+ 'Imported', 5, 5, 0, '2026-08-25T09:00:00.000Z', '2026-08-25T09:00:00.000Z');
+
+INSERT INTO marking_code(id, code, code_hash, gtin, marking_order_id, import_id,
+                         status, origin, created_at, updated_at)
+SELECT ('95010000-0000-0000-0000-' || LPAD((200 + value)::text, 12, '0'))::uuid,
+       'V0039-NONPREFIX-RESERVED-' || value,
+       'V0039-RESERVED-HASH-' || value,
+       '04600000009501', '95010000-0000-0000-0000-000000000001',
+       '95010000-0000-0000-0000-000000000101', 'Reserved', 'LegacySynthetic',
+       '2026-08-25T09:00:00.000Z', '2026-08-25T09:00:00.000Z'
+FROM generate_series(1, 2) value;
+
+INSERT INTO marking_code(id, code, code_hash, gtin, marking_order_id, import_id,
+                         status, origin, created_at, updated_at)
+SELECT ('95010000-0000-0000-0000-' || LPAD((300 + value)::text, 12, '0'))::uuid,
+       'V0039-NONPREFIX-APPLIED-' || value,
+       'V0039-APPLIED-HASH-' || value,
+       '04600000009501', '95010000-0000-0000-0000-000000000002',
+       '95010000-0000-0000-0000-000000000102', 'Applied', 'LegacySynthetic',
+       '2026-08-25T09:00:00.000Z', '2026-08-25T09:00:00.000Z'
+FROM generate_series(1, 5) value;
+");
+    }
+
+    private static void SeedRepresentativeRetirementShape(
+        NpgsqlConnection connection,
+        RepresentativeRetirementShape shape,
+        int index)
+    {
+        var catalogId = 9601 + index;
+        var orderId = 9701 + index;
+        var gtin = $"0460000000{catalogId:D4}";
+        using (var scope = connection.CreateCommand())
+        {
+            scope.CommandText = @"
+INSERT INTO item_types(id, name, code, sort_order, is_active, is_visible_in_product_catalog,
+                       enable_min_stock_control, enable_hu_distribution, enable_marking)
+VALUES (@catalog_id, @name, @code, 1, TRUE, TRUE, FALSE, FALSE, TRUE);
+INSERT INTO items(id, name, barcode, gtin, item_type_id)
+VALUES (@catalog_id, @name, @barcode, @gtin, @catalog_id);
+INSERT INTO orders(id, order_ref, order_type, status, created_at, marking_responsibility)
+VALUES (@order_id, @order_ref, 'INTERNAL', 'ACCEPTED', '2026-08-25T09:00:00.000Z', 'FLOWSTOCK');
+INSERT INTO order_lines(id, order_id, item_id, qty_ordered)
+VALUES (@line_id, @order_id, @catalog_id, @target_quantity);";
+            scope.Parameters.AddWithValue("@catalog_id", catalogId);
+            scope.Parameters.AddWithValue("@order_id", orderId);
+            scope.Parameters.AddWithValue("@line_id", shape.LineId);
+            scope.Parameters.AddWithValue("@target_quantity", shape.AppliedQuantities.Sum());
+            scope.Parameters.AddWithValue("@name", $"V0039 representative {shape.LineId}");
+            scope.Parameters.AddWithValue("@code", $"V0039-REP-TYPE-{shape.LineId}");
+            scope.Parameters.AddWithValue("@barcode", $"V0039-REP-ITEM-{shape.LineId}");
+            scope.Parameters.AddWithValue("@gtin", gtin);
+            scope.Parameters.AddWithValue("@order_ref", $"V0039-REP-ORDER-{shape.LineId}");
+            scope.ExecuteNonQuery();
+        }
+
+        InsertRepresentativeTask(
+            connection,
+            shape.LineId,
+            orderId,
+            catalogId,
+            gtin,
+            shape.CandidateId,
+            taskIndex: 0,
+            appliedQuantity: 0,
+            reservedQuantity: 1);
+        for (var taskIndex = 0; taskIndex < shape.AppliedQuantities.Length; taskIndex++)
+        {
+            InsertRepresentativeTask(
+                connection,
+                shape.LineId,
+                orderId,
+                catalogId,
+                gtin,
+                Guid.Parse($"{shape.LineId:D8}-0000-0000-0000-{taskIndex + 1:D12}"),
+                taskIndex + 1,
+                shape.AppliedQuantities[taskIndex],
+                taskIndex == 0 ? shape.RemainingReservedQuantity : 0);
+        }
+    }
+
+    private static void InsertRepresentativeTask(
+        NpgsqlConnection connection,
+        long lineId,
+        long orderId,
+        long itemId,
+        string gtin,
+        Guid taskId,
+        int taskIndex,
+        int appliedQuantity,
+        int reservedQuantity)
+    {
+        var requestedQuantity = appliedQuantity + reservedQuantity;
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+INSERT INTO marking_order(id, order_id, item_id, gtin, requested_quantity, request_number,
+                          status, source_type, source_order_id, request_status, created_at, updated_at)
+VALUES (@task_id, @order_id, @item_id, @gtin, @requested_quantity, @request_number,
+        'Printed', 'PRODUCTION_ORDER', @order_id, 'NotRequested',
+        '2026-08-25T09:00:00.000Z', '2026-08-25T09:00:00.000Z');
+INSERT INTO marking_code_import(id, original_filename, storage_path, file_hash, source_type,
+                                matched_marking_order_id, status, imported_rows, valid_code_rows,
+                                duplicate_code_rows, created_at, processed_at)
+VALUES ((md5('representative-import:' || @task_id::text))::uuid, 'synthetic-fixture.xlsx',
+        '<temporary-chz-export>', @file_hash, 'temporary-chz-export', @task_id, 'Imported',
+        @requested_quantity, @requested_quantity, 0,
+        '2026-08-25T09:00:00.000Z', '2026-08-25T09:00:00.000Z');
+INSERT INTO marking_code(id, code, code_hash, gtin, marking_order_id, import_id,
+                         status, origin, created_at, updated_at)
+SELECT (md5('representative-applied:' || @task_id::text || ':' || value::text))::uuid,
+       'V0039-REP-APPLIED-' || @line_id::text || '-' || @task_index::text || '-' || value::text,
+       md5('representative-applied-hash:' || @task_id::text || ':' || value::text),
+       @gtin, @task_id, (md5('representative-import:' || @task_id::text))::uuid,
+       'Applied', 'LegacySynthetic', '2026-08-25T09:00:00.000Z', '2026-08-25T09:00:00.000Z'
+FROM generate_series(1, @applied_quantity) value;
+INSERT INTO marking_code(id, code, code_hash, gtin, marking_order_id, import_id,
+                         status, origin, created_at, updated_at)
+SELECT (md5('representative-reserved:' || @task_id::text || ':' || value::text))::uuid,
+       'V0039-REP-RESERVED-' || @line_id::text || '-' || @task_index::text || '-' || value::text,
+       md5('representative-reserved-hash:' || @task_id::text || ':' || value::text),
+       @gtin, @task_id, (md5('representative-import:' || @task_id::text))::uuid,
+       'Reserved', 'LegacySynthetic', '2026-08-25T09:00:00.000Z', '2026-08-25T09:00:00.000Z'
+FROM generate_series(1, @reserved_quantity) value;";
+        command.Parameters.AddWithValue("@task_id", taskId);
+        command.Parameters.AddWithValue("@order_id", orderId);
+        command.Parameters.AddWithValue("@item_id", itemId);
+        command.Parameters.AddWithValue("@gtin", gtin);
+        command.Parameters.AddWithValue("@requested_quantity", requestedQuantity);
+        command.Parameters.AddWithValue("@request_number", $"V0039-REP-{lineId}-{taskIndex}");
+        command.Parameters.AddWithValue("@file_hash", $"V0039-REP-IMPORT-{lineId}-{taskIndex}");
+        command.Parameters.AddWithValue("@line_id", lineId);
+        command.Parameters.AddWithValue("@task_index", taskIndex);
+        command.Parameters.AddWithValue("@applied_quantity", appliedQuantity);
+        command.Parameters.AddWithValue("@reserved_quantity", reservedQuantity);
+        command.ExecuteNonQuery();
+    }
+
+    private sealed record RepresentativeRetirementShape(
+        long LineId,
+        Guid CandidateId,
+        int[] AppliedQuantities,
+        int RemainingReservedQuantity);
 
     private static void Execute(NpgsqlConnection connection, string sql)
     {

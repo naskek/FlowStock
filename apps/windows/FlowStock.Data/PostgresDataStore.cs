@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Data;
 using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
@@ -14,7 +15,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IMarkingAggregateStore, IOrderScopedMarkingImportStore, IMarkingCutoverRuntimeGuard, IOrderRequestManagementStore, ILedgerEntryIdStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IMarkingCutoverApprovalStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
+public sealed class PostgresDataStore : IDataStore, IMarkingAggregateStore, IOrderScopedMarkingImportStore, IMarkingCutoverRuntimeGuard, IOrderRequestManagementStore, ILedgerEntryIdStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IMarkingCutoverApprovalStore, IMarkingLegacyTaskRetirementStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -1352,6 +1353,31 @@ LEFT JOIN active_order_control aoc ON aoc.order_id = ob.id";
         var scoped = new PostgresDataStore(connection, transaction, _orderSqlDiagnosticsSink, _orderSqlExplainDiagnosticsSink);
         work(scoped);
 
+        transaction.Commit();
+    }
+
+    private void ExecuteMarkingCutoverMutation(Action<PostgresDataStore> work)
+    {
+        if (_connection != null && _transaction != null)
+        {
+            if (_transaction.IsolationLevel != IsolationLevel.Serializable)
+            {
+                throw new InvalidOperationException("MARKING_CUTOVER_SERIALIZABLE_TRANSACTION_REQUIRED");
+            }
+
+            work(this);
+            return;
+        }
+
+        using var connection = new NpgsqlConnection(_connectionString);
+        connection.Open();
+        using var transaction = connection.BeginTransaction(IsolationLevel.Serializable);
+        var scoped = new PostgresDataStore(
+            connection,
+            transaction,
+            _orderSqlDiagnosticsSink,
+            _orderSqlExplainDiagnosticsSink);
+        work(scoped);
         transaction.Commit();
     }
 
@@ -8605,9 +8631,9 @@ ORDER BY order_id NULLS LAST,
         }
 
         MarkingCutoverLineApprovalResult? result = null;
-        ExecuteInTransaction(scopedStore =>
+        ExecuteMarkingCutoverMutation(store =>
         {
-            var store = (PostgresDataStore)scopedStore;
+            store.LockMarkingCutoverState();
             var expectedHash = expectedPreflightHash.Trim().ToLowerInvariant();
             long orderId;
             using (var scopeLockCommand = store.CreateCommand(store._connection!, @"
@@ -8848,27 +8874,29 @@ RETURNING id;"))
         }
 
         MarkingCutoverSubjectApprovalResult? result = null;
-        ExecuteInTransaction(scopedStore =>
+        ExecuteMarkingCutoverMutation(store =>
         {
-            var store = (PostgresDataStore)scopedStore;
+            store.LockMarkingCutoverState();
             var expectedHash = expectedPreflightHash.Trim().ToLowerInvariant();
+            using (var scopeLock = store.CreateCommand(store._connection!, @"
+SELECT parent.order_line_id
+FROM marking_synthetic_legacy_allowlist parent
+INNER JOIN order_lines line ON line.id = parent.order_line_id
+INNER JOIN orders order_row ON order_row.id = line.order_id
+WHERE parent.id = @allowlist_id
+ORDER BY order_row.id, line.id, parent.id
+FOR UPDATE OF order_row, line, parent;"))
+            {
+                scopeLock.Parameters.AddWithValue("@allowlist_id", allowlistId);
+                if (scopeLock.ExecuteScalar() == null)
+                {
+                    throw new InvalidOperationException("MARKING_GRANDFATHER_PARENT_NOT_FOUND");
+                }
+            }
             var current = new MarkingCutoverPreflightService(store).Run(approvedAt);
             if (!string.Equals(current.Hash, expectedHash, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException("MARKING_CUTOVER_PREFLIGHT_HASH_MISMATCH");
-            }
-
-            using (var parentCommand = store.CreateCommand(store._connection!, @"
-SELECT order_line_id
-FROM marking_synthetic_legacy_allowlist
-WHERE id = @allowlist_id
-FOR UPDATE;"))
-            {
-                parentCommand.Parameters.AddWithValue("@allowlist_id", allowlistId);
-                if (parentCommand.ExecuteScalar() == null)
-                {
-                    throw new InvalidOperationException("MARKING_GRANDFATHER_PARENT_NOT_FOUND");
-                }
             }
 
             var approvalIds = new List<Guid>();
@@ -8946,10 +8974,19 @@ WHERE subject.id = @subject_id
             throw new InvalidOperationException("MARKING_CUTOVER_APPROVAL_REQUIRED");
         }
 
-        ExecuteInTransaction(scopedStore =>
+        ExecuteMarkingCutoverMutation(store =>
         {
-            var cutoverStore = (IMarkingCutoverPreflightStore)scopedStore;
-            var current = new MarkingCutoverPreflightService(cutoverStore).Run(enforcedAt);
+            var lockedState = store.LockMarkingCutoverState();
+            if (string.Equals(lockedState.State, MarkingCutoverState.Enforced, StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.Equals(lockedState.PreflightHash, expectedPreflightHash.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+                throw new InvalidOperationException("MARKING_CUTOVER_ALREADY_ENFORCED");
+            }
+
+            var current = new MarkingCutoverPreflightService(store).Run(enforcedAt);
             if (!string.Equals(current.Hash, expectedPreflightHash.Trim(), StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException("MARKING_CUTOVER_PREFLIGHT_HASH_MISMATCH");
@@ -8963,12 +9000,655 @@ WHERE subject.id = @subject_id
                 throw new InvalidOperationException("MARKING_CUTOVER_PREFLIGHT_HAS_BLOCKING_CONFLICTS");
             }
 
-            ((PostgresDataStore)scopedStore).ApplyMarkingEnforcedCutover(
+            store.ApplyMarkingEnforcedCutover(
                 current.Hash,
                 approvedBy.Trim(),
                 enforcedAt);
         });
     }
+
+    public MarkingLegacyTaskRetirementResult DryRun(
+        long orderLineId,
+        Guid markingOrderId,
+        string expectedPreflightHash,
+        DateTime generatedAt)
+    {
+        ValidateLegacyTaskRetirementIntent(orderLineId, markingOrderId, expectedPreflightHash);
+        return WithConnection(connection =>
+        {
+            var current = new MarkingCutoverPreflightService(this).Run(generatedAt);
+            return BuildLegacyTaskRetirementResult(
+                connection,
+                orderLineId,
+                markingOrderId,
+                expectedPreflightHash.Trim().ToLowerInvariant(),
+                current,
+                "dry-run");
+        });
+    }
+
+    public MarkingLegacyTaskRetirementResult Apply(
+        long orderLineId,
+        Guid markingOrderId,
+        string expectedPreflightHash,
+        string expectedEligibilityHash,
+        string idempotencyKey,
+        string actor,
+        DateTime appliedAt)
+    {
+        ValidateLegacyTaskRetirementIntent(orderLineId, markingOrderId, expectedPreflightHash);
+        if (string.IsNullOrWhiteSpace(expectedEligibilityHash)
+            || string.IsNullOrWhiteSpace(idempotencyKey)
+            || string.IsNullOrWhiteSpace(actor))
+        {
+            throw new InvalidOperationException("MARKING_LEGACY_TASK_RETIREMENT_INVALID");
+        }
+
+        MarkingLegacyTaskRetirementResult? result = null;
+        ExecuteMarkingCutoverMutation(store =>
+        {
+            var state = store.LockMarkingCutoverState();
+            var expectedHash = expectedPreflightHash.Trim().ToLowerInvariant();
+            var eligibilityHash = expectedEligibilityHash.Trim().ToLowerInvariant();
+            var operationKey = idempotencyKey.Trim();
+
+            var replay = store.ReadLegacyTaskRetirementAudit(operationKey);
+            if (replay != null)
+            {
+                if (replay.OrderLineId != orderLineId
+                    || replay.MarkingOrderId != markingOrderId
+                    || !string.Equals(replay.PreflightHashBefore, expectedHash, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(replay.EligibilityHash, eligibilityHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("MARKING_LEGACY_TASK_RETIREMENT_IDEMPOTENCY_CONFLICT");
+                }
+
+                result = replay with { WasAlreadyApplied = true };
+                return;
+            }
+
+            if (!string.Equals(state.State, MarkingCutoverState.Shadow, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("MARKING_LEGACY_TASK_RETIREMENT_SHADOW_REQUIRED");
+            }
+
+            store.LockLegacyTaskRetirementRows(orderLineId, markingOrderId);
+            var current = new MarkingCutoverPreflightService(store).Run(appliedAt);
+            var preview = store.BuildLegacyTaskRetirementResult(
+                store._connection!, orderLineId, markingOrderId, expectedHash, current, "apply");
+            if (!preview.Eligible)
+            {
+                throw new InvalidOperationException(
+                    $"MARKING_LEGACY_TASK_RETIREMENT_NOT_ELIGIBLE:{string.Join(',', preview.BlockerCodes)}");
+            }
+            if (!string.Equals(preview.EligibilityHash, eligibilityHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("MARKING_LEGACY_TASK_RETIREMENT_ELIGIBILITY_HASH_MISMATCH");
+            }
+
+            using (var update = store.CreateCommand(store._connection!, @"
+UPDATE marking_order
+SET status = 'Cancelled', updated_at = @retired_at
+WHERE id = @marking_order_id
+  AND status = 'Printed'
+  AND request_status = 'NotRequested'
+  AND NOT EXISTS (
+      SELECT 1 FROM marking_legacy_task_retirement_audit audit
+      WHERE audit.marking_order_id = marking_order.id
+  );"))
+            {
+                update.Parameters.AddWithValue("@marking_order_id", markingOrderId);
+                update.Parameters.AddWithValue("@retired_at", ToDbDate(appliedAt));
+                if (update.ExecuteNonQuery() != 1)
+                {
+                    throw new InvalidOperationException("MARKING_LEGACY_TASK_RETIREMENT_DRIFT");
+                }
+            }
+
+            var after = new MarkingCutoverPreflightService(store).Run(appliedAt);
+            var lineErrors = after.Entries.Where(entry =>
+                    entry.OrderLineId == orderLineId
+                    && string.Equals(entry.Level, "error", StringComparison.OrdinalIgnoreCase)
+                    && entry.IssueCode.StartsWith("MARKING_LEGACY_TASK_LINE", StringComparison.Ordinal))
+                .ToArray();
+            var aggregatable = after.Entries.Any(entry =>
+                entry.OrderLineId == orderLineId
+                && entry.IssueCode == "MARKING_LEGACY_TASKS_AGGREGATABLE");
+            if (lineErrors.Length > 0 || (preview.RemainingTaskCount > 1 && !aggregatable))
+            {
+                throw new InvalidOperationException("MARKING_LEGACY_TASK_RETIREMENT_UNEXPECTED_CLASSIFICATION");
+            }
+
+            var classification = preview.RemainingTaskCount > 1
+                ? "MARKING_LEGACY_TASKS_AGGREGATABLE"
+                : "SINGLE_TASK";
+            store.InsertLegacyTaskRetirementAudit(
+                preview,
+                operationKey,
+                actor.Trim(),
+                appliedAt,
+                after.Hash);
+
+            var afterAudit = new MarkingCutoverPreflightService(store).Run(appliedAt);
+            if (!string.Equals(afterAudit.Hash, after.Hash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("MARKING_LEGACY_TASK_RETIREMENT_AUDIT_CHANGED_HASH");
+            }
+
+            result = preview with
+            {
+                WasApplied = true,
+                PreflightHashAfter = after.Hash,
+                ResultingClassification = classification
+            };
+        });
+
+        return result ?? throw new InvalidOperationException("MARKING_LEGACY_TASK_RETIREMENT_FAILED");
+    }
+
+    private static void ValidateLegacyTaskRetirementIntent(
+        long orderLineId,
+        Guid markingOrderId,
+        string expectedPreflightHash)
+    {
+        if (orderLineId <= 0 || markingOrderId == Guid.Empty || string.IsNullOrWhiteSpace(expectedPreflightHash))
+        {
+            throw new InvalidOperationException("MARKING_LEGACY_TASK_RETIREMENT_INVALID");
+        }
+    }
+
+    private (string State, string? PreflightHash) LockMarkingCutoverState()
+    {
+        using var command = CreateCommand(_connection!, @"
+SELECT state, preflight_hash
+FROM marking_cutover_state
+WHERE id = TRUE
+FOR UPDATE;");
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            throw new InvalidOperationException("MARKING_CUTOVER_STATE_MISSING");
+        }
+        return (reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
+    }
+
+    private void LockLegacyTaskRetirementRows(long orderLineId, Guid markingOrderId)
+    {
+        long orderId;
+        using (var line = CreateCommand(_connection!, @"
+SELECT order_row.id
+FROM order_lines line
+INNER JOIN orders order_row ON order_row.id = line.order_id
+WHERE line.id = @order_line_id
+ORDER BY order_row.id, line.id
+FOR UPDATE OF order_row, line;"))
+        {
+            line.Parameters.AddWithValue("@order_line_id", orderLineId);
+            var value = line.ExecuteScalar();
+            if (value == null)
+            {
+                throw new InvalidOperationException("MARKING_LEGACY_TASK_RETIREMENT_LINE_NOT_FOUND");
+            }
+            orderId = Convert.ToInt64(value, CultureInfo.InvariantCulture);
+        }
+
+        using (var tasks = CreateCommand(_connection!, @"
+SELECT request.id
+FROM marking_order request
+WHERE request.id = @marking_order_id
+   OR request.order_id = @order_id
+   OR request.source_order_id = @order_id
+ORDER BY request.id
+FOR UPDATE;"))
+        {
+            tasks.Parameters.AddWithValue("@marking_order_id", markingOrderId);
+            tasks.Parameters.AddWithValue("@order_id", orderId);
+            using var reader = tasks.ExecuteReader();
+            while (reader.Read()) { }
+        }
+
+        using (var codes = CreateCommand(_connection!, @"
+SELECT code.id
+FROM marking_code code
+INNER JOIN marking_order request ON request.id = code.marking_order_id
+WHERE request.id = @marking_order_id
+   OR request.order_id = @order_id
+   OR request.source_order_id = @order_id
+ORDER BY code.id
+FOR UPDATE OF code;"))
+        {
+            codes.Parameters.AddWithValue("@marking_order_id", markingOrderId);
+            codes.Parameters.AddWithValue("@order_id", orderId);
+            using var reader = codes.ExecuteReader();
+            while (reader.Read()) { }
+        }
+
+        using var imports = CreateCommand(_connection!, @"
+SELECT import_row.id
+FROM marking_code_import import_row
+WHERE import_row.matched_marking_order_id = @marking_order_id
+   OR EXISTS (
+       SELECT 1 FROM marking_code code
+       WHERE code.import_id = import_row.id
+         AND code.marking_order_id = @marking_order_id)
+ORDER BY import_row.id
+FOR UPDATE;");
+        imports.Parameters.AddWithValue("@marking_order_id", markingOrderId);
+        using var importReader = imports.ExecuteReader();
+        while (importReader.Read()) { }
+    }
+
+    private MarkingLegacyTaskRetirementResult BuildLegacyTaskRetirementResult(
+        NpgsqlConnection connection,
+        long orderLineId,
+        Guid markingOrderId,
+        string expectedPreflightHash,
+        MarkingCutoverPreflightResult current,
+        string mode)
+    {
+        var blockers = new List<string>();
+        string state;
+        using (var stateCommand = CreateCommand(connection, "SELECT state FROM marking_cutover_state WHERE id = TRUE"))
+        {
+            state = Convert.ToString(stateCommand.ExecuteScalar(), CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+        if (!string.Equals(state, MarkingCutoverState.Shadow, StringComparison.OrdinalIgnoreCase))
+        {
+            blockers.Add("MARKING_LEGACY_TASK_RETIREMENT_SHADOW_REQUIRED");
+        }
+        if (!string.Equals(current.Hash, expectedPreflightHash, StringComparison.OrdinalIgnoreCase))
+        {
+            blockers.Add("MARKING_CUTOVER_PREFLIGHT_HASH_MISMATCH");
+        }
+        if (!current.Entries.Any(entry =>
+                entry.OrderLineId == orderLineId
+                && entry.IssueCode == "MARKING_LEGACY_TASK_LINE_CONFLICT"
+                && string.Equals(entry.Level, "error", StringComparison.OrdinalIgnoreCase)))
+        {
+            blockers.Add("MARKING_LEGACY_TASK_LINE_CONFLICT_REQUIRED");
+        }
+
+        LegacyTaskRetirementSnapshot? snapshot = null;
+        using (var command = CreateCommand(connection, @"
+WITH target AS (
+    SELECT line.id, line.order_id, line.item_id, line.qty_ordered, line.revision,
+           NULLIF(BTRIM(item.gtin), '') AS gtin,
+           order_row.status AS order_status,
+           COALESCE(item_type.enable_marking, FALSE)
+               AND NOT COALESCE(item.chz_marking_exempt, FALSE) AS applicable
+    FROM order_lines line
+    INNER JOIN orders order_row ON order_row.id = line.order_id
+    INNER JOIN items item ON item.id = line.item_id
+    INNER JOIN item_types item_type ON item_type.id = item.item_type_id
+    WHERE line.id = @order_line_id
+      AND line.cancelled_at IS NULL
+), possible_lines AS (
+    SELECT possible.id
+    FROM target
+    INNER JOIN order_lines possible ON possible.order_id = target.order_id
+    INNER JOIN items possible_item ON possible_item.id = possible.item_id
+    INNER JOIN item_types possible_type ON possible_type.id = possible_item.item_type_id
+    INNER JOIN marking_order request ON request.id = @marking_order_id
+    WHERE possible.cancelled_at IS NULL
+      AND possible.qty_ordered > 0.000001
+      AND COALESCE(possible_type.enable_marking, FALSE)
+      AND NOT COALESCE(possible_item.chz_marking_exempt, FALSE)
+      AND (request.item_id = possible.item_id
+           OR (NULLIF(BTRIM(request.gtin), '') IS NOT NULL
+               AND BTRIM(request.gtin) = NULLIF(BTRIM(possible_item.gtin), '')))
+), candidate_task AS (
+    SELECT request.*,
+           target.order_id AS target_order_id,
+           target.item_id AS target_item_id,
+           target.qty_ordered AS target_quantity,
+           target.revision AS line_revision,
+           target.gtin AS target_gtin,
+           target.order_status,
+           target.applicable,
+           ((request.order_line_id = target.id)
+             OR (request.order_line_id IS NULL
+                 AND (SELECT COUNT(*) FROM possible_lines) = 1
+                 AND EXISTS (SELECT 1 FROM possible_lines possible WHERE possible.id = target.id))) AS mapping_ok
+    FROM target
+    INNER JOIN marking_order request ON request.id = @marking_order_id
+), active_tasks AS (
+    SELECT request.id, request.status, request.request_status
+    FROM candidate_task target
+    INNER JOIN marking_order request
+        ON request.status NOT IN ('Cancelled', 'Failed')
+       AND COALESCE(request.order_id, request.source_order_id) = target.target_order_id
+       AND NOT (request.order_id IS NOT NULL AND request.source_order_id IS NOT NULL
+                AND request.order_id <> request.source_order_id)
+    WHERE request.order_line_id = @order_line_id
+       OR (request.order_line_id IS NULL
+           AND (request.item_id = target.target_item_id
+                OR (NULLIF(BTRIM(request.gtin), '') IS NOT NULL
+                    AND BTRIM(request.gtin) = target.target_gtin))
+           AND 1 = (
+               SELECT COUNT(*)
+               FROM order_lines possible
+               INNER JOIN items possible_item ON possible_item.id = possible.item_id
+               INNER JOIN item_types possible_type ON possible_type.id = possible_item.item_type_id
+               WHERE possible.order_id = target.target_order_id
+                 AND possible.cancelled_at IS NULL
+                 AND possible.qty_ordered > 0.000001
+                 AND COALESCE(possible_type.enable_marking, FALSE)
+                 AND NOT COALESCE(possible_item.chz_marking_exempt, FALSE)
+                 AND (request.item_id = possible.item_id
+                      OR (NULLIF(BTRIM(request.gtin), '') IS NOT NULL
+                          AND BTRIM(request.gtin) = NULLIF(BTRIM(possible_item.gtin), '')))))
+), candidate_code AS (
+    SELECT code.* FROM marking_code code WHERE code.marking_order_id = @marking_order_id
+), candidate_stats AS (
+    SELECT COUNT(*)::integer AS total,
+           COUNT(*) FILTER (WHERE origin = 'LegacySynthetic' AND status = 'Reserved')::integer AS reserved_legacy,
+           COUNT(*) FILTER (WHERE origin <> 'LegacySynthetic' OR status <> 'Reserved')::integer AS unsafe,
+           COUNT(*) FILTER (WHERE printed_at IS NOT NULL OR applied_at IS NOT NULL
+                              OR reported_at IS NOT NULL OR introduced_at IS NOT NULL
+                              OR receipt_doc_id IS NOT NULL OR receipt_line_id IS NOT NULL)::integer AS associated,
+           COUNT(DISTINCT import_id)::integer AS import_count,
+           (ARRAY_AGG(DISTINCT import_id))[1] AS import_id,
+           COALESCE(STRING_AGG(id::text || ':' || code_hash || ':' || origin || ':' || status || ':' ||
+               COALESCE(import_id::text, '') || ':' || COALESCE(printed_at, '') || ':' ||
+               COALESCE(applied_at, '') || ':' || COALESCE(reported_at, '') || ':' ||
+               COALESCE(introduced_at, '') || ':' || COALESCE(receipt_doc_id::text, '') || ':' ||
+               COALESCE(receipt_line_id::text, ''), ',' ORDER BY id::text), '') AS fingerprint
+    FROM candidate_code
+), remaining_stats AS (
+    SELECT COUNT(DISTINCT task.id)::integer AS task_count,
+           COUNT(code.id) FILTER (WHERE code.origin = 'LegacySynthetic' AND code.status = 'Applied')::integer AS applied,
+           COUNT(code.id) FILTER (WHERE code.origin = 'LegacySynthetic' AND code.status = 'Reserved')::integer AS reserved,
+           COUNT(code.id) FILTER (WHERE code.origin = 'LegacySynthetic' AND code.status = 'Voided')::integer AS voided,
+           COUNT(code.id) FILTER (WHERE code.origin <> 'LegacySynthetic'
+                                  OR code.status NOT IN ('Applied', 'Reserved', 'Voided'))::integer AS unsafe,
+           COUNT(DISTINCT task.id) FILTER (WHERE EXISTS (
+               SELECT 1 FROM marking_code evidence
+               WHERE evidence.marking_order_id = task.id
+                 AND evidence.origin = 'LegacySynthetic'
+                 AND evidence.status = 'Applied'))::integer AS tasks_with_applied,
+           COALESCE(STRING_AGG(
+               DISTINCT task.id::text || ':' || task.status || ':' || task.request_status,
+               ',' ORDER BY task.id::text || ':' || task.status || ':' || task.request_status), '') || ':' ||
+           COALESCE(STRING_AGG(code.id::text || ':' || code.code_hash || ':' || code.origin || ':' || code.status,
+                              ',' ORDER BY code.id::text), '') AS fingerprint
+    FROM active_tasks task
+    LEFT JOIN marking_code code ON code.marking_order_id = task.id
+    WHERE task.id <> @marking_order_id
+), import_stats AS (
+    SELECT import_row.id, import_row.source_type, import_row.storage_path, import_row.status,
+           import_row.imported_rows, import_row.valid_code_rows, import_row.duplicate_code_rows,
+           import_row.matched_marking_order_id, import_row.file_hash,
+           (SELECT COUNT(*) FROM marking_code other
+            WHERE other.import_id = import_row.id
+              AND other.marking_order_id <> @marking_order_id) AS other_task_codes
+    FROM marking_code_import import_row
+    INNER JOIN candidate_stats stats ON stats.import_id = import_row.id
+), lineage AS (
+    SELECT
+      (SELECT COUNT(*) FROM marking_request_scope scope WHERE scope.marking_order_id = @marking_order_id)
+    + (SELECT COUNT(*) FROM marking_import_batch batch WHERE batch.marking_order_id = @marking_order_id)
+    + (SELECT COUNT(*) FROM marking_import_batch_request request WHERE request.marking_order_id = @marking_order_id)
+    + (SELECT COUNT(*) FROM marking_print_batch batch WHERE batch.marking_order_id = @marking_order_id)
+    + (SELECT COUNT(*) FROM marking_print_batch_code link
+       INNER JOIN candidate_code code ON code.id = link.marking_code_id)
+    + (SELECT COUNT(*) FROM production_marking_transition_audit audit WHERE audit.marking_order_id = @marking_order_id)
+    + (SELECT COUNT(*) FROM marking_operational_coverage coverage
+       INNER JOIN marking_request_scope scope ON scope.id = coverage.marking_request_scope_id
+       WHERE scope.marking_order_id = @marking_order_id)
+    + (SELECT COUNT(*) FROM marking_operational_coverage_import_lineage coverage_lineage
+       INNER JOIN candidate_stats stats ON stats.import_id = coverage_lineage.marking_code_import_id)
+    + (SELECT COUNT(*) FROM marking_synthetic_legacy_allowlist parent WHERE parent.order_line_id = @order_line_id)
+      AS count
+)
+SELECT task.target_order_id, task.line_revision, task.target_item_id, task.target_gtin,
+       task.target_quantity, task.requested_quantity, task.status, task.request_status,
+       task.source_type, task.item_id, task.gtin, task.order_id, task.source_order_id,
+       task.order_status, task.applicable, task.mapping_ok,
+       candidate.total, candidate.reserved_legacy, candidate.unsafe, candidate.associated,
+       candidate.import_count, candidate.import_id, candidate.fingerprint,
+       remaining.task_count, remaining.applied, remaining.reserved, remaining.voided,
+       remaining.unsafe, remaining.tasks_with_applied, remaining.fingerprint,
+       import_row.source_type, import_row.storage_path, import_row.status,
+       import_row.imported_rows, import_row.valid_code_rows, import_row.duplicate_code_rows,
+       import_row.matched_marking_order_id, import_row.other_task_codes,
+       lineage.count, import_row.file_hash
+FROM candidate_task task
+CROSS JOIN candidate_stats candidate
+CROSS JOIN remaining_stats remaining
+LEFT JOIN import_stats import_row ON TRUE
+CROSS JOIN lineage;"))
+        {
+            command.Parameters.AddWithValue("@order_line_id", orderLineId);
+            command.Parameters.AddWithValue("@marking_order_id", markingOrderId);
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                snapshot = new LegacyTaskRetirementSnapshot(
+                    reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.IsDBNull(3) ? "" : reader.GetString(3),
+                    Convert.ToDecimal(reader.GetValue(4), CultureInfo.InvariantCulture), reader.GetInt32(5), reader.GetString(6), reader.GetString(7),
+                    reader.IsDBNull(8) ? "" : reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetInt64(9),
+                    reader.IsDBNull(10) ? "" : reader.GetString(10), reader.IsDBNull(11) ? null : reader.GetInt64(11),
+                    reader.IsDBNull(12) ? null : reader.GetInt64(12), reader.GetString(13), reader.GetBoolean(14), reader.GetBoolean(15),
+                    reader.GetInt32(16), reader.GetInt32(17), reader.GetInt32(18), reader.GetInt32(19), reader.GetInt32(20),
+                    reader.IsDBNull(21) ? null : reader.GetGuid(21), reader.GetString(22), reader.GetInt32(23), reader.GetInt32(24),
+                    reader.GetInt32(25), reader.GetInt32(26), reader.GetInt32(27), reader.GetInt32(28), reader.GetString(29),
+                    reader.IsDBNull(30) ? "" : reader.GetString(30), reader.IsDBNull(31) ? "" : reader.GetString(31),
+                    reader.IsDBNull(32) ? "" : reader.GetString(32), reader.IsDBNull(33) ? 0 : reader.GetInt32(33),
+                    reader.IsDBNull(34) ? 0 : reader.GetInt32(34), reader.IsDBNull(35) ? 0 : reader.GetInt32(35),
+                    reader.IsDBNull(36) ? null : reader.GetGuid(36), reader.IsDBNull(37) ? 0 : reader.GetInt64(37), reader.GetInt64(38),
+                    reader.IsDBNull(39) ? "" : reader.GetString(39));
+            }
+        }
+
+        if (snapshot == null)
+        {
+            blockers.Add("MARKING_LEGACY_TASK_RETIREMENT_SCOPE_NOT_FOUND");
+            return new MarkingLegacyTaskRetirementResult(
+                mode, false, false, blockers.Distinct().ToArray(), orderLineId, markingOrderId,
+                0, 0, 0, 0, 0, 0, current.Hash, null,
+                ComputeSha256($"missing:{orderLineId}:{markingOrderId}:{current.Hash}"), null, false);
+        }
+
+        if (snapshot.TargetQuantity <= 0
+            || snapshot.TargetQuantity != decimal.Truncate(snapshot.TargetQuantity)
+            || snapshot.OrderStatus is "SHIPPED" or "CANCELLED" or "MERGED"
+            || !snapshot.Applicable
+            || string.IsNullOrWhiteSpace(snapshot.Gtin))
+        {
+            blockers.Add("MARKING_LEGACY_TASK_RETIREMENT_LINE_NOT_APPLICABLE");
+        }
+        if (snapshot.TaskStatus != "Printed"
+            || snapshot.RequestStatus != "NotRequested"
+            || snapshot.SourceType is not ("PRODUCTION_NEED" or "PRODUCTION_ORDER")
+            || snapshot.TaskItemId != snapshot.ItemId
+            || !string.Equals(snapshot.TaskGtin.Trim(), snapshot.Gtin.Trim(), StringComparison.Ordinal)
+            || !new[] { snapshot.TaskOrderId, snapshot.SourceOrderId }.Any(id => id == snapshot.TargetOrderId)
+            || snapshot.TaskOrderId.HasValue && snapshot.SourceOrderId.HasValue && snapshot.TaskOrderId != snapshot.SourceOrderId
+            || !snapshot.MappingOk)
+        {
+            blockers.Add("MARKING_LEGACY_TASK_RETIREMENT_TASK_MISMATCH");
+        }
+        if (snapshot.CandidateCodeCount <= 0
+            || snapshot.CandidateCodeCount != snapshot.TaskRequestedQuantity
+            || snapshot.CandidateReservedQuantity != snapshot.CandidateCodeCount
+            || snapshot.CandidateUnsafeQuantity != 0
+            || snapshot.CandidateAssociatedQuantity != 0)
+        {
+            blockers.Add("MARKING_LEGACY_TASK_RETIREMENT_CANDIDATE_UNSAFE");
+        }
+        if (snapshot.ImportCount != 1
+            || !snapshot.ImportId.HasValue
+            || snapshot.ImportSourceType != "temporary-chz-export"
+            || snapshot.ImportStoragePath != "<temporary-chz-export>"
+            || snapshot.ImportMatchedTaskId.HasValue && snapshot.ImportMatchedTaskId != markingOrderId
+            || snapshot.ImportOtherTaskCodes != 0)
+        {
+            blockers.Add("MARKING_LEGACY_TASK_RETIREMENT_IMPORT_UNSAFE");
+        }
+        if (snapshot.LineageCount != 0)
+        {
+            blockers.Add("MARKING_LEGACY_TASK_RETIREMENT_LINEAGE_PRESENT");
+        }
+        if (snapshot.RemainingTaskCount <= 0
+            || snapshot.RemainingTaskCount != snapshot.RemainingTasksWithApplied
+            || snapshot.RemainingUnsafeQuantity != 0
+            || snapshot.RemainingAppliedQuantity != snapshot.TargetQuantity)
+        {
+            blockers.Add("MARKING_LEGACY_TASK_RETIREMENT_REMAINING_EVIDENCE_MISMATCH");
+        }
+
+        var fingerprint = string.Join('|',
+            orderLineId, markingOrderId, snapshot.TargetOrderId, snapshot.LineRevision, snapshot.ItemId,
+            snapshot.Gtin, snapshot.TargetQuantity.ToString(CultureInfo.InvariantCulture),
+            snapshot.TaskRequestedQuantity, snapshot.TaskStatus, snapshot.RequestStatus, snapshot.SourceType,
+            snapshot.TaskItemId, snapshot.TaskGtin, snapshot.TaskOrderId, snapshot.SourceOrderId, snapshot.MappingOk,
+            snapshot.CandidateFingerprint, snapshot.RemainingFingerprint, snapshot.ImportId,
+            snapshot.ImportSourceType, snapshot.ImportStoragePath, snapshot.ImportStatus,
+            snapshot.ImportFileHash,
+            snapshot.ImportedRows, snapshot.ValidRows, snapshot.DuplicateRows,
+            snapshot.ImportMatchedTaskId, snapshot.ImportOtherTaskCodes, snapshot.LineageCount,
+            current.Hash);
+        var hash = ComputeSha256(fingerprint);
+        return new MarkingLegacyTaskRetirementResult(
+            mode,
+            blockers.Count == 0,
+            false,
+            blockers.Distinct().OrderBy(value => value, StringComparer.Ordinal).ToArray(),
+            orderLineId,
+            markingOrderId,
+            snapshot.TargetQuantity,
+            snapshot.CandidateReservedQuantity,
+            snapshot.RemainingTaskCount,
+            snapshot.RemainingAppliedQuantity,
+            snapshot.RemainingReservedQuantity,
+            snapshot.RemainingVoidedQuantity,
+            current.Hash,
+            null,
+            hash,
+            null,
+            false);
+    }
+
+    private MarkingLegacyTaskRetirementResult? ReadLegacyTaskRetirementAudit(string idempotencyKey)
+    {
+        using var command = CreateCommand(_connection!, @"
+SELECT order_line_id, marking_order_id, target_quantity,
+       candidate_reserved_legacy_quantity, remaining_task_count,
+       remaining_applied_legacy_quantity, remaining_reserved_legacy_quantity,
+       remaining_voided_legacy_quantity, preflight_hash_before,
+       preflight_hash_after, eligibility_hash
+FROM marking_legacy_task_retirement_audit
+WHERE idempotency_key = @idempotency_key
+FOR UPDATE;");
+        command.Parameters.AddWithValue("@idempotency_key", idempotencyKey);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+        var remainingTaskCount = reader.GetInt32(4);
+        return new MarkingLegacyTaskRetirementResult(
+            "apply", true, true, [], reader.GetInt64(0), reader.GetGuid(1), reader.GetDecimal(2),
+            reader.GetInt32(3), remainingTaskCount, reader.GetInt32(5), reader.GetInt32(6), reader.GetInt32(7),
+            reader.GetString(8), reader.GetString(9), reader.GetString(10),
+            remainingTaskCount > 1 ? "MARKING_LEGACY_TASKS_AGGREGATABLE" : "SINGLE_TASK", true);
+    }
+
+    private void InsertLegacyTaskRetirementAudit(
+        MarkingLegacyTaskRetirementResult preview,
+        string idempotencyKey,
+        string actor,
+        DateTime appliedAt,
+        string afterHash)
+    {
+        using var command = CreateCommand(_connection!, @"
+INSERT INTO marking_legacy_task_retirement_audit(
+    marking_order_id, idempotency_key, order_id, order_line_id, order_line_revision,
+    item_id, gtin_snapshot, target_quantity, task_requested_quantity,
+    candidate_code_quantity, candidate_reserved_legacy_quantity,
+    remaining_task_count, remaining_applied_legacy_quantity,
+    remaining_reserved_legacy_quantity, remaining_voided_legacy_quantity,
+    marking_code_import_id, import_provenance_summary, reason,
+    status_before, status_after, preflight_hash_before, preflight_hash_after,
+    eligibility_hash, actor, retired_at)
+SELECT @marking_order_id, @idempotency_key, line.order_id, line.id, line.revision,
+       line.item_id, item.gtin, line.qty_ordered, request.requested_quantity,
+       @candidate_quantity, @candidate_quantity,
+       @remaining_task_count, @remaining_applied_quantity,
+       @remaining_reserved_quantity, @remaining_voided_quantity,
+       (SELECT MIN(code.import_id::text)::uuid FROM marking_code code
+        WHERE code.marking_order_id = request.id),
+       'LegacySynthetic/Reserved; temporary-chz-export/<temporary-chz-export>',
+       'REDUNDANT_RESERVED_ONLY_LEGACY_TASK', 'Printed', 'Cancelled',
+       @preflight_hash_before, @preflight_hash_after, @eligibility_hash,
+       @actor, @retired_at
+FROM order_lines line
+INNER JOIN items item ON item.id = line.item_id
+INNER JOIN marking_order request ON request.id = @marking_order_id
+WHERE line.id = @order_line_id;");
+        command.Parameters.AddWithValue("@marking_order_id", preview.MarkingOrderId);
+        command.Parameters.AddWithValue("@idempotency_key", idempotencyKey);
+        command.Parameters.AddWithValue("@order_line_id", preview.OrderLineId);
+        command.Parameters.AddWithValue("@candidate_quantity", preview.CandidateReservedQuantity);
+        command.Parameters.AddWithValue("@remaining_task_count", preview.RemainingTaskCount);
+        command.Parameters.AddWithValue("@remaining_applied_quantity", preview.RemainingAppliedQuantity);
+        command.Parameters.AddWithValue("@remaining_reserved_quantity", preview.RemainingReservedQuantity);
+        command.Parameters.AddWithValue("@remaining_voided_quantity", preview.RemainingVoidedQuantity);
+        command.Parameters.AddWithValue("@preflight_hash_before", preview.PreflightHashBefore);
+        command.Parameters.AddWithValue("@preflight_hash_after", afterHash);
+        command.Parameters.AddWithValue("@eligibility_hash", preview.EligibilityHash);
+        command.Parameters.AddWithValue("@actor", actor);
+        command.Parameters.AddWithValue("@retired_at", ToDbDate(appliedAt));
+        if (command.ExecuteNonQuery() != 1)
+        {
+            throw new InvalidOperationException("MARKING_LEGACY_TASK_RETIREMENT_AUDIT_FAILED");
+        }
+    }
+
+    private static string ComputeSha256(string source) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source))).ToLowerInvariant();
+
+    private sealed record LegacyTaskRetirementSnapshot(
+        long TargetOrderId,
+        long LineRevision,
+        long ItemId,
+        string Gtin,
+        decimal TargetQuantity,
+        int TaskRequestedQuantity,
+        string TaskStatus,
+        string RequestStatus,
+        string SourceType,
+        long? TaskItemId,
+        string TaskGtin,
+        long? TaskOrderId,
+        long? SourceOrderId,
+        string OrderStatus,
+        bool Applicable,
+        bool MappingOk,
+        int CandidateCodeCount,
+        int CandidateReservedQuantity,
+        int CandidateUnsafeQuantity,
+        int CandidateAssociatedQuantity,
+        int ImportCount,
+        Guid? ImportId,
+        string CandidateFingerprint,
+        int RemainingTaskCount,
+        int RemainingAppliedQuantity,
+        int RemainingReservedQuantity,
+        int RemainingVoidedQuantity,
+        int RemainingUnsafeQuantity,
+        int RemainingTasksWithApplied,
+        string RemainingFingerprint,
+        string ImportSourceType,
+        string ImportStoragePath,
+        string ImportStatus,
+        int ImportedRows,
+        int ValidRows,
+        int DuplicateRows,
+        Guid? ImportMatchedTaskId,
+        long ImportOtherTaskCodes,
+        long LineageCount,
+        string ImportFileHash);
 
     private void ApplyMarkingEnforcedCutover(string preflightHash, string approvedBy, DateTime enforcedAt)
     {
@@ -9704,6 +10384,7 @@ SELECT @batch_id,
 FROM marking_order mo
 LEFT JOIN marking_request_scope scope ON scope.marking_order_id = mo.id
 WHERE mo.id = @marking_order_id
+  AND mo.status NOT IN ('Cancelled', 'Failed')
 GROUP BY mo.id
 ON CONFLICT (id) DO NOTHING;
 
@@ -9739,6 +10420,7 @@ WITH request_state AS (
     FROM marking_order mo
     LEFT JOIN marking_code code ON code.marking_order_id = mo.id
     WHERE mo.id = @marking_order_id
+      AND mo.status NOT IN ('Cancelled', 'Failed')
     GROUP BY mo.id
 ), eligible AS (
     SELECT id
@@ -9827,6 +10509,7 @@ WITH imported AS (
     INNER JOIN marking_request_scope scope ON scope.marking_order_id = mo.id
     INNER JOIN marking_production_subject subject ON subject.id = scope.marking_subject_id
     LEFT JOIN imported ON imported.marking_order_id = mo.id
+    WHERE mo.status NOT IN ('Cancelled', 'Failed')
     GROUP BY mo.id, imported.imported_quantity
 )
 SELECT id, request_number, gtin, required_quantity, reserve_quantity,
@@ -10589,19 +11272,24 @@ WHERE receipt_doc_id = @source_doc_id
             return;
         }
 
-        WithConnection(connection =>
+        var distinctIds = ids.Distinct().ToArray();
+        ExecuteInTransaction(scopedStore =>
         {
-            using var command = CreateCommand(connection, @"
+            var store = (PostgresDataStore)scopedStore;
+            using var command = store.CreateCommand(store._connection!, @"
 UPDATE marking_order
 SET status = @status,
     codes_bound_at = COALESCE(codes_bound_at, @printed_at),
     updated_at = @printed_at
-WHERE id = ANY(@ids::uuid[]);");
-            command.Parameters.AddWithValue("@ids", ids.Distinct().ToArray());
+WHERE id = ANY(@ids::uuid[])
+  AND status NOT IN ('Cancelled', 'Failed');");
+            command.Parameters.AddWithValue("@ids", distinctIds);
             command.Parameters.AddWithValue("@status", MarkingOrderStatus.Printed);
             command.Parameters.AddWithValue("@printed_at", ToDbDate(printedAt));
-            command.ExecuteNonQuery();
-            return 0;
+            if (command.ExecuteNonQuery() != distinctIds.Length)
+            {
+                throw new InvalidOperationException("MARKING_ORDER_TERMINAL_OR_NOT_FOUND");
+            }
         });
     }
 

@@ -172,6 +172,7 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
 
         var markingOrder = store.GetMarkingOrdersByItemIds(new[] { MustardItemId })
             .Where(order => order.OrderId == order067.Id || order.SourceOrderId == order067.Id)
+            .Where(order => order.Status is not (MarkingOrderStatus.Cancelled or MarkingOrderStatus.Failed))
             .OrderByDescending(order => order.CreatedAt)
             .FirstOrDefault();
         if (markingOrder == null)
