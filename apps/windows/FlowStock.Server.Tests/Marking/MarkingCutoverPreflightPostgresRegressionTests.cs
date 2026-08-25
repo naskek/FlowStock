@@ -741,7 +741,7 @@ WHERE current_order_id = 9401;");
     [Theory]
     [InlineData("PLANNED")]
     [InlineData("PRINTED")]
-    public void PlannedOrPrintedPallet_WithMatchingActiveSubject_IsApprovableWarning(
+    public void PlannedOrPrintedPallet_WithExactActiveSubject_IsCoherentLegacyScope(
         string palletStatus)
     {
         RunMutatingPostgresTest(connection =>
@@ -758,12 +758,10 @@ WHERE current_order_id = 9401;");
 
             var entries = ReadPreflightEntries(connection.ConnectionString);
 
-            Assert.Contains(entries, entry =>
+            Assert.DoesNotContain(entries, entry =>
                 entry.OrderId == 9401
                 && entry.OrderLineId == 9401
-                && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN"
-                && entry.Level == "warning"
-                && entry.Details == $"pallet_status={palletStatus}");
+                && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN");
             Assert.DoesNotContain(entries, entry =>
                 entry.OrderId == 9401
                 && entry.IssueCode == "MARKING_FILLING_PROGRESS");
@@ -807,8 +805,13 @@ WHERE current_order_id = 9401;");
         });
     }
 
-    [Fact]
-    public void PrintedPallet_WithMismatchedCurrentSubject_RemainsFailClosed()
+    [Theory]
+    [InlineData("current_order_line_id = NULL")]
+    [InlineData("current_production_pallet_id = NULL")]
+    [InlineData("item_id = 9402")]
+    [InlineData("gtin = '04600000009402'")]
+    [InlineData("subject_quantity = subject_quantity - 1")]
+    public void PrintedPallet_WithMismatchedCurrentSubject_RemainsFailClosed(string mutation)
     {
         RunMutatingPostgresTest(connection =>
         {
@@ -822,8 +825,12 @@ WHERE current_order_id = 9401;");
                 hasComponentFilledAt: false,
                 ledgerQuantity: 0);
             Execute(connection, @"
+INSERT INTO items(id, name, barcode, gtin, item_type_id)
+VALUES (9402, 'TEST-CUTOVER-HISTORY-OTHER-ITEM', 'TEST-CUTOVER-HISTORY-OTHER-ITEM',
+        '04600000009402', 9401);");
+            Execute(connection, $@"
 UPDATE marking_production_subject
-SET current_doc_id = NULL
+SET {mutation}
 WHERE current_order_id = 9401;");
 
             var entries = ReadPreflightEntries(connection.ConnectionString);
@@ -833,6 +840,135 @@ WHERE current_order_id = 9401;");
                 && entry.OrderLineId == 9401
                 && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN"
                 && entry.Level == "error");
+        });
+    }
+
+    [Fact]
+    public void PrintedPallet_WithAmbiguousCurrentSubjects_RemainsFailClosed()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "PRINTED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 0,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+            Execute(connection, @"
+INSERT INTO marking_production_subject(
+    id, lifecycle, current_production_pallet_id, current_component_id,
+    current_doc_id, current_doc_line_id, current_order_id, current_order_line_id,
+    item_id, gtin, subject_quantity, created_at)
+VALUES ('94010000-0000-0000-0000-000000000099', 'ACTIVE', 9401, 9401,
+        9401, 9401, 9401, 9401, 9401, '04600000009401', 100,
+        '2026-08-24T10:00:00.000Z');");
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_ACTIVE_PALLET_PLAN"
+                && entry.Level == "error");
+        });
+    }
+
+    [Fact]
+    public void FilledPallet_WithExactCompletedSubjectAndCompleteQuantity_IsCoherentLegacyScope()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "FILLED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 100,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.DoesNotContain(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode is "MARKING_ACTIVE_PALLET_PLAN" or "MARKING_FILLING_PROGRESS");
+        });
+    }
+
+    [Fact]
+    public void FilledPallet_WithPartialQuantity_RemainsFillingBlocker()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "FILLED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 50,
+                hasPalletFilledAt: true,
+                hasComponentFilledAt: true,
+                ledgerQuantity: 0);
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.Contains(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode == "MARKING_FILLING_PROGRESS"
+                && entry.Level == "error");
+        });
+    }
+
+    [Fact]
+    public void MultipleFilledAndPrintedPallets_WithExactSubjects_AreOneCoherentLegacyScope()
+    {
+        RunMutatingPostgresTest(connection =>
+        {
+            SeedMarkingPallet(
+                connection,
+                palletStatus: "FILLED",
+                documentStatus: "DRAFT",
+                plannedQuantity: 100,
+                filledQuantity: 100,
+                hasPalletFilledAt: false,
+                hasComponentFilledAt: false,
+                ledgerQuantity: 0);
+            Execute(connection, "UPDATE order_lines SET qty_ordered = 300 WHERE id = 9401;");
+            AddMarkingPallet(
+                connection,
+                palletId: 9402,
+                palletStatus: "FILLED",
+                plannedQuantity: 100,
+                filledQuantity: 100);
+            AddMarkingPallet(
+                connection,
+                palletId: 9403,
+                palletStatus: "PRINTED",
+                plannedQuantity: 100,
+                filledQuantity: 0);
+
+            var entries = ReadPreflightEntries(connection.ConnectionString);
+
+            Assert.Equal(3, ExecuteScalarInt(connection, @"
+SELECT COUNT(*)
+FROM production_pallet_lines component
+INNER JOIN marking_production_subject subject ON subject.id = component.marking_subject_id
+WHERE component.order_line_id = 9401
+  AND subject.current_order_line_id = 9401
+  AND subject.current_production_pallet_id = component.production_pallet_id
+  AND subject.item_id = component.item_id
+  AND subject.gtin = '04600000009401'
+  AND subject.subject_quantity = component.planned_qty;"));
+            Assert.DoesNotContain(entries, entry =>
+                entry.OrderId == 9401
+                && entry.OrderLineId == 9401
+                && entry.IssueCode is "MARKING_ACTIVE_PALLET_PLAN" or "MARKING_FILLING_PROGRESS");
         });
     }
 
@@ -2385,6 +2521,38 @@ WHERE marking_subject_id = @subject_id;", ("@subject_id", subjectId));
 SELECT granted_quantity
 FROM marking_legacy_cutover_subject_exemption
 WHERE marking_subject_id = @subject_id;", ("@subject_id", subjectId));
+
+    private static void AddMarkingPallet(
+        NpgsqlConnection connection,
+        long palletId,
+        string palletStatus,
+        double plannedQuantity,
+        double filledQuantity)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+INSERT INTO doc_lines(id, doc_id, order_line_id, item_id, qty, to_location_id, to_hu)
+VALUES (@pallet_id, 9401, 9401, 9401, @planned_quantity, 9401,
+        'TEST-CUTOVER-HISTORY-HU-' || @pallet_id::text);
+
+INSERT INTO production_pallets(
+    id, prd_doc_id, doc_line_id, order_id, order_line_id, item_id,
+    hu_code, planned_qty, to_location_id, status, created_at)
+VALUES (@pallet_id, 9401, @pallet_id, 9401, 9401, 9401,
+        'TEST-CUTOVER-HISTORY-HU-' || @pallet_id::text,
+        @planned_quantity, 9401, @pallet_status, '2026-08-24T10:00:00.000Z');
+
+INSERT INTO production_pallet_lines(
+    id, production_pallet_id, doc_line_id, order_line_id, item_id,
+    planned_qty, filled_qty, created_at)
+VALUES (@pallet_id, @pallet_id, @pallet_id, 9401, 9401,
+        @planned_quantity, @filled_quantity, '2026-08-24T10:00:00.000Z');";
+        command.Parameters.AddWithValue("@pallet_id", palletId);
+        command.Parameters.AddWithValue("@pallet_status", palletStatus);
+        command.Parameters.AddWithValue("@planned_quantity", plannedQuantity);
+        command.Parameters.AddWithValue("@filled_quantity", filledQuantity);
+        command.ExecuteNonQuery();
+    }
 
     private static void SeedMarkingPallet(
         NpgsqlConnection connection,

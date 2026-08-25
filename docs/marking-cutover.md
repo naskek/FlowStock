@@ -41,11 +41,11 @@ Canonical hash включает отсортированные frozen line/subje
 Допускаются без real KM:
 
 - coherent DRAFT PRD;
-- `PLANNED/PRINTED` pallet с exact ACTIVE subject и без filling progress;
-- полностью `FILLED` output с exact subject;
+- `PLANNED/PRINTED` pallet с единственным exact `ACTIVE` subject и без filling progress;
+- полностью `FILLED` output с единственным exact `COMPLETED` subject; complete quantity и terminal pallet status являются authoritative, а отсутствие legacy fill timestamp само по себе не превращает такой output в partial progress;
 - `FILLED/CLOSED` production history независимо от текущего ledger balance.
 
-Fail-closed blockers сохраняются для missing/ambiguous/mismatched order-line/subject lineage, invalid quantity, missing GTIN applicable товара, partial/inconsistent filling, orphan production structures, unsafe `RealImport`/`HistoricalUnknown` provenance и duplicate real hashes. Historical synthetic quantities не исправляют и не ухудшают classification.
+Exact subject обязан совпадать с component/pallet/document lineage, current order/order line, item, GTIN и planned quantity. Fail-closed blockers сохраняются для missing/ambiguous/mismatched lineage или lifecycle, invalid quantity, missing GTIN applicable товара, partial/inconsistent filling, orphan production structures, unsafe `RealImport`/`HistoricalUnknown` provenance и duplicate real hashes. Historical synthetic quantities не исправляют и не ухудшают classification.
 
 ## Atomic enforce
 

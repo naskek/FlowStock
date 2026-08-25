@@ -8233,65 +8233,102 @@ pallet_plan_classification AS (
     SELECT COALESCE(pp.order_id, d.order_id, ol.order_id) AS order_id,
            COALESCE(pll.order_line_id, pp.order_line_id) AS order_line_id,
            pp.status,
-           (
+           COALESCE((
                pp.status IN ('PLANNED', 'PRINTED')
                AND d.status <> 'CLOSED'
-               AND COALESCE(subject.lifecycle, '') = 'ACTIVE'
+               AND subject.lifecycle = 'ACTIVE'
+               AND subject.current_order_id = applicable.order_id
+               AND subject.current_order_line_id = applicable.order_line_id
+               AND subject.item_id = applicable.item_id
+               AND BTRIM(subject.gtin) = BTRIM(applicable.gtin)
+               AND ABS(subject.subject_quantity - pll.planned_qty) <= 0.000001
+               AND (pp.order_id IS NULL OR pp.order_id = applicable.order_id)
+               AND (d.order_id IS NULL OR d.order_id = applicable.order_id)
+               AND (pp.order_line_id IS NULL OR pp.order_line_id = applicable.order_line_id)
+               AND pp.item_id = applicable.item_id
+               AND pll.item_id = applicable.item_id
+               AND production_doc_line.order_line_id = applicable.order_line_id
+               AND production_doc_line.item_id = applicable.item_id
+               AND pp.doc_line_id = pll.doc_line_id
+               AND subject.current_doc_line_id = pll.doc_line_id
+               AND (
+                   SELECT COUNT(*)
+                   FROM marking_production_subject candidate
+                   WHERE candidate.current_component_id = pll.id
+                     AND candidate.current_production_pallet_id = pp.id
+                     AND candidate.current_order_line_id = applicable.order_line_id
+                     AND candidate.lifecycle IN ('ACTIVE', 'COMPLETED')
+               ) = 1
                AND pp.filled_at IS NULL
                AND COALESCE(pll.filled_qty, 0) <= 0
                AND pll.filled_at IS NULL
-           ) AS is_approvable_active_plan,
-           (
+           ), FALSE) AS is_coherent_active_plan,
+           COALESCE((
                pp.status = 'FILLED'
                OR pp.filled_at IS NOT NULL
                OR COALESCE(pll.filled_qty, 0) > 0
                OR pll.filled_at IS NOT NULL
-           ) AS has_filling_progress,
-           (
+           ), FALSE) AS has_filling_progress,
+           COALESCE((
                pp.status = 'FILLED'
-               AND d.status = 'CLOSED'
-               AND COALESCE(subject.lifecycle, '') = 'COMPLETED'
-           ) AS is_completed_closed_history,
-           (
-               pp.status = 'FILLED'
-               AND COALESCE(subject.lifecycle, '') IN ('ACTIVE', 'COMPLETED')
+               AND subject.lifecycle = 'COMPLETED'
                AND pll.id IS NOT NULL
-               AND COALESCE(pll.filled_qty, 0) + 0.000001 >= pll.planned_qty
-               AND pp.filled_at IS NOT NULL
-               AND pll.filled_at IS NOT NULL
-           ) AS is_coherent_filled_output
+               AND subject.current_order_id = applicable.order_id
+               AND subject.current_order_line_id = applicable.order_line_id
+               AND subject.item_id = applicable.item_id
+               AND BTRIM(subject.gtin) = BTRIM(applicable.gtin)
+               AND ABS(subject.subject_quantity - pll.planned_qty) <= 0.000001
+               AND (pp.order_id IS NULL OR pp.order_id = applicable.order_id)
+               AND (d.order_id IS NULL OR d.order_id = applicable.order_id)
+               AND (pp.order_line_id IS NULL OR pp.order_line_id = applicable.order_line_id)
+               AND pp.item_id = applicable.item_id
+               AND pll.item_id = applicable.item_id
+               AND production_doc_line.order_line_id = applicable.order_line_id
+               AND production_doc_line.item_id = applicable.item_id
+               AND pp.doc_line_id = pll.doc_line_id
+               AND subject.current_doc_line_id = pll.doc_line_id
+               AND ABS(COALESCE(pll.filled_qty, 0) - pll.planned_qty) <= 0.000001
+               AND (
+                   SELECT COUNT(*)
+                   FROM marking_production_subject candidate
+                   WHERE candidate.current_component_id = pll.id
+                     AND candidate.current_production_pallet_id = pp.id
+                     AND candidate.current_order_line_id = applicable.order_line_id
+                     AND candidate.lifecycle IN ('ACTIVE', 'COMPLETED')
+               ) = 1
+           ), FALSE) AS is_coherent_filled_output
     FROM production_pallets pp
     INNER JOIN docs d ON d.id = pp.prd_doc_id
     LEFT JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    LEFT JOIN doc_lines production_doc_line
+           ON production_doc_line.id = pll.doc_line_id
+          AND production_doc_line.doc_id = d.id
     LEFT JOIN marking_production_subject subject
            ON subject.id = pll.marking_subject_id
           AND subject.current_production_pallet_id = pp.id
           AND subject.current_component_id = pll.id
           AND subject.current_doc_id = d.id
+          AND subject.current_doc_line_id = pll.doc_line_id
     LEFT JOIN order_lines ol ON ol.id = COALESCE(pll.order_line_id, pp.order_line_id)
+    INNER JOIN markable_lines applicable
+            ON applicable.order_line_id = COALESCE(pll.order_line_id, pp.order_line_id)
     WHERE pp.status IN ('PLANNED', 'PRINTED', 'FILLED')
       AND COALESCE(pp.order_id, d.order_id, ol.order_id) IS NOT NULL
       AND COALESCE(pp.order_id, d.order_id, ol.order_id) IN (SELECT id FROM open_orders)
-      AND EXISTS (
-          SELECT 1 FROM markable_lines applicable
-          WHERE applicable.order_line_id = COALESCE(pll.order_line_id, pp.order_line_id)
-      )
 ),
 filling_progress AS (
     SELECT DISTINCT plan.order_id,
            plan.order_line_id
     FROM pallet_plan_classification plan
     WHERE plan.has_filling_progress
-      AND NOT plan.is_completed_closed_history
       AND NOT plan.is_coherent_filled_output
 ),
 active_pallet_plan AS (
     SELECT plan.order_id,
            plan.order_line_id,
-           plan.status,
-           BOOL_AND(plan.is_approvable_active_plan) AS is_approvable_active_plan
+           plan.status
     FROM pallet_plan_classification plan
-    WHERE NOT plan.is_completed_closed_history
+    WHERE NOT plan.is_coherent_active_plan
       AND NOT plan.is_coherent_filled_output
     GROUP BY plan.order_id, plan.order_line_id, plan.status
 ),
@@ -8593,7 +8630,7 @@ issues AS (
     SELECT plan.order_id,
            plan.order_line_id,
            'MARKING_ACTIVE_PALLET_PLAN',
-           CASE WHEN plan.is_approvable_active_plan THEN 'warning' ELSE 'error' END,
+           'error',
            NULL::double precision,
            NULL::integer,
            NULL::integer,
