@@ -36,6 +36,7 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<Guid, MarkingOrder> _markingOrders = new();
     private readonly Dictionary<Guid, MarkingCode> _markingCodes = new();
     private readonly Dictionary<Guid, MarkingCodeImport> _markingCodeImports = new();
+    private readonly Dictionary<long, MarkingPalletEligibility> _markingPalletEligibility = new();
     private readonly Dictionary<long, int> _kmCodeCountByReceiptLine = new();
     private readonly HashSet<long> _ordersWithOutboundDocs = new();
     private readonly HashSet<long> _commerciallyLockedOrderLineIds = new();
@@ -67,6 +68,15 @@ internal sealed class CloseDocumentHarness
     public IReadOnlyList<(long PalletId, long PrdDocId)> ProductionPalletPrdDocAssignmentAttempts =>
         _productionPalletPrdDocAssignmentAttempts;
     public IDataStore Store => _store.Object;
+
+    public void SeedOrderMarkingHistoryDependencies(long orderId, params long[] orderLineIds)
+    {
+        var lineIds = orderLineIds.ToHashSet();
+        _store.Setup(store => store.GetOrderMarkingHistoryDependencies(
+                orderId,
+                It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns(new OrderMarkingHistoryDependencySnapshot(true, lineIds));
+    }
     public int DocCount => _docs.Count;
     public int TotalDocLineCount => _linesByDoc.Values.Sum(lines => lines.Count);
     public int OrderCount => _orders.Count;
@@ -87,6 +97,16 @@ internal sealed class CloseDocumentHarness
                 It.IsAny<int>(),
                 It.IsAny<DateTime>()))
             .Throws(new InvalidOperationException(message));
+    }
+
+    public void SetMarkingPalletEligibility(
+        long productionPalletId,
+        bool isEligible,
+        string? blockerCode = null,
+        string? message = null)
+    {
+        _markingPalletEligibility[productionPalletId] = new MarkingPalletEligibility(
+            productionPalletId, isEligible, blockerCode, message);
     }
 
     public void VerifyNoGlobalHuFateReads()
@@ -986,6 +1006,31 @@ internal sealed class CloseDocumentHarness
 
     private void ConfigureStore()
     {
+        _store.As<IMarkingCutoverRuntimeGuard>()
+            .Setup(store => store.RequireEnforcedMarkingWorkflow(It.IsAny<string>()));
+        _store.As<IMarkingCutoverRuntimeGuard>()
+            .Setup(store => store.GetMarkingPalletEligibility(
+                It.IsAny<IReadOnlyCollection<long>>(),
+                It.IsAny<string>()))
+            .Returns<IReadOnlyCollection<long>, string>((ids, _) => ids
+                .Distinct()
+                .ToDictionary(
+                    id => id,
+                    id => _markingPalletEligibility.TryGetValue(id, out var decision)
+                        ? decision
+                        : new MarkingPalletEligibility(id, true, null, null)));
+        _store.As<IMarkingCutoverRuntimeGuard>()
+            .Setup(store => store.RequireEnforcedMarkingWorkflowForPallet(
+                It.IsAny<long>(),
+                It.IsAny<string>()))
+            .Callback<long, string>((id, _) =>
+            {
+                if (_markingPalletEligibility.TryGetValue(id, out var decision) && !decision.IsEligible)
+                {
+                    throw new InvalidOperationException(
+                        decision.BlockerCode ?? "MARKING_OPERATIONAL_COVERAGE_INCOMPLETE");
+                }
+            });
         _store.As<IMarkingAggregateStore>()
             .Setup(store => store.GetAggregateMarkingCoverageByOrderLine(It.IsAny<long>()))
             .Returns(new Dictionary<long, MarkingLineAggregateCoverage>());
@@ -1826,6 +1871,49 @@ internal sealed class CloseDocumentHarness
                             VatRate = current.VatRate,
                             ProductionPurpose = current.ProductionPurpose,
                             ProductionPalletGroup = groupCode
+                        };
+                        return;
+                    }
+                }
+            });
+
+        _store.Setup(store => store.GetOrderMarkingHistoryDependencies(
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<long, IReadOnlyCollection<long>>((_, _) =>
+                new OrderMarkingHistoryDependencySnapshot(false, new HashSet<long>()));
+
+        _store.Setup(store => store.CancelOrderLine(
+                It.IsAny<long>(),
+                It.IsAny<DateTime>(),
+                It.IsAny<string>(),
+                It.IsAny<string>()))
+            .Callback<long, DateTime, string, string>((orderLineId, cancelledAt, actor, reason) =>
+            {
+                foreach (var pair in _orderLinesByOrder)
+                {
+                    for (var index = 0; index < pair.Value.Count; index++)
+                    {
+                        if (pair.Value[index].Id != orderLineId)
+                        {
+                            continue;
+                        }
+
+                        var current = pair.Value[index];
+                        pair.Value[index] = new OrderLine
+                        {
+                            Id = current.Id,
+                            OrderId = current.OrderId,
+                            ItemId = current.ItemId,
+                            QtyOrdered = current.QtyOrdered,
+                            UnitPriceGross = current.UnitPriceGross,
+                            VatRate = current.VatRate,
+                            ProductionPurpose = current.ProductionPurpose,
+                            ProductionPalletGroup = current.ProductionPalletGroup,
+                            CancelledAt = cancelledAt,
+                            CancelledByActor = actor,
+                            CancelReason = reason,
+                            Revision = current.Revision + 1
                         };
                         return;
                     }

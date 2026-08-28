@@ -27,10 +27,40 @@ public partial class AdminWindow : Window
         InitializeComponent();
         LoadClientBlocksUi();
         LoadPalletLabelPrinterUi();
+        LoadMarkingReserveQuantity();
         InstalledBuildText.Text = $"Установлено: {AppRuntimeInfo.Current.ProductVersion}\n{AppRuntimeInfo.Current.SourceCommit}"
             + (AppRuntimeInfo.IsSourceRun ? "\nРежим: запуск из исходного checkout" : string.Empty);
         Loaded += async (_, _) => await CheckForUpdateAsync();
         Closed += (_, _) => CancelUpdateCheck();
+    }
+
+    private void LoadMarkingReserveQuantity()
+    {
+        MarkingReserveQuantityBox.Text = _services.WpfAdminApi.TryGetMarkingReserveQuantity(out var quantity)
+            ? quantity.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : "5";
+    }
+
+    private async void SaveMarkingReserveQuantity_Click(object sender, RoutedEventArgs e)
+    {
+        if (!int.TryParse(MarkingReserveQuantityBox.Text?.Trim(), out var quantity) || quantity < 0)
+        {
+            MessageBox.Show("Введите целое число не меньше нуля.", "Маркировка ЧЗ",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            var saved = await _services.WpfAdminApi.TrySaveMarkingReserveQuantityAsync(quantity);
+            MessageBox.Show(saved ? "Резерв КМ сохранён." : "Не удалось сохранить резерв КМ.",
+                "Маркировка ЧЗ", MessageBoxButton.OK,
+                saved ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(exception.Message, "Маркировка ЧЗ", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private async void CheckUpdate_Click(object sender, RoutedEventArgs e) => await CheckForUpdateAsync();

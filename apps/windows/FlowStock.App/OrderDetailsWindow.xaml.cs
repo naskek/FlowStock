@@ -428,7 +428,9 @@ public partial class OrderDetailsWindow : Window
                 return;
             }
 
-            var result = await _services.WpfMarkingApi.TryExportOrderAsync(_orderId.Value).ConfigureAwait(true);
+            var result = await _services.WpfMarkingApi.TryExportOrderAsync(
+                _orderId.Value,
+                expectedSnapshotHash: preview.SnapshotHash).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
                 MessageBox.Show(result.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);

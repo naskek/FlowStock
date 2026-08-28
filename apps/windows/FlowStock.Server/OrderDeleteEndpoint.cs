@@ -26,6 +26,10 @@ public static class OrderDeleteEndpoint
         {
             orderService.DeleteOrder(orderId);
         }
+        catch (OrderMarkingHistoryDeleteException ex)
+        {
+            return Results.BadRequest(new ApiErrorResult(false, ex.ErrorCode, ex.Message));
+        }
         catch (InvalidOperationException ex)
         {
             return Results.BadRequest(new ApiResult(false, MapKnownInvalidOperationError(ex, existing.Type)));

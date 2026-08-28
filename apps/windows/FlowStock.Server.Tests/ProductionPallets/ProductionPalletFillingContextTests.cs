@@ -369,6 +369,46 @@ public sealed class ProductionPalletFillingContextTests
         Assert.Empty(fixture.Harness.LedgerEntries);
     }
 
+    [Fact]
+    public void FillingContextAndCommand_BlockSameUncoveredMarkingPallet()
+    {
+        var fixture = CreateOrderWithValidAndOrphanPallet();
+        fixture.Harness.SetMarkingPalletEligibility(
+            1,
+            isEligible: false,
+            blockerCode: "MARKING_OPERATIONAL_COVERAGE_INCOMPLETE",
+            message: "Нет active REAL_IMPORT coverage или frozen legacy exemption.");
+        var service = CreateAutoClosePalletService(fixture.Harness);
+
+        var context = service.GetFillingContext(fixture.OrderId);
+        var fill = service.Fill(fixture.ValidHuCode, "TSD-01", fixture.OrderId, fixture.PrdDocId);
+
+        Assert.DoesNotContain(fixture.ValidHuCode, context.FillingEligibleHuCodes);
+        var decision = context.FillingMarkingEligibilityByHuCode[fixture.ValidHuCode];
+        Assert.False(decision.IsEligible);
+        Assert.Equal("MARKING_OPERATIONAL_COVERAGE_INCOMPLETE", decision.BlockerCode);
+        Assert.False(fill.Success);
+        Assert.Equal("MARKING_OPERATIONAL_COVERAGE_INCOMPLETE", fill.Error);
+        Assert.Equal(ProductionPalletStatus.Planned,
+            fixture.Harness.Store.GetProductionPalletByHu(fixture.ValidHuCode)?.Status);
+        Assert.Empty(fixture.Harness.LedgerEntries);
+    }
+
+    [Fact]
+    public void FillingContextAndCommand_AllowSameLegacyExemptMarkingPallet()
+    {
+        var fixture = CreateOrderWithValidAndOrphanPallet();
+        fixture.Harness.SetMarkingPalletEligibility(1, isEligible: true);
+        var service = CreateAutoClosePalletService(fixture.Harness);
+
+        var context = service.GetFillingContext(fixture.OrderId);
+        var fill = service.Fill(fixture.ValidHuCode, "TSD-01", fixture.OrderId, fixture.PrdDocId);
+
+        Assert.Contains(fixture.ValidHuCode, context.FillingEligibleHuCodes);
+        Assert.True(context.FillingMarkingEligibilityByHuCode[fixture.ValidHuCode].IsEligible);
+        Assert.True(fill.Success, fill.ErrorMessage);
+    }
+
     [Theory]
     [InlineData("invalid_line")]
     [InlineData("invalid_doc")]

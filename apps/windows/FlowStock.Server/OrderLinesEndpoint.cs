@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json.Serialization;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using FlowStock.Core.Models.Marking;
 using FlowStock.Core.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -72,13 +73,17 @@ public static class OrderLinesEndpoint
         var operatorPresentationByLine = store is IHuOperatorFactsStore operatorFactsStore
             ? new HuOperatorReadModelService(operatorFactsStore).GetForOrder(orderId)
             : new Dictionary<long, OrderLineHuPresentation>();
+        var markingProgress = store is IMarkingLineProgressStore markingProgressStore
+            ? markingProgressStore.GetMarkingLineProgress(new[] { orderId })
+            : new Dictionary<long, MarkingLineProgress>();
 
         var lines = lineViews
             .Select(line => MapOrderLine(
                 line,
                 productionHusByOrderLine,
                 detailsByOrderLine.GetValueOrDefault(line.Id),
-                operatorPresentationByLine.GetValueOrDefault(line.Id)))
+                operatorPresentationByLine.GetValueOrDefault(line.Id),
+                markingProgress.GetValueOrDefault(line.Id)))
             .ToList();
         totalStopwatch.Stop();
 
@@ -132,6 +137,9 @@ public static class OrderLinesEndpoint
             .Distinct()
             .ToArray();
         var productionHusByOrderLine = BuildProductionHuCodesByOrderLineIds(store, lineIds, orderIds);
+        var markingProgress = store is IMarkingLineProgressStore markingProgressStore
+            ? markingProgressStore.GetMarkingLineProgress(orderIds)
+            : new Dictionary<long, MarkingLineProgress>();
 
         return orderIds.ToDictionary(
             orderId => orderId,
@@ -143,7 +151,8 @@ public static class OrderLinesEndpoint
                 }
 
                 return lines
-                    .Select(line => MapOrderLine(line, productionHusByOrderLine, details: null, huPresentation: null))
+                    .Select(line => MapOrderLine(line, productionHusByOrderLine, details: null,
+                        huPresentation: null, markingProgress.GetValueOrDefault(line.Id)))
                     .ToList();
             });
     }
@@ -249,7 +258,8 @@ public static class OrderLinesEndpoint
         OrderLineView line,
         IReadOnlyDictionary<long, string[]> productionHusByOrderLine,
         OrderLineHuDetails? details,
-        OrderLineHuPresentation? huPresentation)
+        OrderLineHuPresentation? huPresentation,
+        MarkingLineProgress? markingProgress)
     {
         var huCodes = productionHusByOrderLine.TryGetValue(line.Id, out var values)
             ? values
@@ -292,7 +302,17 @@ public static class OrderLinesEndpoint
             details?.ProductionHuRows.Select(MapProductionHuRow).ToArray(),
             details?.ShippedHuRows.Select(row => MapShippedHuRow(row, huPresentation)).ToArray(),
             details?.Coverage is { } coverage ? MapCoverage(coverage) : null,
-            huPresentation == null ? null : MapHuPresentation(huPresentation));
+            huPresentation == null ? null : MapHuPresentation(huPresentation),
+            markingProgress == null ? null : new MarkingProgressResponse(
+                markingProgress.Applicable,
+                markingProgress.ConfigurationError,
+                markingProgress.State,
+                markingProgress.RealRequiredQuantity,
+                markingProgress.ValidRealCoveredQuantity,
+                markingProgress.ActiveScopedQuantity,
+                markingProgress.Requests.Select(request => new MarkingRequestProgressResponse(
+                    request.MarkingOrderId, request.RequestNumber, request.OperationalRequiredQuantity,
+                    request.ImportedQuantity, request.Classification)).ToArray()));
     }
 
     private static HuPresentationResponse MapHuPresentation(OrderLineHuPresentation presentation) =>
@@ -462,7 +482,25 @@ public static class OrderLinesEndpoint
         [property: JsonPropertyName("coverage"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         CoverageResponse? Coverage,
         [property: JsonPropertyName("hu_presentation"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        HuPresentationResponse? HuPresentation);
+        HuPresentationResponse? HuPresentation,
+        [property: JsonPropertyName("marking_progress"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        MarkingProgressResponse? MarkingProgress);
+
+    private sealed record MarkingProgressResponse(
+        [property: JsonPropertyName("applicable")] bool Applicable,
+        [property: JsonPropertyName("configuration_error")] string? ConfigurationError,
+        [property: JsonPropertyName("state")] string State,
+        [property: JsonPropertyName("real_required_qty")] double RealRequiredQuantity,
+        [property: JsonPropertyName("valid_real_covered_qty")] double ValidRealCoveredQuantity,
+        [property: JsonPropertyName("active_scoped_qty")] double ActiveScopedQuantity,
+        [property: JsonPropertyName("requests")] IReadOnlyList<MarkingRequestProgressResponse> Requests);
+
+    private sealed record MarkingRequestProgressResponse(
+        [property: JsonPropertyName("marking_order_id")] Guid MarkingOrderId,
+        [property: JsonPropertyName("request_number")] string RequestNumber,
+        [property: JsonPropertyName("operational_required_qty")] int OperationalRequiredQuantity,
+        [property: JsonPropertyName("imported_qty")] int ImportedQuantity,
+        [property: JsonPropertyName("classification")] string Classification);
 
     private sealed record WarehouseHuRowResponse(
         [property: JsonPropertyName("hu_code")] string HuCode,

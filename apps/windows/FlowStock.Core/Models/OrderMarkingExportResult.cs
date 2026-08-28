@@ -47,7 +47,9 @@ public sealed record OrderMarkingExportPreviewResult(
     string OrderRef,
     int LineCount,
     double TotalQty,
-    IReadOnlyList<OrderMarkingExportPreviewLine> Lines)
+    IReadOnlyList<OrderMarkingExportPreviewLine> Lines,
+    string SnapshotHash = "",
+    IReadOnlyList<OrderMarkingNewRequestPreview>? NewRequests = null)
 {
     public static OrderMarkingExportPreviewResult Failure(string message)
     {
@@ -61,6 +63,14 @@ public sealed record OrderMarkingExportPreviewResult(
             Array.Empty<OrderMarkingExportPreviewLine>());
     }
 }
+
+public sealed record OrderMarkingNewRequestPreview(
+    long ItemId,
+    string ItemName,
+    string Gtin,
+    int RequiredQty,
+    int ReserveQty,
+    int RequestedQty);
 
 public sealed record OrderMarkingExportPreviewLine(
     long OrderLineId,

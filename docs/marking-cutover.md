@@ -34,6 +34,18 @@ remaining_legacy_fulfillment = max(
 
 `REAL_READY` shipment, DRAFT/rolled-back OUTBOUND и binding/reservation не расходуют legacy fulfillment. Для INTERNAL snapshot shipped quantity равен нулю; outbound allowance исходной INTERNAL line не переносится новой CUSTOMER line.
 
+## V0041 request export batch
+
+V0041 не меняет cohort/enforce и не является новым deploy-путём. Additive schema хранит только durable membership request-only Excel:
+
+- `marking_request_export_batch` фиксирует order, expected pre-export hash, post-export hash, reserve snapshot и server-derived actor/time;
+- `marking_request_export_batch_request` фиксирует immutable request/item/GTIN/required/reserve/requested snapshots;
+- workbook bytes и DataMatrix не сохраняются;
+- exact retry после неизвестного HTTP outcome допустим только пока current operational snapshot равен сохранённому post-export hash, и регенерирует только исходные batch rows;
+- fully-retired historical requests и их immutable requested quantity в новый batch не входят.
+
+Preview возвращает `snapshot_hash`; export обязан передать его как `expected_snapshot_hash`. Несовпадение даёт `409 MARKING_EXPORT_SNAPSHOT_CHANGED` без новых requests. Current demand считается по positive active scope consumption. Несколько active requests одного GTIN импортируются единым deterministic envelope: сначала закрываются все current operational deficits, затем reserve capacity; filename не выбирает request.
+
 ## Preflight
 
 Canonical hash включает отсортированные frozen line/subject snapshots, structural issues и shipped-at-cutover. В hash не входят timestamps генерации, prefix/text synthetic code, `LegacySynthetic` quantities, allowlists и V0039 audit.
@@ -63,7 +75,7 @@ Enforce не меняет `ledger`, docs, CLOSED production history или indiv
 ## Runtime gates после ENFORCED
 
 - Export/import создаёт requests, immutable scopes/codes и operational coverage только для `real_required_qty`. Legacy exemption не создаёт fake request/import/coverage.
-- Filling/PRD close требует по каждому component `active subject exemption + active REAL_IMPORT coverage >= planned quantity`. Partial real import gate не открывает.
+- Filling context/picker и fill command используют один server-owned evaluator. Filling/PRD close требует по каждому component `active subject exemption + active REAL_IMPORT coverage >= planned quantity`; partial real import gate не открывает. Uncovered post-cutover pallet не предлагается TSD, но command всё равно повторяет проверку под locks.
 - PRD close создаёт `marking_ready_hu_fact` только когда whole HU полностью backed real coverage. Legacy-only или mixed legacy/real HU fact не получает.
 - Binding policy допускает full-real-ready HU независимо от legacy quota. Non-real-ready whole HU допускается frozen line только в пределах текущего `remaining_legacy_fulfillment`; binding quota не расходует.
 - Authoritative OUTBOUND close повторяет решение под locks. Full-real-ready whole HU получает `REAL_READY`; иначе whole HU может получить только `LEGACY_EXEMPT` при достаточном остатке. Mathematical split HU запрещён. Document, outbound ledger и attribution commit/rollback выполняются атомарно.
@@ -103,7 +115,7 @@ Applicability публикуется отдельно и может быть tru
 - no new TEMP/non-real codes после ENFORCED;
 - counts/hash docs/ledger/CLOSED production history до/после cutover неизменны;
 - status parity всех read models и clients;
-- полный migration chain, targeted/full tests, solution build и Compose config.
+- полный migration chain V0001–V0041, targeted/full tests, solution build и Compose config.
 
 Production deployment выполняется только каноническим ручным FlowStock PowerShell-процессом из `docs/deployment.md` с explicit `docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml ...`. V0040 применяется обычным one-shot migrator внутри этого процесса. `deploy_from_git.sh`, `deploy_update.sh`, короткий SSH deploy, отдельный migrator deploy и ручной production SQL не используются.
 

@@ -643,6 +643,9 @@ public sealed class OrderService
             var activeExistingLines = existingLines
                 .Where(line => !line.CancelledAt.HasValue)
                 .ToList();
+            var markingHistoryDependencies = store.GetOrderMarkingHistoryDependencies(
+                orderId,
+                activeExistingLines.Select(line => line.Id).ToArray());
             if (activeExistingLines.Count > 0
                 && existing.PartnerId != updated.PartnerId)
             {
@@ -658,10 +661,10 @@ public sealed class OrderService
                     "Нельзя изменить тип заказа с активными строками.");
             }
 
-            var existingByItem = existingLines
+            var existingByItem = activeExistingLines
                 .GroupBy(line => (line.ItemId, ProductionPurpose: ResolveLinePurpose(type, line.ProductionPurpose)))
                 .ToDictionary(group => group.Key, group => group.OrderBy(line => line.Id).ToList());
-            var existingById = existingLines.ToDictionary(line => line.Id);
+            var existingById = activeExistingLines.ToDictionary(line => line.Id);
             var incomingKeys = normalized
                 .Select(line => (line.ItemId, ProductionPurpose: ResolveLinePurpose(type, line.ProductionPurpose)))
                 .ToHashSet();
@@ -860,7 +863,7 @@ public sealed class OrderService
                             additionallyAffectedPalletLineIds.Add(affectedLineId);
                         }
                         ClearCustomerReservationsForOrderLine(store, orderId, duplicate.Id, type);
-                        store.DeleteOrderLine(duplicate.Id);
+                        DeleteOrLogicallyCancelOrderLine(store, markingHistoryDependencies, duplicate.Id);
                     }
                     continue;
                 }
@@ -896,7 +899,7 @@ public sealed class OrderService
                         additionallyAffectedPalletLineIds.Add(affectedLineId);
                     }
                     ClearCustomerReservationsForOrderLine(store, orderId, staleLine.Id, type);
-                    store.DeleteOrderLine(staleLine.Id);
+                    DeleteOrLogicallyCancelOrderLine(store, markingHistoryDependencies, staleLine.Id);
                 }
             }
 
@@ -1489,14 +1492,49 @@ public sealed class OrderService
 
         _data.ExecuteInTransaction(store =>
         {
+            if (!store.LockOrdersForUpdate([orderId]))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
+
+            var lockedOrder = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+            if (lockedOrder.Status != OrderStatus.Draft)
+            {
+                throw new InvalidOperationException("Удалить можно только заказ в статусе \"Черновик\".");
+            }
+
+            var lockedOrderLineIds = store.GetOrderLines(orderId).Select(line => line.Id).ToArray();
+            if (store.GetOrderMarkingHistoryDependencies(orderId, lockedOrderLineIds).BlocksOrderDelete)
+            {
+                throw OrderMarkingHistoryDeleteException.ForOrder();
+            }
+
             TryClearOrderReceiptPlan(store, orderId);
             store.DeleteOrderLines(orderId);
             store.DeleteOrder(orderId);
-            if (existing.Type == OrderType.Customer)
+            if (lockedOrder.Type == OrderType.Customer)
             {
                 TryRefreshCustomerReceiptPlans(store);
             }
         });
+    }
+
+    private static void DeleteOrLogicallyCancelOrderLine(
+        IDataStore store,
+        OrderMarkingHistoryDependencySnapshot markingHistoryDependencies,
+        long orderLineId)
+    {
+        if (markingHistoryDependencies.BlocksOrderLineDelete(orderLineId))
+        {
+            store.CancelOrderLine(
+                orderLineId,
+                DateTime.UtcNow,
+                "SERVER:order-update",
+                "removed_from_order_update_with_marking_history");
+            return;
+        }
+
+        store.DeleteOrderLine(orderLineId);
     }
 
     public void ChangeOrderStatus(long orderId, OrderStatus status)

@@ -220,6 +220,10 @@ public interface IDataStore
     IReadOnlySet<long> GetCommerciallyLockedOrderLineIds(long orderId);
     void UpdateOrderLinePurpose(long orderLineId, ProductionLinePurpose purpose);
     void UpdateOrderLineProductionPalletGroup(long orderLineId, string? groupCode);
+    void CancelOrderLine(long orderLineId, DateTime cancelledAt, string actor, string reason);
+    OrderMarkingHistoryDependencySnapshot GetOrderMarkingHistoryDependencies(
+        long orderId,
+        IReadOnlyCollection<long> orderLineIds);
     void DeleteOrderLine(long orderLineId);
     void DeleteOrderLines(long orderId);
     void DeleteOrder(long orderId);

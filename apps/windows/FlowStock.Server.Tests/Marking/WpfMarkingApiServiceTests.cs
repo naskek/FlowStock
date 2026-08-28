@@ -213,7 +213,8 @@ public sealed class WpfMarkingApiServiceTests
 
         Assert.Contains("Формирование Excel ЧЗ на сервере завершено, но локальный файл не сохранён.", source);
         Assert.Contains("Повторное формирование безопасно и не создаст новые коды.", source);
-        Assert.Equal(1, CountOccurrences(source, "TryExportOrderAsync(_orderId.Value)"));
+        Assert.Equal(1, CountOccurrences(source, "TryExportOrderAsync("));
+        Assert.Contains("expectedSnapshotHash: preview.SnapshotHash", source);
     }
 
     private static string ReadRepoFile(params string[] parts)

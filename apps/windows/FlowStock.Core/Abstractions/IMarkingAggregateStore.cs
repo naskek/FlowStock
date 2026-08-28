@@ -8,6 +8,8 @@ public interface IMarkingAggregateStore
         new Dictionary<long, double>();
     IReadOnlyDictionary<long, double> GetActiveMarkingRequestScopeQuantityByItem(long orderId);
     int GetDefaultMarkingReserveQuantity();
+    void SetDefaultMarkingReserveQuantity(int quantity, string actor, DateTime changedAt) =>
+        throw new NotSupportedException("Marking settings are read-only in this store.");
     void CreateImmutableRequestScopes(
         Guid markingOrderId,
         long orderId,

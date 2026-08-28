@@ -223,6 +223,10 @@ public static class OrderUpdateEndpoint
         {
             return Results.BadRequest(new ApiErrorResult(false, ex.ErrorCode, ex.Message));
         }
+        catch (OrderMarkingHistoryDeleteException ex)
+        {
+            return Results.BadRequest(new ApiErrorResult(false, ex.ErrorCode, ex.Message));
+        }
         catch (ArgumentException ex)
         {
             return Results.BadRequest(new ApiResult(false, MapKnownArgumentError(ex)));

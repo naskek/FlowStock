@@ -38,6 +38,25 @@ public sealed class WpfCompatibilityTests
     }
 
     [Fact]
+    public async Task WpfDeleteOrder_MarkingHistoryReturnsStableRussianValidationMessage()
+    {
+        var (harness, apiStore, orderId) = DeleteOrderHttpScenario.CreateDraftCustomerScenario();
+        var orderLineId = harness.Store.GetOrderLines(orderId).OrderBy(line => line.Id).First().Id;
+        harness.SeedOrderMarkingHistoryDependencies(orderId, orderLineId);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+        using var temp = new TempSettingsScope(host.Client.BaseAddress!, useServerDeleteOrder: true);
+        var service = new WpfDeleteOrderService(new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath));
+
+        var result = await service.DeleteOrderAsync(orderId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WpfDeleteOrderResultKind.ValidationFailed, result.Kind);
+        Assert.Contains("историю маркировки", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ORDER_MARKING_HISTORY_DELETE_FORBIDDEN", result.Message, StringComparison.Ordinal);
+        Assert.NotNull(harness.Store.GetOrder(orderId));
+    }
+
+    [Fact]
     public async Task WpfDeleteOrder_IgnoresLegacyFlagAndStillUsesCanonicalApi()
     {
         var (harness, apiStore, orderId) = DeleteOrderHttpScenario.CreateDraftCustomerScenario();

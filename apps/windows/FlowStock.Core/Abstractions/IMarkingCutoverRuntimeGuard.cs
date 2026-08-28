@@ -1,3 +1,5 @@
+using FlowStock.Core.Models.Marking;
+
 namespace FlowStock.Core.Abstractions;
 
 /// <summary>
@@ -8,6 +10,9 @@ public interface IMarkingCutoverRuntimeGuard
 {
     void RequireEnforcedMarkingWorkflow(string operation);
     void RequireEnforcedMarkingWorkflowForPallet(long productionPalletId, string operation);
+    IReadOnlyDictionary<long, MarkingPalletEligibility> GetMarkingPalletEligibility(
+        IReadOnlyCollection<long> productionPalletIds,
+        string operation) => new Dictionary<long, MarkingPalletEligibility>();
 }
 
 public static class MarkingCutoverRuntimeErrors

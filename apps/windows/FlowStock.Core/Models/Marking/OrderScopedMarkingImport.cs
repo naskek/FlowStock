@@ -10,7 +10,14 @@ public sealed record RelatedMarkingRequest(
     int ReserveQuantity,
     int RequestedQuantity,
     int ImportedQuantity,
-    string ScopeSnapshotHash);
+    string ScopeSnapshotHash,
+    int ActiveScopedQuantity = -1,
+    DateTime CreatedAt = default)
+{
+    public int EffectiveActiveScopedQuantity => ActiveScopedQuantity < 0 ? RequiredQuantity : ActiveScopedQuantity;
+    public int OperationalDeficit => Math.Max(0, EffectiveActiveScopedQuantity - ImportedQuantity);
+    public int RemainingRequestedCapacity => Math.Max(0, RequestedQuantity - ImportedQuantity);
+}
 
 public sealed record OrderScopedMarkingImportFilePreview(
     string FileName,
@@ -34,7 +41,8 @@ public sealed record OrderScopedMarkingImportRequestPreview(
     int ImportedAfter,
     bool CoverageWillActivate,
     bool ReserveShort,
-    string ScopeSnapshotHash);
+    string ScopeSnapshotHash,
+    int OperationalRequiredQuantity = 0);
 
 public sealed record OrderScopedMarkingImportPreviewResult(
     bool IsValid,

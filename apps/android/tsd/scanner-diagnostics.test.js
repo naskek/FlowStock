@@ -1832,6 +1832,13 @@ async function testStorageAndExport() {
 }
 
 function testShellIntegration() {
+  const versionContext = { self: {} };
+  vm.runInNewContext(appVersionJs, versionContext);
+  assert.match(versionContext.self.TSD_PWA_VERSION, /^\d+$/);
+  assert.strictEqual(
+    versionContext.self.TSD_CACHE_NAME,
+    `flowstock-tsd-v${versionContext.self.TSD_PWA_VERSION}`
+  );
   assert(indexHtml.includes("scanner-diagnostics-manifest.js"));
   assert(indexHtml.indexOf("scanner-diagnostics-manifest.js") < indexHtml.indexOf("scanner-diagnostics-store.js"));
   assert(indexHtml.indexOf("scanner-diagnostics-store.js") < indexHtml.indexOf("scanner-diagnostics.js"));
@@ -1843,7 +1850,6 @@ function testShellIntegration() {
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-manifest.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-store.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics.js"'));
-  assert(appVersionJs.includes('var version = "76"'));
   assert(appJs.includes('id="scannerDiagnosticsBtn"'));
   assert(appJs.includes('navigate("/scanner-diagnostics")'));
   assert(appJs.includes('route.name === "scannerDiagnostics"'));

@@ -181,6 +181,15 @@
                         <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="220" IsReadOnly="True" />
                         <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="150" IsReadOnly="True" />
                         <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="150" IsReadOnly="True" />
+                        <DataGridTemplateColumn Header="Маркировка" Width="170">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding MarkingProgressDisplay}"
+                                               ToolTip="{Binding MarkingProgressToolTip}"
+                                               TextWrapping="Wrap" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTextColumn Header="Заказано (база)" Binding="{Binding QtyOrdered}" Width="140" IsReadOnly="True" />
                         <DataGridTextColumn x:Name="UnitPriceGrossColumn"
                                             Header="Цена с НДС"

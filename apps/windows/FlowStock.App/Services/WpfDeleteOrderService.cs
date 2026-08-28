@@ -123,6 +123,9 @@ public sealed class WpfDeleteOrderService
             "ORDER_HAS_SHIPMENTS" => "Нельзя удалить заказ: по нему уже есть отгрузки.",
             "ORDER_HAS_PRODUCTION_DOCS" => "Нельзя удалить внутренний заказ: есть выпуски продукции или связанные документы.",
             "ORDER_HAS_PRODUCTION_RECEIPTS" => "Нельзя удалить внутренний заказ: по нему уже был выпуск продукции.",
+            "ORDER_MARKING_HISTORY_DELETE_FORBIDDEN" => string.IsNullOrWhiteSpace(apiCall.Error?.Message)
+                ? "Заказ имеет историю маркировки и не может быть физически удалён. Отмените заказ и сохраните его как историю."
+                : apiCall.Error.Message!,
             _ => string.IsNullOrWhiteSpace(errorCode)
                 ? $"Сервер вернул ошибку {(int?)apiCall.StatusCode ?? 0}."
                 : $"Сервер вернул ошибку: {errorCode}"
@@ -136,6 +139,7 @@ public sealed class WpfDeleteOrderService
             "ORDER_HAS_SHIPMENTS" => WpfDeleteOrderResultKind.ValidationFailed,
             "ORDER_HAS_PRODUCTION_DOCS" => WpfDeleteOrderResultKind.ValidationFailed,
             "ORDER_HAS_PRODUCTION_RECEIPTS" => WpfDeleteOrderResultKind.ValidationFailed,
+            "ORDER_MARKING_HISTORY_DELETE_FORBIDDEN" => WpfDeleteOrderResultKind.ValidationFailed,
             _ => WpfDeleteOrderResultKind.ServerRejected
         };
 

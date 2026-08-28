@@ -1570,6 +1570,19 @@ public sealed class WpfReadApiService
 
     internal static OrderLineView MapOrderLineView(JsonElement element)
     {
+        var markingProgress = element.TryGetProperty("marking_progress", out var progress)
+                              && progress.ValueKind == JsonValueKind.Object
+            ? progress
+            : default;
+        var markingState = markingProgress.ValueKind == JsonValueKind.Object
+            ? ReadString(markingProgress, "state") ?? "NOT_REQUIRED"
+            : "NOT_REQUIRED";
+        var markingRequired = markingProgress.ValueKind == JsonValueKind.Object
+            ? ReadDouble(markingProgress, "real_required_qty")
+            : 0;
+        var markingCovered = markingProgress.ValueKind == JsonValueKind.Object
+            ? ReadDouble(markingProgress, "valid_real_covered_qty")
+            : 0;
         return new OrderLineView
         {
             Id = ReadInt64(element, "id"),
@@ -1597,9 +1610,28 @@ public sealed class WpfReadApiService
             FilledPalletCount = ReadInt32(element, "filled_pallet_count"),
             PlannedPalletQty = ReadDouble(element, "pallet_planned_qty"),
             FilledPalletQty = ReadDouble(element, "pallet_filled_qty"),
+            MarkingProgressState = markingState,
+            MarkingRealRequiredQty = markingRequired,
+            MarkingValidRealCoveredQty = markingCovered,
+            MarkingProgressToolTip = markingProgress.ValueKind == JsonValueKind.Object
+                ? BuildMarkingProgressToolTip(markingProgress, markingRequired, markingCovered)
+                : null,
             HuPresentation = MapOrderLineHuPresentation(element),
             HuFateDisplayEntries = MapOrderLineHuFateDisplayEntries(element)
         };
+    }
+
+    private static string BuildMarkingProgressToolTip(JsonElement progress, double required, double covered)
+    {
+        var parts = new List<string> { $"Real KM: {covered:0.###} из {required:0.###}" };
+        var configurationError = ReadString(progress, "configuration_error");
+        if (!string.IsNullOrWhiteSpace(configurationError)) parts.Add(configurationError);
+        if (progress.TryGetProperty("requests", out var requests) && requests.ValueKind == JsonValueKind.Array)
+        {
+            parts.AddRange(requests.EnumerateArray().Select(request =>
+                $"{ReadString(request, "request_number")}: импортировано {ReadInt32(request, "imported_qty")} / active {ReadInt32(request, "operational_required_qty")}"));
+        }
+        return string.Join(Environment.NewLine, parts);
     }
 
     private static IReadOnlyList<OrderLineHuDisplayEntry> MapOrderLineHuFateDisplayEntries(JsonElement element)

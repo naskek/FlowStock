@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Diagnostics;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using FlowStock.Core.Models.Marking;
 using FlowStock.Core.Services;
 using FlowStock.Data;
 using FlowStock.Server;
@@ -13,6 +15,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Npgsql;
 
 namespace FlowStock.Server.Tests.Orders;
 
@@ -733,6 +736,678 @@ public sealed class OrderDeletePostgresRegressionTests
         });
     }
 
+    [Fact]
+    public async Task DeleteDraftOrder_WithV0041ExportBatch_ReturnsDomainErrorAndPreservesHistory()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, scopedStore =>
+        {
+            var fixture = SeedCustomerOrderWithSingleLine(scopedStore);
+            scopedStore.UpdateOrderStatus(fixture.OrderId, OrderStatus.Draft);
+            var line = Assert.Single(scopedStore.GetOrderLines(fixture.OrderId));
+            var item = scopedStore.FindItemById(line.ItemId);
+            Assert.NotNull(item);
+            var requestId = Guid.NewGuid();
+            var batchId = Guid.NewGuid();
+            var now = new DateTime(2026, 8, 27, 10, 0, 0, DateTimeKind.Utc);
+
+            scopedStore.AddMarkingOrder(new MarkingOrder
+            {
+                Id = requestId,
+                OrderId = fixture.OrderId,
+                OrderLineId = fixture.OrderLineId,
+                ItemId = line.ItemId,
+                Gtin = "04607186952596",
+                RequiredQuantity = 1,
+                RequestedQuantity = 1,
+                OriginalOrderId = fixture.OrderId,
+                OriginalOrderLineId = fixture.OrderLineId,
+                RequestNumber = $"DELETE-{requestId:N}",
+                Status = MarkingOrderStatus.WaitingForCodes,
+                SourceType = "POSTGRES_TEST",
+                CreatedAt = now,
+                UpdatedAt = now
+            });
+            ((IMarkingRequestOperationalStore)scopedStore).CreateMarkingRequestExportBatch(
+                new CreateMarkingRequestExportBatchCommand(
+                    batchId,
+                    fixture.OrderId,
+                    "delete-pre-snapshot",
+                    "delete-post-snapshot",
+                    0,
+                    "TEST",
+                    now,
+                    [new MarkingRequestExportBatchRequestSnapshot(
+                        requestId,
+                        line.ItemId,
+                        item!.Name,
+                        "04607186952596",
+                        1,
+                        0,
+                        1)]));
+
+            var exception = Record.Exception(() => new OrderService(scopedStore).DeleteOrder(fixture.OrderId));
+
+            var domainException = Assert.IsType<OrderMarkingHistoryDeleteException>(exception);
+            Assert.Equal(OrderMarkingHistoryDeleteException.OrderErrorCode, domainException.ErrorCode);
+            Assert.Contains("историю маркировки", domainException.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.NotNull(scopedStore.GetOrder(fixture.OrderId));
+            Assert.Single(scopedStore.GetOrderLines(fixture.OrderId));
+            Assert.NotNull(((IMarkingRequestOperationalStore)scopedStore)
+                .GetMarkingRequestExportBatch(fixture.OrderId, "delete-pre-snapshot"));
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task DeleteDraftOrder_WithoutMarkingHistory_DeletesOrderAndLines()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, scopedStore =>
+        {
+            var fixture = SeedCustomerOrderWithSingleLine(scopedStore);
+            scopedStore.UpdateOrderStatus(fixture.OrderId, OrderStatus.Draft);
+
+            new OrderService(scopedStore).DeleteOrder(fixture.OrderId);
+
+            Assert.Null(scopedStore.GetOrder(fixture.OrderId));
+            Assert.Empty(scopedStore.GetOrderLines(fixture.OrderId));
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task DeleteDraftOrder_WithMarkingRequestButNoExportBatch_ReturnsSameDomainError()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, scopedStore =>
+        {
+            var fixture = SeedCustomerOrderWithSingleLine(scopedStore);
+            scopedStore.UpdateOrderStatus(fixture.OrderId, OrderStatus.Draft);
+            var line = Assert.Single(scopedStore.GetOrderLines(fixture.OrderId));
+            var requestId = AddMarkingRequest(scopedStore, fixture.OrderId, fixture.OrderLineId, line.ItemId);
+
+            var exception = Assert.Throws<OrderMarkingHistoryDeleteException>(
+                () => new OrderService(scopedStore).DeleteOrder(fixture.OrderId));
+
+            Assert.Equal(OrderMarkingHistoryDeleteException.OrderErrorCode, exception.ErrorCode);
+            Assert.NotNull(scopedStore.GetOrder(fixture.OrderId));
+            Assert.Single(scopedStore.GetOrderLines(fixture.OrderId));
+            Assert.Single(scopedStore.GetMarkingOrdersByIds([requestId]));
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task UpdateOrder_RemovingLineWithMarkingHistory_LogicallyCancelsAndKeepsHistory()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, scopedStore =>
+        {
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore);
+            var requestId = AddMarkingRequest(
+                scopedStore,
+                fixture.OrderId,
+                fixture.DeletedOrderLineId,
+                fixture.DeletedItemId);
+            var remaining = Assert.Single(
+                scopedStore.GetOrderLines(fixture.OrderId),
+                line => line.Id == fixture.RemainingOrderLineId);
+            var service = new OrderService(scopedStore);
+            var updateLines = new[]
+            {
+                new OrderLineView
+                {
+                    Id = remaining.Id,
+                    OrderId = fixture.OrderId,
+                    ItemId = remaining.ItemId,
+                    QtyOrdered = remaining.QtyOrdered,
+                    ProductionPurpose = remaining.ProductionPurpose
+                }
+            };
+
+            service.UpdateOrder(
+                fixture.OrderId,
+                fixture.OrderRef,
+                fixture.PartnerId,
+                null,
+                null,
+                updateLines,
+                OrderType.Customer);
+
+            var storedLines = scopedStore.GetOrderLines(fixture.OrderId);
+            Assert.Equal(2, storedLines.Count);
+            var cancelled = Assert.Single(storedLines, line => line.Id == fixture.DeletedOrderLineId);
+            Assert.NotNull(cancelled.CancelledAt);
+            Assert.Equal("SERVER:order-update", cancelled.CancelledByActor);
+            Assert.Equal("removed_from_order_update_with_marking_history", cancelled.CancelReason);
+            Assert.Single(scopedStore.GetMarkingOrdersByIds([requestId]));
+            Assert.Collection(
+                scopedStore.GetOrderLineViews(fixture.OrderId),
+                line => Assert.Equal(fixture.RemainingOrderLineId, line.Id));
+
+            service.UpdateOrder(
+                fixture.OrderId,
+                fixture.OrderRef,
+                fixture.PartnerId,
+                null,
+                null,
+                updateLines,
+                OrderType.Customer);
+            Assert.Single(scopedStore.GetOrderLines(fixture.OrderId), line => line.CancelledAt.HasValue);
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task PhysicalOrderLineDelete_WithMarkingHistory_FailsClosedWithoutPostgresFk()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        await RunInRollbackTransactionAsync(connectionString, scopedStore =>
+        {
+            var fixture = SeedCustomerOrderWithTwoLines(scopedStore);
+            var requestId = AddMarkingRequest(
+                scopedStore,
+                fixture.OrderId,
+                fixture.DeletedOrderLineId,
+                fixture.DeletedItemId);
+
+            var exception = Assert.Throws<OrderMarkingHistoryDeleteException>(
+                () => scopedStore.DeleteOrderLine(fixture.DeletedOrderLineId));
+
+            Assert.Equal(OrderMarkingHistoryDeleteException.OrderLineErrorCode, exception.ErrorCode);
+            Assert.IsNotType<PostgresException>(exception);
+            Assert.Contains(
+                scopedStore.GetOrderLines(fixture.OrderId),
+                line => line.Id == fixture.DeletedOrderLineId && !line.CancelledAt.HasValue);
+            Assert.Single(scopedStore.GetMarkingOrdersByIds([requestId]));
+            return Task.CompletedTask;
+        });
+    }
+
+    [Theory]
+    [InlineData("MARKING_CODE")]
+    [InlineData("TRANSITION_AUDIT")]
+    public async Task PhysicalOrderLineDelete_MatchingForeignReceiptLineId_DoesNotCreateMarkingHistoryDependency(
+        string source)
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        var fixture = await SeedReceiptLineageFixtureAsync(
+            connectionString,
+            source == "MARKING_CODE" ? ReceiptLineageSource.MarkingCode : ReceiptLineageSource.TransitionAudit,
+            receiptLineBelongsToTarget: false);
+        try
+        {
+            var store = new PostgresDataStore(connectionString);
+            store.Initialize();
+
+            store.DeleteOrderLine(fixture.TargetOrderLineId);
+
+            Assert.DoesNotContain(
+                store.GetOrderLines(fixture.TargetOrderId),
+                line => line.Id == fixture.TargetOrderLineId);
+            Assert.Contains(
+                store.GetOrderLines(fixture.ForeignOrderId),
+                line => line.Id == fixture.ForeignOrderLineId);
+        }
+        finally
+        {
+            await DeleteReceiptLineageFixtureAsync(connectionString, fixture);
+        }
+    }
+
+    [Theory]
+    [InlineData("MARKING_CODE")]
+    [InlineData("TRANSITION_AUDIT")]
+    public async Task PhysicalOrderLineDelete_DifferentLinkedReceiptLineId_BlocksWithStableMarkingHistoryError(
+        string source)
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        var fixture = await SeedReceiptLineageFixtureAsync(
+            connectionString,
+            source == "MARKING_CODE" ? ReceiptLineageSource.MarkingCode : ReceiptLineageSource.TransitionAudit,
+            receiptLineBelongsToTarget: true);
+        try
+        {
+            Assert.NotEqual(fixture.TargetOrderLineId, fixture.ReceiptLineId);
+            var store = new PostgresDataStore(connectionString);
+            store.Initialize();
+
+            var exception = Assert.Throws<OrderMarkingHistoryDeleteException>(
+                () => store.DeleteOrderLine(fixture.TargetOrderLineId));
+
+            Assert.Equal(OrderMarkingHistoryDeleteException.OrderLineErrorCode, exception.ErrorCode);
+            Assert.IsNotType<PostgresException>(exception);
+            Assert.Contains(
+                store.GetOrderLines(fixture.TargetOrderId),
+                line => line.Id == fixture.TargetOrderLineId);
+        }
+        finally
+        {
+            await DeleteReceiptLineageFixtureAsync(connectionString, fixture);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentExportHistoryCommitThenDelete_SerializesAndRejectsWithoutPartialWrites()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        var setupStore = new PostgresDataStore(connectionString);
+        setupStore.Initialize();
+        EnsureAtLeastOneLocation(setupStore);
+        var fixture = SeedCustomerOrderWithSingleLine(setupStore);
+        setupStore.UpdateOrderStatus(fixture.OrderId, OrderStatus.Draft);
+        var line = Assert.Single(setupStore.GetOrderLines(fixture.OrderId));
+        var item = setupStore.FindItemById(line.ItemId)!;
+        var locationId = setupStore.GetLocations().First().Id;
+        var suffix = Guid.NewGuid().ToString("N");
+        setupStore.ReplaceOrderReceiptPlanLines(fixture.OrderId,
+        [
+            new OrderReceiptPlanLine
+            {
+                OrderId = fixture.OrderId,
+                OrderLineId = fixture.OrderLineId,
+                ItemId = line.ItemId,
+                QtyPlanned = 1,
+                ToLocationId = locationId,
+                ToHu = $"HU-DELETE-{suffix[..12]}",
+                SortOrder = 0
+            }
+        ]);
+
+        var writerConnectionString = new NpgsqlConnectionStringBuilder(connectionString)
+        {
+            ApplicationName = $"order-delete-writer-{suffix}"
+        }.ConnectionString;
+        var deleteApplicationName = $"order-delete-waiter-{suffix}";
+        var deleteConnectionString = new NpgsqlConnectionStringBuilder(connectionString)
+        {
+            ApplicationName = deleteApplicationName
+        }.ConnectionString;
+        var deleteStore = new PostgresDataStore(deleteConnectionString);
+        deleteStore.Initialize();
+
+        await using var writerConnection = new NpgsqlConnection(writerConnectionString);
+        await writerConnection.OpenAsync();
+        await using var writerTransaction = await writerConnection.BeginTransactionAsync();
+        await LockOrderAsync(writerConnection, writerTransaction, fixture.OrderId);
+        var requestId = Guid.NewGuid();
+        var batchId = Guid.NewGuid();
+        await InsertExportHistoryAsync(
+            writerConnection,
+            writerTransaction,
+            fixture.OrderId,
+            fixture.OrderLineId,
+            line.ItemId,
+            item.Name,
+            requestId,
+            batchId,
+            suffix);
+
+        var deleteTask = Task.Run(() => Record.Exception(
+            () => new OrderService(deleteStore).DeleteOrder(fixture.OrderId)));
+
+        await WaitForPostgresLockAsync(connectionString, deleteApplicationName, TimeSpan.FromSeconds(10));
+        Assert.False(deleteTask.IsCompleted);
+        await writerTransaction.CommitAsync();
+
+        var exception = await deleteTask;
+        var domainException = Assert.IsType<OrderMarkingHistoryDeleteException>(exception);
+        Assert.Equal(OrderMarkingHistoryDeleteException.OrderErrorCode, domainException.ErrorCode);
+        Assert.NotNull(setupStore.GetOrder(fixture.OrderId));
+        Assert.Single(setupStore.GetOrderLines(fixture.OrderId));
+        Assert.Single(setupStore.GetOrderReceiptPlanLines(fixture.OrderId));
+        Assert.Single(setupStore.GetMarkingOrdersByIds([requestId]));
+        Assert.NotNull(((IMarkingRequestOperationalStore)setupStore)
+            .GetMarkingRequestExportBatch(fixture.OrderId, $"pre-{suffix}"));
+    }
+
+    private static Guid AddMarkingRequest(IDataStore store, long orderId, long orderLineId, long itemId)
+    {
+        var requestId = Guid.NewGuid();
+        var now = new DateTime(2026, 8, 27, 11, 0, 0, DateTimeKind.Utc);
+        store.AddMarkingOrder(new MarkingOrder
+        {
+            Id = requestId,
+            OrderId = orderId,
+            OrderLineId = orderLineId,
+            ItemId = itemId,
+            Gtin = "04607186952596",
+            RequiredQuantity = 1,
+            RequestedQuantity = 1,
+            OriginalOrderId = orderId,
+            OriginalOrderLineId = orderLineId,
+            RequestNumber = $"DELETE-{requestId:N}",
+            Status = MarkingOrderStatus.WaitingForCodes,
+            SourceType = "POSTGRES_TEST",
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        return requestId;
+    }
+
+    private static long _nextReceiptLineageFixtureId = 8_000_000_000;
+
+    private static async Task<ReceiptLineageFixture> SeedReceiptLineageFixtureAsync(
+        string connectionString,
+        ReceiptLineageSource source,
+        bool receiptLineBelongsToTarget)
+    {
+        var baseId = Interlocked.Add(ref _nextReceiptLineageFixtureId, 100);
+        var targetOrderId = baseId + 1;
+        var foreignOrderId = baseId + 2;
+        var targetOrderLineId = baseId + 10;
+        var foreignOrderLineId = baseId + 11;
+        var targetItemId = baseId + 20;
+        var foreignItemId = baseId + 21;
+        var receiptDocId = baseId + 30;
+        var receiptLineId = receiptLineBelongsToTarget ? baseId + 31 : targetOrderLineId;
+        var adjustmentId = baseId + 40;
+        var requestId = Guid.NewGuid();
+        var importId = Guid.NewGuid();
+        var codeId = Guid.NewGuid();
+        var adjustmentRequestId = Guid.NewGuid();
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+        await using var command = new NpgsqlCommand("""
+INSERT INTO items(id, name, base_uom)
+VALUES (@target_item_id, @target_item_name, 'шт'),
+       (@foreign_item_id, @foreign_item_name, 'шт');
+
+INSERT INTO orders(id, order_ref, order_type, status, created_at)
+VALUES (@target_order_id, @target_order_ref, 'CUSTOMER', 'DRAFT', @created_at),
+       (@foreign_order_id, @foreign_order_ref, 'CUSTOMER', 'DRAFT', @created_at);
+
+INSERT INTO order_lines(id, order_id, item_id, qty_ordered)
+VALUES (@target_order_line_id, @target_order_id, @target_item_id, 1),
+       (@foreign_order_line_id, @foreign_order_id, @foreign_item_id, 1);
+
+INSERT INTO docs(id, doc_ref, type, status, created_at, order_id, order_ref)
+VALUES (@receipt_doc_id, @receipt_doc_ref, 'PRODUCTION_RECEIPT', 'CLOSED', @created_at,
+        @receipt_order_id, @receipt_order_ref);
+
+INSERT INTO doc_lines(id, doc_id, order_line_id, item_id, qty)
+VALUES (@receipt_line_id, @receipt_doc_id, @receipt_order_line_id, @receipt_item_id, 1);
+
+INSERT INTO marking_order(
+    id, order_id, order_line_id, item_id, gtin,
+    required_quantity, reserve_quantity, requested_quantity,
+    original_order_id, original_order_line_id,
+    request_number, status, source_type, created_at, updated_at)
+VALUES (
+    @request_id, @foreign_order_id, @foreign_order_line_id, @foreign_item_id, '04607186952596',
+    1, 0, 1, @foreign_order_id, @foreign_order_line_id,
+    @request_number, 'WaitingForCodes', 'POSTGRES_TEST', @created_at, @created_at);
+
+INSERT INTO marking_code_import(
+    id, original_filename, storage_path, file_hash, source_type,
+    matched_marking_order_id, status, created_at)
+VALUES (
+    @import_id, 'synthetic-test.tsv', '<test>', @file_hash, 'POSTGRES_TEST',
+    @request_id, 'Imported', @created_at);
+
+INSERT INTO marking_code(
+    id, code, code_hash, gtin, marking_order_id, import_id,
+    status, origin, receipt_doc_id, receipt_line_id, created_at, updated_at)
+VALUES (
+    @code_id, @code, @code_hash, '04607186952596', @request_id, @import_id,
+    'Reserved', 'HistoricalUnknown',
+    CASE WHEN @source = 'MARKING_CODE' THEN @receipt_doc_id ELSE NULL END,
+    CASE WHEN @source = 'MARKING_CODE' THEN @receipt_line_id ELSE NULL END,
+    @created_at, @created_at);
+
+INSERT INTO production_pallet_filling_adjustments(
+    id, action_type, request_id, payload_hash, source_prd_doc_id,
+    reason_code, reason_text, created_at)
+SELECT @adjustment_id, 'RESET_PARTIAL', @adjustment_request_id, @payload_hash, @receipt_doc_id,
+       'ERRONEOUS_PARTIAL_FILL', 'test lineage', @created_at
+WHERE @source = 'TRANSITION_AUDIT';
+
+INSERT INTO production_marking_transition_audit(
+    adjustment_id, marking_code_id, marking_order_id, import_id, origin,
+    source_prd_doc_id, old_receipt_doc_id, old_receipt_line_id,
+    old_status, new_status, reason_text, changed_at)
+SELECT @adjustment_id, @code_id, @request_id, @import_id, 'HistoricalUnknown',
+       @receipt_doc_id, @receipt_doc_id, @receipt_line_id,
+       'Applied', 'Reserved', 'test lineage', @created_at
+WHERE @source = 'TRANSITION_AUDIT';
+""", connection, transaction);
+        command.Parameters.AddWithValue("@target_item_id", targetItemId);
+        command.Parameters.AddWithValue("@target_item_name", $"Target item {suffix}");
+        command.Parameters.AddWithValue("@foreign_item_id", foreignItemId);
+        command.Parameters.AddWithValue("@foreign_item_name", $"Foreign item {suffix}");
+        command.Parameters.AddWithValue("@target_order_id", targetOrderId);
+        command.Parameters.AddWithValue("@target_order_ref", $"TARGET-{suffix}");
+        command.Parameters.AddWithValue("@foreign_order_id", foreignOrderId);
+        command.Parameters.AddWithValue("@foreign_order_ref", $"FOREIGN-{suffix}");
+        command.Parameters.AddWithValue("@target_order_line_id", targetOrderLineId);
+        command.Parameters.AddWithValue("@foreign_order_line_id", foreignOrderLineId);
+        command.Parameters.AddWithValue("@receipt_doc_id", receiptDocId);
+        command.Parameters.AddWithValue("@receipt_doc_ref", $"PRD-{suffix}");
+        command.Parameters.AddWithValue("@receipt_order_id", receiptLineBelongsToTarget ? targetOrderId : foreignOrderId);
+        command.Parameters.AddWithValue("@receipt_order_ref", receiptLineBelongsToTarget ? $"TARGET-{suffix}" : $"FOREIGN-{suffix}");
+        command.Parameters.AddWithValue("@receipt_line_id", receiptLineId);
+        command.Parameters.AddWithValue("@receipt_order_line_id", receiptLineBelongsToTarget ? targetOrderLineId : foreignOrderLineId);
+        command.Parameters.AddWithValue("@receipt_item_id", receiptLineBelongsToTarget ? targetItemId : foreignItemId);
+        command.Parameters.AddWithValue("@request_id", requestId);
+        command.Parameters.AddWithValue("@request_number", $"LINEAGE-{suffix}");
+        command.Parameters.AddWithValue("@import_id", importId);
+        command.Parameters.AddWithValue("@file_hash", $"file-{suffix}");
+        command.Parameters.AddWithValue("@code_id", codeId);
+        command.Parameters.AddWithValue("@code", $"TEST-CODE-{suffix}");
+        command.Parameters.AddWithValue("@code_hash", $"code-{suffix}");
+        command.Parameters.AddWithValue("@source", source == ReceiptLineageSource.MarkingCode ? "MARKING_CODE" : "TRANSITION_AUDIT");
+        command.Parameters.AddWithValue("@adjustment_id", adjustmentId);
+        command.Parameters.AddWithValue("@adjustment_request_id", adjustmentRequestId);
+        command.Parameters.AddWithValue("@payload_hash", $"payload-{suffix}");
+        command.Parameters.AddWithValue("@created_at", "2026-08-27T12:00:00.0000000Z");
+        await command.ExecuteNonQueryAsync();
+        await transaction.CommitAsync();
+
+        return new ReceiptLineageFixture(
+            targetOrderId,
+            foreignOrderId,
+            targetOrderLineId,
+            foreignOrderLineId,
+            targetItemId,
+            foreignItemId,
+            receiptDocId,
+            receiptLineId,
+            adjustmentId,
+            requestId,
+            importId,
+            codeId);
+    }
+
+    private static async Task DeleteReceiptLineageFixtureAsync(
+        string connectionString,
+        ReceiptLineageFixture fixture)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand("""
+DELETE FROM production_marking_transition_audit WHERE marking_code_id = @code_id;
+DELETE FROM production_pallet_filling_adjustments WHERE id = @adjustment_id;
+DELETE FROM marking_code WHERE id = @code_id;
+DELETE FROM marking_code_import WHERE id = @import_id;
+DELETE FROM marking_order WHERE id = @request_id;
+DELETE FROM doc_lines WHERE id = @receipt_line_id;
+DELETE FROM docs WHERE id = @receipt_doc_id;
+DELETE FROM order_lines WHERE id IN (@target_order_line_id, @foreign_order_line_id);
+DELETE FROM orders WHERE id IN (@target_order_id, @foreign_order_id);
+DELETE FROM items WHERE id IN (@target_item_id, @foreign_item_id);
+""", connection);
+        command.Parameters.AddWithValue("@code_id", fixture.CodeId);
+        command.Parameters.AddWithValue("@adjustment_id", fixture.AdjustmentId);
+        command.Parameters.AddWithValue("@import_id", fixture.ImportId);
+        command.Parameters.AddWithValue("@request_id", fixture.RequestId);
+        command.Parameters.AddWithValue("@receipt_line_id", fixture.ReceiptLineId);
+        command.Parameters.AddWithValue("@receipt_doc_id", fixture.ReceiptDocId);
+        command.Parameters.AddWithValue("@target_order_line_id", fixture.TargetOrderLineId);
+        command.Parameters.AddWithValue("@foreign_order_line_id", fixture.ForeignOrderLineId);
+        command.Parameters.AddWithValue("@target_order_id", fixture.TargetOrderId);
+        command.Parameters.AddWithValue("@foreign_order_id", fixture.ForeignOrderId);
+        command.Parameters.AddWithValue("@target_item_id", fixture.TargetItemId);
+        command.Parameters.AddWithValue("@foreign_item_id", fixture.ForeignItemId);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private enum ReceiptLineageSource
+    {
+        MarkingCode,
+        TransitionAudit
+    }
+
+    private sealed record ReceiptLineageFixture(
+        long TargetOrderId,
+        long ForeignOrderId,
+        long TargetOrderLineId,
+        long ForeignOrderLineId,
+        long TargetItemId,
+        long ForeignItemId,
+        long ReceiptDocId,
+        long ReceiptLineId,
+        long AdjustmentId,
+        Guid RequestId,
+        Guid ImportId,
+        Guid CodeId);
+
+    private static async Task LockOrderAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        long orderId)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT id FROM orders WHERE id = @order_id FOR UPDATE;";
+        command.Parameters.AddWithValue("@order_id", orderId);
+        Assert.Equal(orderId, Convert.ToInt64(await command.ExecuteScalarAsync()));
+    }
+
+    private static async Task InsertExportHistoryAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        long orderId,
+        long orderLineId,
+        long itemId,
+        string itemName,
+        Guid requestId,
+        Guid batchId,
+        string suffix)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+INSERT INTO marking_order(
+    id, order_id, order_line_id, item_id, gtin,
+    required_quantity, reserve_quantity, requested_quantity,
+    original_order_id, original_order_line_id,
+    request_number, status, request_status, source_type, created_at, updated_at)
+VALUES(
+    @request_id, @order_id, @order_line_id, @item_id, @gtin,
+    1, 0, 1, @order_id, @order_line_id,
+    @request_number, 'WaitingForCodes', 'NotRequested', 'POSTGRES_TEST', @created_at_text, @created_at_text);
+
+INSERT INTO marking_request_export_batch(
+    id, order_id, expected_snapshot_hash, post_export_snapshot_hash,
+    reserve_quantity, created_by, created_at)
+VALUES(@batch_id, @order_id, @pre_hash, @post_hash, 0, 'TEST', @created_at);
+
+INSERT INTO marking_request_export_batch_request(
+    export_batch_id, marking_order_id, item_id, item_name_snapshot, gtin_snapshot,
+    required_quantity_snapshot, reserve_quantity_snapshot, requested_quantity_snapshot)
+VALUES(@batch_id, @request_id, @item_id, @item_name, @gtin, 1, 0, 1);
+""";
+        var now = new DateTime(2026, 8, 27, 12, 0, 0, DateTimeKind.Utc);
+        command.Parameters.AddWithValue("@request_id", requestId);
+        command.Parameters.AddWithValue("@batch_id", batchId);
+        command.Parameters.AddWithValue("@order_id", orderId);
+        command.Parameters.AddWithValue("@order_line_id", orderLineId);
+        command.Parameters.AddWithValue("@item_id", itemId);
+        command.Parameters.AddWithValue("@item_name", itemName);
+        command.Parameters.AddWithValue("@gtin", "04607186952596");
+        command.Parameters.AddWithValue("@request_number", $"DELETE-LOCK-{suffix}");
+        command.Parameters.AddWithValue("@pre_hash", $"pre-{suffix}");
+        command.Parameters.AddWithValue("@post_hash", $"post-{suffix}");
+        command.Parameters.AddWithValue("@created_at_text", now.ToString("O"));
+        command.Parameters.AddWithValue("@created_at", now);
+        Assert.Equal(3, await command.ExecuteNonQueryAsync());
+    }
+
+    private static async Task WaitForPostgresLockAsync(
+        string connectionString,
+        string applicationName,
+        TimeSpan timeout)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (stopwatch.Elapsed < timeout)
+        {
+            await using var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+SELECT EXISTS (
+    SELECT 1
+    FROM pg_stat_activity
+    WHERE application_name = @application_name
+      AND wait_event_type = 'Lock'
+);
+""";
+            command.Parameters.AddWithValue("@application_name", applicationName);
+            if (await command.ExecuteScalarAsync() is true)
+            {
+                return;
+            }
+
+            await Task.Delay(25);
+        }
+
+        throw new TimeoutException($"PostgreSQL session {applicationName} did not wait on the order lock.");
+    }
+
     private static UpdateOrderHttpApi.UpdateOrderRequest BuildDeleteFirstLineRequest(CustomerOrderFixture fixture)
     {
         return new UpdateOrderHttpApi.UpdateOrderRequest
@@ -843,7 +1518,8 @@ public sealed class OrderDeletePostgresRegressionTests
         var partnerId = store.AddPartner(new Partner
         {
             Name = $"Тестовый клиент single {suffix}",
-            Code = $"T-SCL-{suffix}"
+            Code = $"T-SCL-{suffix}",
+            PartnerRole = "BOTH"
         });
 
         var itemId = store.AddItem(new Item

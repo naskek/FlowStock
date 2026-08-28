@@ -1,4 +1,7 @@
 using System.Net;
+using System.Net.Http.Json;
+using FlowStock.Core.Models;
+using FlowStock.Server;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 using FlowStock.Server.Tests.DeleteOrder.Infrastructure;
 
@@ -59,6 +62,24 @@ public sealed class ValidationTests
 
         Assert.False(payload.Ok);
         Assert.Equal("ORDER_HAS_SHIPMENTS", payload.Error);
+        Assert.NotNull(harness.Store.GetOrder(orderId));
+    }
+
+    [Fact]
+    public async Task OrderWithMarkingHistory_ReturnsStableDomainErrorAndMessage()
+    {
+        var (harness, apiStore, orderId) = DeleteOrderHttpScenario.CreateDraftCustomerScenario();
+        harness.SeedOrderMarkingHistoryDependencies(orderId, 301);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+
+        using var response = await host.Client.DeleteAsync($"/api/orders/{orderId}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<ApiErrorResult>();
+        Assert.NotNull(payload);
+        Assert.False(payload!.Ok);
+        Assert.Equal(OrderMarkingHistoryDeleteException.OrderErrorCode, payload.Error);
+        Assert.Contains("историю маркировки", payload.Message, StringComparison.OrdinalIgnoreCase);
         Assert.NotNull(harness.Store.GetOrder(orderId));
     }
 

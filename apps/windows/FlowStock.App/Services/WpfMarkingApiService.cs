@@ -72,7 +72,8 @@ public sealed class WpfMarkingApiService
                 payload.OrderRef ?? string.Empty,
                 payload.LineCount,
                 payload.TotalQty,
-                payload.Lines?.Select(MapPreviewLine).ToArray() ?? Array.Empty<OrderMarkingExportPreviewLineApiResult>());
+                payload.Lines?.Select(MapPreviewLine).ToArray() ?? Array.Empty<OrderMarkingExportPreviewLineApiResult>(),
+                payload.SnapshotHash ?? string.Empty);
         }
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
@@ -106,7 +107,8 @@ public sealed class WpfMarkingApiService
 
     public async Task<OrderMarkingExportApiResult> TryExportOrderAsync(
         long orderId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? expectedSnapshotHash = null)
     {
         if (cancellationToken.IsCancellationRequested)
         {
@@ -131,7 +133,10 @@ public sealed class WpfMarkingApiService
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
                 Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             };
-            using var response = await client.PostAsJsonAsync($"/api/orders/{orderId}/marking/export", new { }, cancellationToken)
+            using var response = await client.PostAsJsonAsync(
+                    $"/api/orders/{orderId}/marking/export",
+                    new { expected_snapshot_hash = expectedSnapshotHash },
+                    cancellationToken)
                 .ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
@@ -439,6 +444,10 @@ public sealed class WpfMarkingApiService
         try
         {
             var error = await response.Content.ReadFromJsonAsync<ApiErrorResponse>(JsonOptions).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(error?.Message))
+            {
+                return error.Message;
+            }
             if (!string.IsNullOrWhiteSpace(error?.Error))
             {
                 return error.Error;
@@ -682,6 +691,9 @@ public sealed class WpfMarkingApiService
         [JsonPropertyName("total_qty")]
         public double TotalQty { get; init; }
 
+        [JsonPropertyName("snapshot_hash")]
+        public string? SnapshotHash { get; init; }
+
         [JsonPropertyName("lines")]
         public OrderMarkingExportPreviewLineResponse[]? Lines { get; init; }
     }
@@ -778,7 +790,8 @@ public sealed record OrderMarkingExportPreviewApiResult(
     string OrderRef,
     int LineCount,
     double TotalQty,
-    IReadOnlyList<OrderMarkingExportPreviewLineApiResult> Lines)
+    IReadOnlyList<OrderMarkingExportPreviewLineApiResult> Lines,
+    string SnapshotHash = "")
 {
     public static OrderMarkingExportPreviewApiResult Failure(string message)
     {

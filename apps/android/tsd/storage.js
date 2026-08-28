@@ -1589,6 +1589,10 @@
         .filter(function (value) { return value > 0; }),
       state: normalizeOperatorStatusPresentation(row.state),
       fillingEligible: row.filling_eligible === true || row.fillingEligible === true,
+      fillingBlocker: row.filling_blocker && typeof row.filling_blocker === "object" ? {
+        code: String(row.filling_blocker.code || ""),
+        message: String(row.filling_blocker.message || ""),
+      } : null,
       isMixed: row.is_mixed === true || row.isMixed === true,
       qty: row.qty == null ? null : Number(row.qty) || 0,
       uom: String(row.uom || ""),

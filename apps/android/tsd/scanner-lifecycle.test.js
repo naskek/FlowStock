@@ -288,7 +288,13 @@ function testScannerLifecycleObserverReceivesTransportEvents() {
 }
 
 function testShellAndAppIntegration() {
-  assert(appVersionJs.includes('var version = "76"'));
+  const versionContext = { self: {} };
+  vm.runInNewContext(appVersionJs, versionContext);
+  assert.match(versionContext.self.TSD_PWA_VERSION, /^\d+$/);
+  assert.strictEqual(
+    versionContext.self.TSD_CACHE_NAME,
+    `flowstock-tsd-v${versionContext.self.TSD_PWA_VERSION}`
+  );
   assert(indexHtml.indexOf("scanner-lifecycle-diagnostics.js") < indexHtml.indexOf("scanner.js"));
   assert(indexHtml.indexOf("native-bridge.js") < indexHtml.indexOf("scanner.js"));
   assert(serviceWorkerJs.includes('"./scanner-lifecycle-diagnostics.js"'));

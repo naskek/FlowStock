@@ -161,6 +161,59 @@ public sealed class SimpleMarkingExcelServiceTests
     }
 
     [Fact]
+    public void ExportBatchReplay_UsesOnlyImmutableSnapshotsAndPreservesInitialGroupingAndOrdering()
+    {
+        var firstRequestId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var secondRequestId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var thirdRequestId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        var snapshots = new[]
+        {
+            new MarkingRequestExportBatchRequestSnapshot(
+                firstRequestId, 1001, "Крем", "04607186951520", 5, 2, 7),
+            new MarkingRequestExportBatchRequestSnapshot(
+                secondRequestId, 1001, "крем", "04607186951520", 4, 1, 5),
+            new MarkingRequestExportBatchRequestSnapshot(
+                thirdRequestId, 1002, "Айран", "04601234567890", 3, 0, 3)
+        };
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+        store.Setup(data => data.GetMarkingOrdersByIds(It.IsAny<IReadOnlyCollection<Guid>>()))
+            .Returns(new[]
+            {
+                new MarkingOrder
+                {
+                    Id = firstRequestId,
+                    ItemId = 1001,
+                    Gtin = "00000000000000",
+                    RequestedQuantity = 999,
+                    Status = MarkingOrderStatus.WaitingForCodes
+                }
+            });
+        store.Setup(data => data.FindItemById(1001))
+            .Returns(new Item
+            {
+                Id = 1001,
+                Name = "Изменённое live имя",
+                Gtin = "00000000000000",
+                ItemTypeEnableMarking = false
+            });
+
+        var result = new MarkingExcelService(store.Object)
+            .ExportBatchReplay(snapshots, DateTime.Parse("2026-08-27T10:00:00Z"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(2, result.Rows.Count);
+        Assert.Equal("Айран", result.Rows[0].ItemName);
+        Assert.Equal("04601234567890", result.Rows[0].Gtin);
+        Assert.Equal(3, result.Rows[0].Qty);
+        Assert.Equal("Крем", result.Rows[1].ItemName);
+        Assert.Equal("04607186951520", result.Rows[1].Gtin);
+        Assert.Equal(12, result.Rows[1].Qty);
+        Assert.Equal(new[] { firstRequestId, secondRequestId, thirdRequestId }, result.MarkedMarkingOrderIds);
+        store.Verify(data => data.GetMarkingOrdersByIds(It.IsAny<IReadOnlyCollection<Guid>>()), Times.Never);
+        store.Verify(data => data.FindItemById(It.IsAny<long>()), Times.Never);
+    }
+
+    [Fact]
     public void Export_ByProductionNeedMarkingTask_DoesNotCreateTemporaryCodes()
     {
         var taskId = Guid.Parse("11111111-1111-1111-1111-111111111111");

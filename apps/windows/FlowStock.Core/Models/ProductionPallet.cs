@@ -168,6 +168,8 @@ public sealed class ProductionFillingContext
     public ProductionOperationProgress Progress { get; init; } = new();
     public IReadOnlySet<string> FillingEligibleHuCodes { get; init; } =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlyDictionary<string, Marking.MarkingPalletEligibility> FillingMarkingEligibilityByHuCode { get; init; } =
+        new Dictionary<string, Marking.MarkingPalletEligibility>(StringComparer.OrdinalIgnoreCase);
 }
 
 public sealed class ProductionOperationProgress

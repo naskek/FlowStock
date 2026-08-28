@@ -1,5 +1,6 @@
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
+using FlowStock.Core.Models.Marking;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -27,13 +28,29 @@ public sealed class ProductionPalletService
 
     public ProductionPalletDocument Plan(long docId)
     {
-        var doc = RequireProductionReceipt(docId);
-        if (doc.Status == DocStatus.Closed)
+        _data.ExecuteInTransaction(store =>
         {
-            throw new InvalidOperationException("Документ уже закрыт.");
-        }
+            var initialDoc = store.GetDoc(docId)
+                             ?? throw new InvalidOperationException("Документ не найден.");
+            if (initialDoc.OrderId.HasValue
+                && !store.LockOrdersForUpdate(new[] { initialDoc.OrderId.Value }))
+            {
+                throw new InvalidOperationException("Заказ документа не найден.");
+            }
 
-        _data.PlanProductionPallets(docId, DateTime.Now);
+            var doc = store.GetDoc(docId)
+                      ?? throw new InvalidOperationException("Документ не найден.");
+            if (doc.Type != DocType.ProductionReceipt)
+            {
+                throw new InvalidOperationException("Документ не является выпуском продукции.");
+            }
+            if (doc.Status == DocStatus.Closed)
+            {
+                throw new InvalidOperationException("Документ уже закрыт.");
+            }
+
+            store.PlanProductionPallets(docId, DateTime.Now);
+        });
         return Get(docId);
     }
 
@@ -56,7 +73,13 @@ public sealed class ProductionPalletService
         }
 
         _data.ExecuteInTransaction(store =>
-            SyncOrderLinePlanInStore(store, orderId, orderLineId, orderedQty, oldOrderedQty, source));
+        {
+            if (!store.LockOrdersForUpdate(new[] { orderId }))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
+            SyncOrderLinePlanInStore(store, orderId, orderLineId, orderedQty, oldOrderedQty, source);
+        });
     }
 
     internal void SyncOrderLinePlanInStore(
@@ -138,6 +161,10 @@ public sealed class ProductionPalletService
         var productionRequired = true;
         _data.ExecuteInTransaction(store =>
         {
+            if (!store.LockOrdersForUpdate(new[] { orderId }))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
             var order = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
             if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
             {
@@ -200,6 +227,10 @@ public sealed class ProductionPalletService
         var noSafeLines = false;
         _data.ExecuteInTransaction(store =>
         {
+            if (!store.LockOrdersForUpdate(new[] { orderId }))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
             var order = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
             if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
             {
@@ -1995,6 +2026,17 @@ public sealed class ProductionPalletService
         ProductionPalletPlanCleanupCounts cleanup = null!;
         _data.ExecuteInTransaction(store =>
         {
+            if (!store.LockOrdersForUpdate(new[] { order.Id }))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
+            var currentOrder = store.GetOrder(order.Id)
+                               ?? throw new InvalidOperationException("Заказ не найден.");
+            if (currentOrder.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+            {
+                throw new InvalidOperationException("Заказ недоступен для удаления плана паллет.");
+            }
+
             var docsById = store.GetDocsByOrder(order.Id)
                 .Where(doc => doc.Type == DocType.ProductionReceipt)
                 .ToDictionary(doc => doc.Id, doc => doc);
@@ -2114,6 +2156,18 @@ public sealed class ProductionPalletService
         ProductionPalletPlanAdoptionResult result = null!;
         _data.ExecuteInTransaction(store =>
         {
+            var orderIds = new[] { sourceInternalOrderId, targetCustomerOrderId }
+                .Where(id => id > 0)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToArray();
+            if (!store.LockOrdersForUpdate(orderIds))
+            {
+                throw new ProductionPalletPlanAdoptionException(
+                    "ORDER_NOT_FOUND",
+                    "Один из заказов переноса плана не найден.");
+            }
+
             var sourceOrder = store.GetOrder(sourceInternalOrderId)
                               ?? throw new ProductionPalletPlanAdoptionException("SOURCE_ORDER_NOT_FOUND", "Внутренний заказ-источник не найден.");
             var targetOrder = store.GetOrder(targetCustomerOrderId)
@@ -3550,6 +3604,7 @@ public sealed class ProductionPalletService
         IReadOnlyList<ProductionPallet> rawPallets,
         FillingEligibilitySnapshot eligibilitySnapshot)
     {
+        var markingEligibility = BuildMarkingFillingEligibility(rawPallets);
         return new ProductionFillingContext
         {
             OrderId = order.Id,
@@ -3571,7 +3626,15 @@ public sealed class ProductionPalletService
                 order.Id,
                 pallets,
                 rawPallets,
-                eligibilitySnapshot)
+                eligibilitySnapshot,
+                markingEligibility),
+            FillingMarkingEligibilityByHuCode = rawPallets
+                .Where(pallet => !string.IsNullOrWhiteSpace(pallet.HuCode)
+                                 && markingEligibility.ContainsKey(pallet.Id))
+                .ToDictionary(
+                    pallet => pallet.HuCode.Trim(),
+                    pallet => markingEligibility[pallet.Id],
+                    StringComparer.OrdinalIgnoreCase)
         };
     }
 
@@ -3579,7 +3642,8 @@ public sealed class ProductionPalletService
         long orderId,
         IReadOnlyList<ProductionPallet> fillingPallets,
         IReadOnlyList<ProductionPallet> rawPallets,
-        FillingEligibilitySnapshot snapshot)
+        FillingEligibilitySnapshot snapshot,
+        IReadOnlyDictionary<long, MarkingPalletEligibility>? markingEligibility = null)
     {
         var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (_fillClose?.AutoCloseEnabled != true || fillingPallets.Count == 0)
@@ -3588,6 +3652,7 @@ public sealed class ProductionPalletService
         }
 
         var rawById = rawPallets.ToDictionary(pallet => pallet.Id);
+        markingEligibility ??= BuildMarkingFillingEligibility(rawPallets);
 
         foreach (var view in fillingPallets)
         {
@@ -3598,6 +3663,8 @@ public sealed class ProductionPalletService
 
             if (pallet.OrderId != orderId
                 || !pallet.CanFill
+                || markingEligibility.TryGetValue(pallet.Id, out var markingDecision)
+                   && !markingDecision.IsEligible
                 || !snapshot.ProductionDocsById.TryGetValue(pallet.PrdDocId, out var doc)
                 || doc.Status == DocStatus.Closed
                 || !snapshot.DocLinesByDocId.TryGetValue(pallet.PrdDocId, out var docLinesById)
@@ -3618,6 +3685,19 @@ public sealed class ProductionPalletService
         }
 
         return result;
+    }
+
+    private IReadOnlyDictionary<long, MarkingPalletEligibility> BuildMarkingFillingEligibility(
+        IReadOnlyCollection<ProductionPallet> pallets)
+    {
+        if (_data is not IMarkingCutoverRuntimeGuard guard)
+        {
+            return new Dictionary<long, MarkingPalletEligibility>();
+        }
+
+        return guard.GetMarkingPalletEligibility(
+            pallets.Select(pallet => pallet.Id).Where(id => id > 0).Distinct().ToArray(),
+            "production_pallet_filling_read_model");
     }
 
     private static FillingEligibilitySnapshot BuildFillingEligibilitySnapshot(

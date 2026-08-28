@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using FlowStock.Core.Models.Marking;
@@ -120,9 +122,20 @@ public static class OrderMarkingExportEndpoint
         }
         catch (InvalidOperationException ex)
         {
-            return Results.Conflict(new { error = ex.Message });
+            var code = ex.Message.Split(':', 2)[0];
+            return Results.Conflict(new { error = code, message = GetImportErrorMessage(code) });
         }
     }
+
+    private static string GetImportErrorMessage(string code) => code switch
+    {
+        "MARKING_IMPORT_SNAPSHOT_CHANGED" => "Состояние заявок КМ изменилось. Повторите preview импорта.",
+        "MARKING_IMPORT_RECOVERY_CONFIRMATION_REQUIRED" => "КМ меньше текущей обязательной потребности. Подтвердите recovery-импорт явно.",
+        "MARKING_IMPORT_DUPLICATE_CODE" => "Один или несколько КМ уже были импортированы.",
+        "MARKING_IMPORT_QUANTITY_CHANGED" or "REQUEST_QUANTITY_EXCEEDED" => "Количество КМ превышает остаток immutable заявок.",
+        "MARKING_IMPORT_IDEMPOTENCY_CONFLICT" => "Ключ идемпотентности уже использован с другим содержимым.",
+        _ => "Импорт КМ отклонён сервером. Обновите preview и проверьте состояние заявок."
+    };
 
     private static async Task<IReadOnlyList<MarkingImportUploadFile>> ReadImportFiles(
         HttpRequest request,
@@ -179,6 +192,7 @@ public static class OrderMarkingExportEndpoint
             required_qty = markingRequest.RequiredQuantity,
             reserve_qty = markingRequest.ReserveQuantity,
             requested_qty = markingRequest.RequestedQuantity,
+            operational_required_qty = markingRequest.OperationalRequiredQuantity,
             imported_before = markingRequest.ImportedBefore,
             valid_in_batch = markingRequest.ValidInBatch,
             imported_after = markingRequest.ImportedAfter,
@@ -217,8 +231,9 @@ public static class OrderMarkingExportEndpoint
         }
     }
 
-    private static IResult HandleExport(
+    private static async Task<IResult> HandleExport(
         long orderId,
+        HttpRequest request,
         HttpResponse response,
         IDataStore store,
         ILoggerFactory loggerFactory)
@@ -227,7 +242,16 @@ public static class OrderMarkingExportEndpoint
         var logger = loggerFactory.CreateLogger("FlowStock.Server.OrderMarkingExportEndpoint");
         try
         {
-            var result = new OrderMarkingExportService(store).Export(orderId, DateTime.Now);
+            ExportRequest? body = null;
+            if (request.HasJsonContentType() && request.ContentLength != 0)
+            {
+                body = await request.ReadFromJsonAsync<ExportRequest>();
+            }
+            var result = new OrderMarkingExportService(store).Export(
+                orderId,
+                DateTime.Now,
+                body?.ExpectedSnapshotHash,
+                WpfMachineAuthorization.GetAuditActor(request));
             LogOperation(
                 logger,
                 "export",
@@ -239,6 +263,10 @@ public static class OrderMarkingExportEndpoint
                 result.ReusedCodeQty);
             if (!result.IsSuccess)
             {
+                if (result.Message is "MARKING_EXPORT_SNAPSHOT_CHANGED")
+                {
+                    return Results.Conflict(new { error = result.Message, message = "Состояние маркировки изменилось. Повторите preview." });
+                }
                 return Results.BadRequest(new ApiResult(false, result.Message));
             }
 
@@ -261,6 +289,12 @@ public static class OrderMarkingExportEndpoint
             LogOperation(logger, "export", "exception", stopwatch.ElapsedMilliseconds, orderId, 0, 0, 0, ex);
             throw;
         }
+    }
+
+    private sealed class ExportRequest
+    {
+        [JsonPropertyName("expected_snapshot_hash")]
+        public string? ExpectedSnapshotHash { get; init; }
     }
 
     private static void LogOperation(
@@ -311,7 +345,17 @@ public static class OrderMarkingExportEndpoint
             order_ref = result.OrderRef,
             line_count = result.LineCount,
             total_qty = result.TotalQty,
+            snapshot_hash = result.SnapshotHash,
             message = result.Message,
+            new_requests = (result.NewRequests ?? Array.Empty<OrderMarkingNewRequestPreview>()).Select(request => new
+            {
+                item_id = request.ItemId,
+                item_name = request.ItemName,
+                gtin = request.Gtin,
+                required_qty = request.RequiredQty,
+                reserve_qty = request.ReserveQty,
+                requested_qty = request.RequestedQty
+            }).ToArray(),
             lines = result.Lines.Select(line => new
             {
                 order_line_id = line.OrderLineId,

@@ -58,6 +58,35 @@ public sealed class MarkingExcelService
                                && line.QtyForMarking > 0)
                 .ToList();
         var taskRows = BuildTaskRows(normalizedMarkingOrderIds);
+        return ExportRows(orderRows, taskRows);
+    }
+
+    public MarkingExcelExportResult ExportBatchReplay(
+        IReadOnlyCollection<MarkingRequestExportBatchRequestSnapshot> requests,
+        DateTime generatedAt)
+    {
+        ArgumentNullException.ThrowIfNull(requests);
+        _ = generatedAt;
+        if (requests.Count == 0)
+        {
+            return MarkingExcelExportResult.Empty("В immutable export batch нет строк ЧЗ.");
+        }
+
+        var taskRows = requests
+            .Select(request => new MarkingTaskExportRow(
+                request.MarkingOrderId,
+                OrderId: null,
+                request.ItemName,
+                request.Gtin,
+                request.RequestedQuantity))
+            .ToList();
+        return ExportRows(Array.Empty<MarkingOrderLineCandidate>(), taskRows);
+    }
+
+    private static MarkingExcelExportResult ExportRows(
+        IReadOnlyCollection<MarkingOrderLineCandidate> orderRows,
+        IReadOnlyCollection<MarkingTaskExportRow> taskRows)
+    {
         var exportRows = orderRows
             .Select(line => new MarkingExportRow
             {

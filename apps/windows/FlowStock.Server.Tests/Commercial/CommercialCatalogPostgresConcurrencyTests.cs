@@ -554,6 +554,8 @@ public sealed class CommercialCatalogPostgresConcurrencyTests
 
         await using var blockerConnection = new NpgsqlConnection(connectionString);
         await blockerConnection.OpenAsync();
+        var blockerPid = Convert.ToInt32(
+            await new NpgsqlCommand("SELECT pg_backend_pid();", blockerConnection).ExecuteScalarAsync());
         await using var blockerTransaction = await blockerConnection.BeginTransactionAsync();
         await using (var blockerCommand = blockerConnection.CreateCommand())
         {
@@ -561,6 +563,25 @@ public sealed class CommercialCatalogPostgresConcurrencyTests
             blockerCommand.CommandText = "LOCK TABLE items IN SHARE MODE;";
             await blockerCommand.ExecuteNonQueryAsync();
         }
+
+        var interferenceApplicationName = $"vat-interference-{suffix}";
+        var interferenceTask = Task.Run(() => Record.Exception(() =>
+        {
+            using var connection = new NpgsqlConnection(
+                WithApplicationName(connectionString, interferenceApplicationName));
+            connection.Open();
+            using var transaction = connection.BeginTransaction();
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = "SET LOCAL lock_timeout = '200ms'; LOCK TABLE items IN ACCESS EXCLUSIVE MODE;";
+            command.ExecuteNonQuery();
+            transaction.Commit();
+        }));
+        await WaitUntilSessionWaitsForSpecificLock(
+            connectionString,
+            interferenceApplicationName,
+            blockerPid,
+            "LOCK TABLE items IN ACCESS EXCLUSIVE MODE");
 
         var assignmentApplicationName = $"vat-assign-{suffix}";
         var assignmentStore = new PostgresDataStore(
@@ -578,10 +599,18 @@ public sealed class CommercialCatalogPostgresConcurrencyTests
                 isMarked: false,
                 defaultSaleVatRateId: vatRateId)));
 
-        await WaitUntilSessionWaitsForLock(connectionString, assignmentApplicationName);
+        var assignmentPid = await WaitUntilSessionWaitsForSpecificLock(
+            connectionString,
+            assignmentApplicationName,
+            blockerPid,
+            "INSERT INTO items");
+        var interferenceError = Assert.IsType<PostgresException>(
+            await interferenceTask.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Equal(PostgresErrorCodes.LockNotAvailable, interferenceError.SqlState);
 
+        var updateApplicationName = $"vat-update-{suffix}";
         var updateStore = new PostgresDataStore(
-            WithApplicationName(connectionString, $"vat-update-{suffix}"));
+            WithApplicationName(connectionString, updateApplicationName));
         var updateTask = Task.Run(() => Record.Exception(() =>
             new VatRateService(updateStore).UpdateVatRate(
                 vatRateId,
@@ -590,7 +619,12 @@ public sealed class CommercialCatalogPostgresConcurrencyTests
                 0,
                 isActive: true)));
 
-        await Task.Delay(250);
+        await WaitUntilSessionWaitsForSpecificLock(
+            connectionString,
+            updateApplicationName,
+            assignmentPid,
+            "FROM vat_rates");
+        Assert.False(updateTask.IsCompleted);
         await blockerTransaction.CommitAsync();
 
         var assignmentError = await assignmentTask.WaitAsync(TimeSpan.FromSeconds(10));
@@ -631,6 +665,45 @@ SELECT EXISTS (
 
         throw new TimeoutException(
             $"Сессия {applicationName} не перешла в ожидание PostgreSQL lock.");
+    }
+
+    private static async Task<int> WaitUntilSessionWaitsForSpecificLock(
+        string connectionString,
+        string applicationName,
+        int blockerPid,
+        string queryFragment)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+SELECT pid
+FROM pg_stat_activity
+WHERE application_name = @application_name
+  AND wait_event_type = 'Lock'
+  AND @blocker_pid = ANY(pg_blocking_pids(pid))
+  AND STRPOS(UPPER(query), UPPER(@query_fragment)) > 0
+ORDER BY pid
+LIMIT 1;
+""";
+            command.Parameters.AddWithValue("@application_name", applicationName);
+            command.Parameters.AddWithValue("@blocker_pid", blockerPid);
+            command.Parameters.AddWithValue("@query_fragment", queryFragment);
+            var result = await command.ExecuteScalarAsync();
+            if (result != null && result is not DBNull)
+            {
+                return Convert.ToInt32(result);
+            }
+
+            await Task.Delay(25);
+        }
+
+        throw new TimeoutException(
+            $"Сессия {applicationName} не ждала PostgreSQL lock от PID {blockerPid} " +
+            $"на SQL-фрагменте '{queryFragment}'.");
     }
 
     private static string WithApplicationName(string connectionString, string applicationName)

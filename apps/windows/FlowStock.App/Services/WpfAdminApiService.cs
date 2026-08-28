@@ -63,6 +63,24 @@ public sealed class WpfAdminApiService
             .ConfigureAwait(false);
     }
 
+    public bool TryGetMarkingReserveQuantity(out int quantity) => TryRead(
+        "/api/admin/marking/settings",
+        root => root.TryGetProperty("default_reserve_quantity", out var value) && value.TryGetInt32(out var parsed)
+            ? parsed
+            : 0,
+        "admin-marking-settings",
+        out quantity);
+
+    public async Task<bool> TrySaveMarkingReserveQuantityAsync(
+        int quantity,
+        CancellationToken cancellationToken = default) =>
+        await TrySendAsync(
+            HttpMethod.Put,
+            "/api/admin/marking/settings",
+            new { default_reserve_quantity = quantity },
+            "admin-save-marking-settings",
+            cancellationToken).ConfigureAwait(false);
+
     public async Task<WpfMaintenanceBackfillReportResult> RunReservationBackfillDryRunAsync(CancellationToken cancellationToken = default)
     {
         return await TryPostForReportAsync(
@@ -170,7 +188,15 @@ public sealed class WpfAdminApiService
         }
     }
 
-    private async Task<bool> TryPostAsync(string relativePath, object payload, string operationName, CancellationToken cancellationToken)
+    private async Task<bool> TryPostAsync(string relativePath, object payload, string operationName, CancellationToken cancellationToken) =>
+        await TrySendAsync(HttpMethod.Post, relativePath, payload, operationName, cancellationToken).ConfigureAwait(false);
+
+    private async Task<bool> TrySendAsync(
+        HttpMethod method,
+        string relativePath,
+        object payload,
+        string operationName,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -186,7 +212,7 @@ public sealed class WpfAdminApiService
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
                 Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             };
-            using var request = new HttpRequestMessage(HttpMethod.Post, relativePath)
+            using var request = new HttpRequestMessage(method, relativePath)
             {
                 Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
             };

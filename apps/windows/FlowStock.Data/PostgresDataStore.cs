@@ -15,7 +15,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IMarkingAggregateStore, IMarkingOutboundFulfillmentStore, IMarkingHuFulfillmentEligibilityStore, IOrderScopedMarkingImportStore, IMarkingCutoverRuntimeGuard, IOrderRequestManagementStore, ILedgerEntryIdStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IMarkingCutoverApprovalStore, IMarkingLegacyTaskRetirementStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
+public sealed class PostgresDataStore : IDataStore, IMarkingAggregateStore, IMarkingRequestOperationalStore, IMarkingLineProgressStore, IMarkingOutboundFulfillmentStore, IMarkingHuFulfillmentEligibilityStore, IOrderScopedMarkingImportStore, IMarkingCutoverRuntimeGuard, IOrderRequestManagementStore, ILedgerEntryIdStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IMarkingCutoverApprovalStore, IMarkingLegacyTaskRetirementStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -10385,29 +10385,37 @@ VALUES(
 
     public void RequireEnforcedMarkingWorkflowForPallet(long productionPalletId, string operation)
     {
-        var markingApplies = WithConnection(connection =>
+        var decision = GetMarkingPalletEligibility(new[] { productionPalletId }, operation)
+            .GetValueOrDefault(productionPalletId);
+        if (decision == null)
+        {
+            throw new InvalidOperationException("MARKING_PALLET_ELIGIBILITY_CHANGED");
+        }
+
+        if (!decision.IsEligible)
+        {
+            throw new InvalidOperationException(decision.BlockerCode ?? "MARKING_OPERATIONAL_COVERAGE_INCOMPLETE");
+        }
+    }
+
+    public IReadOnlyDictionary<long, MarkingPalletEligibility> GetMarkingPalletEligibility(
+        IReadOnlyCollection<long> productionPalletIds,
+        string operation)
+    {
+        var ids = productionPalletIds.Where(id => id > 0).Distinct().Order().ToArray();
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, MarkingPalletEligibility>();
+        }
+
+        return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT EXISTS (
-    SELECT 1
-    FROM production_pallet_lines component
-    INNER JOIN items item ON item.id = component.item_id
-    INNER JOIN item_types item_type ON item_type.id = item.item_type_id
-    WHERE component.production_pallet_id = @pallet_id
-      AND COALESCE(item_type.enable_marking, FALSE) = TRUE
-      AND NOT COALESCE(item.chz_marking_exempt, FALSE)
-);" );
-            command.Parameters.AddWithValue("@pallet_id", productionPalletId);
-            return Convert.ToBoolean(command.ExecuteScalar(), CultureInfo.InvariantCulture);
-        });
-        if (markingApplies)
-        {
-            RequireEnforcedMarkingWorkflow(operation);
-            var complete = WithConnection(connection =>
-            {
-                using var command = CreateCommand(connection, @"
-WITH component_gate AS (
-    SELECT component.id,
+WITH runtime AS (
+    SELECT COALESCE((SELECT state FROM marking_cutover_state WHERE id = TRUE), 'SHADOW') AS state
+), component_gate AS (
+    SELECT component.production_pallet_id,
+           component.id,
            component.planned_qty,
            component.marking_subject_id,
            COALESCE(SUM(consumption.active_quantity) FILTER (
@@ -10423,24 +10431,61 @@ WITH component_gate AS (
            ON consumption.operational_coverage_id = coverage.id
     LEFT JOIN marking_legacy_cutover_subject_exemption exemption
            ON exemption.marking_subject_id = component.marking_subject_id
-    WHERE component.production_pallet_id = @pallet_id
+    WHERE component.production_pallet_id = ANY(@pallet_ids)
       AND COALESCE(item_type.enable_marking, FALSE)
       AND NOT COALESCE(item.chz_marking_exempt, FALSE)
-    GROUP BY component.id, component.planned_qty, component.marking_subject_id
+    GROUP BY component.production_pallet_id, component.id,
+             component.planned_qty, component.marking_subject_id
+), pallet_gate AS (
+    SELECT pallet.id,
+           COUNT(component.id) > 0 AS marking_applies,
+           BOOL_AND(component.marking_subject_id IS NOT NULL
+                    AND component.real_qty + component.legacy_exempt_qty + 0.000001
+                        >= component.planned_qty) AS complete
+    FROM production_pallets pallet
+    LEFT JOIN component_gate component ON component.production_pallet_id = pallet.id
+    WHERE pallet.id = ANY(@pallet_ids)
+    GROUP BY pallet.id
 )
-SELECT NOT EXISTS (
-    SELECT 1 FROM component_gate
-    WHERE marking_subject_id IS NULL
-       OR real_qty + legacy_exempt_qty + 0.000001 < planned_qty
-);" );
-                command.Parameters.AddWithValue("@pallet_id", productionPalletId);
-                return Convert.ToBoolean(command.ExecuteScalar() ?? false, CultureInfo.InvariantCulture);
-            });
-            if (!complete)
+SELECT gate.id,
+       CASE
+         WHEN NOT gate.marking_applies THEN TRUE
+         WHEN runtime.state <> 'ENFORCED' THEN FALSE
+         ELSE COALESCE(gate.complete, FALSE)
+       END AS eligible,
+       CASE
+         WHEN NOT gate.marking_applies THEN NULL
+         WHEN runtime.state <> 'ENFORCED' THEN 'MARKING_CUTOVER_MAINTENANCE_REQUIRED'
+         WHEN NOT COALESCE(gate.complete, FALSE) THEN 'MARKING_OPERATIONAL_COVERAGE_INCOMPLETE'
+         ELSE NULL
+       END AS blocker
+FROM pallet_gate gate
+CROSS JOIN runtime
+ORDER BY gate.id;" );
+            command.Parameters.AddWithValue("@pallet_ids", ids);
+            using var reader = command.ExecuteReader();
+            var result = new Dictionary<long, MarkingPalletEligibility>();
+            while (reader.Read())
             {
-                throw new InvalidOperationException("MARKING_OPERATIONAL_COVERAGE_INCOMPLETE");
+                var id = reader.GetInt64(0);
+                var eligible = reader.GetBoolean(1);
+                var blocker = reader.IsDBNull(2) ? null : reader.GetString(2);
+                result[id] = new MarkingPalletEligibility(
+                    id,
+                    eligible,
+                    blocker,
+                    blocker switch
+                    {
+                        MarkingCutoverRuntimeErrors.MaintenanceRequired =>
+                            $"{MarkingCutoverRuntimeErrors.MaintenanceRequired}: operation={operation}",
+                        "MARKING_OPERATIONAL_COVERAGE_INCOMPLETE" =>
+                            "Для наполнения паллеты недостаточно действующего real KM coverage или frozen legacy exemption.",
+                        _ => null
+                    });
             }
-        }
+
+            return (IReadOnlyDictionary<long, MarkingPalletEligibility>)result;
+        });
     }
 
     public IReadOnlyDictionary<long, double> GetActiveMarkingRequestScopeQuantityByItem(long orderId)
@@ -10588,6 +10633,31 @@ SELECT default_reserve_quantity
 FROM marking_settings
 WHERE id = TRUE;");
             return Math.Max(0, Convert.ToInt32(command.ExecuteScalar() ?? 5, CultureInfo.InvariantCulture));
+        });
+    }
+
+    public void SetDefaultMarkingReserveQuantity(int quantity, string actor, DateTime changedAt)
+    {
+        if (quantity < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(quantity));
+        }
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE marking_settings
+SET default_reserve_quantity = @quantity,
+    updated_at = @changed_at,
+    updated_by = @actor
+WHERE id = TRUE;" );
+            command.Parameters.AddWithValue("@quantity", quantity);
+            command.Parameters.AddWithValue("@changed_at", changedAt);
+            command.Parameters.AddWithValue("@actor", actor);
+            if (command.ExecuteNonQuery() != 1)
+            {
+                throw new InvalidOperationException("MARKING_SETTINGS_NOT_FOUND");
+            }
+            return 0;
         });
     }
 
@@ -11201,12 +11271,13 @@ ON CONFLICT (import_batch_id, file_hash) DO NOTHING;"))
             using (var activateCommand = CreateCommand(connection, @"
 WITH request_state AS (
     SELECT mo.id,
-           mo.required_quantity,
            COUNT(code.id) FILTER (
                WHERE code.origin = 'RealImport' AND code.status = 'Imported') AS valid_real_qty,
-           COALESCE((SELECT SUM(scope.scoped_quantity)
+           COALESCE((SELECT SUM(consumption.active_quantity)
                      FROM marking_request_scope scope
-                     WHERE scope.marking_order_id = mo.id), 0) AS scoped_qty
+                     INNER JOIN marking_request_scope_consumption consumption
+                             ON consumption.marking_request_scope_id = scope.id
+                     WHERE scope.marking_order_id = mo.id), 0) AS active_scoped_qty
     FROM marking_order mo
     LEFT JOIN marking_code code ON code.marking_order_id = mo.id
     WHERE mo.id = @marking_order_id
@@ -11215,8 +11286,8 @@ WITH request_state AS (
 ), eligible AS (
     SELECT id
     FROM request_state
-    WHERE valid_real_qty >= required_quantity
-      AND scoped_qty = required_quantity
+    WHERE active_scoped_qty > 0
+      AND valid_real_qty >= active_scoped_qty
 ), inserted AS (
     INSERT INTO marking_operational_coverage(
         id, marking_subject_id, marking_request_scope_id, source_type,
@@ -11268,6 +11339,25 @@ ON CONFLICT DO NOTHING;"))
 
     public IReadOnlyList<RelatedMarkingRequest> GetRelatedOutstandingMarkingRequests(long orderId)
     {
+        return GetMarkingRequestOperationalSnapshots(orderId)
+            .Where(snapshot => snapshot.IsOperational
+                               && snapshot.ImportedRealQuantity < snapshot.RequestedQuantity)
+            .Select(snapshot => new RelatedMarkingRequest(
+                snapshot.MarkingOrderId,
+                snapshot.RequestNumber,
+                snapshot.Gtin,
+                snapshot.RequiredQuantity,
+                snapshot.ReserveQuantity,
+                snapshot.RequestedQuantity,
+                snapshot.ImportedRealQuantity,
+                snapshot.ScopeSnapshotHash,
+                snapshot.ActiveScopedQuantity,
+                snapshot.CreatedAt))
+            .ToArray();
+    }
+
+    public IReadOnlyList<MarkingRequestOperationalSnapshot> GetMarkingRequestOperationalSnapshots(long orderId)
+    {
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
@@ -11277,54 +11367,340 @@ WITH imported AS (
     WHERE code.origin = 'RealImport'
       AND code.status = 'Imported'
     GROUP BY code.marking_order_id
+), coverage AS (
+    SELECT scope.marking_order_id,
+           SUM(consumption.active_quantity)::integer AS covered_quantity
+    FROM marking_request_scope scope
+    INNER JOIN marking_operational_coverage operational
+            ON operational.marking_request_scope_id = scope.id
+           AND operational.source_type = 'REAL_IMPORT'
+           AND operational.retired_at IS NULL
+    INNER JOIN marking_operational_coverage_consumption consumption
+            ON consumption.operational_coverage_id = operational.id
+    GROUP BY scope.marking_order_id
 ), request_scope_state AS (
     SELECT mo.id,
            mo.request_number,
+           mo.original_order_id,
+           MIN(subject.current_order_id) FILTER (WHERE subject.current_order_id IS NOT NULL) AS current_order_id,
+           MIN(subject.current_order_line_id) FILTER (WHERE subject.current_order_line_id IS NOT NULL) AS current_order_line_id,
+           mo.item_id,
+           item.name AS item_name,
            mo.gtin,
            mo.required_quantity,
            mo.reserve_quantity,
            mo.requested_quantity,
+           SUM(scope.scoped_quantity)::integer AS original_scoped_quantity,
+           COALESCE(SUM(consumption.active_quantity), 0)::integer AS active_scoped_quantity,
            COALESCE(imported.imported_quantity, 0) AS imported_quantity,
+           COALESCE(coverage.covered_quantity, 0) AS covered_quantity,
+           mo.created_at,
            md5(mo.id::text || ':' || mo.required_quantity::text || ':' ||
                mo.reserve_quantity::text || ':' || mo.requested_quantity::text || ':' ||
                COALESCE(string_agg(
                    scope.id::text || ':' || scope.scoped_quantity::text || ':' ||
+                   COALESCE(consumption.active_quantity::text, '0') || ':' ||
                    subject.id::text || ':' || subject.revision::text || ':' ||
                    COALESCE(subject.current_order_id::text, '') || ':' ||
                    COALESCE(subject.current_order_line_id::text, '') || ':' || subject.lifecycle,
                    ',' ORDER BY scope.id), '')) AS scope_snapshot_hash,
-           BOOL_OR(subject.current_order_id = @order_id
-                   AND subject.lifecycle IN ('ACTIVE', 'COMPLETED')) AS related_to_order
+           BOOL_OR(subject.current_order_id = @order_id) AS related_to_order
     FROM marking_order mo
+    INNER JOIN items item ON item.id = mo.item_id
     INNER JOIN marking_request_scope scope ON scope.marking_order_id = mo.id
     INNER JOIN marking_production_subject subject ON subject.id = scope.marking_subject_id
+    LEFT JOIN marking_request_scope_consumption consumption
+           ON consumption.marking_request_scope_id = scope.id
     LEFT JOIN imported ON imported.marking_order_id = mo.id
+    LEFT JOIN coverage ON coverage.marking_order_id = mo.id
     WHERE mo.status NOT IN ('Cancelled', 'Failed')
-    GROUP BY mo.id, imported.imported_quantity
+      AND (mo.order_id = @order_id OR mo.source_order_id = @order_id
+           OR mo.original_order_id = @order_id OR subject.current_order_id = @order_id)
+    GROUP BY mo.id, item.name, imported.imported_quantity, coverage.covered_quantity
 )
-SELECT id, request_number, gtin, required_quantity, reserve_quantity,
-       requested_quantity, imported_quantity, scope_snapshot_hash
+SELECT id, request_number, original_order_id, current_order_id, current_order_line_id,
+       item_id, item_name, gtin, required_quantity, reserve_quantity,
+       requested_quantity, original_scoped_quantity, active_scoped_quantity,
+       imported_quantity, covered_quantity, created_at,
+       CASE
+         WHEN active_scoped_quantity <= 0 THEN 'FULLY_RETIRED'
+         WHEN active_scoped_quantity < original_scoped_quantity THEN 'PARTIALLY_RETIRED'
+         ELSE 'EXACT_ACTIVE'
+       END,
+       scope_snapshot_hash
 FROM request_scope_state
 WHERE related_to_order = TRUE
-  AND imported_quantity < requested_quantity
-ORDER BY id;");
+ORDER BY created_at, request_number, id;");
             command.Parameters.AddWithValue("@order_id", orderId);
             using var reader = command.ExecuteReader();
-            var result = new List<RelatedMarkingRequest>();
+            var result = new List<MarkingRequestOperationalSnapshot>();
             while (reader.Read())
             {
-                result.Add(new RelatedMarkingRequest(
+                result.Add(new MarkingRequestOperationalSnapshot(
                     reader.GetGuid(0),
                     reader.GetString(1),
-                    reader.GetString(2),
-                    reader.GetInt32(3),
-                    reader.GetInt32(4),
-                    reader.GetInt32(5),
-                    reader.GetInt32(6),
-                    reader.GetString(7)));
+                    reader.IsDBNull(2) ? null : reader.GetInt64(2),
+                    reader.IsDBNull(3) ? null : reader.GetInt64(3),
+                    reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                    reader.GetInt64(5),
+                    reader.GetString(6),
+                    reader.GetString(7),
+                    reader.GetInt32(8),
+                    reader.GetInt32(9),
+                    reader.GetInt32(10),
+                    reader.GetInt32(11),
+                    reader.GetInt32(12),
+                    reader.GetInt32(13),
+                    reader.GetInt32(14),
+                    DateTime.Parse(reader.GetString(15), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                    reader.GetString(16),
+                    reader.GetString(17)));
             }
 
-            return (IReadOnlyList<RelatedMarkingRequest>)result;
+            return (IReadOnlyList<MarkingRequestOperationalSnapshot>)result;
+        });
+    }
+
+    public MarkingRequestExportBatchSnapshot? GetMarkingRequestExportBatch(
+        long orderId,
+        string expectedSnapshotHash)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT batch.id, batch.order_id, batch.expected_snapshot_hash,
+       batch.post_export_snapshot_hash, batch.reserve_quantity, batch.created_at,
+       request.marking_order_id, request.item_id, request.item_name_snapshot,
+       request.gtin_snapshot, request.required_quantity_snapshot,
+       request.reserve_quantity_snapshot, request.requested_quantity_snapshot
+FROM marking_request_export_batch batch
+LEFT JOIN marking_request_export_batch_request request
+       ON request.export_batch_id = batch.id
+WHERE batch.order_id = @order_id
+  AND batch.expected_snapshot_hash = @snapshot_hash
+ORDER BY request.marking_order_id;" );
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.AddWithValue("@snapshot_hash", expectedSnapshotHash);
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return null;
+            }
+
+            var batchId = reader.GetGuid(0);
+            var expectedHash = reader.GetString(2);
+            var postHash = reader.GetString(3);
+            var reserve = reader.GetInt32(4);
+            var createdAt = reader.GetDateTime(5);
+            var requests = new List<MarkingRequestExportBatchRequestSnapshot>();
+            do
+            {
+                if (!reader.IsDBNull(6))
+                {
+                    requests.Add(new MarkingRequestExportBatchRequestSnapshot(
+                        reader.GetGuid(6), reader.GetInt64(7), reader.GetString(8), reader.GetString(9),
+                        reader.GetInt32(10), reader.GetInt32(11), reader.GetInt32(12)));
+                }
+            } while (reader.Read());
+
+            return new MarkingRequestExportBatchSnapshot(
+                batchId, orderId, expectedHash, postHash, reserve, createdAt, requests);
+        });
+    }
+
+    public IReadOnlyDictionary<long, MarkingLineProgress> GetMarkingLineProgress(
+        IReadOnlyCollection<long> orderIds)
+    {
+        var ids = orderIds.Where(id => id > 0).Distinct().Order().ToArray();
+        if (ids.Length == 0) return new Dictionary<long, MarkingLineProgress>();
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH imported AS (
+    SELECT marking_order_id, COUNT(*)::integer AS qty
+    FROM marking_code
+    WHERE origin = 'RealImport' AND status = 'Imported'
+    GROUP BY marking_order_id
+), request_line AS (
+    SELECT subject.current_order_line_id AS order_line_id,
+           mo.id, mo.request_number,
+           COALESCE(SUM(consumption.active_quantity), 0)::integer AS active_qty,
+           COALESCE(imported.qty, 0) AS imported_qty,
+           SUM(scope.scoped_quantity)::integer AS original_qty
+    FROM marking_request_scope scope
+    INNER JOIN marking_order mo ON mo.id = scope.marking_order_id
+    INNER JOIN marking_production_subject subject ON subject.id = scope.marking_subject_id
+    LEFT JOIN marking_request_scope_consumption consumption
+           ON consumption.marking_request_scope_id = scope.id
+    LEFT JOIN imported ON imported.marking_order_id = mo.id
+    WHERE subject.current_order_id = ANY(@order_ids)
+      AND subject.current_order_line_id IS NOT NULL
+      AND mo.status NOT IN ('Cancelled', 'Failed')
+    GROUP BY subject.current_order_line_id, mo.id, imported.qty
+), operational AS (
+    SELECT subject.current_order_line_id AS order_line_id,
+           SUM(consumption.active_quantity) AS qty
+    FROM marking_production_subject subject
+    INNER JOIN marking_operational_coverage coverage
+            ON coverage.marking_subject_id = subject.id
+           AND coverage.source_type = 'REAL_IMPORT' AND coverage.retired_at IS NULL
+    INNER JOIN marking_operational_coverage_consumption consumption
+            ON consumption.operational_coverage_id = coverage.id
+    WHERE subject.current_order_id = ANY(@order_ids)
+      AND subject.current_order_line_id IS NOT NULL
+      AND subject.lifecycle IN ('ACTIVE', 'COMPLETED')
+      AND NOT EXISTS (
+          SELECT 1
+          FROM marking_ready_hu_fact fact
+          WHERE fact.marking_subject_id = subject.id
+            AND fact.reversed_at IS NULL
+            AND fact.provenance = 'REAL_IMPORT'
+      )
+    GROUP BY subject.current_order_line_id
+), ledger_balance AS (
+    SELECT UPPER(BTRIM(COALESCE(hu_code, hu))) AS hu_code,
+           item_id,
+           SUM(qty_delta) AS qty
+    FROM ledger
+    WHERE NULLIF(BTRIM(COALESCE(hu_code, hu)), '') IS NOT NULL
+    GROUP BY UPPER(BTRIM(COALESCE(hu_code, hu))), item_id
+    HAVING SUM(qty_delta) > 0.000001
+), ready_fact AS (
+    SELECT UPPER(BTRIM(hu_code_snapshot)) AS hu_code,
+           item_id_snapshot AS item_id,
+           SUM(marked_quantity) AS qty
+    FROM marking_ready_hu_fact
+    WHERE reversed_at IS NULL
+      AND provenance = 'REAL_IMPORT'
+    GROUP BY UPPER(BTRIM(hu_code_snapshot)), item_id_snapshot
+), ready AS (
+    SELECT plan.order_line_id,
+           SUM(LEAST(plan.qty_planned, ledger.qty, fact.qty)) AS qty
+    FROM order_receipt_plan_lines plan
+    INNER JOIN order_lines line
+            ON line.id = plan.order_line_id
+           AND line.order_id = ANY(@order_ids)
+    INNER JOIN ledger_balance ledger
+            ON ledger.item_id = plan.item_id
+           AND ledger.hu_code = UPPER(BTRIM(plan.to_hu))
+    INNER JOIN ready_fact fact
+            ON fact.item_id = plan.item_id
+           AND fact.hu_code = UPPER(BTRIM(plan.to_hu))
+    WHERE plan.qty_planned > 0
+      AND NULLIF(BTRIM(plan.to_hu), '') IS NOT NULL
+    GROUP BY plan.order_line_id
+), real_shipped AS (
+    SELECT attribution.order_line_id, SUM(attribution.quantity) AS qty
+    FROM marking_outbound_fulfillment_attribution attribution
+    WHERE attribution.order_id = ANY(@order_ids)
+      AND attribution.basis = 'REAL_READY'
+    GROUP BY attribution.order_line_id
+), legacy AS (
+    SELECT scope.order_line_id, scope.frozen_quantity
+    FROM marking_legacy_cutover_line_scope scope
+    WHERE scope.order_id = ANY(@order_ids)
+)
+SELECT line.id, COALESCE(item_type.enable_marking, FALSE) AND NOT item.chz_marking_exempt AS applicable,
+       CASE WHEN COALESCE(item_type.enable_marking, FALSE) AND NOT item.chz_marking_exempt
+                  AND NULLIF(BTRIM(item.gtin), '') IS NULL THEN 'GTIN_REQUIRED' END,
+       GREATEST(0, line.qty_ordered - LEAST(line.qty_ordered, COALESCE(legacy.frozen_quantity, 0))) AS real_required,
+       LEAST(GREATEST(0, line.qty_ordered - LEAST(line.qty_ordered, COALESCE(legacy.frozen_quantity, 0))),
+             COALESCE(operational.qty, 0) + COALESCE(ready.qty, 0) + COALESCE(real_shipped.qty, 0)) AS covered,
+       request.id, request.request_number, request.active_qty, request.imported_qty,
+       CASE WHEN request.active_qty <= 0 THEN 'FULLY_RETIRED'
+            WHEN request.active_qty < request.original_qty THEN 'PARTIALLY_RETIRED'
+            ELSE 'EXACT_ACTIVE' END
+FROM order_lines line
+INNER JOIN items item ON item.id = line.item_id
+INNER JOIN item_types item_type ON item_type.id = item.item_type_id
+LEFT JOIN legacy ON legacy.order_line_id = line.id
+LEFT JOIN operational ON operational.order_line_id = line.id
+LEFT JOIN ready ON ready.order_line_id = line.id
+LEFT JOIN real_shipped ON real_shipped.order_line_id = line.id
+LEFT JOIN request_line request ON request.order_line_id = line.id
+WHERE line.order_id = ANY(@order_ids)
+  AND line.cancelled_at IS NULL
+ORDER BY line.id, request.id;" );
+            command.Parameters.AddWithValue("@order_ids", ids);
+            using var reader = command.ExecuteReader();
+            var rows = new Dictionary<long, (bool Applicable, string? Error, double Required, double Covered, List<MarkingLineRequestProgress> Requests)>();
+            while (reader.Read())
+            {
+                var lineId = reader.GetInt64(0);
+                if (!rows.TryGetValue(lineId, out var row))
+                {
+                    row = (reader.GetBoolean(1), reader.IsDBNull(2) ? null : reader.GetString(2),
+                        Convert.ToDouble(reader.GetValue(3), CultureInfo.InvariantCulture),
+                        Convert.ToDouble(reader.GetValue(4), CultureInfo.InvariantCulture),
+                        new List<MarkingLineRequestProgress>());
+                    rows[lineId] = row;
+                }
+                if (!reader.IsDBNull(5))
+                {
+                    row.Requests.Add(new MarkingLineRequestProgress(
+                        reader.GetGuid(5), reader.GetString(6), reader.GetInt32(7),
+                        reader.GetInt32(8), reader.GetString(9)));
+                }
+            }
+
+            return (IReadOnlyDictionary<long, MarkingLineProgress>)rows.ToDictionary(pair => pair.Key, pair =>
+            {
+                var row = pair.Value;
+                var active = row.Requests.Sum(request => Math.Max(0, request.OperationalRequiredQuantity));
+                var imported = row.Requests.Sum(request => Math.Min(
+                    Math.Max(0, request.OperationalRequiredQuantity), Math.Max(0, request.ImportedQuantity)));
+                var state = !row.Applicable || row.Required <= 0.000001 ? "NOT_REQUIRED"
+                    : row.Error != null ? "ACTION_REQUIRED"
+                    : row.Covered + 0.000001 >= row.Required ? "COMPLETE"
+                    : active <= 0 ? "REQUEST_REQUIRED"
+                    : imported > 0 ? "PARTIAL_IMPORT"
+                    : "WAITING_FOR_CODES";
+                return new MarkingLineProgress(pair.Key, row.Applicable, row.Error, state,
+                    row.Required, row.Covered, active, row.Requests);
+            });
+        });
+    }
+
+    public void CreateMarkingRequestExportBatch(CreateMarkingRequestExportBatchCommand value)
+    {
+        WithConnection(connection =>
+        {
+            using (var command = CreateCommand(connection, @"
+INSERT INTO marking_request_export_batch(
+    id, order_id, expected_snapshot_hash, post_export_snapshot_hash,
+    reserve_quantity, created_by, created_at)
+VALUES(@id, @order_id, @expected_hash, @post_hash, @reserve, @actor, @created_at);"))
+            {
+                command.Parameters.AddWithValue("@id", value.BatchId);
+                command.Parameters.AddWithValue("@order_id", value.OrderId);
+                command.Parameters.AddWithValue("@expected_hash", value.ExpectedSnapshotHash);
+                command.Parameters.AddWithValue("@post_hash", value.PostExportSnapshotHash);
+                command.Parameters.AddWithValue("@reserve", value.ReserveQuantity);
+                command.Parameters.AddWithValue("@actor", value.Actor);
+                command.Parameters.AddWithValue("@created_at", value.CreatedAt);
+                command.ExecuteNonQuery();
+            }
+
+            foreach (var request in value.Requests.OrderBy(row => row.MarkingOrderId))
+            {
+                using var command = CreateCommand(connection, @"
+INSERT INTO marking_request_export_batch_request(
+    export_batch_id, marking_order_id, item_id, item_name_snapshot, gtin_snapshot,
+    required_quantity_snapshot, reserve_quantity_snapshot, requested_quantity_snapshot)
+VALUES(@batch_id, @request_id, @item_id, @item_name, @gtin,
+       @required, @reserve, @requested);" );
+                command.Parameters.AddWithValue("@batch_id", value.BatchId);
+                command.Parameters.AddWithValue("@request_id", request.MarkingOrderId);
+                command.Parameters.AddWithValue("@item_id", request.ItemId);
+                command.Parameters.AddWithValue("@item_name", request.ItemName);
+                command.Parameters.AddWithValue("@gtin", request.Gtin);
+                command.Parameters.AddWithValue("@required", request.RequiredQuantity);
+                command.Parameters.AddWithValue("@reserve", request.ReserveQuantity);
+                command.Parameters.AddWithValue("@requested", request.RequestedQuantity);
+                command.ExecuteNonQuery();
+            }
+            return 0;
         });
     }
 
@@ -11413,6 +11789,11 @@ LIMIT 1;" );
 
         return WithConnection(connection =>
         {
+            if (!LockOrdersForUpdate(new[] { command.RelatedOrderId }))
+            {
+                throw new InvalidOperationException("MARKING_IMPORT_SNAPSHOT_CHANGED");
+            }
+
             using (var existingCommand = CreateCommand(connection, @"
 SELECT id, coverage_snapshot_hash
 FROM marking_import_batch
@@ -11439,6 +11820,30 @@ LIMIT 1;"))
                 }
             }
 
+            var importedGtins = command.Codes
+                .Select(value => value.Gtin?.Trim())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!)
+                .Distinct(StringComparer.Ordinal)
+                .ToHashSet(StringComparer.Ordinal);
+            var expectedRequests = command.Requests
+                .Where(value => importedGtins.Contains(value.Gtin))
+                .OrderBy(value => value.MarkingOrderId)
+                .ToArray();
+            if (importedGtins.Count == 0 || expectedRequests.Length != command.Requests.Count)
+            {
+                throw new InvalidOperationException("MARKING_IMPORT_SNAPSHOT_CHANGED");
+            }
+
+            var currentEnvelopeBeforeLock = GetRelatedOutstandingMarkingRequests(command.RelatedOrderId)
+                .Where(value => importedGtins.Contains(value.Gtin))
+                .OrderBy(value => value.MarkingOrderId)
+                .ToArray();
+            var requestIdsToLock = requestIds
+                .Concat(currentEnvelopeBeforeLock.Select(value => value.MarkingOrderId))
+                .Distinct()
+                .OrderBy(value => value)
+                .ToArray();
             using (var lockCommand = CreateCommand(connection, @"
 SELECT mo.id
 FROM marking_order mo
@@ -11446,7 +11851,7 @@ WHERE mo.id = ANY(@request_ids)
 ORDER BY mo.id
 FOR UPDATE;"))
             {
-                lockCommand.Parameters.AddWithValue("@request_ids", requestIds);
+                lockCommand.Parameters.AddWithValue("@request_ids", requestIdsToLock);
                 using var reader = lockCommand.ExecuteReader();
                 var locked = 0;
                 while (reader.Read())
@@ -11454,7 +11859,7 @@ FOR UPDATE;"))
                     locked++;
                 }
 
-                if (locked != requestIds.Length)
+                if (locked != requestIdsToLock.Length)
                 {
                     throw new InvalidOperationException("MARKING_IMPORT_REQUEST_CHANGED");
                 }
@@ -11473,15 +11878,24 @@ FOR UPDATE;"))
                 return concurrentlyConfirmed;
             }
 
-            var currentRequests = GetRelatedOutstandingMarkingRequests(command.RelatedOrderId)
-                .Where(value => requestIds.Contains(value.MarkingOrderId))
-                .ToDictionary(value => value.MarkingOrderId);
-            foreach (var expected in command.Requests)
+            var currentEnvelope = GetRelatedOutstandingMarkingRequests(command.RelatedOrderId)
+                .Where(value => importedGtins.Contains(value.Gtin))
+                .OrderBy(value => value.MarkingOrderId)
+                .ToArray();
+            if (!currentEnvelope.Select(value => value.MarkingOrderId)
+                    .SequenceEqual(expectedRequests.Select(value => value.MarkingOrderId)))
+            {
+                throw new InvalidOperationException("MARKING_IMPORT_SNAPSHOT_CHANGED");
+            }
+
+            var currentRequests = currentEnvelope.ToDictionary(value => value.MarkingOrderId);
+            foreach (var expected in expectedRequests)
             {
                 if (!currentRequests.TryGetValue(expected.MarkingOrderId, out var current)
                     || current.RequiredQuantity != expected.RequiredQuantity
                     || current.ReserveQuantity != expected.ReserveQuantity
                     || current.RequestedQuantity != expected.RequestedQuantity
+                    || current.ActiveScopedQuantity != expected.OperationalRequiredQuantity
                     || current.ImportedQuantity != expected.ImportedBefore
                     || !string.Equals(current.ScopeSnapshotHash, expected.ScopeSnapshotHash, StringComparison.Ordinal))
                 {
@@ -11494,7 +11908,7 @@ FOR UPDATE;"))
                     throw new InvalidOperationException("MARKING_IMPORT_QUANTITY_CHANGED");
                 }
 
-                if (importedAfter < current.RequiredQuantity && !command.ConfirmRecovery)
+                if (importedAfter < current.ActiveScopedQuantity && !command.ConfirmRecovery)
                 {
                     throw new InvalidOperationException("MARKING_IMPORT_RECOVERY_CONFIRMATION_REQUIRED");
                 }
@@ -11627,11 +12041,12 @@ VALUES(
             using (var activateCommand = CreateCommand(connection, @"
 WITH request_state AS (
     SELECT mo.id,
-           mo.required_quantity,
            COUNT(code.id) FILTER (
                WHERE code.origin = 'RealImport' AND code.status = 'Imported') AS valid_real_qty,
-           COALESCE((SELECT SUM(scope.scoped_quantity)
+           COALESCE((SELECT SUM(consumption.active_quantity)
                      FROM marking_request_scope scope
+                     INNER JOIN marking_request_scope_consumption consumption
+                             ON consumption.marking_request_scope_id = scope.id
                      WHERE scope.marking_order_id = mo.id), 0) AS scoped_qty
     FROM marking_order mo
     LEFT JOIN marking_code code ON code.marking_order_id = mo.id
@@ -11639,7 +12054,7 @@ WITH request_state AS (
     GROUP BY mo.id
 ), eligible AS (
     SELECT id FROM request_state
-    WHERE valid_real_qty >= required_quantity AND scoped_qty = required_quantity
+    WHERE scoped_qty > 0 AND valid_real_qty >= scoped_qty
 ), inserted_coverage AS (
     INSERT INTO marking_operational_coverage(
     id, marking_subject_id, marking_request_scope_id, source_type,
@@ -12289,6 +12704,7 @@ FROM order_lines ol
 INNER JOIN items i ON i.id = ol.item_id
 LEFT JOIN pallet_metrics pm ON pm.order_line_id = ol.id
 WHERE ol.order_id = @order_id
+  AND ol.cancelled_at IS NULL
 ORDER BY i.name, ol.id;
 ");
             command.Parameters.AddWithValue("@order_id", orderId);
@@ -12358,6 +12774,7 @@ WITH line_scope AS (
     INNER JOIN items i ON i.id = ol.item_id
     LEFT JOIN item_types it ON it.id = i.item_type_id
     WHERE ol.order_id = ANY(@order_ids)
+      AND ol.cancelled_at IS NULL
 ),
 ledger_by_hu_item AS (
     SELECT l.item_id,
@@ -15438,6 +15855,206 @@ WHERE ol.order_id = @order_id
         });
     }
 
+    public void CancelOrderLine(long orderLineId, DateTime cancelledAt, string actor, string reason)
+    {
+        if (_transaction == null)
+        {
+            ExecuteAtomic(store =>
+            {
+                store.CancelOrderLine(orderLineId, cancelledAt, actor, reason);
+                return 0;
+            });
+            return;
+        }
+
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE order_lines
+SET cancelled_at = @cancelled_at,
+    cancelled_by_actor = @actor,
+    cancelled_by_device_id = NULL,
+    cancel_reason = @reason,
+    revision = revision + 1
+WHERE id = @id
+  AND cancelled_at IS NULL;");
+            command.Parameters.AddWithValue("@id", orderLineId);
+            command.Parameters.AddWithValue("@cancelled_at", ToDbDate(cancelledAt));
+            command.Parameters.AddWithValue("@actor", actor);
+            command.Parameters.AddWithValue("@reason", reason);
+            if (command.ExecuteNonQuery() != 1)
+            {
+                throw new InvalidOperationException("Строка заказа не найдена или уже отменена.");
+            }
+
+            return 0;
+        });
+    }
+
+    public OrderMarkingHistoryDependencySnapshot GetOrderMarkingHistoryDependencies(
+        long orderId,
+        IReadOnlyCollection<long> orderLineIds)
+    {
+        var ids = orderLineIds
+            .Where(id => id > 0)
+            .Distinct()
+            .Order()
+            .ToArray();
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH target_lines AS (
+    SELECT line.id, line.item_id
+    FROM order_lines line
+    WHERE line.order_id = @order_id
+      AND line.id = ANY(@order_line_ids)
+), line_dependencies AS (
+    SELECT target.id
+    FROM target_lines target
+    WHERE EXISTS (
+        SELECT 1
+        FROM marking_order request
+        WHERE request.order_line_id = target.id
+           OR request.original_order_line_id = target.id
+           OR (
+               request.order_line_id IS NULL
+               AND request.original_order_line_id IS NULL
+               AND request.item_id = target.item_id
+               AND @order_id IN (request.order_id, request.source_order_id, request.original_order_id)
+           )
+    )
+    OR EXISTS (
+        SELECT 1
+        FROM marking_request_scope scope
+        INNER JOIN marking_production_subject subject ON subject.id = scope.marking_subject_id
+        WHERE scope.original_order_line_id = target.id
+           OR subject.original_order_line_id = target.id
+           OR subject.current_order_line_id = target.id
+    )
+    OR EXISTS (
+        SELECT 1
+        FROM marking_production_subject subject
+        WHERE subject.original_order_line_id = target.id
+           OR subject.current_order_line_id = target.id
+    )
+    OR EXISTS (
+        SELECT 1
+        FROM marking_subject_ownership_audit audit
+        WHERE audit.old_order_line_id = target.id
+           OR audit.new_order_line_id = target.id
+    )
+    OR EXISTS (SELECT 1 FROM marking_import_batch batch WHERE batch.order_line_id = target.id)
+    OR EXISTS (SELECT 1 FROM marking_synthetic_legacy_allowlist approval WHERE approval.order_line_id = target.id)
+    OR EXISTS (SELECT 1 FROM marking_line_change_audit audit WHERE audit.order_line_id = target.id)
+    OR EXISTS (SELECT 1 FROM marking_legacy_task_retirement_audit audit WHERE audit.order_line_id = target.id)
+    OR EXISTS (SELECT 1 FROM marking_legacy_cutover_line_scope scope WHERE scope.order_line_id = target.id)
+    OR EXISTS (SELECT 1 FROM marking_outbound_fulfillment_attribution attribution WHERE attribution.order_line_id = target.id)
+    OR EXISTS (
+        SELECT 1
+        FROM marking_request_export_batch batch
+        INNER JOIN marking_request_export_batch_request member ON member.export_batch_id = batch.id
+        INNER JOIN marking_order request ON request.id = member.marking_order_id
+        WHERE batch.order_id = @order_id
+          AND (
+              request.order_line_id = target.id
+              OR request.original_order_line_id = target.id
+              OR (request.order_line_id IS NULL
+                  AND request.original_order_line_id IS NULL
+                  AND request.item_id = target.item_id)
+          )
+    )
+    OR EXISTS (
+        SELECT 1
+        FROM km_code legacy_code
+        WHERE legacy_code.order_id = @order_id
+          AND legacy_code.sku_id = target.item_id
+    )
+    OR EXISTS (
+        SELECT 1
+        FROM marking_code code
+        INNER JOIN doc_lines receipt_line ON receipt_line.id = code.receipt_line_id
+        WHERE receipt_line.order_line_id = target.id
+    )
+    OR EXISTS (
+        SELECT 1
+        FROM production_marking_transition_audit audit
+        INNER JOIN doc_lines receipt_line ON receipt_line.id = audit.old_receipt_line_id
+        WHERE receipt_line.order_line_id = target.id
+    )
+), order_history AS (
+    SELECT 1 FROM marking_order request
+    WHERE @order_id IN (request.order_id, request.source_order_id, request.original_order_id)
+       OR EXISTS (
+           SELECT 1 FROM order_lines line
+           WHERE line.order_id = @order_id
+             AND line.id IN (request.order_line_id, request.original_order_line_id)
+       )
+    UNION ALL SELECT 1 FROM marking_responsibility_audit audit WHERE audit.order_id = @order_id
+    UNION ALL SELECT 1 FROM marking_import_batch batch WHERE batch.order_id = @order_id
+    UNION ALL SELECT 1 FROM marking_line_change_audit audit WHERE audit.order_id = @order_id
+    UNION ALL SELECT 1 FROM marking_legacy_task_retirement_audit audit WHERE audit.order_id = @order_id
+    UNION ALL SELECT 1 FROM marking_legacy_cutover_line_scope scope WHERE scope.order_id = @order_id
+    UNION ALL SELECT 1 FROM marking_outbound_fulfillment_attribution attribution WHERE attribution.order_id = @order_id
+    UNION ALL SELECT 1 FROM marking_request_export_batch batch WHERE batch.order_id = @order_id
+    UNION ALL SELECT 1 FROM km_code_batch batch WHERE batch.order_id = @order_id
+    UNION ALL SELECT 1 FROM km_code code WHERE code.order_id = @order_id
+    UNION ALL
+    SELECT 1 FROM marking_production_subject subject
+    WHERE @order_id IN (subject.original_order_id, subject.current_order_id)
+       OR EXISTS (
+           SELECT 1 FROM order_lines line
+           WHERE line.order_id = @order_id
+             AND line.id IN (subject.original_order_line_id, subject.current_order_line_id)
+       )
+    UNION ALL
+    SELECT 1 FROM marking_request_scope scope
+    WHERE scope.original_order_id = @order_id
+       OR EXISTS (
+           SELECT 1 FROM order_lines line
+           WHERE line.order_id = @order_id
+             AND line.id = scope.original_order_line_id
+       )
+    UNION ALL
+    SELECT 1 FROM marking_subject_ownership_audit audit
+    WHERE @order_id IN (audit.old_order_id, audit.new_order_id)
+       OR EXISTS (
+           SELECT 1 FROM order_lines line
+           WHERE line.order_id = @order_id
+             AND line.id IN (audit.old_order_line_id, audit.new_order_line_id)
+       )
+    UNION ALL
+    SELECT 1 FROM marking_code code
+    LEFT JOIN docs receipt_doc ON receipt_doc.id = code.receipt_doc_id
+    LEFT JOIN doc_lines receipt_line ON receipt_line.id = code.receipt_line_id
+    LEFT JOIN order_lines linked_line ON linked_line.id = receipt_line.order_line_id
+    WHERE receipt_doc.order_id = @order_id OR linked_line.order_id = @order_id
+    UNION ALL
+    SELECT 1 FROM production_marking_transition_audit audit
+    LEFT JOIN docs source_doc ON source_doc.id = audit.source_prd_doc_id
+    LEFT JOIN docs correction_doc ON correction_doc.id = audit.cor_doc_id
+    LEFT JOIN doc_lines receipt_line ON receipt_line.id = audit.old_receipt_line_id
+    LEFT JOIN order_lines linked_line ON linked_line.id = receipt_line.order_line_id
+    WHERE source_doc.order_id = @order_id
+       OR correction_doc.order_id = @order_id
+       OR linked_line.order_id = @order_id
+)
+SELECT EXISTS(SELECT 1 FROM order_history),
+       COALESCE((SELECT ARRAY_AGG(id ORDER BY id) FROM line_dependencies), ARRAY[]::BIGINT[]);" );
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.Add("@order_line_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return new OrderMarkingHistoryDependencySnapshot(false, new HashSet<long>());
+            }
+
+            return new OrderMarkingHistoryDependencySnapshot(
+                reader.GetBoolean(0),
+                reader.GetFieldValue<long[]>(1).ToHashSet());
+        });
+    }
+
     public void DeleteOrderLine(long orderLineId)
     {
         if (_transaction == null)
@@ -15494,7 +16111,18 @@ WHERE ol.order_id = @order_id
 
         WithConnection(connection =>
         {
-            DeleteOrderLinesCore(connection, orderId, GetOrderLineIds(connection, orderId));
+            if (!LockOrdersForUpdate(new[] { orderId }))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
+
+            var orderLineIds = GetOrderLineIds(connection, orderId);
+            if (GetOrderMarkingHistoryDependencies(orderId, orderLineIds).BlocksOrderDelete)
+            {
+                throw OrderMarkingHistoryDeleteException.ForOrder();
+            }
+
+            DeleteOrderLinesCore(connection, orderId, orderLineIds);
 
             using (var deleteOrderCommand = CreateCommand(connection, "DELETE FROM orders WHERE id = @id"))
             {
@@ -15519,6 +16147,11 @@ WHERE ol.order_id = @order_id
         if (!LockOrdersForUpdate(new[] { orderId }))
         {
             throw new InvalidOperationException("Заказ не найден.");
+        }
+        var markingDependencies = GetOrderMarkingHistoryDependencies(orderId, ids);
+        if (ids.Any(markingDependencies.BlocksOrderLineDelete))
+        {
+            throw OrderMarkingHistoryDeleteException.ForOrderLine();
         }
         LockNormalizedHus(GetReservationHus(connection, new[] { orderId }, ids));
 

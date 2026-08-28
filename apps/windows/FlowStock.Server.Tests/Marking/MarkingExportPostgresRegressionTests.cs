@@ -1,4 +1,7 @@
 using System.Globalization;
+using System.IO.Compression;
+using System.Net.Http.Json;
+using System.Text;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models.Marking;
 using FlowStock.Core.Services;
@@ -208,10 +211,13 @@ WHERE code = @code;
             var before = await fixture.ReadSnapshotAsync();
             var store = new PostgresDataStore(connectionString);
 
+            var service = new OrderMarkingExportService(store);
+            var snapshotHash = service.Preview(fixture.OrderId).SnapshotHash;
             Assert.Throws<PostgresException>(() =>
-                new OrderMarkingExportService(store).Export(
+                service.Export(
                     fixture.OrderId,
-                    new DateTime(2026, 7, 27, 12, 0, 0, DateTimeKind.Utc)));
+                    new DateTime(2026, 7, 27, 12, 0, 0, DateTimeKind.Utc),
+                    snapshotHash));
 
             var after = await fixture.ReadSnapshotAsync();
             Assert.Equal(before, after);
@@ -250,8 +256,13 @@ WHERE code = @code;
             Assert.Equal(fixture.OrderId, Convert.ToInt64(await gateCommand.ExecuteScalarAsync()));
         }
 
-        var firstTask = host.Client.PostAsync($"/api/orders/{fixture.OrderId}/marking/export", content: null);
-        var secondTask = host.Client.PostAsync($"/api/orders/{fixture.OrderId}/marking/export", content: null);
+        var previewPayload = await host.Client.GetFromJsonAsync<System.Text.Json.JsonElement>(
+            $"/api/orders/{fixture.OrderId}/marking/preview");
+        var snapshotHash = previewPayload.GetProperty("snapshot_hash").GetString();
+        var firstTask = host.Client.PostAsJsonAsync($"/api/orders/{fixture.OrderId}/marking/export",
+            new { expected_snapshot_hash = snapshotHash });
+        var secondTask = host.Client.PostAsJsonAsync($"/api/orders/{fixture.OrderId}/marking/export",
+            new { expected_snapshot_hash = snapshotHash });
         await WaitUntilSessionsWaitForLock(baseConnectionString, applicationName, expectedCount: 2);
         await gateTransaction.CommitAsync();
 
@@ -259,6 +270,8 @@ WHERE code = @code;
         using var second = await secondTask;
         Assert.True(first.IsSuccessStatusCode, await first.Content.ReadAsStringAsync());
         Assert.True(second.IsSuccessStatusCode, await second.Content.ReadAsStringAsync());
+        Assert.NotEmpty(await first.Content.ReadAsByteArrayAsync());
+        Assert.NotEmpty(await second.Content.ReadAsByteArrayAsync());
 
         var created = new[]
         {
@@ -279,9 +292,64 @@ WHERE code = @code;
         Assert.Equal(0, snapshot.Codes);
         Assert.Equal(0, await fixture.CountDistinctCodesAsync());
         Assert.Equal(1, await fixture.CountRequestScopesAsync());
+        await using (var connection = new NpgsqlConnection(baseConnectionString))
+        {
+            await connection.OpenAsync();
+            Assert.Equal(1, await ExecuteScalarIntAsync(
+                connection,
+                "SELECT COUNT(*) FROM marking_request_export_batch WHERE order_id = @id",
+                ("id", fixture.OrderId)));
+            Assert.Equal(1, await ExecuteScalarIntAsync(
+                connection,
+                """
+SELECT COUNT(*)
+FROM marking_request_export_batch_request request
+INNER JOIN marking_request_export_batch batch ON batch.id = request.export_batch_id
+WHERE batch.order_id = @id
+""",
+                ("id", fixture.OrderId)));
+        }
         Assert.Equal(0, snapshot.Ledger);
         Assert.Equal(1, snapshot.Docs);
         Assert.Equal(1, snapshot.DocLines);
+    }
+
+    [Fact]
+    public async Task ExistingExportBatchReplay_UsesImmutableItemNameSnapshotWithoutCreatingNewRows()
+    {
+        var connectionString = ResolveRequiredPostgresTestConnectionString();
+        await using var fixture = await OrderFixture.CreateAsync(connectionString, quantity: 7);
+        var store = new PostgresDataStore(connectionString);
+        var service = new OrderMarkingExportService(store);
+        var preview = service.Preview(fixture.OrderId);
+        Assert.True(preview.IsSuccess, preview.Message);
+
+        var first = service.Export(fixture.OrderId, DateTime.UtcNow, preview.SnapshotHash);
+        Assert.True(first.IsSuccess, first.Message);
+        Assert.NotNull(first.FileBytes);
+        Assert.Contains(fixture.ItemName, ReadWorksheetXml(first.FileBytes!), StringComparison.Ordinal);
+
+        var changedName = $"Changed live item {Guid.NewGuid():N}";
+        await fixture.UpdateItemNameAsync(changedName);
+
+        var replay = service.Export(fixture.OrderId, DateTime.UtcNow.AddMinutes(1), preview.SnapshotHash);
+        Assert.True(replay.IsSuccess, replay.Message);
+        Assert.NotNull(replay.FileBytes);
+        var replayWorksheet = ReadWorksheetXml(replay.FileBytes!);
+        Assert.Contains(fixture.ItemName, replayWorksheet, StringComparison.Ordinal);
+        Assert.DoesNotContain(changedName, replayWorksheet, StringComparison.Ordinal);
+        Assert.Equal((1, 1), await fixture.ReadExportBatchCountsAsync());
+        Assert.Equal(1, (await fixture.ReadSnapshotAsync()).MarkingOrders);
+
+        await fixture.SetPlannedQuantityAsync(8);
+        var driftedReplay = service.Export(
+            fixture.OrderId,
+            DateTime.UtcNow.AddMinutes(2),
+            preview.SnapshotHash);
+        Assert.False(driftedReplay.IsSuccess);
+        Assert.Equal("MARKING_EXPORT_SNAPSHOT_CHANGED", driftedReplay.Message);
+        Assert.Equal((1, 1), await fixture.ReadExportBatchCountsAsync());
+        Assert.Equal(1, (await fixture.ReadSnapshotAsync()).MarkingOrders);
     }
 
     [Fact]
@@ -290,8 +358,12 @@ WHERE code = @code;
         var connectionString = ResolveRequiredPostgresTestConnectionString();
         await using var fixture = await OrderFixture.CreateAsync(connectionString, quantity: 2);
         var store = new PostgresDataStore(connectionString);
-        var export = new OrderMarkingExportService(store).Export(fixture.OrderId, DateTime.UtcNow);
+        var export = ExportWithPreview(store, fixture.OrderId);
         Assert.True(export.IsSuccess, export.Message);
+        var waitingProgress = Assert.Single(store.GetMarkingLineProgress(new[] { fixture.OrderId })).Value;
+        Assert.Equal("WAITING_FOR_CODES", waitingProgress.State);
+        Assert.Equal(2, waitingProgress.RealRequiredQuantity);
+        Assert.Equal(0, waitingProgress.ValidRealCoveredQuantity);
 
         var markingOrderId = await fixture.GetMarkingOrderIdAsync();
         var firstImportId = Guid.NewGuid();
@@ -317,7 +389,7 @@ WHERE code = @code;
         var connectionString = ResolveRequiredPostgresTestConnectionString();
         await using var fixture = await OrderFixture.CreateAsync(connectionString, quantity: 2);
         var store = new PostgresDataStore(connectionString);
-        var export = new OrderMarkingExportService(store).Export(fixture.OrderId, DateTime.UtcNow);
+        var export = ExportWithPreview(store, fixture.OrderId);
         Assert.True(export.IsSuccess, export.Message);
 
         var dm1 = $"01{fixture.Gtin}21ORDER-SCOPED-1\u001D93VERIFY";
@@ -347,6 +419,9 @@ WHERE code = @code;
         Assert.Single(result.ActivatedMarkingOrderIds);
         Assert.Equal(1, await fixture.CountOperationalCoverageAsync());
         Assert.Equal(2, await fixture.SumOperationalCoverageAsync());
+        var completeProgress = Assert.Single(store.GetMarkingLineProgress(new[] { fixture.OrderId })).Value;
+        Assert.Equal("COMPLETE", completeProgress.State);
+        Assert.Equal(2, completeProgress.ValidRealCoveredQuantity);
 
         var repeated = service.Confirm(
             fixture.OrderId,
@@ -375,13 +450,189 @@ WHERE code = @code;
     }
 
     [Fact]
+    public async Task OrderScopedConfirm_WhenSameGtinRequestAppearsAfterPreview_RejectsWithoutPartialWrites()
+    {
+        var connectionString = ResolveRequiredPostgresTestConnectionString();
+        await using var fixture = await OrderFixture.CreateAsync(connectionString, quantity: 1);
+        var store = new PostgresDataStore(connectionString);
+        Assert.True(ExportWithPreview(store, fixture.OrderId).IsSuccess);
+
+        var importService = new OrderScopedMarkingImportService(store);
+        var initialDm = $"01{fixture.Gtin}21RACE-INITIAL\u001D93VERIFY";
+        var initialFile = CreateObservedMarkingFile(fixture.Gtin, initialDm, "race-initial.tsv");
+        var initialPreview = importService.Preview(fixture.OrderId, new[] { initialFile });
+        Assert.True(initialPreview.IsValid, initialPreview.Message);
+        var initialBatchId = Guid.NewGuid();
+        var initialConfirm = importService.Confirm(
+            fixture.OrderId,
+            initialBatchId,
+            initialPreview.SnapshotHash,
+            $"initial-{initialBatchId:N}",
+            confirmRecovery: false,
+            new[] { initialFile });
+        Assert.Equal(1, initialConfirm.PersistedCodeCount);
+
+        var reserveDm = $"01{fixture.Gtin}21RACE-RESERVE\u001D93VERIFY";
+        var reserveFile = CreateObservedMarkingFile(fixture.Gtin, reserveDm, "race-reserve.tsv");
+        var stalePreview = importService.Preview(fixture.OrderId, new[] { reserveFile });
+        Assert.True(stalePreview.IsValid, stalePreview.Message);
+        var staleRequest = Assert.Single(stalePreview.Requests);
+        Assert.Equal(0, staleRequest.OperationalRequiredQuantity - staleRequest.ImportedBefore);
+        Assert.Equal(1, staleRequest.ValidInBatch);
+
+        await fixture.AddIndependentPlannedPalletAsync(1);
+        Assert.True(ExportWithPreview(store, fixture.OrderId).IsSuccess);
+        Assert.Equal(new[] { 1, 1 }, await fixture.ReadMarkingRequestRequiredQuantitiesAsync());
+        var before = await fixture.ReadImportMutationCountsAsync();
+
+        var staleBatchId = Guid.NewGuid();
+        var staleCommand = CreateSingleCodeConfirmCommand(
+            fixture.OrderId, fixture.Gtin, reserveDm, reserveFile, stalePreview, staleBatchId);
+
+        var error = Assert.Throws<InvalidOperationException>(
+            () => store.ConfirmOrderScopedMarkingImport(staleCommand));
+        Assert.Equal("MARKING_IMPORT_SNAPSHOT_CHANGED", error.Message);
+        Assert.Equal(before, await fixture.ReadImportMutationCountsAsync());
+    }
+
+    [Fact]
+    public async Task ConcurrentSameOrderExportThenConfirm_SerializesAndRejectsStaleAllocation()
+    {
+        var baseConnectionString = ResolveRequiredPostgresTestConnectionString();
+        await using var fixture = await OrderFixture.CreateAsync(baseConnectionString, quantity: 1);
+        var setupStore = new PostgresDataStore(baseConnectionString);
+        Assert.True(ExportWithPreview(setupStore, fixture.OrderId).IsSuccess);
+
+        var dm = $"01{fixture.Gtin}21RACE-CONCURRENT\u001D93VERIFY";
+        var file = CreateObservedMarkingFile(fixture.Gtin, dm, "race-concurrent.tsv");
+        var stalePreview = new OrderScopedMarkingImportService(setupStore)
+            .Preview(fixture.OrderId, new[] { file });
+        Assert.True(stalePreview.IsValid, stalePreview.Message);
+        await fixture.AddIndependentPlannedPalletAsync(1);
+
+        var exportApplication = $"marking-race-export-{Guid.NewGuid():N}";
+        var confirmApplication = $"marking-race-confirm-{Guid.NewGuid():N}";
+        var exportStore = new PostgresDataStore(WithApplicationName(baseConnectionString, exportApplication));
+        var confirmStore = new PostgresDataStore(WithApplicationName(baseConnectionString, confirmApplication));
+        var exportService = new OrderMarkingExportService(exportStore);
+        var exportPreview = exportService.Preview(fixture.OrderId);
+        Assert.True(exportPreview.IsSuccess, exportPreview.Message);
+        var staleBatchId = Guid.NewGuid();
+        var staleCommand = CreateSingleCodeConfirmCommand(
+            fixture.OrderId, fixture.Gtin, dm, file, stalePreview, staleBatchId);
+
+        await using var gate = new NpgsqlConnection(
+            WithApplicationName(baseConnectionString, $"marking-race-gate-{Guid.NewGuid():N}"));
+        await gate.OpenAsync();
+        await using var gateTransaction = await gate.BeginTransactionAsync();
+        await using (var gateCommand = gate.CreateCommand())
+        {
+            gateCommand.Transaction = gateTransaction;
+            gateCommand.CommandText = "SELECT id FROM orders WHERE id = @order_id FOR UPDATE";
+            gateCommand.Parameters.AddWithValue("@order_id", fixture.OrderId);
+            Assert.Equal(fixture.OrderId, Convert.ToInt64(await gateCommand.ExecuteScalarAsync()));
+        }
+
+        var exportTask = Task.Run(() => exportService.Export(
+            fixture.OrderId,
+            DateTime.UtcNow,
+            exportPreview.SnapshotHash));
+        await WaitUntilSessionsWaitForLock(baseConnectionString, exportApplication, expectedCount: 1);
+
+        var confirmTask = Task.Run(() => Record.Exception(
+            () => confirmStore.ConfirmOrderScopedMarkingImport(staleCommand)));
+        await WaitUntilSessionsWaitForLock(baseConnectionString, confirmApplication, expectedCount: 1);
+        await gateTransaction.CommitAsync();
+
+        var export = await exportTask;
+        var confirmError = await confirmTask;
+        Assert.True(export.IsSuccess, export.Message);
+        Assert.IsType<InvalidOperationException>(confirmError);
+        Assert.Equal("MARKING_IMPORT_SNAPSHOT_CHANGED", confirmError!.Message);
+        Assert.Equal(new[] { 1, 1 }, await fixture.ReadMarkingRequestRequiredQuantitiesAsync());
+        Assert.Equal(new ImportMutationCounts(0, 0, 0, 0), await fixture.ReadImportMutationCountsAsync());
+    }
+
+    [Fact]
+    public async Task ProductionReplan_WaitsForCanonicalOrderSerializationPoint()
+    {
+        var baseConnectionString = ResolveRequiredPostgresTestConnectionString();
+        await using var fixture = await OrderFixture.CreateAsync(baseConnectionString, quantity: 1);
+        await fixture.SetOrderQuantityOnlyAsync(2);
+        var planApplication = $"marking-race-plan-{Guid.NewGuid():N}";
+        var planStore = new PostgresDataStore(WithApplicationName(baseConnectionString, planApplication));
+
+        await using var gate = new NpgsqlConnection(
+            WithApplicationName(baseConnectionString, $"marking-race-plan-gate-{Guid.NewGuid():N}"));
+        await gate.OpenAsync();
+        await using var gateTransaction = await gate.BeginTransactionAsync();
+        await using (var gateCommand = gate.CreateCommand())
+        {
+            gateCommand.Transaction = gateTransaction;
+            gateCommand.CommandText = "SELECT id FROM orders WHERE id = @order_id FOR UPDATE";
+            gateCommand.Parameters.AddWithValue("@order_id", fixture.OrderId);
+            Assert.Equal(fixture.OrderId, Convert.ToInt64(await gateCommand.ExecuteScalarAsync()));
+        }
+
+        var planTask = Task.Run(() => new ProductionPalletService(planStore).PlanOrder(fixture.OrderId));
+        var prematureCompletion = await Task.WhenAny(planTask, Task.Delay(TimeSpan.FromSeconds(2)));
+        Assert.NotSame(planTask, prematureCompletion);
+        await WaitUntilSessionsWaitForLock(baseConnectionString, planApplication, expectedCount: 1);
+
+        await gateTransaction.CommitAsync();
+        var plan = await planTask;
+        Assert.True(plan.ProductionRequired);
+    }
+
+    [Fact]
+    public async Task SameGtinTwoRequestConfirm_CoversBothOperationalDeficitsBeforeReserve()
+    {
+        var connectionString = ResolveRequiredPostgresTestConnectionString();
+        await using var fixture = await OrderFixture.CreateAsync(connectionString, quantity: 1);
+        var store = new PostgresDataStore(connectionString);
+        Assert.True(ExportWithPreview(store, fixture.OrderId).IsSuccess);
+        await fixture.AddIndependentPlannedPalletAsync(1);
+        Assert.True(ExportWithPreview(store, fixture.OrderId).IsSuccess);
+
+        var firstDm = $"01{fixture.Gtin}21SAME-GTIN-FIRST\u001D93VERIFY";
+        var secondDm = $"01{fixture.Gtin}21SAME-GTIN-SECOND\u001D93VERIFY";
+        var file = new MarkingImportUploadFile(
+            "same-gtin.tsv",
+            Encoding.UTF8.GetBytes(
+                $"\"{firstDm}\"\t{fixture.Gtin}\tProduct\n\"{secondDm}\"\t{fixture.Gtin}\tProduct"));
+        var service = new OrderScopedMarkingImportService(store);
+        var preview = service.Preview(fixture.OrderId, new[] { file });
+        Assert.True(preview.IsValid, preview.Message);
+        Assert.Equal(2, preview.Requests.Count);
+        Assert.All(preview.Requests, request =>
+        {
+            Assert.Equal(1, request.OperationalRequiredQuantity);
+            Assert.Equal(1, request.ValidInBatch);
+        });
+
+        var batchId = Guid.NewGuid();
+        var confirmed = service.Confirm(
+            fixture.OrderId,
+            batchId,
+            preview.SnapshotHash,
+            $"same-gtin-{batchId:N}",
+            confirmRecovery: false,
+            new[] { file });
+
+        Assert.Equal(2, confirmed.PersistedCodeCount);
+        Assert.Equal(new[] { 1, 1 }, await fixture.ReadRealCodeCountsByRequestAsync());
+        Assert.Equal(2, await fixture.CountOperationalCoverageAsync());
+        Assert.Equal(2, await fixture.SumOperationalCoverageAsync());
+    }
+
+    [Fact]
     public async Task OperationalCoverage_DecreaseThenIncrease_DoesNotResurrectRetiredQuantity()
     {
         var connectionString = ResolveRequiredPostgresTestConnectionString();
         await SetCutoverStateAsync(connectionString, MarkingCutoverState.Enforced);
         await using var fixture = await OrderFixture.CreateAsync(connectionString, quantity: 3000);
         var store = new PostgresDataStore(connectionString);
-        var firstExport = new OrderMarkingExportService(store).Export(fixture.OrderId, DateTime.UtcNow);
+        var firstExport = ExportWithPreview(store, fixture.OrderId);
         Assert.True(firstExport.IsSuccess, firstExport.Message);
 
         await fixture.SeedAggregateRealCoverageAsync(3000);
@@ -394,7 +645,7 @@ WHERE code = @code;
         var increased = Assert.Single(store.GetAggregateMarkingCoverageByOrderLine(fixture.OrderId));
         Assert.Equal(2000, increased.Value.OperationalQuantity);
 
-        var deltaExport = new OrderMarkingExportService(store).Export(fixture.OrderId, DateTime.UtcNow);
+        var deltaExport = ExportWithPreview(store, fixture.OrderId);
         Assert.True(deltaExport.IsSuccess, deltaExport.Message);
         Assert.Equal(new[] { 500, 3000 }, await fixture.ReadMarkingRequestRequiredQuantitiesAsync());
 
@@ -863,7 +1114,9 @@ WHERE application_name = @application_name
             string connectionString,
             long itemTypeId,
             long itemId,
+            string itemName,
             long orderId,
+            long orderLineId,
             long locationId,
             string gtin,
             long prdDocId,
@@ -872,7 +1125,9 @@ WHERE application_name = @application_name
             _connectionString = connectionString;
             _itemTypeId = itemTypeId;
             ItemId = itemId;
+            ItemName = itemName;
             OrderId = orderId;
+            OrderLineId = orderLineId;
             LocationId = locationId;
             Gtin = gtin;
             PrdDocId = prdDocId;
@@ -880,7 +1135,9 @@ WHERE application_name = @application_name
         }
 
         public long ItemId { get; }
+        public string ItemName { get; }
         public long OrderId { get; }
+        public long OrderLineId { get; }
         public long LocationId { get; }
         public string Gtin { get; }
         public long PrdDocId { get; }
@@ -901,14 +1158,15 @@ RETURNING id;
 """,
                 ("name", $"Marking PostgreSQL test {suffix}"),
                 ("code", $"MARKING_TEST_{suffix}"));
+            var itemName = $"Marking item {suffix}";
             var itemId = await InsertReturningIdAsync(
                 connection,
                 """
-INSERT INTO items(name, barcode, gtin, base_uom, item_type_id)
-VALUES (@name, @barcode, @gtin, 'шт', @item_type_id)
+INSERT INTO items(name, barcode, gtin, base_uom, item_type_id, max_qty_per_hu)
+VALUES (@name, @barcode, @gtin, 'шт', @item_type_id, 10000)
 RETURNING id;
 """,
-                ("name", $"Marking item {suffix}"),
+                ("name", itemName),
                 ("barcode", $"MARKING-{suffix}"),
                 ("gtin", gtin),
                 ("item_type_id", itemTypeId));
@@ -1006,7 +1264,132 @@ VALUES(@pallet_id, @doc_line_id, @order_line_id, @item_id, @qty, 0, @created_at)
                 await component.ExecuteNonQueryAsync();
             }
 
-            return new OrderFixture(connectionString, itemTypeId, itemId, orderId, locationId, gtin, docId, hu);
+            return new OrderFixture(
+                connectionString, itemTypeId, itemId, itemName, orderId, orderLineId,
+                locationId, gtin, docId, hu);
+        }
+
+        public async Task AddIndependentPlannedPalletAsync(decimal quantity)
+        {
+            await using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync();
+            await using var transaction = await connection.BeginTransactionAsync();
+            var hu = $"HU-MARKING-DELTA-{Guid.NewGuid():N}";
+
+            await using (var updateLine = connection.CreateCommand())
+            {
+                updateLine.Transaction = transaction;
+                updateLine.CommandText = "UPDATE order_lines SET qty_ordered = qty_ordered + @qty WHERE id = @line_id";
+                updateLine.Parameters.AddWithValue("@qty", quantity);
+                updateLine.Parameters.AddWithValue("@line_id", OrderLineId);
+                Assert.Equal(1, await updateLine.ExecuteNonQueryAsync());
+            }
+
+            long docLineId;
+            await using (var insertLine = connection.CreateCommand())
+            {
+                insertLine.Transaction = transaction;
+                insertLine.CommandText = """
+INSERT INTO doc_lines(doc_id, order_line_id, item_id, qty, to_location_id, to_hu)
+VALUES (@doc_id, @order_line_id, @item_id, @qty, @location_id, @hu)
+RETURNING id;
+""";
+                insertLine.Parameters.AddWithValue("@doc_id", PrdDocId);
+                insertLine.Parameters.AddWithValue("@order_line_id", OrderLineId);
+                insertLine.Parameters.AddWithValue("@item_id", ItemId);
+                insertLine.Parameters.AddWithValue("@qty", quantity);
+                insertLine.Parameters.AddWithValue("@location_id", LocationId);
+                insertLine.Parameters.AddWithValue("@hu", hu);
+                docLineId = Convert.ToInt64(await insertLine.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
+            }
+
+            long palletId;
+            await using (var insertPallet = connection.CreateCommand())
+            {
+                insertPallet.Transaction = transaction;
+                insertPallet.CommandText = """
+INSERT INTO production_pallets(
+    prd_doc_id, doc_line_id, order_id, order_line_id, item_id,
+    hu_code, planned_qty, to_location_id, status, created_at)
+VALUES(
+    @doc_id, @doc_line_id, @order_id, @order_line_id, @item_id,
+    @hu, @qty, @location_id, 'PLANNED', @created_at)
+RETURNING id;
+""";
+                insertPallet.Parameters.AddWithValue("@doc_id", PrdDocId);
+                insertPallet.Parameters.AddWithValue("@doc_line_id", docLineId);
+                insertPallet.Parameters.AddWithValue("@order_id", OrderId);
+                insertPallet.Parameters.AddWithValue("@order_line_id", OrderLineId);
+                insertPallet.Parameters.AddWithValue("@item_id", ItemId);
+                insertPallet.Parameters.AddWithValue("@hu", hu);
+                insertPallet.Parameters.AddWithValue("@qty", quantity);
+                insertPallet.Parameters.AddWithValue("@location_id", LocationId);
+                insertPallet.Parameters.AddWithValue("@created_at", "2026-08-27T12:00:00");
+                palletId = Convert.ToInt64(await insertPallet.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
+            }
+
+            await using (var insertComponent = connection.CreateCommand())
+            {
+                insertComponent.Transaction = transaction;
+                insertComponent.CommandText = """
+INSERT INTO production_pallet_lines(
+    production_pallet_id, doc_line_id, order_line_id, item_id,
+    planned_qty, filled_qty, created_at)
+VALUES (@pallet_id, @doc_line_id, @order_line_id, @item_id, @qty, 0, @created_at);
+""";
+                insertComponent.Parameters.AddWithValue("@pallet_id", palletId);
+                insertComponent.Parameters.AddWithValue("@doc_line_id", docLineId);
+                insertComponent.Parameters.AddWithValue("@order_line_id", OrderLineId);
+                insertComponent.Parameters.AddWithValue("@item_id", ItemId);
+                insertComponent.Parameters.AddWithValue("@qty", quantity);
+                insertComponent.Parameters.AddWithValue("@created_at", "2026-08-27T12:00:00");
+                Assert.Equal(1, await insertComponent.ExecuteNonQueryAsync());
+            }
+
+            await transaction.CommitAsync();
+        }
+
+        public async Task SetOrderQuantityOnlyAsync(decimal quantity)
+        {
+            await using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "UPDATE order_lines SET qty_ordered = @qty WHERE id = @line_id",
+                connection);
+            command.Parameters.AddWithValue("@qty", quantity);
+            command.Parameters.AddWithValue("@line_id", OrderLineId);
+            Assert.Equal(1, await command.ExecuteNonQueryAsync());
+        }
+
+        public async Task UpdateItemNameAsync(string name)
+        {
+            await using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "UPDATE items SET name = @name WHERE id = @item_id",
+                connection);
+            command.Parameters.AddWithValue("@name", name);
+            command.Parameters.AddWithValue("@item_id", ItemId);
+            Assert.Equal(1, await command.ExecuteNonQueryAsync());
+        }
+
+        public async Task<(int Batches, int Requests)> ReadExportBatchCountsAsync()
+        {
+            await using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+SELECT
+    (SELECT COUNT(*) FROM marking_request_export_batch WHERE order_id = @order_id),
+    (SELECT COUNT(*)
+     FROM marking_request_export_batch_request request
+     INNER JOIN marking_request_export_batch batch ON batch.id = request.export_batch_id
+     WHERE batch.order_id = @order_id);
+""";
+            command.Parameters.AddWithValue("@order_id", OrderId);
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            return (reader.GetInt32(0), reader.GetInt32(1));
         }
 
         public async Task<string> ReadPalletStatusAsync()
@@ -1265,6 +1648,64 @@ ORDER BY required_quantity;
             return result.ToArray();
         }
 
+        public async Task<int[]> ReadRealCodeCountsByRequestAsync()
+        {
+            await using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+SELECT COUNT(code.id)::integer
+FROM marking_order request
+LEFT JOIN marking_code code
+       ON code.marking_order_id = request.id
+      AND code.origin = 'RealImport'
+      AND code.status = 'Imported'
+WHERE request.order_id = @order_id
+GROUP BY request.id
+ORDER BY request.created_at, request.request_number, request.id;
+""";
+            command.Parameters.AddWithValue("@order_id", OrderId);
+            await using var reader = await command.ExecuteReaderAsync();
+            var result = new List<int>();
+            while (await reader.ReadAsync())
+            {
+                result.Add(reader.GetInt32(0));
+            }
+            return result.ToArray();
+        }
+
+        public async Task<ImportMutationCounts> ReadImportMutationCountsAsync()
+        {
+            await using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+SELECT
+    (SELECT COUNT(*) FROM marking_import_batch WHERE order_id = @order_id),
+    (SELECT COUNT(*)
+     FROM marking_code_import import_record
+     INNER JOIN marking_order request ON request.id = import_record.matched_marking_order_id
+     WHERE request.order_id = @order_id),
+    (SELECT COUNT(*)
+     FROM marking_code code
+     INNER JOIN marking_order request ON request.id = code.marking_order_id
+     WHERE request.order_id = @order_id),
+    (SELECT COUNT(*)
+     FROM marking_operational_coverage coverage
+     INNER JOIN marking_request_scope scope ON scope.id = coverage.marking_request_scope_id
+     INNER JOIN marking_order request ON request.id = scope.marking_order_id
+     WHERE request.order_id = @order_id AND coverage.retired_at IS NULL);
+""";
+            command.Parameters.AddWithValue("@order_id", OrderId);
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            return new ImportMutationCounts(
+                reader.GetInt32(0),
+                reader.GetInt32(1),
+                reader.GetInt32(2),
+                reader.GetInt32(3));
+        }
+
         public async Task<int> SumOperationalCoverageAsync()
         {
             await using var connection = new NpgsqlConnection(_connectionString);
@@ -1374,6 +1815,52 @@ DELETE FROM locations WHERE id = @location_id;
         int Docs,
         int DocLines);
 
+    private sealed record ImportMutationCounts(
+        int ImportBatches,
+        int CodeImports,
+        int Codes,
+        int ActiveCoverage);
+
+    private static MarkingImportUploadFile CreateObservedMarkingFile(string gtin, string dataMatrix, string fileName)
+    {
+        return new MarkingImportUploadFile(
+            fileName,
+            Encoding.UTF8.GetBytes($"\"{dataMatrix}\"\t{gtin}\tProduct"));
+    }
+
+    private static OrderScopedMarkingImportConfirmCommand CreateSingleCodeConfirmCommand(
+        long orderId,
+        string gtin,
+        string dataMatrix,
+        MarkingImportUploadFile file,
+        OrderScopedMarkingImportPreviewResult preview,
+        Guid batchId)
+    {
+        var allocatedRequest = Assert.Single(preview.Requests.Where(value => value.ValidInBatch == 1));
+        var fileHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(file.Content));
+        var codeHash = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(dataMatrix)));
+        return new OrderScopedMarkingImportConfirmCommand(
+            orderId,
+            batchId,
+            preview.SnapshotHash,
+            $"confirm-{batchId:N}",
+            ConfirmRecovery: false,
+            new[] { file },
+            new[]
+            {
+                new OrderScopedMarkingImportCode(
+                    allocatedRequest.MarkingOrderId,
+                    gtin,
+                    dataMatrix,
+                    codeHash,
+                    fileHash,
+                    SourceRowNumber: 1)
+            },
+            preview.Requests,
+            DateTime.UtcNow);
+    }
+
     private static async Task SetCutoverStateAsync(string connectionString, string state)
     {
         await using var connection = new NpgsqlConnection(connectionString);
@@ -1387,6 +1874,26 @@ WHERE id = TRUE;
         command.Parameters.AddWithValue("@state", state);
         command.Parameters.AddWithValue("@now", "2026-08-24T09:00:00Z");
         Assert.Equal(1, await command.ExecuteNonQueryAsync());
+    }
+
+    private static FlowStock.Core.Models.OrderMarkingExportResult ExportWithPreview(
+        PostgresDataStore store,
+        long orderId)
+    {
+        var service = new OrderMarkingExportService(store);
+        var preview = service.Preview(orderId);
+        Assert.True(preview.IsSuccess, preview.Message);
+        return service.Export(orderId, DateTime.UtcNow, preview.SnapshotHash);
+    }
+
+    private static string ReadWorksheetXml(byte[] workbook)
+    {
+        using var stream = new MemoryStream(workbook);
+        using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
+        var worksheet = archive.GetEntry("xl/worksheets/sheet1.xml")
+                        ?? throw new InvalidOperationException("Worksheet is missing.");
+        using var reader = new StreamReader(worksheet.Open(), Encoding.UTF8);
+        return reader.ReadToEnd();
     }
 
     private static async Task<string> ReadCutoverStateAsync(string connectionString)

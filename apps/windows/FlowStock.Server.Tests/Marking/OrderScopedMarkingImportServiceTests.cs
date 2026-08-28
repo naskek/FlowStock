@@ -39,18 +39,133 @@ public sealed class OrderScopedMarkingImportServiceTests
     }
 
     [Fact]
-    public void Preview_TwoOutstandingRequestsForSameGtin_IsAmbiguous()
+    public void Preview_TwoOutstandingRequestsForSameGtin_AllocatesDeterministically()
     {
         var store = new Mock<IOrderScopedMarkingImportStore>(MockBehavior.Strict);
-        store.Setup(value => value.GetRelatedOutstandingMarkingRequests(257))
-            .Returns(new[] { RelatedRequest(GtinA, 1, 0), RelatedRequest(GtinA, 2, 0) });
+        var first = RelatedRequest(GtinA, 1, 0) with { CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) };
+        var second = RelatedRequest(GtinA, 2, 0) with { CreatedAt = new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc) };
+        store.Setup(value => value.GetRelatedOutstandingMarkingRequests(257)).Returns(new[] { first, second });
+        store.Setup(value => value.FindExistingRealMarkingCodeHashes(It.IsAny<IReadOnlyCollection<string>>()))
+            .Returns(new HashSet<string>());
 
         var result = new OrderScopedMarkingImportService(store.Object).Preview(
             257,
-            new[] { File("codes.tsv", Dm(GtinA, "SERIAL-A")) });
+            new[]
+            {
+                File("codes-1.tsv", Dm(GtinA, "SERIAL-A")),
+                File("codes-2.tsv", Dm(GtinA, "SERIAL-B")),
+                File("codes-3.tsv", Dm(GtinA, "SERIAL-C"))
+            });
 
-        Assert.False(result.IsValid);
-        Assert.Equal("AMBIGUOUS_REQUEST_SCOPE", result.ErrorCode);
+        Assert.True(result.IsValid, result.Message);
+        Assert.Equal(1, result.Requests.Single(row => row.MarkingOrderId == first.MarkingOrderId).ValidInBatch);
+        Assert.Equal(2, result.Requests.Single(row => row.MarkingOrderId == second.MarkingOrderId).ValidInBatch);
+    }
+
+    [Fact]
+    public void Preview_SameGtinPartialImportThenIncrease_ClosesOldDeficitBeforeDelta()
+    {
+        var first = RelatedRequest(GtinA, 3, 0) with
+        {
+            ImportedQuantity = 1,
+            ActiveScopedQuantity = 3,
+            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var delta = RelatedRequest(GtinA, 2, 0) with
+        {
+            ActiveScopedQuantity = 2,
+            CreatedAt = new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var store = CreatePreviewStore(first, delta);
+
+        var result = new OrderScopedMarkingImportService(store.Object).Preview(
+            257,
+            Enumerable.Range(1, 4)
+                .Select(index => File($"codes-{index}.tsv", Dm(GtinA, $"SERIAL-{index}")))
+                .ToArray());
+
+        Assert.True(result.IsValid, result.Message);
+        Assert.False(result.RequiresRecoveryConfirmation);
+        Assert.Equal(2, result.Requests.Single(row => row.MarkingOrderId == first.MarkingOrderId).ValidInBatch);
+        Assert.Equal(2, result.Requests.Single(row => row.MarkingOrderId == delta.MarkingOrderId).ValidInBatch);
+    }
+
+    [Fact]
+    public void Preview_SameGtinRequiredCompleteReserveShort_PrioritizesNewDelta()
+    {
+        var first = RelatedRequest(GtinA, 2, 5) with
+        {
+            ImportedQuantity = 2,
+            ActiveScopedQuantity = 2,
+            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var delta = RelatedRequest(GtinA, 2, 5) with
+        {
+            ActiveScopedQuantity = 2,
+            CreatedAt = new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var store = CreatePreviewStore(first, delta);
+
+        var result = new OrderScopedMarkingImportService(store.Object).Preview(
+            257,
+            new[]
+            {
+                File("delta-1.tsv", Dm(GtinA, "DELTA-1")),
+                File("delta-2.tsv", Dm(GtinA, "DELTA-2"))
+            });
+
+        Assert.True(result.IsValid, result.Message);
+        Assert.False(result.RequiresRecoveryConfirmation);
+        Assert.Equal(0, result.Requests.Single(row => row.MarkingOrderId == first.MarkingOrderId).ValidInBatch);
+        Assert.Equal(2, result.Requests.Single(row => row.MarkingOrderId == delta.MarkingOrderId).ValidInBatch);
+    }
+
+    [Fact]
+    public void Preview_PartiallyRetiredRequest_UsesOnlyActiveRemainder()
+    {
+        var request = RelatedRequest(GtinA, 5, 5) with
+        {
+            ImportedQuantity = 2,
+            ActiveScopedQuantity = 3
+        };
+        var store = CreatePreviewStore(request);
+
+        var result = new OrderScopedMarkingImportService(store.Object).Preview(
+            257,
+            new[] { File("remainder.tsv", Dm(GtinA, "REMAINDER")) });
+
+        var preview = Assert.Single(result.Requests);
+        Assert.True(result.IsValid, result.Message);
+        Assert.Equal(3, preview.OperationalRequiredQuantity);
+        Assert.Equal(1, preview.ValidInBatch);
+        Assert.True(preview.CoverageWillActivate);
+        Assert.True(preview.ReserveShort);
+        Assert.False(result.RequiresRecoveryConfirmation);
+    }
+
+    [Fact]
+    public void Preview_FullyRetiredHistoricalSameGtinRequest_DoesNotCreateAmbiguityOrConsumeCodes()
+    {
+        var retired = RelatedRequest(GtinA, 10, 5) with
+        {
+            ActiveScopedQuantity = 0,
+            CreatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var current = RelatedRequest(GtinA, 1, 0) with
+        {
+            ActiveScopedQuantity = 1,
+            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var store = CreatePreviewStore(retired, current);
+
+        var result = new OrderScopedMarkingImportService(store.Object).Preview(
+            257,
+            new[] { File("current.tsv", Dm(GtinA, "CURRENT")) });
+
+        var preview = Assert.Single(result.Requests);
+        Assert.True(result.IsValid, result.Message);
+        Assert.Equal(current.MarkingOrderId, preview.MarkingOrderId);
+        Assert.Equal(1, preview.ValidInBatch);
     }
 
     [Fact]
@@ -93,6 +208,16 @@ public sealed class OrderScopedMarkingImportServiceTests
 
     private static RelatedMarkingRequest RelatedRequest(string gtin, int required, int reserve) =>
         new(Guid.NewGuid(), $"REQ-{Guid.NewGuid():N}", gtin, required, reserve, required + reserve, 0, Guid.NewGuid().ToString("N"));
+
+    private static Mock<IOrderScopedMarkingImportStore> CreatePreviewStore(
+        params RelatedMarkingRequest[] requests)
+    {
+        var store = new Mock<IOrderScopedMarkingImportStore>(MockBehavior.Strict);
+        store.Setup(value => value.GetRelatedOutstandingMarkingRequests(257)).Returns(requests);
+        store.Setup(value => value.FindExistingRealMarkingCodeHashes(It.IsAny<IReadOnlyCollection<string>>()))
+            .Returns(new HashSet<string>());
+        return store;
+    }
 
     private static MarkingImportUploadFile File(string name, string dm) =>
         new(name, Encoding.UTF8.GetBytes($"\"{dm}\"\t{dm.Substring(2, 14)}\tProduct"));

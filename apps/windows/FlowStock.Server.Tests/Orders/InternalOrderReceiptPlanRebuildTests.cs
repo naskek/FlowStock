@@ -175,6 +175,11 @@ public sealed class InternalOrderReceiptPlanRebuildTests
                 It.Is<IReadOnlyCollection<long>>(ids => ids.Count == 1 && ids.Contains(order.Id))))
             .Returns(true);
         store.Setup(s => s.GetOrder(order.Id)).Returns(order);
+        store.Setup(s => s.GetOrderMarkingHistoryDependencies(
+                order.Id,
+                It.Is<IReadOnlyCollection<long>>(ids =>
+                    ids.Count == 1 && ids.Contains(orderLines[0].Id))))
+            .Returns(new OrderMarkingHistoryDependencySnapshot(false, new HashSet<long>()));
         store.Setup(s => s.GetOrderLines(order.Id))
             .Returns(() =>
             [

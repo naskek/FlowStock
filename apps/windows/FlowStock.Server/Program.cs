@@ -167,6 +167,7 @@ OrderProducedHuReservationEndpoint.Map(app);
 OrderAutoRedistributionEndpoint.Map(app);
 OrderMarkingExportEndpoint.Map(app);
 MarkingCutoverEndpoints.Map(app);
+MarkingSettingsEndpoints.Map(app);
 OrderLinesEndpoint.Map(app);
 PartnerItemSalePriceEndpoints.Map(app);
 CommercialTermsPreviewEndpoint.Map(app);

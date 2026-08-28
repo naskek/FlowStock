@@ -12,6 +12,7 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
@@ -162,7 +163,19 @@
                 </Grid>
             </GroupBox>
 
-            <GroupBox Header="Очистка перед стартом" Grid.Row="5" Margin="0,12,0,0">
+            <GroupBox Header="Маркировка ЧЗ" Grid.Row="5" Margin="0,12,0,0">
+                <StackPanel Margin="8">
+                    <TextBlock Text="Резерв КМ для новых заявок (целое число ≥ 0). Существующие заявки не изменяются."
+                               TextWrapping="Wrap" />
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <TextBox x:Name="MarkingReserveQuantityBox" Width="100" />
+                        <Button Content="Сохранить" Width="140" Margin="12,0,0,0"
+                                Click="SaveMarkingReserveQuantity_Click" />
+                    </StackPanel>
+                </StackPanel>
+            </GroupBox>
+
+            <GroupBox Header="Очистка перед стартом" Grid.Row="6" Margin="0,12,0,0">
                 <StackPanel Margin="8">
                     <TextBlock Text="Удаляет тестовые операции: документы, строки, ledger, заказы, imported events/errors."
                                TextWrapping="Wrap" />
@@ -173,7 +186,7 @@
                 </StackPanel>
             </GroupBox>
 
-            <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
                 <Button Content="Обслуживание..."
                         Width="150"
                         Margin="0,0,12,0"

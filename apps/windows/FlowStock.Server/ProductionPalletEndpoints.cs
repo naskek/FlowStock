@@ -1335,12 +1335,16 @@ public static class ProductionPalletEndpoints
                 var row = group.First().Row;
                 var orderLineIds = group.Select(entry => entry.OrderLineId).Distinct().Order().ToArray();
                 palletsByHu.TryGetValue(group.Key, out var pallet);
+                context.FillingMarkingEligibilityByHuCode.TryGetValue(group.Key, out var markingEligibility);
                 return (object)new
                 {
                     hu_code = row.HuCode,
                     order_line_ids = orderLineIds,
                     state = new { code = row.State.Code, label = row.State.Label },
                     filling_eligible = eligibleHuCodes.Contains(group.Key),
+                    filling_blocker = markingEligibility is { IsEligible: false }
+                        ? new { code = markingEligibility.BlockerCode, message = markingEligibility.Message }
+                        : null,
                     is_mixed = pallet?.IsMixedPallet == true || row.Components.Count > 1 || orderLineIds.Length > 1,
                     qty = (double?)row.Qty,
                     uom = row.Uom,

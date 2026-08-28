@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
@@ -51,13 +52,19 @@ public sealed class OrderMarkingExportService
             ? BuildProductionHuCodesByOrderLine(order.Id)
             : new Dictionary<long, IReadOnlyList<string>>();
         var plannedQtyByLine = BuildActiveProductionPalletQtyByOrderLine(order.Id);
-        var activeScopedQtyByItem = _data is IMarkingAggregateStore scopeAggregateStore
-            ? scopeAggregateStore.GetActiveMarkingRequestScopeQuantityByItem(order.Id)
+        var operationalSnapshots = GetOperationalSnapshots(order.Id);
+        var legacyTasksByItem = _data is IMarkingRequestOperationalStore
+            ? new Dictionary<long, MarkingOrder[]>()
+            : _data.GetMarkingOrdersByItemIds(_data.GetOrderLines(order.Id).Select(line => line.ItemId).Distinct().ToArray())
+                .Where(task => task.ItemId.HasValue && !IsTerminalFailed(task.Status) && IsOrderLinkedTask(task, order.Id))
+                .GroupBy(task => task.ItemId!.Value)
+                .ToDictionary(group => group.Key, group => group.ToArray());
+        var activeScopedFallback = _data is IMarkingAggregateStore fallbackStore
+            ? fallbackStore.GetActiveMarkingRequestScopeQuantityByItem(order.Id)
             : new Dictionary<long, double>();
-        var tasksByItem = _data.GetMarkingOrdersByItemIds(
-                _data.GetOrderLines(order.Id).Select(line => line.ItemId).Distinct().ToArray())
-            .Where(task => task.ItemId.HasValue && !IsTerminalFailed(task.Status) && IsOrderLinkedTask(task, order.Id))
-            .GroupBy(task => task.ItemId!.Value)
+        var snapshotsByItem = operationalSnapshots
+            .Where(snapshot => snapshot.IsOperational)
+            .GroupBy(snapshot => snapshot.ItemId)
             .ToDictionary(group => group.Key, group => group.ToArray());
         var lines = BuildLineSummaries(order)
             .Select(summary =>
@@ -65,15 +72,22 @@ public sealed class OrderMarkingExportService
                 huCodesByLine.TryGetValue(summary.OrderLineId, out var huCodes);
                 huCodes ??= Array.Empty<string>();
                 plannedQtyByLine.TryGetValue(summary.OrderLineId, out var plannedQty);
-                tasksByItem.TryGetValue(summary.ItemId, out var tasks);
-                tasks ??= Array.Empty<MarkingOrder>();
-                var scopedQty = _data is IMarkingAggregateStore
-                                && activeScopedQtyByItem.TryGetValue(summary.ItemId, out var activeScopedQty)
-                    ? activeScopedQty
-                    : tasks.Sum(task => Math.Max(0, task.RequiredQuantity));
-                var requestedQty = tasks.Sum(task => Math.Max(0, task.RequestedQuantity));
-                var importedQty = tasks.Sum(task => _data.CountMarkingCodesByMarkingOrder(task.Id));
-                var reserveQty = tasks.Sum(task => Math.Max(0, task.ReserveQuantity));
+                snapshotsByItem.TryGetValue(summary.ItemId, out var requests);
+                requests ??= Array.Empty<MarkingRequestOperationalSnapshot>();
+                var scopedQty = requests.Length > 0
+                    ? requests.Sum(request => request.ActiveScopedQuantity)
+                    : activeScopedFallback.TryGetValue(summary.ItemId, out var activeFallback)
+                        ? activeFallback
+                        : legacyTasksByItem.GetValueOrDefault(summary.ItemId)?.Sum(task => Math.Max(0, task.RequiredQuantity)) ?? 0;
+                var requestedQty = requests.Length > 0
+                    ? requests.Sum(request => request.RequestedQuantity)
+                    : legacyTasksByItem.GetValueOrDefault(summary.ItemId)?.Sum(task => Math.Max(0, task.RequestedQuantity)) ?? 0;
+                var importedQty = requests.Length > 0
+                    ? requests.Sum(request => request.ImportedRealQuantity)
+                    : legacyTasksByItem.GetValueOrDefault(summary.ItemId)?.Sum(task => _data.CountMarkingCodesByMarkingOrder(task.Id)) ?? 0;
+                var reserveQty = requests.Length > 0
+                    ? requests.Sum(request => request.ReserveQuantity)
+                    : legacyTasksByItem.GetValueOrDefault(summary.ItemId)?.Sum(task => Math.Max(0, task.ReserveQuantity)) ?? 0;
                 var remainingToProduce = Math.Max(0, summary.ExportQty + summary.ExistingCodeQty);
                 var previewQty = Math.Max(0, summary.ExportQty) + Math.Max(0, summary.ExistingCodeQty);
                 return new OrderMarkingExportPreviewLine(
@@ -98,6 +112,32 @@ public sealed class OrderMarkingExportService
             .Where(line => line.Qty > QtyTolerance)
             .ToList();
 
+        var reserveQuantity = _data is IMarkingAggregateStore aggregateStore
+            ? aggregateStore.GetDefaultMarkingReserveQuantity()
+            : 5;
+        var newRequests = lines
+            .GroupBy(line => new { line.ItemId, line.ItemName, line.Gtin })
+            .Select(group =>
+            {
+                var currentNeed = group.Sum(line => Math.Max(0, line.RemainingToProduce));
+                var activeScope = (double)operationalSnapshots
+                    .Where(snapshot => snapshot.IsOperational && snapshot.ItemId == group.Key.ItemId)
+                    .Sum(snapshot => snapshot.ActiveScopedQuantity);
+                if (activeScope == 0 && activeScopedFallback.TryGetValue(group.Key.ItemId, out var fallbackQty))
+                {
+                    activeScope = fallbackQty;
+                }
+                var required = checked((int)Math.Ceiling(Math.Max(0, currentNeed - activeScope)));
+                return new OrderMarkingNewRequestPreview(
+                    group.Key.ItemId, group.Key.ItemName, group.Key.Gtin, required,
+                    required > 0 ? reserveQuantity : 0,
+                    required > 0 ? checked(required + reserveQuantity) : 0);
+            })
+            .Where(request => request.RequiredQty > 0)
+            .OrderBy(request => request.Gtin, StringComparer.Ordinal)
+            .ThenBy(request => request.ItemId)
+            .ToArray();
+        var snapshotHash = ComputeExportSnapshotHash(order, lines, operationalSnapshots, newRequests, reserveQuantity);
         return new OrderMarkingExportPreviewResult(
             true,
             lines.Count == 0
@@ -107,10 +147,16 @@ public sealed class OrderMarkingExportService
             order.OrderRef,
             lines.Count,
             lines.Sum(line => line.Qty),
-            lines);
+            lines,
+            snapshotHash,
+            newRequests);
     }
 
-    public OrderMarkingExportResult Export(long orderId, DateTime generatedAt)
+    public OrderMarkingExportResult Export(
+        long orderId,
+        DateTime generatedAt,
+        string? expectedSnapshotHash = null,
+        string actor = "server:marking-export")
     {
         OrderMarkingExportResult? result = null;
         try
@@ -123,7 +169,8 @@ public sealed class OrderMarkingExportService
                     return;
                 }
 
-                result = new OrderMarkingExportService(scopedStore).ExportLocked(orderId, generatedAt, generateExcel: true);
+                result = new OrderMarkingExportService(scopedStore).ExportLocked(
+                    orderId, generatedAt, generateExcel: true, expectedSnapshotHash, actor);
             });
         }
         catch (OrderMarkingExportRollbackException ex)
@@ -154,7 +201,9 @@ public sealed class OrderMarkingExportService
                         ? new OrderMarkingExportResult(
                             true, "Customer import envelope не требуется.", null, string.Empty,
                             0, 0, 0, 0, 0, 0, Array.Empty<OrderMarkingExportLineSummary>())
-                        : new OrderMarkingExportService(scopedStore).ExportLocked(orderId, createdAt, generateExcel: false);
+                    : new OrderMarkingExportService(scopedStore).ExportLocked(
+                        orderId, createdAt, generateExcel: false, expectedSnapshotHash: null,
+                        actor: "server:customer-import-envelope");
             });
         }
         catch (OrderMarkingExportRollbackException ex)
@@ -165,7 +214,12 @@ public sealed class OrderMarkingExportService
         return result ?? OrderMarkingExportResult.Failure("Не удалось подготовить customer import scope.");
     }
 
-    private OrderMarkingExportResult ExportLocked(long orderId, DateTime generatedAt, bool generateExcel)
+    private OrderMarkingExportResult ExportLocked(
+        long orderId,
+        DateTime generatedAt,
+        bool generateExcel,
+        string? expectedSnapshotHash,
+        string actor)
     {
         if (_data is IMarkingCutoverRuntimeGuard cutoverGuard)
         {
@@ -198,6 +252,36 @@ public sealed class OrderMarkingExportService
                 "Для marking_responsibility=CUSTOMER Excel FlowStock недоступен; загрузите ответ КМ в карточке заказа.");
         }
 
+        var previewBefore = Preview(orderId);
+        if (!previewBefore.IsSuccess)
+        {
+            return OrderMarkingExportResult.Failure(previewBefore.Message);
+        }
+        if (generateExcel && _data is IMarkingRequestOperationalStore
+            && string.IsNullOrWhiteSpace(expectedSnapshotHash))
+        {
+            return OrderMarkingExportResult.Failure("MARKING_EXPORT_SNAPSHOT_REQUIRED");
+        }
+        if (generateExcel && _data is IMarkingRequestOperationalStore batchStore)
+        {
+            var existingBatch = batchStore.GetMarkingRequestExportBatch(orderId, expectedSnapshotHash!.Trim());
+            if (existingBatch != null)
+            {
+                if (!string.Equals(previewBefore.SnapshotHash, existingBatch.PostExportSnapshotHash,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return OrderMarkingExportResult.Failure("MARKING_EXPORT_SNAPSHOT_CHANGED");
+                }
+                return ExportExistingBatch(order, existingBatch, generatedAt);
+            }
+        }
+        if (generateExcel && _data is IMarkingRequestOperationalStore
+            && !string.Equals(previewBefore.SnapshotHash, expectedSnapshotHash?.Trim(),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return OrderMarkingExportResult.Failure("MARKING_EXPORT_SNAPSHOT_CHANGED");
+        }
+
         var configurationError = FindMarkingConfigurationError(order.Id);
         if (configurationError != null)
         {
@@ -222,20 +306,22 @@ public sealed class OrderMarkingExportService
         }
 
         var itemIds = lines.Select(line => line.ItemId).Distinct().ToArray();
-        var activeTasks = _data.GetMarkingOrdersByItemIds(itemIds)
-            .Where(task => task.ItemId.HasValue
-                           && !IsTerminalFailed(task.Status)
-                           && IsOrderLinkedTask(task, order.Id))
-            .ToList();
-        var tasksByItem = activeTasks
-            .GroupBy(task => task.ItemId!.Value)
-            .ToDictionary(group => group.Key, group => group.ToList());
-        var activeScopedQtyByItem = _data is IMarkingAggregateStore scopeAggregateStore
-            ? scopeAggregateStore.GetActiveMarkingRequestScopeQuantityByItem(order.Id)
-            : new Dictionary<long, double>();
+        var operationalSnapshots = GetOperationalSnapshots(order.Id);
+        var fallbackTasks = _data is IMarkingRequestOperationalStore
+            ? Array.Empty<MarkingOrder>()
+            : _data.GetMarkingOrdersByItemIds(itemIds)
+                .Where(task => task.ItemId.HasValue && !IsTerminalFailed(task.Status) && IsOrderLinkedTask(task, order.Id))
+                .ToArray();
+        var activeScopedQtyByItem = operationalSnapshots.Count > 0
+            ? operationalSnapshots
+                .Where(snapshot => snapshot.IsOperational)
+                .GroupBy(snapshot => snapshot.ItemId)
+                .ToDictionary(group => group.Key, group => (double)group.Sum(row => row.ActiveScopedQuantity))
+            : _data is IMarkingAggregateStore aggregateScopeStore
+                ? aggregateScopeStore.GetActiveMarkingRequestScopeQuantityByItem(order.Id)
+                : new Dictionary<long, double>();
 
         var taskIdsToExport = new List<Guid>();
-        var taskIdsAvailableForReexport = new List<Guid>();
         var createdCodeQty = 0d;
         var reusedCodeQty = 0d;
         var exportLineCount = 0;
@@ -254,25 +340,18 @@ public sealed class OrderMarkingExportService
                 continue;
             }
 
-            var itemTasks = tasksByItem.TryGetValue(group.Key, out var existing)
-                ? existing
-                : new List<MarkingOrder>();
             var taskScopedQty = _data is IMarkingAggregateStore
                                 && activeScopedQtyByItem.TryGetValue(group.Key, out var activeScopedQty)
                 ? activeScopedQty
-                : itemTasks.Sum(task => Math.Max(
-                    0,
-                    task.RequiredQuantity > 0 ? task.RequiredQuantity : task.RequestedQuantity));
-            var taskCodeQtyById = itemTasks.ToDictionary(task => task.Id, task => _data.CountMarkingCodesByMarkingOrder(task.Id));
-            var taskCodeQty = taskCodeQtyById.Sum(pair => pair.Value);
-            taskIdsAvailableForReexport.AddRange(itemTasks
-                .Where(task => taskCodeQtyById.TryGetValue(task.Id, out var codes) && codes > 0)
-                .Select(task => task.Id));
-
-            foreach (var task in itemTasks.Where(task => taskCodeQtyById.TryGetValue(task.Id, out var codes)
-                                                         && codes + QtyTolerance < task.RequestedQuantity))
+                : fallbackTasks.Where(task => task.ItemId == group.Key)
+                    .Sum(task => Math.Max(0, task.RequiredQuantity > 0 ? task.RequiredQuantity : task.RequestedQuantity));
+            if (_data is not IMarkingRequestOperationalStore)
             {
-                taskIdsToExport.Add(task.Id);
+                taskIdsToExport.AddRange(fallbackTasks
+                    .Where(task => task.ItemId == group.Key
+                                   && _data.CountMarkingCodesByMarkingOrder(task.Id) + QtyTolerance
+                                      < task.RequestedQuantity)
+                    .Select(task => task.Id));
             }
 
             var missingTaskQty = Math.Max(0, itemRequiredQty - taskScopedQty);
@@ -312,13 +391,6 @@ public sealed class OrderMarkingExportService
         }
 
         taskIdsToExport = taskIdsToExport.Distinct().ToList();
-        if (taskIdsToExport.Count == 0)
-        {
-            taskIdsToExport = taskIdsAvailableForReexport
-                .Distinct()
-                .ToList();
-        }
-
         MarkingExcelExportResult? excelResult = null;
         if (generateExcel && taskIdsToExport.Count > 0)
         {
@@ -330,6 +402,28 @@ public sealed class OrderMarkingExportService
             }
 
             exportLineCount = excelResult.Rows.Count;
+        }
+
+        if (generateExcel && _data is IMarkingRequestOperationalStore exportBatchStore
+            && taskIdsToExport.Count > 0)
+        {
+            var postPreview = Preview(orderId);
+            if (!postPreview.IsSuccess)
+            {
+                throw new OrderMarkingExportRollbackException(postPreview.Message);
+            }
+            var tasks = _data.GetMarkingOrdersByIds(taskIdsToExport).ToDictionary(task => task.Id);
+            var batchRequests = taskIdsToExport.Select(taskId =>
+            {
+                var task = tasks[taskId];
+                var item = _data.FindItemById(task.ItemId!.Value)!;
+                return new MarkingRequestExportBatchRequestSnapshot(
+                    task.Id, item.Id, item.Name, task.Gtin ?? item.Gtin ?? string.Empty,
+                    task.RequiredQuantity, task.ReserveQuantity, task.RequestedQuantity);
+            }).ToArray();
+            exportBatchStore.CreateMarkingRequestExportBatch(new CreateMarkingRequestExportBatchCommand(
+                Guid.NewGuid(), orderId, expectedSnapshotHash!.Trim(), postPreview.SnapshotHash,
+                reserveQuantity, actor, generatedAt, batchRequests));
         }
 
         var requiredQty = lines.Sum(line => line.RequiredQty);
@@ -423,6 +517,62 @@ public sealed class OrderMarkingExportService
                 operationalCoveredQty,
                 exportQty);
         }
+    }
+
+    private OrderMarkingExportResult ExportExistingBatch(
+        Order order,
+        MarkingRequestExportBatchSnapshot batch,
+        DateTime generatedAt)
+    {
+        var excel = new MarkingExcelService(_data).ExportBatchReplay(batch.Requests, generatedAt);
+        if (!excel.IsSuccess || excel.FileBytes == null)
+        {
+            return OrderMarkingExportResult.Failure(excel.Error ?? "Не удалось повторить Excel ЧЗ.");
+        }
+        return new OrderMarkingExportResult(
+            true, "Повторно сформирован исходный immutable export batch.", excel.FileBytes,
+            BuildFileName(order, generatedAt), batch.Requests.Count, excel.Rows.Count,
+            batch.Requests.Sum(row => row.RequiredQuantity), 0, 0, 0,
+            Array.Empty<OrderMarkingExportLineSummary>());
+    }
+
+    private IReadOnlyList<MarkingRequestOperationalSnapshot> GetOperationalSnapshots(long orderId)
+    {
+        if (_data is IMarkingRequestOperationalStore operationalStore)
+        {
+            return operationalStore.GetMarkingRequestOperationalSnapshots(orderId);
+        }
+
+        return Array.Empty<MarkingRequestOperationalSnapshot>();
+    }
+
+    private static string ComputeExportSnapshotHash(
+        Order order,
+        IReadOnlyList<OrderMarkingExportPreviewLine> lines,
+        IReadOnlyList<MarkingRequestOperationalSnapshot> requests,
+        IReadOnlyList<OrderMarkingNewRequestPreview> newRequests,
+        int reserveQuantity)
+    {
+        var payload = new StringBuilder()
+            .Append(order.Id).Append('|').Append(order.Status).Append('|').Append(reserveQuantity).Append('|');
+        foreach (var line in lines.OrderBy(value => value.OrderLineId))
+        {
+            payload.Append(line.OrderLineId).Append(':').Append(line.ItemId).Append(':')
+                .Append(line.Gtin).Append(':').Append(line.RemainingToProduce.ToString("R", CultureInfo.InvariantCulture))
+                .Append(':').Append(line.PlannedQty.ToString("R", CultureInfo.InvariantCulture)).Append('|');
+        }
+        foreach (var request in requests.OrderBy(value => value.MarkingOrderId))
+        {
+            payload.Append(request.MarkingOrderId).Append(':').Append(request.ActiveScopedQuantity).Append(':')
+                .Append(request.ImportedRealQuantity).Append(':').Append(request.ActiveCoveredQuantity).Append(':')
+                .Append(request.ScopeSnapshotHash).Append('|');
+        }
+        foreach (var request in newRequests)
+        {
+            payload.Append("new:").Append(request.ItemId).Append(':').Append(request.Gtin).Append(':')
+                .Append(request.RequiredQty).Append(':').Append(request.ReserveQty).Append('|');
+        }
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload.ToString()))).ToLowerInvariant();
     }
 
     private string? FindMarkingConfigurationError(long orderId)

@@ -14,6 +14,7 @@ using Npgsql;
 
 namespace FlowStock.Server.Tests.Catalog;
 
+[Collection(CatalogCutoverPostgresTestCollection.Name)]
 public sealed class CatalogCutoverPostgresTests
 {
     [PostgresFact]
@@ -190,6 +191,51 @@ public sealed class CatalogCutoverPostgresTests
         {
             if (File.Exists(legacyPath)) File.Delete(legacyPath);
             await DeletePartners(connectionString, ids);
+        }
+    }
+
+    [PostgresFact]
+    public async Task PartnerRoleBackfill_ConcurrentNullPartnerInsert_FailsClosedAndRollsBack()
+    {
+        var connectionString = RequiredConnection();
+        var ids = await InsertPartners(connectionString, 1);
+        long[] concurrentIds = [];
+        var legacyPath = Path.Combine(Path.GetTempPath(), $"flowstock-partner-roles-{Guid.NewGuid():N}.json");
+        await using var lockConnection = new NpgsqlConnection(connectionString);
+        await lockConnection.OpenAsync();
+        await using var lockTransaction = await lockConnection.BeginTransactionAsync();
+        var lockTransactionCompleted = false;
+        try
+        {
+            await File.WriteAllTextAsync(legacyPath, JsonSerializer.Serialize(new Dictionary<long, string>
+            {
+                [ids[0]] = "Client"
+            }));
+            var lockCommand = new NpgsqlCommand(
+                "SELECT id FROM partners WHERE id = @id FOR UPDATE;",
+                lockConnection,
+                lockTransaction);
+            lockCommand.Parameters.AddWithValue("id", ids[0]);
+            await lockCommand.ExecuteScalarAsync();
+
+            var apply = Task.Run(() => PartnerRoleBackfillCommand.Run(connectionString, apply: true, legacyPath));
+            await WaitForPartnerRoleBackfillUpdateLock(connectionString);
+            concurrentIds = await InsertPartners(connectionString, 1);
+            await lockTransaction.CommitAsync();
+            lockTransactionCompleted = true;
+
+            Assert.Equal(3, await apply);
+            Assert.Null(await ScalarString(connectionString, "SELECT partner_role FROM partners WHERE id = @id;", ids[0]));
+            Assert.Null(await ScalarString(connectionString, "SELECT partner_role FROM partners WHERE id = @id;", concurrentIds[0]));
+        }
+        finally
+        {
+            if (!lockTransactionCompleted)
+            {
+                await lockTransaction.RollbackAsync();
+            }
+            if (File.Exists(legacyPath)) File.Delete(legacyPath);
+            await DeletePartners(connectionString, ids.Concat(concurrentIds).ToArray());
         }
     }
 
@@ -460,6 +506,32 @@ VALUES(@device, @login, @salt, @hash, 100000, 'PC', TRUE, @role, @created) RETUR
         var command = new NpgsqlCommand("DELETE FROM partners WHERE id = ANY(@ids);", connection); command.Parameters.AddWithValue("@ids", ids); await command.ExecuteNonQueryAsync();
     }
 
+    private static async Task WaitForPartnerRoleBackfillUpdateLock(string connectionString)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            await using var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync();
+            var command = new NpgsqlCommand(@"
+SELECT EXISTS (
+    SELECT 1
+    FROM pg_stat_activity
+    WHERE pid <> pg_backend_pid()
+      AND datname = current_database()
+      AND wait_event_type = 'Lock'
+      AND query LIKE '%UPDATE partners%partner_role%'
+);", connection);
+            if (Convert.ToBoolean(await command.ExecuteScalarAsync()))
+            {
+                return;
+            }
+            await Task.Delay(20);
+        }
+
+        throw new TimeoutException("Partner-role backfill did not reach the blocked UPDATE.");
+    }
+
     private static string RequiredConnection() => TsdOutboundEligibilityPostgresTests.ResolvePostgresTestConnectionString()!;
 
     private static string ReadRepoFile(params string[] parts)
@@ -485,3 +557,11 @@ VALUES(@device, @login, @salt, @hash, 100000, 'PC', TRUE, @role, @created) RETUR
         long HiddenActiveItemId,
         long VisibleInactiveItemId);
 }
+
+public static class CatalogCutoverPostgresTestCollection
+{
+    public const string Name = "Catalog cutover PostgreSQL maintenance";
+}
+
+[CollectionDefinition(CatalogCutoverPostgresTestCollection.Name, DisableParallelization = true)]
+public sealed class CatalogCutoverPostgresTestCollectionDefinition;

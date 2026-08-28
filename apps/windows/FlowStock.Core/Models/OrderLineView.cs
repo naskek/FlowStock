@@ -225,6 +225,19 @@ public sealed class OrderLineView : INotifyPropertyChanged
     public string? PalletFillLabel { get; set; }
     public string PalletFillTone { get; set; } = "neutral";
     public string? PalletFillTitle { get; set; }
+    public string MarkingProgressState { get; set; } = "NOT_REQUIRED";
+    public double MarkingRealRequiredQty { get; set; }
+    public double MarkingValidRealCoveredQty { get; set; }
+    public string MarkingProgressDisplay => MarkingProgressState switch
+    {
+        "REQUEST_REQUIRED" => "Нужна заявка КМ",
+        "WAITING_FOR_CODES" => "Ожидаются КМ",
+        "PARTIAL_IMPORT" => $"КМ {MarkingValidRealCoveredQty:0.###}/{MarkingRealRequiredQty:0.###}",
+        "COMPLETE" => $"КМ готовы {MarkingValidRealCoveredQty:0.###}/{MarkingRealRequiredQty:0.###}",
+        "ACTION_REQUIRED" => "Требуется настройка",
+        _ => "Не требуется"
+    };
+    public string? MarkingProgressToolTip { get; set; }
     public string ProductionPurposeDisplay => ProductionLinePurposeMapper.ToDisplayName(ProductionPurpose);
     public bool IsMixedPalletLine => !string.IsNullOrWhiteSpace(ProductionPalletGroup);
     public string ProductionPalletGroupDisplay => string.IsNullOrWhiteSpace(ProductionPalletGroup) ? string.Empty : ProductionPalletGroup!;

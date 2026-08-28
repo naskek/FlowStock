@@ -1939,7 +1939,10 @@ SELECT active_quantity FROM marking_legacy_cutover_subject_exemption;"));
             Execute(connection, @"
 UPDATE order_lines SET qty_ordered = 120 WHERE id = 9401;
 UPDATE production_pallet_lines SET planned_qty = 120 WHERE id = 9401;");
-            var firstExport = new OrderMarkingExportService(store).Export(9401, DateTime.UtcNow);
+            var exportService = new OrderMarkingExportService(store);
+            var firstPreview = exportService.Preview(9401);
+            Assert.True(firstPreview.IsSuccess, firstPreview.Message);
+            var firstExport = exportService.Export(9401, DateTime.UtcNow, firstPreview.SnapshotHash);
             Assert.True(firstExport.IsSuccess, firstExport.Message);
             Assert.Equal(20, Assert.Single(firstExport.Lines).ExportQty);
 
@@ -2005,7 +2008,12 @@ SELECT SUM(active_quantity) FROM marking_operational_coverage_consumption;"));
             Assert.Equal("NOT_APPLIED", ExecuteScalarString(connection,
                 "SELECT calculate_order_marking_status(9401);"));
 
-            var secondExport = new OrderMarkingExportService(store).Export(9401, DateTime.UtcNow.AddMinutes(1));
+            var secondPreview = exportService.Preview(9401);
+            Assert.True(secondPreview.IsSuccess, secondPreview.Message);
+            var secondExport = exportService.Export(
+                9401,
+                DateTime.UtcNow.AddMinutes(1),
+                secondPreview.SnapshotHash);
             Assert.True(secondExport.IsSuccess, secondExport.Message);
             Assert.Equal(20, Assert.Single(secondExport.Lines).ExportQty);
             Assert.Equal(2, ExecuteScalarInt(connection,
@@ -2198,7 +2206,10 @@ WHERE subject.id = @new_subject_id;", ("@new_subject_id", subjects.NewSubjectId)
             Execute(connection, @"
 UPDATE order_lines SET qty_ordered = 120 WHERE id = 9401;
 UPDATE production_pallet_lines SET planned_qty = 120 WHERE id = 9401;");
-            var export = new OrderMarkingExportService(store).Export(9401, DateTime.UtcNow);
+            var exportService = new OrderMarkingExportService(store);
+            var exportPreview = exportService.Preview(9401);
+            Assert.True(exportPreview.IsSuccess, exportPreview.Message);
+            var export = exportService.Export(9401, DateTime.UtcNow, exportPreview.SnapshotHash);
             Assert.True(export.IsSuccess, export.Message);
 
             Execute(connection, @"

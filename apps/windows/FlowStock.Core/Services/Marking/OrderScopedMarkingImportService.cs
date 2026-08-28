@@ -41,7 +41,7 @@ public sealed class OrderScopedMarkingImportService
             return Invalid("FILES_REQUIRED", "Выберите хотя бы один файл КМ.");
         }
 
-        var relatedRequests = _store.GetRelatedOutstandingMarkingRequests(relatedOrderId);
+        var relatedRequests = GetOperationalRequests(relatedOrderId);
         if (relatedRequests.Count == 0)
         {
             return Invalid("NO_RELATED_REQUEST_SCOPE", "У заказа нет связанного незавершённого запроса КМ.");
@@ -124,14 +124,6 @@ public sealed class OrderScopedMarkingImportService
                         filePreviews);
                 }
 
-                if (candidates.Length != 1)
-                {
-                    return Invalid(
-                        "AMBIGUOUS_REQUEST_SCOPE",
-                        $"GTIN {gtin} соответствует нескольким outstanding requests.",
-                        filePreviews);
-                }
-
                 var codeHash = ComputeHash(Encoding.UTF8.GetBytes(code));
                 if (!batchCodeHashes.Add(codeHash))
                 {
@@ -153,10 +145,21 @@ public sealed class OrderScopedMarkingImportService
             return Invalid("DUPLICATE_CODES", "Один или несколько DataMatrix уже импортированы.", filePreviews);
         }
 
-        var requestPreviews = new List<OrderScopedMarkingImportRequestPreview>();
-        foreach (var request in relatedRequests.Where(request => codes.Any(code => code.Gtin == request.Gtin)))
+        var allocation = AllocateCodes(relatedRequests, codes);
+        if (allocation.ErrorCode != null)
         {
-            var validInBatch = codes.Count(code => code.Gtin == request.Gtin);
+            return Invalid(allocation.ErrorCode, allocation.Message!, filePreviews);
+        }
+
+        var requestPreviews = new List<OrderScopedMarkingImportRequestPreview>();
+        var importedGtins = codes.Select(value => value.Gtin).ToHashSet(StringComparer.Ordinal);
+        foreach (var request in relatedRequests
+                     .Where(request => importedGtins.Contains(request.Gtin))
+                     .OrderBy(request => request.CreatedAt)
+                     .ThenBy(request => request.RequestNumber, StringComparer.Ordinal)
+                     .ThenBy(request => request.MarkingOrderId))
+        {
+            allocation.CountByRequest.TryGetValue(request.MarkingOrderId, out var validInBatch);
             var importedAfter = checked(request.ImportedQuantity + validInBatch);
             if (importedAfter > request.RequestedQuantity)
             {
@@ -176,12 +179,15 @@ public sealed class OrderScopedMarkingImportService
                 request.ImportedQuantity,
                 validInBatch,
                 importedAfter,
-                importedAfter >= request.RequiredQuantity,
-                importedAfter >= request.RequiredQuantity && importedAfter < request.RequestedQuantity,
-                request.ScopeSnapshotHash));
+                importedAfter >= request.EffectiveActiveScopedQuantity,
+                importedAfter >= request.EffectiveActiveScopedQuantity && importedAfter < request.RequestedQuantity,
+                request.ScopeSnapshotHash,
+                request.EffectiveActiveScopedQuantity));
         }
 
-        var requiresRecovery = requestPreviews.Any(value => value.ImportedAfter < value.RequiredQuantity);
+        var activeById = relatedRequests.ToDictionary(value => value.MarkingOrderId);
+        var requiresRecovery = requestPreviews.Any(value =>
+            value.ImportedAfter < activeById[value.MarkingOrderId].EffectiveActiveScopedQuantity);
         var warnings = requestPreviews
             .Where(value => value.ReserveShort)
             .Select(value => $"RESERVE_SHORT:{value.RequestNumber}:{value.ImportedAfter}/{value.RequestedQuantity}")
@@ -244,8 +250,7 @@ public sealed class OrderScopedMarkingImportService
             throw new InvalidOperationException("MARKING_IMPORT_RECOVERY_CONFIRMATION_REQUIRED");
         }
 
-        var requestByGtin = preview.Requests.ToDictionary(value => value.Gtin, StringComparer.Ordinal);
-        var codes = new List<OrderScopedMarkingImportCode>();
+        var parsedCodes = new List<(string Code, string Hash, string Gtin, string FileHash, int RowNumber)>();
         foreach (var file in files)
         {
             var fileHash = ComputeHash(file.Content);
@@ -254,15 +259,19 @@ public sealed class OrderScopedMarkingImportService
             {
                 var code = parsed.AcceptedCodes[index];
                 MarkingFileParser.TryExtractGs1Gtin(code, out var gtin);
-                codes.Add(new OrderScopedMarkingImportCode(
-                    requestByGtin[gtin].MarkingOrderId,
-                    gtin,
-                    code,
-                    ComputeHash(Encoding.UTF8.GetBytes(code)),
-                    fileHash,
-                    index + 1));
+                parsedCodes.Add((code, ComputeHash(Encoding.UTF8.GetBytes(code)), gtin, fileHash, index + 1));
             }
         }
+
+        var relatedRequests = GetOperationalRequests(relatedOrderId);
+        var allocation = AllocateCodes(relatedRequests, parsedCodes);
+        if (allocation.ErrorCode != null)
+        {
+            throw new InvalidOperationException(allocation.ErrorCode);
+        }
+        var codes = parsedCodes.Select(code => new OrderScopedMarkingImportCode(
+            allocation.RequestByCodeHash[code.Hash], code.Gtin, code.Code, code.Hash,
+            code.FileHash, code.RowNumber)).ToArray();
 
         return _store.ConfirmOrderScopedMarkingImport(new OrderScopedMarkingImportConfirmCommand(
             relatedOrderId,
@@ -274,6 +283,84 @@ public sealed class OrderScopedMarkingImportService
             codes,
             preview.Requests,
             DateTime.UtcNow));
+    }
+
+    private static AllocationResult AllocateCodes(
+        IReadOnlyList<RelatedMarkingRequest> requests,
+        IReadOnlyList<(string Code, string Hash, string Gtin, string FileHash, int RowNumber)> codes)
+    {
+        var requestByCodeHash = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+        var countByRequest = new Dictionary<Guid, int>();
+        foreach (var gtinGroup in codes.GroupBy(value => value.Gtin, StringComparer.Ordinal))
+        {
+            var candidates = requests
+                .Where(value => value.EffectiveActiveScopedQuantity > 0
+                                && string.Equals(value.Gtin, gtinGroup.Key, StringComparison.Ordinal))
+                .OrderBy(value => value.CreatedAt)
+                .ThenBy(value => value.RequestNumber, StringComparer.Ordinal)
+                .ThenBy(value => value.MarkingOrderId)
+                .ToArray();
+            if (candidates.Length == 0)
+            {
+                return AllocationResult.Failure("GTIN_MISMATCH", $"GTIN {gtinGroup.Key} не относится к active scope заказа.");
+            }
+
+            var orderedCodes = new Queue<(string Code, string Hash, string Gtin, string FileHash, int RowNumber)>(
+                gtinGroup.OrderBy(value => value.FileHash, StringComparer.Ordinal)
+                    .ThenBy(value => value.RowNumber)
+                    .ThenBy(value => value.Hash, StringComparer.Ordinal));
+            foreach (var request in candidates)
+            {
+                Assign(request, request.OperationalDeficit, orderedCodes, requestByCodeHash, countByRequest);
+            }
+            foreach (var request in candidates)
+            {
+                var alreadyAssigned = countByRequest.GetValueOrDefault(request.MarkingOrderId);
+                var remainingCapacity = Math.Max(0, request.RemainingRequestedCapacity - alreadyAssigned);
+                Assign(request, remainingCapacity, orderedCodes, requestByCodeHash, countByRequest);
+            }
+
+            if (orderedCodes.Count > 0)
+            {
+                return AllocationResult.Failure(
+                    "REQUEST_QUANTITY_EXCEEDED",
+                    $"Для GTIN {gtinGroup.Key} передано больше КМ, чем допускают current requests.");
+            }
+        }
+
+        return new AllocationResult(requestByCodeHash, countByRequest, null, null);
+    }
+
+    private IReadOnlyList<RelatedMarkingRequest> GetOperationalRequests(long relatedOrderId) =>
+        _store.GetRelatedOutstandingMarkingRequests(relatedOrderId)
+            .Where(request => request.EffectiveActiveScopedQuantity > 0
+                              && request.ImportedQuantity < request.RequestedQuantity)
+            .ToArray();
+
+    private static void Assign(
+        RelatedMarkingRequest request,
+        int quantity,
+        Queue<(string Code, string Hash, string Gtin, string FileHash, int RowNumber)> codes,
+        IDictionary<string, Guid> requestByCodeHash,
+        IDictionary<Guid, int> countByRequest)
+    {
+        for (var index = 0; index < quantity && codes.Count > 0; index++)
+        {
+            var code = codes.Dequeue();
+            requestByCodeHash[code.Hash] = request.MarkingOrderId;
+            countByRequest.TryGetValue(request.MarkingOrderId, out var current);
+            countByRequest[request.MarkingOrderId] = current + 1;
+        }
+    }
+
+    private sealed record AllocationResult(
+        IReadOnlyDictionary<string, Guid> RequestByCodeHash,
+        IReadOnlyDictionary<Guid, int> CountByRequest,
+        string? ErrorCode,
+        string? Message)
+    {
+        public static AllocationResult Failure(string code, string message) =>
+            new(new Dictionary<string, Guid>(), new Dictionary<Guid, int>(), code, message);
     }
 
     private static OrderScopedMarkingImportPreviewResult Invalid(
@@ -303,6 +390,7 @@ public sealed class OrderScopedMarkingImportService
                 .Append(request.RequiredQuantity).Append(':')
                 .Append(request.ReserveQuantity).Append(':')
                 .Append(request.RequestedQuantity).Append(':')
+                .Append(request.OperationalRequiredQuantity).Append(':')
                 .Append(request.ImportedBefore).Append(':')
                 .Append(request.ValidInBatch).Append(':')
                 .Append(related.ScopeSnapshotHash).Append('|');
