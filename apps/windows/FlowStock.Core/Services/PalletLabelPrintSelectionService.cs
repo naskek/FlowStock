@@ -15,6 +15,8 @@ public sealed class PalletLabelPrintSelectionRow
     public string HuCode { get; init; } = string.Empty;
     public double Qty { get; init; }
     public string Status { get; init; } = string.Empty;
+    public bool ReprintRequired { get; init; }
+    public string LabelState { get; init; } = string.Empty;
     public bool IsSelectedByDefault { get; init; }
     public string DisplayText { get; init; } = string.Empty;
 }
@@ -42,7 +44,8 @@ public static class PalletLabelPrintSelectionService
     {
         return rows
             .Where(row => !IsReservedHuRow(row)
-                          && string.Equals(row.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase))
+                          && (string.Equals(row.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                              || row.ReprintRequired))
             .Select(row => row.PalletId)
             .ToArray();
     }
@@ -95,8 +98,13 @@ public static class PalletLabelPrintSelectionService
             HuCode = row.HuCode,
             Qty = row.Qty,
             Status = statusLabel,
-            IsSelectedByDefault = string.Equals(statusLabel, "PLANNED", StringComparison.OrdinalIgnoreCase),
-            DisplayText = $"{row.HuCode}, {FormatQty(row.Qty)} шт, {statusLabel}/{printedLabel}"
+            ReprintRequired = row.ReprintRequired,
+            LabelState = row.LabelState,
+            IsSelectedByDefault = string.Equals(statusLabel, "PLANNED", StringComparison.OrdinalIgnoreCase)
+                                  || row.ReprintRequired,
+            DisplayText = row.ReprintRequired
+                ? $"{row.HuCode}, {FormatQty(row.Qty)} шт, {statusLabel}/ТРЕБУЕТ ПЕРЕПЕЧАТИ"
+                : $"{row.HuCode}, {FormatQty(row.Qty)} шт, {statusLabel}/{printedLabel}"
         };
     }
 

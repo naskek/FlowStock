@@ -66,7 +66,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
     }
 
     [Fact]
-    public async Task Decrease4800To1200_Succeeds_RemovesActiveOpenPlanBeyondFilled()
+    public async Task Decrease4800To1200_WithPrintedFullRemoval_FailsAndKeepsOrderAndPlan()
     {
         var fixture = InternalOrderPalletQtyUpdateScenario.Create(
             orderedQty: 4800,
@@ -75,23 +75,20 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
             openPalletsArePrinted: true);
         await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
 
-        var payload = await UpdateOrderHttpApi.UpdateAsync(
+        using var response = await UpdateOrderHttpApi.PutRawAsync(
             host.Client,
             fixture.OrderId,
-            InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(1200));
+            BuildJson(fixture.ItemId, 1200));
 
-        Assert.True(payload.Ok);
+        var payload = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
+        Assert.Equal("ORDER_LINE_PRINTED_PALLET_REMOVAL_REQUIRED", payload.Error);
+        Assert.Contains("явного подтверждения оператора", payload.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(4800, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
         var pallets = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
         Assert.Equal(2, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Filled));
-        Assert.Equal(0, ActiveOpenQty(pallets, fixture.OrderLineId), 3);
-        Assert.Equal(6, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Cancelled));
-
-        var printRows = new ProductionPalletService(fixture.Harness.Store).GetPrintRows(fixture.OrderId);
-        Assert.Equal(2, printRows.Count);
-        Assert.DoesNotContain(printRows, row =>
-            row.Status == ProductionPalletStatus.Planned
-            || row.Status == ProductionPalletStatus.Printed);
-        Assert.Empty(PalletLabelPrintSelectionService.ResolveDefaultSelectedPalletIds(printRows));
+        Assert.Equal(6, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Printed));
+        Assert.Equal(3600, ActiveOpenQty(pallets, fixture.OrderLineId), 3);
+        Assert.DoesNotContain(pallets, pallet => pallet.Status == ProductionPalletStatus.Cancelled);
     }
 
     [Fact]
@@ -127,7 +124,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
     }
 
     [Fact]
-    public async Task DecreaseWithPrintedSurplus_AllowsTrim_AndDoesNotCountPrintedAsFilled()
+    public async Task DecreaseWithPrintedSurplus_RequiresExplicitRemovalWorkflow()
     {
         var fixture = InternalOrderPalletQtyUpdateScenario.Create(
             orderedQty: 4800,
@@ -136,16 +133,18 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
             openPalletsArePrinted: true);
         await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
 
-        var payload = await UpdateOrderHttpApi.UpdateAsync(
+        using var response = await UpdateOrderHttpApi.PutRawAsync(
             host.Client,
             fixture.OrderId,
-            InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(2400));
+            BuildJson(fixture.ItemId, 2400));
 
-        Assert.True(payload.Ok);
+        var payload = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
+        Assert.Equal("ORDER_LINE_PRINTED_PALLET_REMOVAL_REQUIRED", payload.Error);
+        Assert.Equal(4800, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
         Assert.Equal(1200, fixture.Harness.Store.GetFilledProductionPalletQtyByOrderLine(fixture.OrderLineId), 3);
         var pallets = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
-        Assert.Equal(2, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Printed));
-        Assert.Equal(4, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Cancelled));
+        Assert.Equal(6, pallets.Count(pallet => pallet.Status == ProductionPalletStatus.Printed));
+        Assert.DoesNotContain(pallets, pallet => pallet.Status == ProductionPalletStatus.Cancelled);
     }
 
     [Fact]

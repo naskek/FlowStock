@@ -31,6 +31,10 @@ public sealed class PalletLabelPrintRow
     public double Line3Qty { get; init; }
     public string Status { get; init; } = string.Empty;
     public string SourceType { get; init; } = string.Empty;
+    public string LabelContract { get; init; } = string.Empty;
+    public string LabelFingerprint { get; init; } = string.Empty;
+    public bool ReprintRequired { get; init; }
+    public string LabelState { get; init; } = string.Empty;
 
     public IReadOnlyDictionary<string, string> ToNamedSubStrings()
     {

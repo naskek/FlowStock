@@ -291,7 +291,7 @@ public sealed class ProductionPalletAdoptInternalThenPlanTests
         Assert.Contains(preview.AdoptableInternalPlannedHus, row =>
             row.HuCode == "HU-INT-PRINTED"
             && row.Status == ProductionPalletStatus.Printed
-            && !row.WillRequireReprint);
+            && row.WillRequireReprint);
         Assert.Contains(preview.AdoptableInternalPlannedHus, row =>
             row.HuCode == "HU-INT-PLANNED"
             && row.Status == ProductionPalletStatus.Planned
@@ -310,8 +310,8 @@ public sealed class ProductionPalletAdoptInternalThenPlanTests
         Assert.Equal(1, result.AdoptedPalletCount);
         Assert.Equal(378, result.AdoptedQty);
         var adopted = Assert.Single(result.AdoptedInternalPlannedHus);
-        Assert.False(adopted.WillRequireReprint);
-        Assert.Empty(result.ReprintRequiredHus);
+        Assert.True(adopted.WillRequireReprint);
+        Assert.Single(result.ReprintRequiredHus);
 
         var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(result.PrdDocId));
         Assert.Equal(10, pallet.OrderId);
@@ -330,6 +330,35 @@ public sealed class ProductionPalletAdoptInternalThenPlanTests
         var previewAfter = service.GetCustomerPrePlanCoveragePreview(10);
         Assert.False(previewAfter.HasWarning);
         Assert.Empty(previewAfter.Lines);
+    }
+
+    [Fact]
+    public void AdoptInternalThenPlan_PreservesIdAndInvalidatesExistingTargetLabelByOrderWideNumbering()
+    {
+        var harness = CreateHarness(customerQty: 756, sourceQty: 378);
+        SeedCustomerPallet(harness, 5001, 501, "HU-CUST-CURRENT", 378, ProductionPalletStatus.Printed);
+        SeedSourcePallet(harness, 4001, 401, "HU-INT-ADOPT", 378, ProductionPalletStatus.Planned);
+        var service = new ProductionPalletService(harness.Store);
+        var targetBefore = Assert.Single(service.GetPrintRows(10));
+        Assert.Equal(1, targetBefore.PalletNo);
+        Assert.Equal(1, targetBefore.PalletCount);
+        Assert.Equal(1, service.AcknowledgePrintedLabels(
+            10,
+            [new ProductionPalletLabelAcknowledgement(targetBefore.PalletId, targetBefore.LabelFingerprint!)],
+            new DateTime(2026, 8, 29, 11, 0, 0)));
+
+        var result = service.PlanOrder(10, ProductionPalletPlanMode.AdoptInternalThenPlan);
+
+        Assert.Equal(1, result.AdoptedPalletCount);
+        var rows = service.GetPrintRows(10).OrderBy(row => row.PalletId).ToArray();
+        Assert.Equal(new long[] { 4001, 5001 }, rows.Select(row => row.PalletId));
+        Assert.Equal(new[] { 1, 2 }, rows.Select(row => row.PalletNo));
+        Assert.All(rows, row => Assert.Equal(2, row.PalletCount));
+        var survivingPrinted = rows.Single(row => row.PalletId == 5001);
+        Assert.True(survivingPrinted.ReprintRequired);
+        Assert.Equal(ProductionPalletLabelState.ReprintRequired, survivingPrinted.LabelState);
+        var adopted = Assert.Single(harness.Store.GetProductionPalletsByDoc(result.PrdDocId), pallet => pallet.Id == 4001);
+        Assert.Equal("HU-INT-ADOPT", adopted.HuCode);
     }
 
     [Theory]

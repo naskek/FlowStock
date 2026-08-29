@@ -357,7 +357,13 @@ public sealed class WpfProductionPalletApiService
 
             using var handler = CreateHandler(configuration);
             using var client = CreateClient(handler, configuration);
-            using var response = await client.GetAsync($"/api/orders/{orderId}/production-pallets/print-rows", cancellationToken)
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                $"/api/orders/{orderId}/production-pallets/print-rows");
+            request.Headers.Add(
+                FlowStock.Core.Models.ProductionPalletLabelContract.HeaderName,
+                FlowStock.Core.Models.ProductionPalletLabelContract.FingerprintV1);
+            using var response = await client.SendAsync(request, cancellationToken)
                 .ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
@@ -498,7 +504,8 @@ public sealed class WpfProductionPalletApiService
                 payload.RemovedLineCount,
                 payload.RequestedPalletIds ?? Array.Empty<long>(),
                 payload.RemovedPalletIds ?? Array.Empty<long>(),
-                payload.SkippedPalletIds ?? Array.Empty<long>());
+                payload.SkippedPalletIds ?? Array.Empty<long>(),
+                payload.SurvivingReprintRequiredHuCodes ?? Array.Empty<string>());
         }
         catch (Exception ex)
         {
@@ -559,14 +566,7 @@ public sealed class WpfProductionPalletApiService
 
     public async Task<(bool IsSuccess, string? Error)> TryMarkPrintedAsync(
         long orderId,
-        CancellationToken cancellationToken = default)
-    {
-        return await TryMarkPrintedAsync(orderId, palletIds: null, cancellationToken).ConfigureAwait(false);
-    }
-
-    public async Task<(bool IsSuccess, string? Error)> TryMarkPrintedAsync(
-        long orderId,
-        IReadOnlyList<long>? palletIds,
+        IReadOnlyList<PalletLabelPrintRow> rows,
         CancellationToken cancellationToken = default)
     {
         try
@@ -579,9 +579,35 @@ public sealed class WpfProductionPalletApiService
 
             using var handler = CreateHandler(configuration);
             using var client = CreateClient(handler, configuration);
-            object body = palletIds is { Count: > 0 }
-                ? new { pallet_ids = palletIds }
-                : new { };
+            var productionRows = rows
+                .Where(row => string.Equals(
+                    row.SourceType,
+                    FlowStock.Core.Models.ProductionPalletPrintSourceType.ProductionPallet,
+                    StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (productionRows.Length == 0)
+            {
+                return (true, null);
+            }
+
+            if (productionRows.Any(row =>
+                    !string.Equals(
+                        row.LabelContract,
+                        FlowStock.Core.Models.ProductionPalletLabelContract.FingerprintV1,
+                        StringComparison.Ordinal)
+                    || string.IsNullOrWhiteSpace(row.LabelFingerprint)))
+            {
+                return (false, "Сервер не вернул проверяемый fingerprint production-этикетки. Обновите данные или клиент.");
+            }
+
+            var body = new
+            {
+                pallets = productionRows.Select(row => new
+                {
+                    pallet_id = row.PalletId,
+                    expected_label_fingerprint = row.LabelFingerprint
+                }).ToArray()
+            };
             using var response = await client.PostAsJsonAsync(
                     $"/api/orders/{orderId}/production-pallets/mark-printed",
                     body,
@@ -1238,7 +1264,10 @@ public sealed class WpfProductionPalletApiService
             Brand = row.Brand ?? string.Empty,
             StorageConditions = row.StorageConditions ?? string.Empty,
             Qty = row.Qty,
-            Uom = string.IsNullOrWhiteSpace(row.Uom) ? "шт" : row.Uom!,
+            // Preserve the exact server-owned BarTender payload. In particular mixed
+            // pallets intentionally use an empty UOM and the acknowledged fingerprint
+            // must describe what was physically printed.
+            Uom = row.Uom ?? string.Empty,
             PalletNo = row.PalletNo,
             PalletCount = row.PalletCount,
             StoragePlace = row.StoragePlace ?? string.Empty,
@@ -1253,7 +1282,11 @@ public sealed class WpfProductionPalletApiService
             Line3ItemName = row.Line3ItemName ?? string.Empty,
             Line3Qty = row.Line3Qty,
             Status = row.Status ?? string.Empty,
-            SourceType = row.SourceType ?? string.Empty
+            SourceType = row.SourceType ?? string.Empty,
+            LabelContract = row.LabelContract ?? string.Empty,
+            LabelFingerprint = row.LabelFingerprint ?? string.Empty,
+            ReprintRequired = row.ReprintRequired,
+            LabelState = row.LabelState ?? string.Empty
         };
     }
 
@@ -1339,6 +1372,9 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("skipped_pallet_ids")]
         public long[]? SkippedPalletIds { get; init; }
+
+        [JsonPropertyName("surviving_reprint_required_hu_codes")]
+        public string[]? SurvivingReprintRequiredHuCodes { get; init; }
     }
 
     private sealed class CancelPlanOptionsResponse
@@ -1810,6 +1846,18 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("source_type")]
         public string? SourceType { get; init; }
+
+        [JsonPropertyName("label_contract")]
+        public string? LabelContract { get; init; }
+
+        [JsonPropertyName("label_fingerprint")]
+        public string? LabelFingerprint { get; init; }
+
+        [JsonPropertyName("reprint_required")]
+        public bool ReprintRequired { get; init; }
+
+        [JsonPropertyName("label_state")]
+        public string? LabelState { get; init; }
     }
 
     private sealed class FillResponse
@@ -1968,7 +2016,8 @@ public sealed record WpfProductionPalletCancelPlanApiResult(
     int RemovedLineCount,
     IReadOnlyList<long> RequestedPalletIds,
     IReadOnlyList<long> RemovedPalletIds,
-    IReadOnlyList<long> SkippedPalletIds)
+    IReadOnlyList<long> SkippedPalletIds,
+    IReadOnlyList<string> SurvivingReprintRequiredHuCodes)
 {
     public static WpfProductionPalletCancelPlanApiResult Failure(string message)
     {
@@ -1980,7 +2029,8 @@ public sealed record WpfProductionPalletCancelPlanApiResult(
             0,
             Array.Empty<long>(),
             Array.Empty<long>(),
-            Array.Empty<long>());
+            Array.Empty<long>(),
+            Array.Empty<string>());
     }
 }
 

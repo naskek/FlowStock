@@ -330,6 +330,11 @@ public static class OrderUpdateEndpoint
             return "ORDER_LINE_PALLET_PLAN_NOT_PLANNED";
         }
 
+        if (ex.Message.Contains("Полное удаление напечатанной HU", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ORDER_LINE_PRINTED_PALLET_REMOVAL_REQUIRED";
+        }
+
         return "ORDER_UPDATE_FAILED";
     }
 

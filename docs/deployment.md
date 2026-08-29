@@ -589,6 +589,35 @@ $DC restart nginx
 
 ## Разовые операционные процедуры
 
+### V0042: production label fingerprint и согласованный rollout WPF
+
+`V0042__production_pallet_label_fingerprint.sql` аддитивно добавляет nullable fingerprint/version pair и только безопасные pair/format CHECK-инварианты. Миграция не выполняет lifecycle repair: не меняет `status`, не создаёт `printed_at` из `created_at` и не формирует fingerprint. Поэтому existing `PRINTED + printed_at + NULL fingerprint/version` остаётся `LEGACY_UNVERIFIED`, а anomalies `PRINTED + NULL printed_at` и `PLANNED + printed_at` сохраняются для явной диагностики. Runtime блокирует наполнение таких `PRINTED` rows до controlled baseline либо фактической перепечати.
+
+Rollout выполняется fail-safe в maintenance window:
+
+1. создать и проверить свежий PostgreSQL backup, остановить Server и запретить печать/редактирование writers;
+2. применить V0042 и развернуть новый Server, не открывая writers;
+3. выполнить read-only inventory тем же новым image:
+
+   ```bash
+   $DC run --rm --no-deps flowstock maintenance production-label-fingerprint-backfill --dry-run
+   ```
+
+4. проверить для каждой строки `order_id`, `pallet_id`, `hu_code`, `status`, `has_printed_at`, `current_label_fingerprint`, `action`, `blocker_reason`. `WOULD_BACKFILL` допустим только для `PRINTED + printed_at + NULL fingerprint/version` активного заказа в DRAFT PRD с доступным canonical print row. `PLANNED_HAS_PRINT_EVIDENCE`, `PRINTED_AT_MISSING`, `ORDER_NOT_ACTIVE`, `PRD_NOT_DRAFT`, inconsistent pair/version и невозможность построить payload являются blockers и автоматически не исправляются;
+5. при свежем backup применить eligible baseline одной transaction под canonical order locks:
+
+   ```bash
+   $DC run --rm --no-deps flowstock maintenance production-label-fingerprint-backfill --apply --confirm APPLY
+   ```
+
+   Команда использует тот же order-wide print-row builder и `ProductionPalletLabelFingerprint.Compute`, не меняет `printed_at/status`, `ledger`, marking rows/provenance, CLOSED docs или order quantities. При наличии blockers eligible rows всё равно применяются атомарно, отчёт возвращает blockers и process exit code `3`; это не разрешение игнорировать их. Повторный apply идемпотентен;
+6. повторить dry-run: eligible rows должны стать `NO_ACTION_ALREADY_VERIFIED`, anomalies остаться теми же blockers. Их можно вывести из fail-closed состояния только отдельным доказуемым workflow, в том числе фактической перепечатью новым WPF; ручной SQL repair запрещён;
+7. до открытия writers обновить все WPF, которые печатают production pallets, до версии `fingerprint-v1`;
+8. smoke: capability GET возвращает fingerprint, acknowledgement с тем же fingerprint проходит, stale fingerprint даёт `409`, bare `pallet_ids` даёт stable `426 WPF_PRODUCTION_LABEL_UPGRADE_REQUIRED`; проверить, что baseline-current HU допускается к наполнению, а remaining blocker HU остаётся fail-closed;
+9. только после этого разрешить production printing и order edits.
+
+Старый WPF после открытия системы не может печатать production pallets: Server не выдаёт ему production print rows и отклоняет bare acknowledgement. `ReservedHu` rows не относятся к `production_pallets`: их GET/печать продолжаются без fingerprint и без mark-printed. Rollback WPF при оставленном новом Server также fail-closed для production printing; для возврата production writers нужна согласованная пара Server/WPF в maintenance window. Откат Server после V0042 требует совместимого кода, который терпит additive columns, либо restore pre-deploy backup; новый WPF со старым Server не подтверждает production labels без fingerprint. Нельзя открывать writers в смешанной версии, рассчитывая на временное принятие legacy race.
+
 Процедуры, привязанные к конкретным миграциям или разовым переходам, описаны отдельно:
 
 - Cutover ЧЗ real-code workflow (V0027–V0039 historical foundation + V0040 frozen exemption cohort, real-only coverage, `marking_cutover_state`, preflight/enforcement) — [`docs/marking-cutover.md`](marking-cutover.md)

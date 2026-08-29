@@ -153,6 +153,7 @@ public interface IDataStore
     void AssignProductionPalletToPrdDoc(long productionPalletId, long targetPrdDocId);
     double GetFilledProductionPalletQtyByOrderLine(long orderLineId, long? excludePalletId = null);
     void UpdateProductionPalletHu(long palletId, string huCode);
+    bool ResizeSingleItemProductionPallet(long palletId, double plannedQty);
     void ReassignOpenProductionPalletsByHu(
         long sourceOrderId,
         long targetOrderId,
@@ -174,6 +175,14 @@ public interface IDataStore
         IReadOnlyCollection<long> docLineIds);
     int MarkProductionPalletsPrintedByOrder(long orderId, DateTime printedAt);
     int MarkProductionPalletsPrinted(long orderId, IReadOnlyCollection<long> palletIds, DateTime printedAt);
+    int AcknowledgeProductionPalletLabels(
+        long orderId,
+        IReadOnlyCollection<ProductionPalletLabelAcknowledgement> acknowledgements,
+        DateTime printedAt);
+    int BackfillProductionPalletLabelFingerprint(
+        long orderId,
+        long palletId,
+        string currentLabelFingerprint);
     ProductionFillingCompletion? GetProductionFillingCompletion(long orderId, string operationFingerprint);
     void AddProductionFillingCompletion(ProductionFillingCompletion completion);
     IReadOnlyList<ProductionPallet> GetFilledProductionPalletsByItemAndLocation(long itemId, long locationId);

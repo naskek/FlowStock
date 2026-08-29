@@ -98,23 +98,29 @@ public sealed class ProductionPalletService
             return;
         }
 
-        var committedQty = GetProtectedCoverageQtyForOrderLine(store, order, orderLineId, orderedQty);
-        var activePlannedBefore = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
-            .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
-        var missingBeforeTrim = Math.Max(0, orderedQty - committedQty - activePlannedBefore);
+        var orderLine = store.GetOrderLines(orderId).SingleOrDefault(line => line.Id == orderLineId);
+        if (orderLine == null)
+        {
+            return;
+        }
 
-        TrimSurplusOpenPallets(store, order, orderId, orderLineId, orderedQty);
+        var target = ProductionFuturePlanTargetCalculator.Calculate(store, order, orderLine, orderedQty);
+        var openBefore = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId);
+        var activePlannedBefore = openBefore.Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
+        var missingBefore = Math.Max(0, target.FuturePlanQty - activePlannedBefore);
 
-        var activePlannedAfterTrim = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
+        var action = ReconcileSingleItemFuturePlan(
+            store,
+            order,
+            orderLine,
+            openBefore,
+            target.FuturePlanQty);
+
+        var activePlannedAfter = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId)
             .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
-        var cancelledQty = Math.Max(0, activePlannedBefore - activePlannedAfterTrim);
-        var missingAfterTrim = Math.Max(0, orderedQty - committedQty - activePlannedAfterTrim);
-        var createdQty = 0d;
-        var action = cancelledQty > QtyTolerance
-                ? "trim_open"
-                : missingAfterTrim > QtyTolerance
-                    ? "missing_unplanned"
-                    : "noop";
+        var cancelledQty = Math.Max(0, activePlannedBefore - activePlannedAfter);
+        var createdQty = Math.Max(0, activePlannedAfter - activePlannedBefore);
+        var missingAfter = Math.Max(0, target.FuturePlanQty - activePlannedAfter);
 
         ProductionPalletPlanSyncDiagnostics.Log(new ProductionPalletPlanSyncReport
         {
@@ -123,14 +129,157 @@ public sealed class ProductionPalletService
             OrderLineId = orderLineId,
             OldQty = oldOrderedQty,
             NewQty = orderedQty,
-            FilledQty = committedQty,
+            FilledQty = target.ProtectedQty,
             ActivePlannedQtyBefore = activePlannedBefore,
-            MissingQty = missingBeforeTrim > missingAfterTrim ? missingBeforeTrim : missingAfterTrim,
+            MissingQty = Math.Max(missingBefore, missingAfter),
             CreatedQty = createdQty,
             CancelledQty = cancelledQty,
-            ActivePlannedQtyAfter = activePlannedAfterTrim,
+            ActivePlannedQtyAfter = activePlannedAfter,
             Action = action
         });
+    }
+
+    private static string ReconcileSingleItemFuturePlan(
+        IDataStore store,
+        Order order,
+        OrderLine orderLine,
+        IReadOnlyList<ProductionPallet> openPallets,
+        double targetFutureQty)
+    {
+        var currentQty = openPallets.Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLine.Id));
+        if (Math.Abs(currentQty - targetFutureQty) <= QtyTolerance)
+        {
+            return "noop";
+        }
+
+        if (openPallets.Count == 0)
+        {
+            // Обычное редактирование не создаёт первый PRD/HU: initial planning остаётся
+            // явной server-командой. Reconcile продолжает только уже существующий plan.
+            return targetFutureQty > QtyTolerance ? "missing_unplanned" : "noop";
+        }
+
+        if (openPallets.Any(pallet => pallet.IsMixedPallet
+                                      || pallet.HasComponentProgress
+                                      || (pallet.Lines.Count > 0
+                                          && (pallet.Lines.Count != 1
+                                              || pallet.Lines[0].OrderLineId != orderLine.Id))))
+        {
+            throw new InvalidOperationException(
+                "Автоматическое изменение mixed HU или частично наполненная HU запрещено. Используйте явный workflow перепланирования или коррекции.");
+        }
+
+        var item = store.FindItemById(orderLine.ItemId)
+                   ?? throw new InvalidOperationException("Номенклатура строки заказа не найдена.");
+        if (!item.MaxQtyPerHu.HasValue || item.MaxQtyPerHu.Value <= QtyTolerance)
+        {
+            throw new InvalidOperationException("Не задано количество на паллете для номенклатуры");
+        }
+
+        var maxQtyPerHu = item.MaxQtyPerHu.Value;
+        if (openPallets.Any(pallet => ResolvePalletQtyForOrderLine(pallet, orderLine.Id) > maxQtyPerHu + QtyTolerance))
+        {
+            throw new InvalidOperationException("Существующая HU превышает max_qty_per_hu; автоматический reconcile остановлен.");
+        }
+
+        if (targetFutureQty < currentQty - QtyTolerance)
+        {
+            var surplus = currentQty - targetFutureQty;
+            var cancelled = new List<ProductionPallet>();
+            foreach (var pallet in openPallets.OrderByDescending(pallet => pallet.Id))
+            {
+                if (surplus <= QtyTolerance)
+                {
+                    break;
+                }
+
+                var palletQty = ResolvePalletQtyForOrderLine(pallet, orderLine.Id);
+                if (surplus + QtyTolerance >= palletQty)
+                {
+                    if (string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
+                        || pallet.PrintedAt.HasValue)
+                    {
+                        throw new InvalidOperationException(
+                            $"Полное удаление напечатанной HU {pallet.HuCode} требует явного подтверждения оператора в workflow удаления плана.");
+                    }
+
+                    cancelled.Add(pallet);
+                    surplus -= palletQty;
+                    continue;
+                }
+
+                var resizedQty = palletQty - surplus;
+                if (!store.ResizeSingleItemProductionPallet(pallet.Id, resizedQty))
+                {
+                    throw new InvalidOperationException($"Не удалось изменить HU {pallet.HuCode}: состояние паллеты изменилось.");
+                }
+
+                surplus = 0;
+            }
+
+            if (cancelled.Count > 0)
+            {
+                TombstoneProductionPalletDocLines(store, cancelled);
+                if (store.CancelProductionPallets(cancelled.Select(pallet => pallet.Id).ToArray()) != cancelled.Count)
+                {
+                    throw new InvalidOperationException("Паллетный план изменился во время reconcile.");
+                }
+            }
+
+            return cancelled.Count > 0 && surplus <= QtyTolerance ? "resize_and_trim" : "resize";
+        }
+
+        var remaining = targetFutureQty - currentQty;
+        var boundary = openPallets.OrderBy(pallet => pallet.Id).Last();
+        var boundaryQty = ResolvePalletQtyForOrderLine(boundary, orderLine.Id);
+        var freeCapacity = Math.Max(0, maxQtyPerHu - boundaryQty);
+        var boundaryIncrease = Math.Min(freeCapacity, remaining);
+        if (boundaryIncrease > QtyTolerance)
+        {
+            if (!store.ResizeSingleItemProductionPallet(boundary.Id, boundaryQty + boundaryIncrease))
+            {
+                throw new InvalidOperationException($"Не удалось изменить HU {boundary.HuCode}: состояние паллеты изменилось.");
+            }
+
+            remaining -= boundaryIncrease;
+        }
+
+        if (remaining <= QtyTolerance)
+        {
+            return "resize";
+        }
+
+        var doc = store.GetDoc(boundary.PrdDocId);
+        if (doc?.Status != DocStatus.Draft || doc.Type != DocType.ProductionReceipt)
+        {
+            throw new InvalidOperationException("Boundary PRD недоступен для продолжения плана.");
+        }
+
+        var receiptLine = OrderReceiptRemainingCalculator.GetRemaining(store, order)
+            .FirstOrDefault(line => line.OrderLineId == orderLine.Id);
+        var targetLocationId = boundary.ToLocationId ?? receiptLine?.ToLocationId
+            ?? ResolveProductionPalletPlanLocation(store).Id;
+        AddPlannedPalletLines(
+            store,
+            boundary.PrdDocId,
+            new OrderReceiptLine
+            {
+                OrderLineId = orderLine.Id,
+                OrderId = order.Id,
+                ItemId = orderLine.ItemId,
+                ItemName = receiptLine?.ItemName ?? item.Name,
+                QtyOrdered = orderLine.QtyOrdered,
+                QtyReceived = 0,
+                QtyRemaining = remaining,
+                ProductionPurpose = orderLine.ProductionPurpose,
+                ToLocationId = targetLocationId,
+                ToLocation = receiptLine?.ToLocation,
+                SortOrder = receiptLine?.SortOrder ?? 0
+            },
+            maxQtyPerHu,
+            targetLocationId);
+        store.PlanProductionPallets(boundary.PrdDocId, DateTime.Now);
+        return boundaryIncrease > QtyTolerance ? "resize_and_append" : "append";
     }
 
     internal IReadOnlyList<long> CancelFuturePlanForOrderLineAndResolveAffectedLinesInStore(
@@ -1626,7 +1775,11 @@ public sealed class ProductionPalletService
             ProductionPalletGroup = string.IsNullOrWhiteSpace(targetGroup) ? null : targetGroup,
             IsMixed = sourceLines.Count > 1,
             Status = pallet.Status,
-            WillRequireReprint = false,
+            WillRequireReprint = string.Equals(
+                                     pallet.Status,
+                                     ProductionPalletStatus.Printed,
+                                     StringComparison.OrdinalIgnoreCase)
+                                 || pallet.PrintedAt.HasValue,
             Lines = mappedLines
         };
         return true;
@@ -2023,6 +2176,7 @@ public sealed class ProductionPalletService
         var prdDocIds = Array.Empty<long>();
         var removedPalletIds = Array.Empty<long>();
         var skippedPalletIds = requestedIds;
+        var survivingReprintRequiredHuCodes = Array.Empty<string>();
         ProductionPalletPlanCleanupCounts cleanup = null!;
         _data.ExecuteInTransaction(store =>
         {
@@ -2074,6 +2228,23 @@ public sealed class ProductionPalletService
             if (cleanup.RemovedPalletCount > 0)
             {
                 new OrderService(store).RefreshPersistedStatus(order.Id);
+                var hasSurvivingProductionPallets = store.GetDocsByOrder(order.Id)
+                    .Where(doc => doc.Type == DocType.ProductionReceipt)
+                    .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
+                    .Any(pallet => pallet.OrderId == order.Id && IsPrintableProductionPalletStatus(pallet.Status));
+                if (hasSurvivingProductionPallets)
+                {
+                    survivingReprintRequiredHuCodes = new ProductionPalletService(store).GetPrintRows(order.Id)
+                        .Where(row => string.Equals(
+                                          row.SourceType,
+                                          ProductionPalletPrintSourceType.ProductionPallet,
+                                          StringComparison.OrdinalIgnoreCase)
+                                      && row.ReprintRequired)
+                        .Select(row => row.HuCode)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Order(StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                }
             }
         });
 
@@ -2088,7 +2259,8 @@ public sealed class ProductionPalletService
             RemovedLineCount = cleanup.RemovedLineCount,
             RequestedPalletIds = requestedIds,
             RemovedPalletIds = removedPalletIds,
-            SkippedPalletIds = skippedPalletIds
+            SkippedPalletIds = skippedPalletIds,
+            SurvivingReprintRequiredHuCodes = survivingReprintRequiredHuCodes
         };
     }
 
@@ -2601,6 +2773,65 @@ public sealed class ProductionPalletService
         return rows;
     }
 
+    private static ProductionPalletPrintRow ApplyLabelFingerprint(
+        ProductionPalletPrintRow row,
+        ProductionPallet pallet)
+    {
+        var fingerprint = ProductionPalletLabelFingerprint.Compute(row);
+        var claimsPrintedLifecycle = pallet.PrintedAt.HasValue
+                                     || string.Equals(
+                                         pallet.Status,
+                                         ProductionPalletStatus.Printed,
+                                         StringComparison.OrdinalIgnoreCase);
+        var hasVerifiedFingerprint = pallet.PrintedAt.HasValue
+                                     && pallet.PrintedLabelFingerprintVersion == ProductionPalletLabelContract.FingerprintVersion
+                                     && !string.IsNullOrWhiteSpace(pallet.PrintedLabelFingerprint);
+        var verifiedFingerprintMismatch = hasVerifiedFingerprint
+                                          && !string.Equals(
+                                              fingerprint,
+                                              pallet.PrintedLabelFingerprint,
+                                              StringComparison.OrdinalIgnoreCase);
+        var reprintRequired = claimsPrintedLifecycle && (!hasVerifiedFingerprint || verifiedFingerprintMismatch);
+        var labelState = !claimsPrintedLifecycle
+            ? ProductionPalletLabelState.Unprinted
+            : !hasVerifiedFingerprint
+                ? ProductionPalletLabelState.LegacyUnverified
+                : verifiedFingerprintMismatch
+                    ? ProductionPalletLabelState.ReprintRequired
+                    : ProductionPalletLabelState.Current;
+
+        return new ProductionPalletPrintRow
+        {
+            SourceType = row.SourceType,
+            PalletId = row.PalletId,
+            OrderId = row.OrderId,
+            OrderRef = row.OrderRef,
+            ClientName = row.ClientName,
+            PrdDocId = row.PrdDocId,
+            PrdRef = row.PrdRef,
+            HuCode = row.HuCode,
+            ItemId = row.ItemId,
+            ItemName = row.ItemName,
+            Brand = row.Brand,
+            StorageConditions = row.StorageConditions,
+            Qty = row.Qty,
+            Uom = row.Uom,
+            PalletNo = row.PalletNo,
+            PalletCount = row.PalletCount,
+            StoragePlace = row.StoragePlace,
+            ProductionDate = row.ProductionDate,
+            Comment = row.Comment,
+            IsMixedPallet = row.IsMixedPallet,
+            Composition = row.Composition,
+            Lines = row.Lines,
+            Status = row.Status,
+            LabelContract = ProductionPalletLabelContract.FingerprintV1,
+            LabelFingerprint = fingerprint,
+            ReprintRequired = reprintRequired,
+            LabelState = labelState
+        };
+    }
+
     private IReadOnlyList<ProductionPalletPrintRow> GetProductionPalletPrintRows(Order order)
     {
         var docsById = _data.GetDocsByOrder(order.Id)
@@ -2695,7 +2926,10 @@ public sealed class ProductionPalletService
             });
         }
 
-        return rows;
+        var palletsById = pallets.ToDictionary(pallet => pallet.Id);
+        return rows
+            .Select(row => ApplyLabelFingerprint(row, palletsById[row.PalletId]))
+            .ToArray();
     }
 
     public int MarkPrinted(long orderId, DateTime printedAt)
@@ -2740,6 +2974,78 @@ public sealed class ProductionPalletService
         return _data.MarkProductionPalletsPrintedByOrder(orderId, printedAt);
     }
 
+    public int AcknowledgePrintedLabels(
+        long orderId,
+        IReadOnlyCollection<ProductionPalletLabelAcknowledgement> acknowledgements,
+        DateTime printedAt)
+    {
+        var supplied = acknowledgements
+            .Where(row => row.PalletId > 0)
+            .Select(row => new ProductionPalletLabelAcknowledgement(
+                row.PalletId,
+                (row.ExpectedLabelFingerprint ?? string.Empty).Trim().ToLowerInvariant()))
+            .ToArray();
+        if (supplied.GroupBy(row => row.PalletId).Any(group => group.Count() != 1))
+        {
+            throw new ProductionPalletLabelContractException(
+                ProductionPalletLabelContract.UpgradeRequired,
+                "Каждая production-pallet HU должна подтверждаться ровно одним fingerprint.");
+        }
+
+        var requested = supplied
+            .OrderBy(row => row.PalletId)
+            .ToArray();
+        if (requested.Length == 0
+            || requested.Any(row => string.IsNullOrWhiteSpace(row.ExpectedLabelFingerprint)))
+        {
+            throw new ProductionPalletLabelContractException(
+                ProductionPalletLabelContract.UpgradeRequired,
+                "Для подтверждения production-pallet печати требуется fingerprint каждой этикетки.");
+        }
+
+        var updated = 0;
+        _data.ExecuteInTransaction(store =>
+        {
+            if (!store.LockOrdersForUpdate(new[] { orderId }))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
+
+            var rows = new ProductionPalletService(store).GetPrintRows(orderId)
+                .Where(row => string.Equals(
+                    row.SourceType,
+                    ProductionPalletPrintSourceType.ProductionPallet,
+                    StringComparison.OrdinalIgnoreCase))
+                .ToDictionary(row => row.PalletId);
+            foreach (var acknowledgement in requested)
+            {
+                if (!rows.TryGetValue(acknowledgement.PalletId, out var current))
+                {
+                    throw new InvalidOperationException("Выбранные паллеты не найдены в плане заказа.");
+                }
+
+                if (!string.Equals(
+                        current.LabelFingerprint,
+                        acknowledgement.ExpectedLabelFingerprint.Trim(),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new ProductionPalletLabelContractException(
+                        ProductionPalletLabelContract.Stale,
+                        $"Payload этикетки HU '{current.HuCode}' изменился. Обновите данные и перепечатайте этикетку.");
+                }
+            }
+
+            updated = store.AcknowledgeProductionPalletLabels(orderId, requested, printedAt);
+            if (updated != requested.Length)
+            {
+                throw new ProductionPalletLabelContractException(
+                    ProductionPalletLabelContract.Stale,
+                    "Состояние выбранных паллет изменилось до подтверждения печати.");
+            }
+        });
+        return updated;
+    }
+
     // Unified classification used identically by Scan and Fill so both report the same
     // outcome for the same pallet. Priority: actual order + status drive the result.
     // A prdDocId mismatch within the SAME order is never treated as "another order".
@@ -2776,6 +3082,32 @@ public sealed class ProductionPalletService
         if (IsCancelledPallet(pallet))
         {
             return (ProductionFillingErrorCodes.PalletCancelled, "Паллета отменена и не может быть наполнена.");
+        }
+
+        if (string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
+            && pallet.OrderId.HasValue)
+        {
+            var labelRow = new ProductionPalletService(store).GetPrintRows(pallet.OrderId.Value)
+                .FirstOrDefault(row => string.Equals(
+                                           row.SourceType,
+                                           ProductionPalletPrintSourceType.ProductionPallet,
+                                           StringComparison.OrdinalIgnoreCase)
+                                       && row.PalletId == pallet.Id);
+            if (labelRow == null
+                || string.Equals(
+                    labelRow.LabelState,
+                    ProductionPalletLabelState.LegacyUnverified,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return (ProductionFillingErrorCodes.LabelStateUnverified,
+                    $"Для HU {pallet.HuCode} нет проверяемого fingerprint физической этикетки. Перепечатайте этикетку в обновлённом WPF.");
+            }
+
+            if (labelRow.ReprintRequired)
+            {
+                return (ProductionFillingErrorCodes.LabelReprintRequired,
+                    $"Этикетка HU {pallet.HuCode} устарела после изменения заказа/плана. Перепечатайте её перед наполнением.");
+            }
         }
 
         return null;
@@ -4146,60 +4478,17 @@ public sealed class ProductionPalletService
             return Array.Empty<OrderReceiptLine>();
         }
 
-        if (order.Type == OrderType.Customer)
-        {
-            var receiptLinesById = OrderReceiptRemainingCalculator.GetRemaining(store, order)
-                .ToDictionary(line => line.OrderLineId, line => line);
-            var protectedByLine = CustomerProtectedCoverageCalculator.BuildByOrderLine(
-                store,
-                order.Id,
-                includeUnconfirmedFilledPallets: true);
-            var activePallets = GetProductionPalletsByOrder(store, order.Id)
-                .Where(pallet => IsOpenProductionPalletCoverage(store, pallet))
-                .ToArray();
-
-            return orderLinesById.Values
-                .Select(orderLine =>
-                {
-                    var protectedQty = protectedByLine.TryGetValue(orderLine.Id, out var coverage)
-                        ? coverage.ResolveProtectedQty(orderLine.QtyOrdered)
-                        : 0d;
-                    var activePalletQty = SumPalletQtyForOrderLine(activePallets, orderLine.Id);
-                    var missingQty = Math.Max(0, orderLine.QtyOrdered - protectedQty - activePalletQty);
-                    receiptLinesById.TryGetValue(orderLine.Id, out var receiptLine);
-                    return new OrderReceiptLine
-                    {
-                        OrderLineId = orderLine.Id,
-                        OrderId = order.Id,
-                        ItemId = orderLine.ItemId,
-                        ItemName = receiptLine?.ItemName ?? string.Empty,
-                        QtyOrdered = orderLine.QtyOrdered,
-                        QtyReceived = Math.Max(0, orderLine.QtyOrdered - missingQty),
-                        QtyRemaining = missingQty,
-                        ProductionPurpose = orderLine.ProductionPurpose,
-                        ToLocationId = receiptLine?.ToLocationId,
-                        ToLocation = receiptLine?.ToLocation,
-                        ToHu = receiptLine?.ToHu,
-                        SortOrder = receiptLine?.SortOrder ?? 0
-                    };
-                })
-                .Where(line => line.QtyRemaining > QtyTolerance)
-                .OrderBy(line => line.OrderLineId)
-                .ToList();
-        }
-
         var activePalletsByOrder = GetProductionPalletsByOrder(store, order.Id)
             .Where(pallet => IsOpenProductionPalletCoverage(store, pallet))
             .ToArray();
         var receiptLinesByOrderLineId = OrderReceiptRemainingCalculator.GetRemaining(store, order)
             .ToDictionary(line => line.OrderLineId, line => line);
-        var confirmedByLine = BuildInternalPlanningCoverage(store, order.Id, orderLinesById.Values.ToArray());
         return orderLinesById.Values
             .Select(orderLine =>
             {
-                var confirmedQty = confirmedByLine.TryGetValue(orderLine.Id, out var confirmed) ? confirmed : 0d;
-                var coveredQty = confirmedQty + SumPalletQtyForOrderLine(activePalletsByOrder, orderLine.Id);
-                var missingQty = Math.Max(0, orderLine.QtyOrdered - coveredQty);
+                var target = ProductionFuturePlanTargetCalculator.Calculate(store, order, orderLine);
+                var activePalletQty = SumPalletQtyForOrderLine(activePalletsByOrder, orderLine.Id);
+                var missingQty = Math.Max(0, target.FuturePlanQty - activePalletQty);
                 receiptLinesByOrderLineId.TryGetValue(orderLine.Id, out var receiptLine);
                 return new OrderReceiptLine
                 {
@@ -4208,7 +4497,9 @@ public sealed class ProductionPalletService
                     ItemId = orderLine.ItemId,
                     ItemName = receiptLine?.ItemName ?? string.Empty,
                     QtyOrdered = orderLine.QtyOrdered,
-                    QtyReceived = receiptLine?.QtyReceived ?? 0,
+                    QtyReceived = order.Type == OrderType.Customer
+                        ? Math.Max(0, orderLine.QtyOrdered - missingQty)
+                        : receiptLine?.QtyReceived ?? 0,
                     QtyRemaining = missingQty,
                     ProductionPurpose = orderLine.ProductionPurpose,
                     ToLocationId = receiptLine?.ToLocationId,
@@ -4239,84 +4530,7 @@ public sealed class ProductionPalletService
             .Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
     }
 
-    private static IReadOnlyList<long> TrimSurplusOpenPallets(
-        IDataStore store,
-        Order order,
-        long orderId,
-        long orderLineId,
-        double orderedQty)
-    {
-        var committedQty = GetProtectedCoverageQtyForOrderLine(store, order, orderLineId, orderedQty);
-        var plannedAllowedQty = Math.Max(0, orderedQty - committedQty);
-        var openPallets = GetOpenProductionPalletsForOrderLine(store, orderId, orderLineId);
-        var openQty = openPallets.Sum(pallet => ResolvePalletQtyForOrderLine(pallet, orderLineId));
-        if (openQty <= plannedAllowedQty + QtyTolerance)
-        {
-            return Array.Empty<long>();
-        }
-
-        var surplusQty = openQty - plannedAllowedQty;
-        var palletIdsToCancel = new List<long>();
-        foreach (var pallet in openPallets.OrderByDescending(pallet => pallet.Id))
-        {
-            if (surplusQty <= QtyTolerance)
-            {
-                break;
-            }
-
-            var palletQty = ResolvePalletQtyForOrderLine(pallet, orderLineId);
-            if (palletQty <= QtyTolerance)
-            {
-                continue;
-            }
-
-            palletIdsToCancel.Add(pallet.Id);
-            surplusQty -= palletQty;
-        }
-
-        if (palletIdsToCancel.Count == 0)
-        {
-            return Array.Empty<long>();
-        }
-
-        var affectedOrderLineIds = openPallets
-            .Where(pallet => palletIdsToCancel.Contains(pallet.Id))
-            .SelectMany(GetPalletOrderLineIds)
-            .Append(orderLineId)
-            .Distinct()
-            .ToArray();
-        var palletsToCancel = openPallets.Where(pallet => palletIdsToCancel.Contains(pallet.Id)).ToArray();
-        if (palletsToCancel.Any(pallet => pallet.HasComponentProgress))
-        {
-            throw new InvalidOperationException("Паллетный план находится в фактическом состоянии: есть частично наполненная микс-паллета.");
-        }
-
-        TombstoneProductionPalletDocLines(store, palletsToCancel);
-        store.CancelProductionPallets(palletIdsToCancel);
-        return affectedOrderLineIds;
-    }
-
-    private static double GetProtectedCoverageQtyForOrderLine(
-        IDataStore store,
-        Order order,
-        long orderLineId,
-        double qtyOrdered)
-    {
-        if (order.Type == OrderType.Customer)
-        {
-            var coverage = CustomerProtectedCoverageCalculator.BuildByOrderLine(
-                    store,
-                    order.Id,
-                    includeUnconfirmedFilledPallets: true)
-                .GetValueOrDefault(orderLineId);
-            return coverage?.ResolveProtectedQty(qtyOrdered) ?? 0d;
-        }
-
-        var confirmed = BuildInternalPlanningCoverage(store, order.Id, store.GetOrderLines(order.Id));
-        return confirmed.TryGetValue(orderLineId, out var qty) ? Math.Max(0, qty) : 0d;
-    }
-
-    private static IReadOnlyDictionary<long, double> BuildInternalPlanningCoverage(
+    internal static IReadOnlyDictionary<long, double> BuildInternalPlanningCoverage(
         IDataStore store,
         long orderId,
         IReadOnlyList<OrderLine> orderLines)
@@ -4615,6 +4829,8 @@ public sealed class ProductionPalletService
             PalletNo = pallet.PalletNo,
             PalletCount = pallet.PalletCount,
             PrintedAt = pallet.PrintedAt,
+            PrintedLabelFingerprint = pallet.PrintedLabelFingerprint,
+            PrintedLabelFingerprintVersion = pallet.PrintedLabelFingerprintVersion,
             FilledAt = pallet.FilledAt,
             FilledByDeviceId = pallet.FilledByDeviceId,
             CancelReason = pallet.CancelReason,

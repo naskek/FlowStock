@@ -44,6 +44,10 @@ public static class PalletLabelPrintRowFactory
                 Line3Qty = row.Line3Qty,
                 Status = row.Status,
                 SourceType = row.SourceType,
+                LabelContract = row.LabelContract,
+                LabelFingerprint = row.LabelFingerprint,
+                ReprintRequired = row.ReprintRequired,
+                LabelState = row.LabelState,
                 // Переопределяем только параметры текущего запуска печати:
                 ProductionDate = productionDate,   // null явно очищает дату PRD, пришедшую от API
                 BatchNumber = normalizedBatch

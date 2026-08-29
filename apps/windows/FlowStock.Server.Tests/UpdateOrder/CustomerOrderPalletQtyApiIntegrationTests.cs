@@ -68,6 +68,36 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
     }
 
     [Fact]
+    public async Task DecreaseBelowUnconfirmedFilledCustomerPallet_FailsClosedAndRollsBack()
+    {
+        var fixture = CreateCustomerFixture(orderedQty: 378);
+        var palletService = fixture.Harness.CreateAtomicProductionPalletService();
+        var plan = palletService.PlanOrder(fixture.OrderId);
+        var pallet = Assert.Single(fixture.Harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
+        fixture.Harness.Store.MarkProductionPalletFilled(
+            pallet.Id,
+            new DateTime(2026, 8, 29, 12, 0, 0),
+            "DIRTY-FIXTURE");
+        Assert.Empty(fixture.Harness.LedgerEntries);
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        using var response = await UpdateOrderHttpApi.PutRawAsync(
+            host.Client,
+            fixture.OrderId,
+            BuildRawJson(fixture, qtyOrdered: 300));
+
+        var error = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
+        Assert.False(error.Ok);
+        Assert.Equal("ORDER_LINE_QTY_BELOW_COVERAGE", error.Error);
+        Assert.Contains("защищено 378", error.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(378, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
+        var after = Assert.Single(fixture.Harness.Store.GetProductionPalletsByDoc(plan.PrdDocId));
+        Assert.Equal(ProductionPalletStatus.Filled, after.Status);
+        Assert.Equal(378, after.PlannedQty, 3);
+        Assert.Empty(fixture.Harness.LedgerEntries);
+    }
+
+    [Fact]
     public async Task PutCustomerQtyChange_LinesApiDoesNotSilentlyReturnOldQty()
     {
         var fixture = CreateCustomerFixture(orderedQty: 1134);

@@ -19,10 +19,32 @@ public static class OrderMarkingExportEndpoint
     {
         app.MapGet("/api/orders/{orderId:long}/marking/preview", HandlePreview);
         app.MapPost("/api/orders/{orderId:long}/marking/export", HandleExport);
+        app.MapGet("/api/orders/{orderId:long}/marking/export-batches/latest/archive", HandleHistoricalArchiveDownload);
         app.MapPost("/api/orders/{orderId:long}/marking/import/preview", HandleImportPreview)
             .DisableAntiforgery();
         app.MapPost("/api/orders/{orderId:long}/marking/import/confirm", HandleImportConfirm)
             .DisableAntiforgery();
+    }
+
+    private static IResult HandleHistoricalArchiveDownload(
+        long orderId,
+        HttpResponse response,
+        IDataStore store)
+    {
+        var result = new OrderMarkingExportService(store)
+            .DownloadLatestHistoricalBatch(orderId, DateTime.Now);
+        if (!result.IsSuccess || result.FileBytes == null)
+        {
+            return Results.NotFound(new { error = result.Message, message = "Архивный export batch для заказа не найден." });
+        }
+
+        response.Headers["X-FlowStock-Marking-Archive"] = "true";
+        response.Headers["X-FlowStock-Marking-Archive-Warning"] =
+            Uri.EscapeDataString("Не отправлять в КМ как новую заявку; файл не отражает текущее состояние заказа.");
+        return Results.File(
+            result.FileBytes,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            result.FileName);
     }
 
     private static async Task<IResult> HandleImportPreview(

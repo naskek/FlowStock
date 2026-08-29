@@ -463,6 +463,8 @@ internal sealed class CloseDocumentHarness
             PalletNo = pallet.PalletNo,
             PalletCount = pallet.PalletCount,
             PrintedAt = pallet.PrintedAt,
+            PrintedLabelFingerprint = pallet.PrintedLabelFingerprint,
+            PrintedLabelFingerprintVersion = pallet.PrintedLabelFingerprintVersion,
             FilledAt = pallet.FilledAt,
             FilledByDeviceId = pallet.FilledByDeviceId,
             CancelReason = pallet.CancelReason,
@@ -3168,7 +3170,7 @@ internal sealed class CloseDocumentHarness
             });
 
         _store.Setup(store => store.MarkProductionPalletsPrintedByOrder(It.IsAny<long>(), It.IsAny<DateTime>()))
-            .Returns<long, DateTime>((orderId, _) =>
+            .Returns<long, DateTime>((orderId, printedAt) =>
             {
                 var updated = 0;
                 foreach (var pair in _productionPallets.ToArray())
@@ -3194,8 +3196,13 @@ internal sealed class CloseDocumentHarness
                         ToLocationId = current.ToLocationId,
                         ToLocationCode = current.ToLocationCode,
                         Status = ProductionPalletStatus.Printed,
+                        PalletNo = current.PalletNo,
+                        PalletCount = current.PalletCount,
+                        PrintedAt = printedAt,
                         FilledAt = current.FilledAt,
                         FilledByDeviceId = current.FilledByDeviceId,
+                        CancelReason = current.CancelReason,
+                        CancelledAt = current.CancelledAt,
                         CreatedAt = current.CreatedAt,
                         Lines = current.Lines
                     };
@@ -3209,7 +3216,7 @@ internal sealed class CloseDocumentHarness
                 It.IsAny<long>(),
                 It.IsAny<IReadOnlyCollection<long>>(),
                 It.IsAny<DateTime>()))
-            .Returns<long, IReadOnlyCollection<long>, DateTime>((orderId, palletIds, _) =>
+            .Returns<long, IReadOnlyCollection<long>, DateTime>((orderId, palletIds, printedAt) =>
             {
                 var targetIds = palletIds.Where(id => id > 0).ToHashSet();
                 var updated = 0;
@@ -3237,8 +3244,13 @@ internal sealed class CloseDocumentHarness
                         ToLocationId = current.ToLocationId,
                         ToLocationCode = current.ToLocationCode,
                         Status = ProductionPalletStatus.Printed,
+                        PalletNo = current.PalletNo,
+                        PalletCount = current.PalletCount,
+                        PrintedAt = printedAt,
                         FilledAt = current.FilledAt,
                         FilledByDeviceId = current.FilledByDeviceId,
+                        CancelReason = current.CancelReason,
+                        CancelledAt = current.CancelledAt,
                         CreatedAt = current.CreatedAt,
                         Lines = current.Lines
                     };
@@ -3246,6 +3258,211 @@ internal sealed class CloseDocumentHarness
                 }
 
                 return updated;
+            });
+
+        _store.Setup(store => store.ResizeSingleItemProductionPallet(It.IsAny<long>(), It.IsAny<double>()))
+            .Returns<long, double>((palletId, plannedQty) =>
+            {
+                if (!_productionPallets.TryGetValue(palletId, out var current)
+                    || plannedQty <= StockQuantityRules.QtyTolerance
+                    || current.HasComponentProgress
+                    || current.IsMixedPallet
+                    || (!string.Equals(current.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(current.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return false;
+                }
+
+                var sourceLines = current.Lines.Count > 0
+                    ? current.Lines
+                    : new[]
+                    {
+                        new ProductionPalletComponentLine
+                        {
+                            ProductionPalletId = current.Id,
+                            DocLineId = current.DocLineId,
+                            OrderLineId = current.OrderLineId,
+                            ItemId = current.ItemId,
+                            ItemName = current.ItemName,
+                            PlannedQty = current.PlannedQty,
+                            CreatedAt = current.CreatedAt
+                        }
+                    };
+                if (sourceLines.Count != 1)
+                {
+                    return false;
+                }
+
+                var component = sourceLines[0];
+                _productionPallets[palletId] = new ProductionPallet
+                {
+                    Id = current.Id,
+                    PrdDocId = current.PrdDocId,
+                    DocLineId = current.DocLineId,
+                    OrderId = current.OrderId,
+                    OrderLineId = current.OrderLineId,
+                    ItemId = current.ItemId,
+                    ItemName = current.ItemName,
+                    HuCode = current.HuCode,
+                    PlannedQty = plannedQty,
+                    ToLocationId = current.ToLocationId,
+                    ToLocationCode = current.ToLocationCode,
+                    Status = current.Status,
+                    PalletNo = current.PalletNo,
+                    PalletCount = current.PalletCount,
+                    PrintedAt = current.PrintedAt,
+                    PrintedLabelFingerprint = current.PrintedLabelFingerprint,
+                    PrintedLabelFingerprintVersion = current.PrintedLabelFingerprintVersion,
+                    FilledAt = current.FilledAt,
+                    FilledByDeviceId = current.FilledByDeviceId,
+                    CancelReason = current.CancelReason,
+                    CancelledAt = current.CancelledAt,
+                    CreatedAt = current.CreatedAt,
+                    Lines = new[]
+                    {
+                        new ProductionPalletComponentLine
+                        {
+                            Id = component.Id,
+                            ProductionPalletId = component.ProductionPalletId,
+                            DocLineId = component.DocLineId,
+                            OrderLineId = component.OrderLineId,
+                            ItemId = component.ItemId,
+                            ItemName = component.ItemName,
+                            Brand = component.Brand,
+                            Uom = component.Uom,
+                            PlannedQty = plannedQty,
+                            FilledQty = component.FilledQty,
+                            FilledAt = component.FilledAt,
+                            CreatedAt = component.CreatedAt
+                        }
+                    }
+                };
+
+                if (_linesByDoc.TryGetValue(current.PrdDocId, out var docLines))
+                {
+                    for (var index = 0; index < docLines.Count; index++)
+                    {
+                        if (docLines[index].Id != component.DocLineId)
+                        {
+                            continue;
+                        }
+
+                        var line = docLines[index];
+                        docLines[index] = new DocLine
+                        {
+                            Id = line.Id,
+                            DocId = line.DocId,
+                            ReplacesLineId = line.ReplacesLineId,
+                            OrderLineId = line.OrderLineId,
+                            ProductionPurpose = line.ProductionPurpose,
+                            ItemId = line.ItemId,
+                            Qty = plannedQty,
+                            FromLocationId = line.FromLocationId,
+                            ToLocationId = line.ToLocationId,
+                            FromHu = line.FromHu,
+                            ToHu = line.ToHu,
+                            PackSingleHu = line.PackSingleHu
+                        };
+                    }
+                }
+
+                return true;
+            });
+
+        _store.Setup(store => store.AcknowledgeProductionPalletLabels(
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyCollection<ProductionPalletLabelAcknowledgement>>(),
+                It.IsAny<DateTime>()))
+            .Returns<long, IReadOnlyCollection<ProductionPalletLabelAcknowledgement>, DateTime>((orderId, acknowledgements, printedAt) =>
+            {
+                var byId = acknowledgements.ToDictionary(row => row.PalletId);
+                var updated = 0;
+                foreach (var pair in _productionPallets.ToArray())
+                {
+                    var current = pair.Value;
+                    if (current.OrderId != orderId
+                        || !byId.TryGetValue(current.Id, out var acknowledgement)
+                        || (!string.Equals(current.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                            && !string.Equals(current.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+
+                    _productionPallets[pair.Key] = new ProductionPallet
+                    {
+                        Id = current.Id,
+                        PrdDocId = current.PrdDocId,
+                        DocLineId = current.DocLineId,
+                        OrderId = current.OrderId,
+                        OrderLineId = current.OrderLineId,
+                        ItemId = current.ItemId,
+                        ItemName = current.ItemName,
+                        HuCode = current.HuCode,
+                        PlannedQty = current.PlannedQty,
+                        ToLocationId = current.ToLocationId,
+                        ToLocationCode = current.ToLocationCode,
+                        Status = ProductionPalletStatus.Printed,
+                        PalletNo = current.PalletNo,
+                        PalletCount = current.PalletCount,
+                        PrintedAt = printedAt,
+                        PrintedLabelFingerprint = acknowledgement.ExpectedLabelFingerprint,
+                        PrintedLabelFingerprintVersion = ProductionPalletLabelContract.FingerprintVersion,
+                        FilledAt = current.FilledAt,
+                        FilledByDeviceId = current.FilledByDeviceId,
+                        CancelReason = current.CancelReason,
+                        CancelledAt = current.CancelledAt,
+                        CreatedAt = current.CreatedAt,
+                        Lines = current.Lines
+                    };
+                    updated++;
+                }
+
+                return updated;
+            });
+
+        _store.Setup(store => store.BackfillProductionPalletLabelFingerprint(
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<string>()))
+            .Returns<long, long, string>((orderId, palletId, fingerprint) =>
+            {
+                if (!_productionPallets.TryGetValue(palletId, out var current)
+                    || current.OrderId != orderId
+                    || !string.Equals(current.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
+                    || !current.PrintedAt.HasValue
+                    || !string.IsNullOrWhiteSpace(current.PrintedLabelFingerprint)
+                    || current.PrintedLabelFingerprintVersion.HasValue)
+                {
+                    return 0;
+                }
+
+                _productionPallets[palletId] = new ProductionPallet
+                {
+                    Id = current.Id,
+                    PrdDocId = current.PrdDocId,
+                    DocLineId = current.DocLineId,
+                    OrderId = current.OrderId,
+                    OrderLineId = current.OrderLineId,
+                    ItemId = current.ItemId,
+                    ItemName = current.ItemName,
+                    HuCode = current.HuCode,
+                    PlannedQty = current.PlannedQty,
+                    ToLocationId = current.ToLocationId,
+                    ToLocationCode = current.ToLocationCode,
+                    Status = current.Status,
+                    PalletNo = current.PalletNo,
+                    PalletCount = current.PalletCount,
+                    PrintedAt = current.PrintedAt,
+                    PrintedLabelFingerprint = fingerprint.Trim().ToLowerInvariant(),
+                    PrintedLabelFingerprintVersion = ProductionPalletLabelContract.FingerprintVersion,
+                    FilledAt = current.FilledAt,
+                    FilledByDeviceId = current.FilledByDeviceId,
+                    CancelReason = current.CancelReason,
+                    CancelledAt = current.CancelledAt,
+                    CreatedAt = current.CreatedAt,
+                    Lines = current.Lines
+                };
+                return 1;
             });
 
         _store.Setup(store => store.CountKmCodesByReceiptLine(It.IsAny<long>()))

@@ -265,8 +265,9 @@ public sealed class ProductionPalletSafeOnlyPlanTests
         Assert.Equal(378, json.RootElement.GetProperty("adopted_qty").GetDouble());
         var adopted = Assert.Single(json.RootElement.GetProperty("adopted_internal_planned_hus").EnumerateArray());
         Assert.Equal("HU-INT-PRINTED", adopted.GetProperty("hu_code").GetString());
-        Assert.False(adopted.GetProperty("will_require_reprint").GetBoolean());
-        Assert.Empty(json.RootElement.GetProperty("reprint_required_hus").EnumerateArray());
+        Assert.True(adopted.GetProperty("will_require_reprint").GetBoolean());
+        var reprint = Assert.Single(json.RootElement.GetProperty("reprint_required_hus").EnumerateArray());
+        Assert.Equal("HU-INT-PRINTED", reprint.GetProperty("hu_code").GetString());
         Assert.Empty(harness.LedgerEntries);
         Assert.Empty(harness.Store.GetOrderReceiptPlanLines(10));
     }

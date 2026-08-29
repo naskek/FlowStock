@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Text;
 using System.Xml.Linq;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
@@ -211,6 +212,35 @@ public sealed class SimpleMarkingExcelServiceTests
         Assert.Equal(new[] { firstRequestId, secondRequestId, thirdRequestId }, result.MarkedMarkingOrderIds);
         store.Verify(data => data.GetMarkingOrdersByIds(It.IsAny<IReadOnlyCollection<Guid>>()), Times.Never);
         store.Verify(data => data.FindItemById(It.IsAny<long>()), Times.Never);
+    }
+
+    [Fact]
+    public void HistoricalArchiveReplay_AddsStrongWarningWithoutChangingImmutableRows()
+    {
+        var request = new MarkingRequestExportBatchRequestSnapshot(
+            Guid.NewGuid(), 1001, "Крем", "04607186951520", 5, 2, 7);
+        var store = new Mock<IDataStore>(MockBehavior.Strict);
+
+        var result = new MarkingExcelService(store.Object)
+            .ExportBatchReplay([request], DateTime.UtcNow, historicalArchive: true);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(7, Assert.Single(result.Rows).Qty);
+        using var stream = new MemoryStream(result.FileBytes!);
+        using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
+        using (var workbookReader = new StreamReader(archive.GetEntry("xl/workbook.xml")!.Open(), Encoding.UTF8))
+        {
+            var workbook = workbookReader.ReadToEnd();
+            Assert.True(
+                workbook.IndexOf("АРХИВ_НЕ_ОТПРАВЛЯТЬ", StringComparison.Ordinal)
+                < workbook.IndexOf("name=\"ЧЗ\"", StringComparison.Ordinal));
+        }
+        var warningSheet = archive.GetEntry("xl/worksheets/sheet2.xml");
+        Assert.NotNull(warningSheet);
+        using var reader = new StreamReader(warningSheet!.Open(), Encoding.UTF8);
+        var warning = reader.ReadToEnd();
+        Assert.Contains("АРХИВНАЯ КОПИЯ", warning, StringComparison.Ordinal);
+        Assert.Contains("НЕ ОТПРАВЛЯТЬ", warning, StringComparison.Ordinal);
     }
 
     [Fact]

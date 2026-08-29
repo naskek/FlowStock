@@ -10,5 +10,6 @@ public interface IMarkingRequestOperationalStore
 {
     IReadOnlyList<MarkingRequestOperationalSnapshot> GetMarkingRequestOperationalSnapshots(long orderId);
     MarkingRequestExportBatchSnapshot? GetMarkingRequestExportBatch(long orderId, string expectedSnapshotHash);
+    IReadOnlyList<MarkingRequestExportBatchSnapshot> GetMarkingRequestExportBatches(long orderId);
     void CreateMarkingRequestExportBatch(CreateMarkingRequestExportBatchCommand command);
 }

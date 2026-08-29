@@ -559,6 +559,65 @@ public partial class OrderDetailsWindow : Window
         }
     }
 
+    private async void DownloadMarkingArchive_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_orderId.HasValue)
+        {
+            MessageBox.Show("Сначала сохраните заказ.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var confirmed = MessageBox.Show(
+            "Будет скачана архивная копия последнего immutable export batch. Она может не соответствовать текущему заказу и её нельзя отправлять в КМ как новую заявку. Продолжить?",
+            "Архив Excel ЧЗ",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (confirmed != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        DownloadMarkingArchiveButton.IsEnabled = false;
+        try
+        {
+            var result = await _services.WpfMarkingApi.TryDownloadLatestArchiveAsync(_orderId.Value).ConfigureAwait(true);
+            if (!result.IsSuccess || result.FileBytes == null)
+            {
+                MessageBox.Show(result.Message, "Архив Excel ЧЗ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var dialog = new SaveFileDialog
+            {
+                Title = "Сохранить архивную копию Excel ЧЗ",
+                Filter = "Excel (*.xlsx)|*.xlsx",
+                FileName = result.FileName ?? $"ARCHIVE_chestny_znak_order_{_orderId.Value}.xlsx"
+            };
+            if (dialog.ShowDialog(this) == true)
+            {
+                try
+                {
+                    File.WriteAllBytes(dialog.FileName, result.FileBytes);
+                    MessageBox.Show(result.Message, "Архив Excel ЧЗ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                catch (Exception ex)
+                {
+                    _services.AppLogger.Error("Historical marking archive save failed", ex);
+                    MessageBox.Show(
+                        $"Не удалось сохранить архивную копию: {ex.Message}",
+                        "Архив Excel ЧЗ",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+            }
+        }
+        finally
+        {
+            DownloadMarkingArchiveButton.IsEnabled = true;
+        }
+    }
+
     private async void PlanPallets_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsurePalletPlanningReady())
@@ -976,6 +1035,11 @@ public partial class OrderDetailsWindow : Window
             {
                 idsText += $"{Environment.NewLine}Пропущены pallet_id: {string.Join(", ", result.SkippedPalletIds)}";
             }
+            if (result.SurvivingReprintRequiredHuCodes.Count > 0)
+            {
+                idsText += $"{Environment.NewLine}{Environment.NewLine}ВНИМАНИЕ: из-за изменения нумерации перепечатайте сохранившиеся HU: "
+                           + string.Join(", ", result.SurvivingReprintRequiredHuCodes);
+            }
 
             MessageBox.Show(
                 $"{result.Message}{Environment.NewLine}{Environment.NewLine}" +
@@ -1059,7 +1123,11 @@ public partial class OrderDetailsWindow : Window
                     IsMixedPallet = row.IsMixedPallet,
                     Composition = row.Composition,
                     Status = row.Status,
-                    SourceType = row.SourceType
+                    SourceType = row.SourceType,
+                    LabelContract = row.LabelContract,
+                    LabelFingerprint = row.LabelFingerprint,
+                    ReprintRequired = row.ReprintRequired,
+                    LabelState = row.LabelState
                 })
                 .ToArray();
             var groups = FlowStock.Core.Services.PalletLabelPrintSelectionService.BuildGroups(coreRows);
@@ -1077,6 +1145,26 @@ public partial class OrderDetailsWindow : Window
             if (selectedRows.Count == 0)
             {
                 MessageBox.Show("Выберите хотя бы одну паллетную этикетку", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var invalidProductionRow = selectedRows.FirstOrDefault(row =>
+                string.Equals(
+                    row.SourceType,
+                    FlowStock.Core.Models.ProductionPalletPrintSourceType.ProductionPallet,
+                    StringComparison.OrdinalIgnoreCase)
+                && (!string.Equals(
+                        row.LabelContract,
+                        FlowStock.Core.Models.ProductionPalletLabelContract.FingerprintV1,
+                        StringComparison.Ordinal)
+                    || string.IsNullOrWhiteSpace(row.LabelFingerprint)));
+            if (invalidProductionRow != null)
+            {
+                MessageBox.Show(
+                    $"Для HU {invalidProductionRow.HuCode} сервер не вернул проверяемый fingerprint. Печать остановлена; обновите Server/WPF и повторите загрузку.",
+                    "Паллеты",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
                 return;
             }
 
@@ -1102,10 +1190,15 @@ public partial class OrderDetailsWindow : Window
 
             if (_order?.Type != OrderType.Customer || HasOpenProductionPalletPlan(_orderId.Value))
             {
-                var selectedPalletIds = dialog.SelectedProductionPalletIds;
-                if (selectedPalletIds.Count > 0)
+                var selectedProductionRows = selectedRows
+                    .Where(row => string.Equals(
+                        row.SourceType,
+                        FlowStock.Core.Models.ProductionPalletPrintSourceType.ProductionPallet,
+                        StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (selectedProductionRows.Length > 0)
                 {
-                    var markResult = await _services.WpfProductionPalletApi.TryMarkPrintedAsync(_orderId.Value, selectedPalletIds).ConfigureAwait(true);
+                    var markResult = await _services.WpfProductionPalletApi.TryMarkPrintedAsync(_orderId.Value, selectedProductionRows).ConfigureAwait(true);
                     if (!markResult.IsSuccess)
                     {
                         MessageBox.Show(

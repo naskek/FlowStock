@@ -596,7 +596,8 @@ public static class ProductionPalletEndpoints
                 removed_line_count = result.RemovedLineCount,
                 requested_pallet_ids = result.RequestedPalletIds,
                 removed_pallet_ids = result.RemovedPalletIds,
-                skipped_pallet_ids = result.SkippedPalletIds
+                skipped_pallet_ids = result.SkippedPalletIds,
+                surviving_reprint_required_hu_codes = result.SurvivingReprintRequiredHuCodes
             });
         }
         catch (InvalidOperationException ex)
@@ -678,11 +679,48 @@ public static class ProductionPalletEndpoints
         }
     }
 
-    private static IResult HandlePrintRows(long orderId, ProductionPalletService service)
+    private static IResult HandlePrintRows(
+        long orderId,
+        HttpRequest request,
+        HttpResponse response,
+        ProductionPalletService service)
     {
         try
         {
-            return Results.Ok(service.GetPrintRows(orderId).Select(MapPrintRow));
+            var rows = service.GetPrintRows(orderId);
+            var supportsFingerprint = string.Equals(
+                request.Headers[ProductionPalletLabelContract.HeaderName].FirstOrDefault(),
+                ProductionPalletLabelContract.FingerprintV1,
+                StringComparison.OrdinalIgnoreCase);
+            if (!supportsFingerprint
+                && rows.Any(row => string.Equals(
+                    row.SourceType,
+                    ProductionPalletPrintSourceType.ProductionPallet,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                var reservedRows = rows
+                    .Where(row => string.Equals(
+                        row.SourceType,
+                        ProductionPalletPrintSourceType.ReservedHu,
+                        StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (reservedRows.Length == 0)
+                {
+                    return Results.Json(
+                        new
+                        {
+                            ok = false,
+                            error = ProductionPalletLabelContract.UpgradeRequired,
+                            message = "Обновите WPF для безопасной печати production-pallet этикеток."
+                        },
+                        statusCode: StatusCodes.Status426UpgradeRequired);
+                }
+
+                response.Headers["X-FlowStock-Production-Label-Upgrade-Required"] = "true";
+                rows = reservedRows;
+            }
+
+            return Results.Ok(rows.Select(MapPrintRow));
         }
         catch (InvalidOperationException ex)
         {
@@ -697,15 +735,38 @@ public static class ProductionPalletEndpoints
     {
         try
         {
-            IReadOnlyList<long>? palletIds = null;
-            if (request.ContentLength > 0)
+            MarkPrintedRequest? body = null;
+            if (request.ContentLength != 0)
             {
-                var body = await request.ReadFromJsonAsync<MarkPrintedRequest>();
-                palletIds = body?.PalletIds;
+                body = await request.ReadFromJsonAsync<MarkPrintedRequest>();
             }
 
-            var updated = service.MarkPrinted(orderId, palletIds, DateTime.Now);
+            if (body?.Pallets is not { Count: > 0 })
+            {
+                return Results.Json(
+                    new
+                    {
+                        ok = false,
+                        error = ProductionPalletLabelContract.UpgradeRequired,
+                        message = "Обновите WPF: production-pallet печать требует fingerprint acknowledgement."
+                    },
+                    statusCode: StatusCodes.Status426UpgradeRequired);
+            }
+
+            var updated = service.AcknowledgePrintedLabels(
+                orderId,
+                body.Pallets.Select(row => new ProductionPalletLabelAcknowledgement(
+                    row.PalletId,
+                    row.ExpectedLabelFingerprint ?? string.Empty)).ToArray(),
+                DateTime.Now);
             return Results.Ok(new { ok = true, updated_count = updated });
+        }
+        catch (ProductionPalletLabelContractException ex)
+        {
+            var status = string.Equals(ex.Code, ProductionPalletLabelContract.Stale, StringComparison.Ordinal)
+                ? StatusCodes.Status409Conflict
+                : StatusCodes.Status426UpgradeRequired;
+            return Results.Json(new { ok = false, error = ex.Code, message = ex.Message }, statusCode: status);
         }
         catch (InvalidOperationException ex)
         {
@@ -717,6 +778,18 @@ public static class ProductionPalletEndpoints
     {
         [JsonPropertyName("pallet_ids")]
         public IReadOnlyList<long>? PalletIds { get; init; }
+
+        [JsonPropertyName("pallets")]
+        public IReadOnlyList<MarkPrintedPalletRequest>? Pallets { get; init; }
+    }
+
+    private sealed class MarkPrintedPalletRequest
+    {
+        [JsonPropertyName("pallet_id")]
+        public long PalletId { get; init; }
+
+        [JsonPropertyName("expected_label_fingerprint")]
+        public string? ExpectedLabelFingerprint { get; init; }
     }
 
     private static IResult HandleGet(long docId, ProductionPalletService service)
@@ -1169,7 +1242,11 @@ public static class ProductionPalletEndpoints
             line3_item_name = row.Lines.Count > 2 ? row.Lines[2].ItemName : string.Empty,
             line3_qty = row.Lines.Count > 2 ? row.Lines[2].Qty : 0,
             status = row.Status,
-            source_type = row.SourceType
+            source_type = row.SourceType,
+            label_contract = row.LabelContract,
+            label_fingerprint = row.LabelFingerprint,
+            reprint_required = row.ReprintRequired,
+            label_state = row.LabelState
         };
     }
 

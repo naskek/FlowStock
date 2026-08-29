@@ -63,7 +63,8 @@ public sealed class MarkingExcelService
 
     public MarkingExcelExportResult ExportBatchReplay(
         IReadOnlyCollection<MarkingRequestExportBatchRequestSnapshot> requests,
-        DateTime generatedAt)
+        DateTime generatedAt,
+        bool historicalArchive = false)
     {
         ArgumentNullException.ThrowIfNull(requests);
         _ = generatedAt;
@@ -80,12 +81,13 @@ public sealed class MarkingExcelService
                 request.Gtin,
                 request.RequestedQuantity))
             .ToList();
-        return ExportRows(Array.Empty<MarkingOrderLineCandidate>(), taskRows);
+        return ExportRows(Array.Empty<MarkingOrderLineCandidate>(), taskRows, historicalArchive);
     }
 
     private static MarkingExcelExportResult ExportRows(
         IReadOnlyCollection<MarkingOrderLineCandidate> orderRows,
-        IReadOnlyCollection<MarkingTaskExportRow> taskRows)
+        IReadOnlyCollection<MarkingTaskExportRow> taskRows,
+        bool historicalArchive = false)
     {
         var exportRows = orderRows
             .Select(line => new MarkingExportRow
@@ -127,7 +129,7 @@ public sealed class MarkingExcelService
             .Concat(taskRows.Where(line => line.OrderId.HasValue).Select(line => line.OrderId!.Value))
             .Distinct()
             .ToArray();
-        var bytes = BuildWorkbook(rows);
+        var bytes = BuildWorkbook(rows, historicalArchive);
 
         return new MarkingExcelExportResult(
             IsSuccess: true,
@@ -231,12 +233,22 @@ public sealed class MarkingExcelService
                && row.CodesTotal >= row.RequestedQuantity;
     }
 
-    private static byte[] BuildWorkbook(IReadOnlyList<MarkingExportRow> rows)
+    private static byte[] BuildWorkbook(IReadOnlyList<MarkingExportRow> rows, bool historicalArchive)
     {
         using var stream = new MemoryStream();
         using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
         {
-            AddEntry(archive, "[Content_Types].xml", """
+            AddEntry(archive, "[Content_Types].xml", historicalArchive ? """
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>
+""" : """
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -252,14 +264,29 @@ public sealed class MarkingExcelService
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>
 """);
-            AddEntry(archive, "xl/_rels/workbook.xml.rels", """
+            AddEntry(archive, "xl/_rels/workbook.xml.rels", historicalArchive ? """
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+</Relationships>
+""" : """
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
 </Relationships>
 """);
-            AddEntry(archive, "xl/workbook.xml", """
+            AddEntry(archive, "xl/workbook.xml", historicalArchive ? """
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="АРХИВ_НЕ_ОТПРАВЛЯТЬ" sheetId="1" r:id="rId3"/>
+    <sheet name="ЧЗ" sheetId="2" r:id="rId1"/>
+  </sheets>
+</workbook>
+""" : """
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets>
@@ -278,9 +305,24 @@ public sealed class MarkingExcelService
 </styleSheet>
 """);
             AddEntry(archive, "xl/worksheets/sheet1.xml", BuildWorksheet(rows));
+            if (historicalArchive)
+            {
+                AddEntry(archive, "xl/worksheets/sheet2.xml", BuildArchiveWarningWorksheet());
+            }
         }
 
         return stream.ToArray();
+    }
+
+    private static string BuildArchiveWarningWorksheet()
+    {
+        const string warning = "АРХИВНАЯ КОПИЯ. НЕ ОТПРАВЛЯТЬ В КМ КАК НОВУЮ ЗАЯВКУ. Файл воспроизводит immutable membership исходного export batch и не отражает текущее состояние заказа.";
+        var builder = new StringBuilder();
+        builder.AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+        builder.AppendLine("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData><row r=\"1\">");
+        AppendTextCell(builder, "A", 1, warning);
+        builder.AppendLine("</row></sheetData></worksheet>");
+        return builder.ToString();
     }
 
     private static string BuildWorksheet(IReadOnlyList<MarkingExportRow> rows)

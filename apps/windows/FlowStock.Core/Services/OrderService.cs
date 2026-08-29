@@ -1281,7 +1281,10 @@ public sealed class OrderService
     {
         if (orderType == OrderType.Customer)
         {
-            var coverage = CustomerProtectedCoverageCalculator.BuildByOrderLine(store, orderId)
+            var coverage = CustomerProtectedCoverageCalculator.BuildByOrderLine(
+                    store,
+                    orderId,
+                    includeUnconfirmedFilledPallets: true)
                 .GetValueOrDefault(line.Id);
             var protectedQty = coverage?.DeduplicatedQty ?? 0d;
             if (newQty + QtyTolerance < protectedQty)

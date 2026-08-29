@@ -329,6 +329,16 @@ WHERE batch.order_id = @id
         Assert.NotNull(first.FileBytes);
         Assert.Contains(fixture.ItemName, ReadWorksheetXml(first.FileBytes!), StringComparison.Ordinal);
 
+        var currentPreview = service.Preview(fixture.OrderId);
+        Assert.True(currentPreview.IsSuccess, currentPreview.Message);
+        var currentRetry = service.Export(
+            fixture.OrderId,
+            DateTime.UtcNow.AddSeconds(30),
+            currentPreview.SnapshotHash);
+        Assert.True(currentRetry.IsSuccess, currentRetry.Message);
+        Assert.NotNull(currentRetry.FileBytes);
+        Assert.Equal((1, 1), await fixture.ReadExportBatchCountsAsync());
+
         var changedName = $"Changed live item {Guid.NewGuid():N}";
         await fixture.UpdateItemNameAsync(changedName);
 
@@ -348,6 +358,16 @@ WHERE batch.order_id = @id
             preview.SnapshotHash);
         Assert.False(driftedReplay.IsSuccess);
         Assert.Equal("MARKING_EXPORT_SNAPSHOT_CHANGED", driftedReplay.Message);
+        Assert.Equal((1, 1), await fixture.ReadExportBatchCountsAsync());
+        Assert.Equal(1, (await fixture.ReadSnapshotAsync()).MarkingOrders);
+
+        var archive = service.DownloadLatestHistoricalBatch(fixture.OrderId, DateTime.UtcNow.AddMinutes(3));
+        Assert.True(archive.IsSuccess, archive.Message);
+        Assert.NotNull(archive.FileBytes);
+        Assert.StartsWith("ARCHIVE_", archive.FileName, StringComparison.Ordinal);
+        var archiveWorksheet = ReadWorksheetXml(archive.FileBytes!);
+        Assert.Contains(fixture.ItemName, archiveWorksheet, StringComparison.Ordinal);
+        Assert.DoesNotContain(changedName, archiveWorksheet, StringComparison.Ordinal);
         Assert.Equal((1, 1), await fixture.ReadExportBatchCountsAsync());
         Assert.Equal(1, (await fixture.ReadSnapshotAsync()).MarkingOrders);
     }

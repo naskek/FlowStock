@@ -46,6 +46,12 @@ if (UomRemediationCommand.TryRun(args, postgresConnectionString, out var uomMain
     return;
 }
 
+if (ProductionPalletLabelBackfillCommand.TryRun(args, postgresConnectionString, out var labelBackfillExitCode))
+{
+    Environment.ExitCode = labelBackfillExitCode;
+    return;
+}
+
 var ordersExplainEnabled = string.Equals(
     builder.Configuration["FLOWSTOCK_ENABLE_ORDERS_EXPLAIN"],
     "1",

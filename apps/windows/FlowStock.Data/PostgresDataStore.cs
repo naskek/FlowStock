@@ -93,7 +93,9 @@ SELECT p.id,
        p.filled_by_device_id,
        p.cancel_reason,
        p.cancelled_at,
-       p.created_at
+       p.created_at,
+       p.printed_label_fingerprint,
+       p.printed_label_fingerprint_version
 FROM production_pallets p
 INNER JOIN items i ON i.id = p.item_id
 LEFT JOIN locations l ON l.id = p.to_location_id";
@@ -8717,6 +8719,160 @@ ORDER BY order_id NULLS LAST,
         });
     }
 
+    public bool ResizeSingleItemProductionPallet(long palletId, double plannedQty)
+    {
+        if (plannedQty <= StockQuantityRules.QtyTolerance)
+        {
+            return false;
+        }
+
+        return WithConnection(connection =>
+        {
+            long docLineId;
+            using (var component = CreateCommand(connection, @"
+UPDATE production_pallet_lines pll
+SET planned_qty = @planned_qty
+FROM production_pallets pp
+WHERE pp.id = @pallet_id
+  AND pp.id = pll.production_pallet_id
+  AND pp.status IN (@planned_status, @printed_status)
+  AND COALESCE(pll.filled_qty, 0) <= @qty_tolerance
+  AND (SELECT COUNT(*) FROM production_pallet_lines sibling WHERE sibling.production_pallet_id = pp.id) = 1
+RETURNING pll.doc_line_id;
+"))
+            {
+                component.Parameters.AddWithValue("@pallet_id", palletId);
+                component.Parameters.AddWithValue("@planned_qty", plannedQty);
+                component.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+                component.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+                component.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+                var result = component.ExecuteScalar();
+                if (result == null || result == DBNull.Value)
+                {
+                    return false;
+                }
+
+                docLineId = Convert.ToInt64(result, CultureInfo.InvariantCulture);
+            }
+
+            using (var pallet = CreateCommand(connection, @"
+UPDATE production_pallets
+SET planned_qty = @planned_qty
+WHERE id = @pallet_id
+  AND status IN (@planned_status, @printed_status);
+"))
+            {
+                pallet.Parameters.AddWithValue("@pallet_id", palletId);
+                pallet.Parameters.AddWithValue("@planned_qty", plannedQty);
+                pallet.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+                pallet.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+                if (pallet.ExecuteNonQuery() != 1)
+                {
+                    throw new InvalidOperationException("Паллета изменилась во время reconcile.");
+                }
+            }
+
+            using var docLine = CreateCommand(connection, @"
+UPDATE doc_lines
+SET qty = @planned_qty,
+    qty_input = NULL,
+    uom_code = NULL
+WHERE id = @doc_line_id;
+");
+            docLine.Parameters.AddWithValue("@doc_line_id", docLineId);
+            docLine.Parameters.AddWithValue("@planned_qty", plannedQty);
+            if (docLine.ExecuteNonQuery() != 1)
+            {
+                throw new InvalidOperationException("Строка PRD изменилась во время reconcile.");
+            }
+
+            return true;
+        });
+    }
+
+    public int AcknowledgeProductionPalletLabels(
+        long orderId,
+        IReadOnlyCollection<ProductionPalletLabelAcknowledgement> acknowledgements,
+        DateTime printedAt)
+    {
+        var rows = acknowledgements
+            .Where(row => row.PalletId > 0 && !string.IsNullOrWhiteSpace(row.ExpectedLabelFingerprint))
+            .GroupBy(row => row.PalletId)
+            .Select(group => group.First())
+            .ToArray();
+        if (rows.Length == 0)
+        {
+            return 0;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH acknowledged AS (
+    SELECT *
+    FROM UNNEST(@pallet_ids::bigint[], @fingerprints::text[])
+        AS input(pallet_id, fingerprint)
+)
+UPDATE production_pallets pp
+SET status = @printed_status,
+    printed_at = @printed_at,
+    printed_label_fingerprint = acknowledged.fingerprint,
+    printed_label_fingerprint_version = @fingerprint_version
+FROM docs d, acknowledged
+WHERE d.id = pp.prd_doc_id
+  AND d.order_id = @order_id
+  AND d.type = @doc_type
+  AND pp.id = acknowledged.pallet_id
+  AND pp.status IN (@planned_status, @printed_status);
+");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+            command.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+            command.Parameters.AddWithValue("@printed_at", ToDbDate(printedAt));
+            command.Parameters.AddWithValue("@fingerprint_version", ProductionPalletLabelContract.FingerprintVersion);
+            command.Parameters.AddWithValue("@pallet_ids", rows.Select(row => row.PalletId).ToArray());
+            command.Parameters.AddWithValue("@fingerprints", rows.Select(row => row.ExpectedLabelFingerprint).ToArray());
+            return command.ExecuteNonQuery();
+        });
+    }
+
+    public int BackfillProductionPalletLabelFingerprint(
+        long orderId,
+        long palletId,
+        string currentLabelFingerprint)
+    {
+        if (palletId <= 0 || string.IsNullOrWhiteSpace(currentLabelFingerprint))
+        {
+            return 0;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE production_pallets pp
+SET printed_label_fingerprint = @fingerprint,
+    printed_label_fingerprint_version = @fingerprint_version
+FROM docs d
+WHERE d.id = pp.prd_doc_id
+  AND d.order_id = @order_id
+  AND d.type = @doc_type
+  AND pp.id = @pallet_id
+  AND pp.status = @printed_status
+  AND pp.printed_at IS NOT NULL
+  AND pp.printed_label_fingerprint IS NULL
+  AND pp.printed_label_fingerprint_version IS NULL;
+");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.AddWithValue("@pallet_id", palletId);
+            command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+            command.Parameters.AddWithValue("@fingerprint", currentLabelFingerprint.Trim().ToLowerInvariant());
+            command.Parameters.AddWithValue("@fingerprint_version", ProductionPalletLabelContract.FingerprintVersion);
+            return command.ExecuteNonQuery();
+        });
+    }
+
     public IReadOnlyList<MarkingLegacyCutoverLineSnapshot> GetMarkingLegacyCutoverLineSnapshots()
     {
         return WithConnection(connection =>
@@ -11476,8 +11632,19 @@ SELECT batch.id, batch.order_id, batch.expected_snapshot_hash,
 FROM marking_request_export_batch batch
 LEFT JOIN marking_request_export_batch_request request
        ON request.export_batch_id = batch.id
-WHERE batch.order_id = @order_id
-  AND batch.expected_snapshot_hash = @snapshot_hash
+WHERE batch.id = (
+    SELECT candidate.id
+    FROM marking_request_export_batch candidate
+    WHERE candidate.order_id = @order_id
+      AND (
+          candidate.expected_snapshot_hash = @snapshot_hash
+          OR candidate.post_export_snapshot_hash = @snapshot_hash
+      )
+    ORDER BY CASE WHEN candidate.expected_snapshot_hash = @snapshot_hash THEN 0 ELSE 1 END,
+             candidate.created_at DESC,
+             candidate.id DESC
+    LIMIT 1
+)
 ORDER BY request.marking_order_id;" );
             command.Parameters.AddWithValue("@order_id", orderId);
             command.Parameters.AddWithValue("@snapshot_hash", expectedSnapshotHash);
@@ -11505,6 +11672,63 @@ ORDER BY request.marking_order_id;" );
 
             return new MarkingRequestExportBatchSnapshot(
                 batchId, orderId, expectedHash, postHash, reserve, createdAt, requests);
+        });
+    }
+
+    public IReadOnlyList<MarkingRequestExportBatchSnapshot> GetMarkingRequestExportBatches(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT batch.id, batch.order_id, batch.expected_snapshot_hash,
+       batch.post_export_snapshot_hash, batch.reserve_quantity, batch.created_at,
+       request.marking_order_id, request.item_id, request.item_name_snapshot,
+       request.gtin_snapshot, request.required_quantity_snapshot,
+       request.reserve_quantity_snapshot, request.requested_quantity_snapshot
+FROM marking_request_export_batch batch
+LEFT JOIN marking_request_export_batch_request request
+       ON request.export_batch_id = batch.id
+WHERE batch.order_id = @order_id
+ORDER BY batch.created_at DESC, batch.id DESC, request.marking_order_id;");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            using var reader = command.ExecuteReader();
+            var order = new List<Guid>();
+            var headers = new Dictionary<Guid, (string Expected, string Post, int Reserve, DateTime CreatedAt)>();
+            var requests = new Dictionary<Guid, List<MarkingRequestExportBatchRequestSnapshot>>();
+            while (reader.Read())
+            {
+                var batchId = reader.GetGuid(0);
+                if (!headers.ContainsKey(batchId))
+                {
+                    order.Add(batchId);
+                    headers[batchId] = (
+                        reader.GetString(2),
+                        reader.GetString(3),
+                        reader.GetInt32(4),
+                        reader.GetDateTime(5));
+                    requests[batchId] = new List<MarkingRequestExportBatchRequestSnapshot>();
+                }
+
+                if (!reader.IsDBNull(6))
+                {
+                    requests[batchId].Add(new MarkingRequestExportBatchRequestSnapshot(
+                        reader.GetGuid(6), reader.GetInt64(7), reader.GetString(8), reader.GetString(9),
+                        reader.GetInt32(10), reader.GetInt32(11), reader.GetInt32(12)));
+                }
+            }
+
+            return order.Select(batchId =>
+            {
+                var header = headers[batchId];
+                return new MarkingRequestExportBatchSnapshot(
+                    batchId,
+                    orderId,
+                    header.Expected,
+                    header.Post,
+                    header.Reserve,
+                    header.CreatedAt,
+                    requests[batchId]);
+            }).ToArray();
         });
     }
 
@@ -20613,6 +20837,8 @@ ORDER BY pll.production_pallet_id, pll.id;
                 PalletNo = pallet.PalletNo,
                 PalletCount = pallet.PalletCount,
                 PrintedAt = pallet.PrintedAt,
+                PrintedLabelFingerprint = pallet.PrintedLabelFingerprint,
+                PrintedLabelFingerprintVersion = pallet.PrintedLabelFingerprintVersion,
                 FilledAt = pallet.FilledAt,
                 FilledByDeviceId = pallet.FilledByDeviceId,
                 CreatedAt = pallet.CreatedAt,
@@ -20644,7 +20870,9 @@ ORDER BY pll.production_pallet_id, pll.id;
             FilledByDeviceId = reader.IsDBNull(16) ? null : reader.GetString(16),
             CancelReason = reader.IsDBNull(17) ? null : reader.GetString(17),
             CancelledAt = FromDbDate(reader.IsDBNull(18) ? null : reader.GetString(18)),
-            CreatedAt = FromDbDate(reader.GetString(19)) ?? DateTime.MinValue
+            CreatedAt = FromDbDate(reader.GetString(19)) ?? DateTime.MinValue,
+            PrintedLabelFingerprint = reader.IsDBNull(20) ? null : reader.GetString(20),
+            PrintedLabelFingerprintVersion = reader.IsDBNull(21) ? null : reader.GetInt16(21)
         };
     }
 

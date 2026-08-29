@@ -202,6 +202,54 @@ public sealed class WpfMarkingApiService
         }
     }
 
+    public async Task<OrderMarkingExportApiResult> TryDownloadLatestArchiveAsync(
+        long orderId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configuration = LoadConfiguration();
+            if (!configuration.IsConfigured)
+            {
+                return OrderMarkingExportApiResult.Failure("FlowStock Server API не настроен.");
+            }
+
+            using var handler = _handlerFactory(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            using var response = await client.GetAsync(
+                    $"/api/orders/{orderId}/marking/export-batches/latest/archive",
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return OrderMarkingExportApiResult.Failure(await ReadApiErrorAsync(response).ConfigureAwait(false));
+            }
+
+            var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            var fileName = response.Content.Headers.ContentDisposition?.FileNameStar
+                           ?? response.Content.Headers.ContentDisposition?.FileName?.Trim('"')
+                           ?? $"ARCHIVE_chestny_znak_order_{orderId}.xlsx";
+            return new OrderMarkingExportApiResult(
+                true,
+                "Архивная копия восстановлена. Не отправляйте её в КМ как новую заявку.",
+                bytes,
+                fileName,
+                0,
+                0,
+                0,
+                0);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Historical marking archive download failed", ex);
+            return OrderMarkingExportApiResult.Failure("Не удалось скачать архивную копию Excel ЧЗ.");
+        }
+    }
+
     public async Task<OrderMarkingImportPreviewApiResult> TryPreviewOrderImportAsync(
         long orderId,
         IReadOnlyList<string> filePaths,

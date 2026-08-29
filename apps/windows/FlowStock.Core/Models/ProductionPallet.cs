@@ -35,6 +35,26 @@ public static class ProductionFillingErrorCodes
     public const string ProductionAutoCloseRequired = "PRODUCTION_AUTO_CLOSE_REQUIRED";
     public const string PartialComponentFillNotAllowed = "PARTIAL_COMPONENT_FILL_NOT_ALLOWED";
     public const string PalletPartialFillInconsistent = "PALLET_PARTIAL_FILL_INCONSISTENT";
+    public const string LabelReprintRequired = "PRODUCTION_PALLET_LABEL_REPRINT_REQUIRED";
+    public const string LabelStateUnverified = "PRODUCTION_PALLET_LABEL_STATE_UNVERIFIED";
+}
+
+public static class ProductionPalletLabelContract
+{
+    public const string FingerprintV1 = "fingerprint-v1";
+    public const short FingerprintVersion = 1;
+    public const string HeaderName = "X-FlowStock-Production-Label-Contract";
+    public const string UpgradeRequired = "WPF_PRODUCTION_LABEL_UPGRADE_REQUIRED";
+    public const string Stale = "PRODUCTION_PALLET_LABEL_STALE";
+    public const string StateUnverified = "PRODUCTION_PALLET_LABEL_STATE_UNVERIFIED";
+}
+
+public static class ProductionPalletLabelState
+{
+    public const string Unprinted = "UNPRINTED";
+    public const string Current = "CURRENT";
+    public const string ReprintRequired = "REPRINT_REQUIRED";
+    public const string LegacyUnverified = "LEGACY_UNVERIFIED";
 }
 
 public sealed class ProductionPallet
@@ -54,6 +74,8 @@ public sealed class ProductionPallet
     public int PalletNo { get; init; }
     public int PalletCount { get; init; }
     public DateTime? PrintedAt { get; init; }
+    public string? PrintedLabelFingerprint { get; init; }
+    public short? PrintedLabelFingerprintVersion { get; init; }
     public DateTime? FilledAt { get; init; }
     public string? FilledByDeviceId { get; init; }
     public string? CancelReason { get; init; }
@@ -259,6 +281,7 @@ public sealed class ProductionPalletCancelPlanResult
     public IReadOnlyList<long> RequestedPalletIds { get; init; } = Array.Empty<long>();
     public IReadOnlyList<long> RemovedPalletIds { get; init; } = Array.Empty<long>();
     public IReadOnlyList<long> SkippedPalletIds { get; init; } = Array.Empty<long>();
+    public IReadOnlyList<string> SurvivingReprintRequiredHuCodes { get; init; } = Array.Empty<string>();
 }
 
 public sealed class ProductionPalletCancelPlanOptions
@@ -338,7 +361,13 @@ public sealed class ProductionPalletPrintRow
     public string Composition { get; init; } = string.Empty;
     public IReadOnlyList<ProductionPalletPrintLine> Lines { get; init; } = Array.Empty<ProductionPalletPrintLine>();
     public string Status { get; init; } = ProductionPalletStatus.Planned;
+    public string? LabelContract { get; init; }
+    public string? LabelFingerprint { get; init; }
+    public bool ReprintRequired { get; init; }
+    public string LabelState { get; init; } = ProductionPalletLabelState.Unprinted;
 }
+
+public sealed record ProductionPalletLabelAcknowledgement(long PalletId, string ExpectedLabelFingerprint);
 
 public sealed class ProductionPalletPrintLine
 {

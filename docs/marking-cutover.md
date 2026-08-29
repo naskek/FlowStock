@@ -42,6 +42,8 @@ V0041 не меняет cohort/enforce и не является новым deplo
 - `marking_request_export_batch_request` фиксирует immutable request/item/GTIN/required/reserve/requested snapshots;
 - workbook bytes и DataMatrix не сохраняются;
 - exact retry после неизвестного HTTP outcome допустим только пока current operational snapshot равен сохранённому post-export hash, и регенерирует только исходные batch rows;
+- обычный current retry принимает как исходный pre-export hash (unknown-outcome), так и текущий post-export hash, но в обоих случаях требует exact equality текущего operational snapshot с сохранённым post hash;
+- отдельный latest archive download после import/quantity change/retirement разрешён только как явно помеченная historical copy: он читает immutable membership без order write lock, ничего не создаёт и не реактивирует, добавляет workbook warning `АРХИВ_НЕ_ОТПРАВЛЯТЬ`;
 - fully-retired historical requests и их immutable requested quantity в новый batch не входят.
 
 Preview возвращает `snapshot_hash`; export обязан передать его как `expected_snapshot_hash`. Несовпадение даёт `409 MARKING_EXPORT_SNAPSHOT_CHANGED` без новых requests. Current demand считается по positive active scope consumption. Несколько active requests одного GTIN импортируются единым deterministic envelope: сначала закрываются все current operational deficits, затем reserve capacity; filename не выбирает request.
@@ -115,7 +117,7 @@ Applicability публикуется отдельно и может быть tru
 - no new TEMP/non-real codes после ENFORCED;
 - counts/hash docs/ledger/CLOSED production history до/после cutover неизменны;
 - status parity всех read models и clients;
-- полный migration chain V0001–V0041, targeted/full tests, solution build и Compose config.
+- полный migration chain V0001–V0042, targeted/full tests, solution build и Compose config.
 
 Production deployment выполняется только каноническим ручным FlowStock PowerShell-процессом из `docs/deployment.md` с explicit `docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml ...`. V0040 применяется обычным one-shot migrator внутри этого процесса. `deploy_from_git.sh`, `deploy_update.sh`, короткий SSH deploy, отдельный migrator deploy и ручной production SQL не используются.
 

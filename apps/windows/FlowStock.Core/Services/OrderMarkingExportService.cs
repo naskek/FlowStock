@@ -214,6 +214,53 @@ public sealed class OrderMarkingExportService
         return result ?? OrderMarkingExportResult.Failure("Не удалось подготовить customer import scope.");
     }
 
+    /// <summary>
+    /// Read-only historical recovery. It never creates/reactivates marking requests or
+    /// scopes and intentionally does not acquire the order write lock: batch membership
+    /// is immutable and no current/stale classification is needed for an archive copy.
+    /// </summary>
+    public OrderMarkingExportResult DownloadLatestHistoricalBatch(long orderId, DateTime generatedAt)
+    {
+        if (_data is not IMarkingRequestOperationalStore batchStore)
+        {
+            return OrderMarkingExportResult.Failure("MARKING_EXPORT_ARCHIVE_UNAVAILABLE");
+        }
+
+        var order = _data.GetOrder(orderId);
+        if (order == null)
+        {
+            return OrderMarkingExportResult.Failure("Заказ не найден.");
+        }
+
+        var batch = batchStore.GetMarkingRequestExportBatches(orderId).FirstOrDefault();
+        if (batch == null)
+        {
+            return OrderMarkingExportResult.Failure("MARKING_EXPORT_ARCHIVE_NOT_FOUND");
+        }
+
+        var excel = new MarkingExcelService(_data).ExportBatchReplay(
+            batch.Requests,
+            generatedAt,
+            historicalArchive: true);
+        if (!excel.IsSuccess || excel.FileBytes == null)
+        {
+            return OrderMarkingExportResult.Failure(excel.Error ?? "Не удалось восстановить архивный Excel ЧЗ.");
+        }
+
+        return new OrderMarkingExportResult(
+            true,
+            "АРХИВНАЯ КОПИЯ: не отправляйте этот файл в КМ как новую заявку. Он не отражает текущее состояние заказа.",
+            excel.FileBytes,
+            $"ARCHIVE_{BuildFileName(order, batch.CreatedAt)}",
+            batch.Requests.Count,
+            excel.Rows.Count,
+            batch.Requests.Sum(row => row.RequiredQuantity),
+            0,
+            0,
+            0,
+            Array.Empty<OrderMarkingExportLineSummary>());
+    }
+
     private OrderMarkingExportResult ExportLocked(
         long orderId,
         DateTime generatedAt,

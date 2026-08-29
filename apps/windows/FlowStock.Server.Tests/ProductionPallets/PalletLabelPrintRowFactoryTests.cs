@@ -38,7 +38,11 @@ public sealed class PalletLabelPrintRowFactoryTests
             Line3ItemName = "Строка 3",
             Line3Qty = 30,
             Status = "PLANNED",
-            SourceType = sourceType
+            SourceType = sourceType,
+            LabelContract = "fingerprint-v1",
+            LabelFingerprint = "0123456789abcdef",
+            ReprintRequired = true,
+            LabelState = "REPRINT_REQUIRED"
         };
     }
 
@@ -99,6 +103,10 @@ public sealed class PalletLabelPrintRowFactoryTests
         Assert.Equal(source.Line3Qty, copy.Line3Qty);
         Assert.Equal(source.Status, copy.Status);
         Assert.Equal(source.SourceType, copy.SourceType);
+        Assert.Equal(source.LabelContract, copy.LabelContract);
+        Assert.Equal(source.LabelFingerprint, copy.LabelFingerprint);
+        Assert.Equal(source.ReprintRequired, copy.ReprintRequired);
+        Assert.Equal(source.LabelState, copy.LabelState);
     }
 
     [Fact]

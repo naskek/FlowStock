@@ -54,12 +54,27 @@ public sealed class PalletLabelPrintSelectionServiceTests
         Assert.Empty(selected);
     }
 
+    [Fact]
+    public void ResolveDefaultSelectedPalletIds_SelectsPrintedRowThatRequiresReprint()
+    {
+        var rows = new[]
+        {
+            CreateRow(1, "Товар", "HU-0000478", ProductionPalletStatus.Printed),
+            CreateRow(2, "Товар", "HU-0000479", ProductionPalletStatus.Printed, reprintRequired: true)
+        };
+
+        var selected = PalletLabelPrintSelectionService.ResolveDefaultSelectedPalletIds(rows);
+
+        Assert.Equal(new[] { 2L }, selected);
+    }
+
     private static ProductionPalletPrintRow CreateRow(
         long palletId,
         string itemName,
         string huCode,
         string status,
-        string sourceType = ProductionPalletPrintSourceType.ProductionPallet)
+        string sourceType = ProductionPalletPrintSourceType.ProductionPallet,
+        bool reprintRequired = false)
     {
         return new ProductionPalletPrintRow
         {
@@ -70,7 +85,8 @@ public sealed class PalletLabelPrintSelectionServiceTests
             HuCode = huCode,
             ItemName = itemName,
             Qty = 600,
-            Status = status
+            Status = status,
+            ReprintRequired = reprintRequired
         };
     }
 }
