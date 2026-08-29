@@ -77,22 +77,38 @@ VALUES
 
             var service = new ProductionPalletLabelBackfillService(store);
             var dryRun = service.Run(apply: false, [fixture.OrderId]);
+            Assert.Equal(3, dryRun.CandidateCount);
             Assert.Equal(0, dryRun.BackfilledCount);
             Assert.Equal(2, dryRun.BlockerCount);
+            Assert.Contains(dryRun.Rows, row => row.PalletId == fixture.EligiblePalletId
+                                                && row.Action == ProductionPalletLabelBackfillAction.WouldBackfill);
+            Assert.Contains(dryRun.Rows, row => row.PalletId == fixture.NoTimestampPalletId
+                                                && row.BlockerReason == "PRINTED_AT_MISSING");
+            Assert.Contains(dryRun.Rows, row => row.PalletId == fixture.PlannedEvidencePalletId
+                                                && row.BlockerReason == "PLANNED_HAS_PRINT_EVIDENCE");
             Assert.Null(await ReadFingerprint(connectionString, fixture.EligiblePalletId));
 
             var applied = service.Run(apply: true, [fixture.OrderId]);
             Assert.Equal(1, applied.BackfilledCount);
             Assert.Equal(2, applied.BlockerCount);
-            Assert.NotNull(await ReadFingerprint(connectionString, fixture.EligiblePalletId));
-            Assert.Null(await ReadFingerprint(connectionString, fixture.NoTimestampPalletId));
-            Assert.Null(await ReadFingerprint(connectionString, fixture.PlannedEvidencePalletId));
+            Assert.Contains(applied.Rows, row => row.PalletId == fixture.EligiblePalletId
+                                                 && row.Action == ProductionPalletLabelBackfillAction.Backfilled);
+            Assert.Equal(
+                (ProductionPalletStatus.Printed, "2026-08-29T09:00:00", true, ProductionPalletLabelContract.FingerprintVersion),
+                await ReadLabelState(connectionString, fixture.EligiblePalletId));
+            Assert.Equal(
+                (ProductionPalletStatus.Printed, (string?)null, false, (int?)null),
+                await ReadLabelState(connectionString, fixture.NoTimestampPalletId));
+            Assert.Equal(
+                (ProductionPalletStatus.Planned, "2026-08-29T09:05:00", false, (int?)null),
+                await ReadLabelState(connectionString, fixture.PlannedEvidencePalletId));
 
             var after = palletService.Scan(fixture.OrderId, fixture.DocId, fixture.EligibleHu);
             Assert.True(after.Success, $"{after.Error}: {after.ErrorMessage}");
 
             var secondApply = service.Run(apply: true, [fixture.OrderId]);
             Assert.Equal(0, secondApply.BackfilledCount);
+            Assert.Equal(2, secondApply.BlockerCount);
             Assert.Contains(secondApply.Rows, row => row.PalletId == fixture.EligiblePalletId
                                                      && row.Action == ProductionPalletLabelBackfillAction.AlreadyVerified);
         }
@@ -126,8 +142,12 @@ VALUES (@order_id, @item_id, 1134, 'CUSTOMER_ORDER')
 RETURNING id;", ("order_id", orderId), ("item_id", itemId));
         var docId = await InsertId(connection, @"
 INSERT INTO docs(doc_ref, type, status, created_at, order_id, order_ref)
-VALUES (@doc_ref, 'PRD', 'DRAFT', @created_at, @order_id, @order_ref)
-RETURNING id;", ("doc_ref", "PRD-LBL-" + token), ("created_at", "2026-08-29T08:30:00"), ("order_id", orderId), ("order_ref", "LBL-" + token));
+VALUES (@doc_ref, @doc_type, 'DRAFT', @created_at, @order_id, @order_ref)
+RETURNING id;", ("doc_ref", "PRD-LBL-" + token),
+            ("doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt)),
+            ("created_at", "2026-08-29T08:30:00"),
+            ("order_id", orderId),
+            ("order_ref", "LBL-" + token));
 
         var eligible = await InsertPallet(connection, docId, orderId, orderLineId, itemId, locationId, "HU-ELIGIBLE-" + token, "PRINTED", "2026-08-29T09:00:00");
         var noTimestamp = await InsertPallet(connection, docId, orderId, orderLineId, itemId, locationId, "HU-NO-TIME-" + token, "PRINTED", null);
@@ -208,6 +228,26 @@ RETURNING id;", connection);
         command.Parameters.AddWithValue("id", palletId);
         var value = await command.ExecuteScalarAsync();
         return value is null or DBNull ? null : Convert.ToString(value);
+    }
+
+    private static async Task<(string Status, string? PrintedAt, bool HasFingerprint, int? FingerprintVersion)> ReadLabelState(
+        string connectionString,
+        long palletId)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(@"
+SELECT status, printed_at, printed_label_fingerprint, printed_label_fingerprint_version
+FROM production_pallets
+WHERE id = @id;", connection);
+        command.Parameters.AddWithValue("id", palletId);
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        return (
+            reader.GetString(0),
+            reader.IsDBNull(1) ? null : reader.GetString(1),
+            !reader.IsDBNull(2),
+            reader.IsDBNull(3) ? null : reader.GetInt32(3));
     }
 
     private static async Task DeleteFixture(string connectionString, Fixture fixture)

@@ -787,7 +787,7 @@ public sealed class ProductionPalletServiceTests
 
         palletService.MarkPrinted(10, new DateTime(2026, 5, 13, 11, 0, 0));
 
-        var error = Assert.Throws<InvalidOperationException>(() => orderService.UpdateOrder(
+        var error = Assert.Throws<ProductionPalletPlanReconcileException>(() => orderService.UpdateOrder(
             10,
             "056",
             null,
@@ -797,6 +797,7 @@ public sealed class ProductionPalletServiceTests
             OrderType.Internal));
 
         var after = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId);
+        Assert.Equal(ProductionPalletPlanReconcileErrorCodes.PrintedPalletExplicitRemovalRequired, error.ErrorCode);
         Assert.Contains("явного подтверждения", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(2, after.Count(pallet => pallet.Status == ProductionPalletStatus.Filled));
         Assert.Equal(6, after.Count(pallet => pallet.Status == ProductionPalletStatus.Printed));
@@ -903,7 +904,7 @@ public sealed class ProductionPalletServiceTests
         var plan = palletService.PlanOrder(10);
         palletService.MarkPrinted(10, new DateTime(2026, 5, 13, 11, 0, 0));
 
-        var error = Assert.Throws<InvalidOperationException>(() => orderService.UpdateOrder(
+        var error = Assert.Throws<ProductionPalletPlanReconcileException>(() => orderService.UpdateOrder(
             10,
             "056",
             null,
@@ -915,6 +916,7 @@ public sealed class ProductionPalletServiceTests
         var after = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
             .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
             .ToArray();
+        Assert.Equal(ProductionPalletPlanReconcileErrorCodes.PrintedPalletExplicitRemovalRequired, error.ErrorCode);
         Assert.Contains("явного подтверждения", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(4, after.Length);
         Assert.All(after, pallet => Assert.Equal(ProductionPalletStatus.Printed, pallet.Status));

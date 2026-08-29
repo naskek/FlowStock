@@ -227,6 +227,10 @@ public static class OrderUpdateEndpoint
         {
             return Results.BadRequest(new ApiErrorResult(false, ex.ErrorCode, ex.Message));
         }
+        catch (ProductionPalletPlanReconcileException ex)
+        {
+            return Results.BadRequest(new ApiErrorResult(false, ex.ErrorCode, ex.Message));
+        }
         catch (ArgumentException ex)
         {
             return Results.BadRequest(new ApiResult(false, MapKnownArgumentError(ex)));
@@ -328,11 +332,6 @@ public static class OrderUpdateEndpoint
             || ex.Message.Contains("находится в фактическом состоянии", StringComparison.OrdinalIgnoreCase))
         {
             return "ORDER_LINE_PALLET_PLAN_NOT_PLANNED";
-        }
-
-        if (ex.Message.Contains("Полное удаление напечатанной HU", StringComparison.OrdinalIgnoreCase))
-        {
-            return "ORDER_LINE_PRINTED_PALLET_REMOVAL_REQUIRED";
         }
 
         return "ORDER_UPDATE_FAILED";

@@ -38,7 +38,7 @@ public sealed class ProductionPalletLabelBackfillService
                 throw new InvalidOperationException("Не удалось заблокировать все заказы для label fingerprint backfill.");
             }
 
-            report = BuildReport(store, apply: true, scope);
+            report = BuildReport(store, apply: true, orderIds.ToHashSet());
         });
 
         return report ?? new ProductionPalletLabelBackfillReport(

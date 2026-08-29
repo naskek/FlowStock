@@ -66,6 +66,60 @@ public sealed class ProductionPalletLabelBackfillTests
         Assert.True(accepted.Success, $"{accepted.Error}: {accepted.ErrorMessage}");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Apply_DoesNotBackfillOrderThatBecomesCandidateAfterLockSetWasCaptured(bool useExplicitScope)
+    {
+        var harness = CreateHarness(includeAnomalies: false);
+        harness.RunAfterNextLockOrdersForUpdate(() =>
+        {
+            harness.SeedOrder(new Order
+            {
+                Id = 11,
+                OrderRef = "LBL-011",
+                Type = OrderType.Customer,
+                Status = OrderStatus.InProgress,
+                PartnerName = "Клиент 2",
+                CreatedAt = new DateTime(2026, 8, 29, 8, 10, 0)
+            });
+            harness.SeedOrderLine(new OrderLine
+            {
+                Id = 111,
+                OrderId = 11,
+                ItemId = 100,
+                QtyOrdered = 378,
+                ProductionPurpose = ProductionLinePurpose.CustomerOrder
+            });
+            harness.SeedDoc(new Doc
+            {
+                Id = 21,
+                DocRef = "PRD-LABEL-LATE-CANDIDATE",
+                Type = DocType.ProductionReceipt,
+                Status = DocStatus.Draft,
+                OrderId = 11,
+                CreatedAt = new DateTime(2026, 8, 29, 9, 10, 0)
+            });
+            SeedPallet(
+                harness,
+                id: 4,
+                huCode: "HU-LATE-CANDIDATE",
+                status: ProductionPalletStatus.Printed,
+                printedAt: new DateTime(2026, 8, 29, 10, 10, 0),
+                orderId: 11,
+                orderLineId: 111,
+                docId: 21);
+        });
+
+        IReadOnlyCollection<long>? scope = useExplicitScope ? [10, 11] : null;
+        var report = new ProductionPalletLabelBackfillService(harness.Store).Run(apply: true, scope);
+
+        Assert.Equal(1, report.BackfilledCount);
+        Assert.DoesNotContain(report.Rows, row => row.OrderId == 11);
+        Assert.Null(harness.Store.GetProductionPalletByHu("HU-LATE-CANDIDATE")!.PrintedLabelFingerprint);
+        Assert.NotNull(harness.Store.GetProductionPalletByHu("HU-ELIGIBLE")!.PrintedLabelFingerprint);
+    }
+
     private static CloseDocumentHarness CreateHarness(bool includeAnomalies)
     {
         var harness = new CloseDocumentHarness();
@@ -112,13 +166,16 @@ public sealed class ProductionPalletLabelBackfillTests
         long id,
         string huCode,
         string status,
-        DateTime? printedAt)
+        DateTime? printedAt,
+        long orderId = 10,
+        long orderLineId = 101,
+        long docId = 20)
     {
         harness.SeedLine(new DocLine
         {
             Id = 200 + id,
-            DocId = 20,
-            OrderLineId = 101,
+            DocId = docId,
+            OrderLineId = orderLineId,
             ProductionPurpose = ProductionLinePurpose.CustomerOrder,
             ItemId = 100,
             Qty = 378,
@@ -129,10 +186,10 @@ public sealed class ProductionPalletLabelBackfillTests
         harness.SeedProductionPallet(new ProductionPallet
         {
             Id = id,
-            PrdDocId = 20,
+            PrdDocId = docId,
             DocLineId = 200 + id,
-            OrderId = 10,
-            OrderLineId = 101,
+            OrderId = orderId,
+            OrderLineId = orderLineId,
             ItemId = 100,
             ItemName = "Товар",
             HuCode = huCode,

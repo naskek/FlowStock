@@ -1367,6 +1367,7 @@ SELECT
         await using var fixture = await PartialFixture.Create(
             connectionString,
             $"CONCURRENT-MIXED-FILL-{Guid.NewGuid():N}");
+        AcknowledgeCurrentProductionLabel(connectionString, fixture);
         var componentIds = new List<long>();
         await using (var lookup = new NpgsqlConnection(connectionString))
         {
@@ -1439,6 +1440,36 @@ ORDER BY id;";
         Assert.Equal(ProductionPalletFillingCorrectionAction.ResetPartial, reset.Action);
         Assert.Null(reset.CorDocId);
         Assert.Null(reset.ReplacementPalletId);
+    }
+
+    private static void AcknowledgeCurrentProductionLabel(
+        string connectionString,
+        PartialFixture fixture)
+    {
+        var service = new ProductionPalletService(new PostgresDataStore(connectionString));
+        var printRow = Assert.Single(service.GetPrintRows(fixture.OrderId), row =>
+            string.Equals(
+                row.SourceType,
+                ProductionPalletPrintSourceType.ProductionPallet,
+                StringComparison.OrdinalIgnoreCase)
+            && row.PalletId == fixture.PalletId);
+        Assert.Equal(ProductionPalletLabelContract.FingerprintV1, printRow.LabelContract);
+        Assert.False(string.IsNullOrWhiteSpace(printRow.LabelFingerprint));
+
+        var acknowledged = service.AcknowledgePrintedLabels(
+            fixture.OrderId,
+            [new ProductionPalletLabelAcknowledgement(fixture.PalletId, printRow.LabelFingerprint!)],
+            DateTime.Now);
+
+        Assert.Equal(1, acknowledged);
+        var verifiedRow = Assert.Single(service.GetPrintRows(fixture.OrderId), row =>
+            string.Equals(
+                row.SourceType,
+                ProductionPalletPrintSourceType.ProductionPallet,
+                StringComparison.OrdinalIgnoreCase)
+            && row.PalletId == fixture.PalletId);
+        Assert.Equal(ProductionPalletLabelState.Current, verifiedRow.LabelState);
+        Assert.False(verifiedRow.ReprintRequired);
     }
 
     [Theory]

@@ -81,7 +81,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
             BuildJson(fixture.ItemId, 1200));
 
         var payload = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
-        Assert.Equal("ORDER_LINE_PRINTED_PALLET_REMOVAL_REQUIRED", payload.Error);
+        Assert.Equal("PRINTED_PALLET_EXPLICIT_REMOVAL_REQUIRED", payload.Error);
         Assert.Contains("явного подтверждения оператора", payload.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(4800, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
         var pallets = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);
@@ -139,7 +139,7 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
             BuildJson(fixture.ItemId, 2400));
 
         var payload = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
-        Assert.Equal("ORDER_LINE_PRINTED_PALLET_REMOVAL_REQUIRED", payload.Error);
+        Assert.Equal("PRINTED_PALLET_EXPLICIT_REMOVAL_REQUIRED", payload.Error);
         Assert.Equal(4800, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered, 3);
         Assert.Equal(1200, fixture.Harness.Store.GetFilledProductionPalletQtyByOrderLine(fixture.OrderLineId), 3);
         var pallets = fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId);

@@ -199,7 +199,8 @@ public sealed class ProductionPalletService
                     if (string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
                         || pallet.PrintedAt.HasValue)
                     {
-                        throw new InvalidOperationException(
+                        throw new ProductionPalletPlanReconcileException(
+                            ProductionPalletPlanReconcileErrorCodes.PrintedPalletExplicitRemovalRequired,
                             $"Полное удаление напечатанной HU {pallet.HuCode} требует явного подтверждения оператора в workflow удаления плана.");
                     }
 
@@ -5136,4 +5137,20 @@ public sealed class ProductionPalletPlanAdoptionException : InvalidOperationExce
     }
 
     public string Code { get; }
+}
+
+public static class ProductionPalletPlanReconcileErrorCodes
+{
+    public const string PrintedPalletExplicitRemovalRequired = "PRINTED_PALLET_EXPLICIT_REMOVAL_REQUIRED";
+}
+
+public sealed class ProductionPalletPlanReconcileException : InvalidOperationException
+{
+    public ProductionPalletPlanReconcileException(string errorCode, string message)
+        : base(message)
+    {
+        ErrorCode = errorCode;
+    }
+
+    public string ErrorCode { get; }
 }
