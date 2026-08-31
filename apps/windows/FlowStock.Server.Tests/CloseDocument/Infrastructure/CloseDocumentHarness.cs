@@ -376,7 +376,12 @@ internal sealed class CloseDocumentHarness
             UnitPriceGross = line.UnitPriceGross,
             VatRate = line.VatRate,
             ProductionPurpose = line.ProductionPurpose,
-            ProductionPalletGroup = line.ProductionPalletGroup
+            ProductionPalletGroup = line.ProductionPalletGroup,
+            CancelledAt = line.CancelledAt,
+            CancelledByActor = line.CancelledByActor,
+            CancelledByDeviceId = line.CancelledByDeviceId,
+            CancelReason = line.CancelReason,
+            Revision = line.Revision
         };
     }
 

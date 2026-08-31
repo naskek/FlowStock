@@ -482,6 +482,27 @@ public sealed class ProductionPalletAdoptInternalThenPlanTests
     }
 
     [Fact]
+    public void AdoptInternalThenPlan_WhenFullyAdoptedSourceLineHasMarkingHistory_CancelsSourceLine()
+    {
+        var harness = CreateHarness(customerQty: 378, sourceQty: 378);
+        SeedSourcePallet(harness, 4001, 401, "HU-INT-FULL-MARKING-HISTORY", 378, ProductionPalletStatus.Planned);
+        harness.SeedOrderMarkingHistoryDependencies(30, 301);
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.PlanOrder(10, ProductionPalletPlanMode.AdoptInternalThenPlan);
+
+        Assert.Equal(1, result.AdoptedPalletCount);
+        var sourceLine = Assert.Single(harness.Store.GetOrderLines(30));
+        Assert.Equal(0, sourceLine.QtyOrdered);
+        Assert.NotNull(sourceLine.CancelledAt);
+        Assert.Equal("SERVER:production-pallet-adoption", sourceLine.CancelledByActor);
+        Assert.Equal("depleted_after_internal_plan_adoption_with_marking_history", sourceLine.CancelReason);
+        Assert.Empty(harness.Store.GetDocsByOrder(30).SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id)));
+        Assert.Empty(harness.Store.GetOrderReceiptPlanLines(30));
+        Assert.Empty(harness.LedgerEntries);
+    }
+
+    [Fact]
     public void AdoptInternalThenPlan_WhenFullyAdoptedSourceLineHasOnlyStaleInternalReceiptPlanRows_CleansRowsAndRemovesLine()
     {
         var harness = CreateHarness(customerQty: 378, sourceQty: 378);

@@ -1277,6 +1277,9 @@ public sealed class ProductionPalletService
             }
 
             var sourceLines = store.GetOrderLines(sourceOrder.Id);
+            var markingHistoryDependencies = store.GetOrderMarkingHistoryDependencies(
+                sourceOrder.Id,
+                candidateLineIds);
             var producedByLine = BuildInternalPlanningCoverage(store, sourceOrder.Id, sourceLines);
             foreach (var sourceLine in sourceLines.Where(line => candidateLineIds.Contains(line.Id)).ToArray())
             {
@@ -1300,6 +1303,16 @@ public sealed class ProductionPalletService
                 ClearStaleInternalReceiptPlanRowsForDepletedSourceLine(store, sourceOrder.Id, sourceLine.Id);
                 if (store.GetOrderReceiptPlanLines(sourceOrder.Id).Any(line => line.OrderLineId == sourceLine.Id))
                 {
+                    continue;
+                }
+
+                if (markingHistoryDependencies.BlocksOrderLineDelete(sourceLine.Id))
+                {
+                    store.CancelOrderLine(
+                        sourceLine.Id,
+                        DateTime.UtcNow,
+                        "SERVER:production-pallet-adoption",
+                        "depleted_after_internal_plan_adoption_with_marking_history");
                     continue;
                 }
 
