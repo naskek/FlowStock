@@ -2593,7 +2593,8 @@ public partial class OrderDetailsWindow : Window
         }
 
         var canDeletePlan = _orderId.HasValue
-                            && _order?.Status is not (OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+                            && _order?.Status is not (OrderStatus.Cancelled or OrderStatus.Merged)
+                            && (_order?.Status != OrderStatus.Shipped || _order.Type == OrderType.Internal)
                             && HasOpenProductionPalletPlan(_orderId.Value);
         PlanPalletsButton.IsEnabled = canPlan;
         PrintPalletLabelsButton.IsEnabled = canPrint;

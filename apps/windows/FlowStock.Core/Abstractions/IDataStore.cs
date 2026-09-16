@@ -138,6 +138,7 @@ public interface IDataStore
         IReadOnlyCollection<long> orderLineIds);
     int CountLedgerEntriesByDocId(long docId);
     double GetLedgerQtyByDocItemHu(long docId, long itemId, string? huCode);
+    IReadOnlySet<long> GetProductionPalletIdsWithLedger(IReadOnlyCollection<long> productionPalletIds);
     ProductionPalletPlanCleanupCounts CancelProductionPalletPlan(long docId);
     ProductionPalletPlanCleanupCounts DeleteProductionPalletPlanPallets(IReadOnlyCollection<long> productionPalletIds);
     ProductionPalletPlanAdoptionResult AdoptProductionPalletPlan(

@@ -922,6 +922,11 @@ public sealed class OrderService
                 {
                     TryRefreshCustomerReceiptPlans(store);
                 }
+
+                if (type == OrderType.Internal)
+                {
+                    new OrderService(store).RefreshPersistedStatus(orderId);
+                }
             }
         });
     }

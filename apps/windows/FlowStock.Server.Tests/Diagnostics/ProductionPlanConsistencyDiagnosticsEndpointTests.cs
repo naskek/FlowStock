@@ -48,6 +48,69 @@ public sealed class ProductionPlanConsistencyDiagnosticsEndpointTests
     }
 
     [Fact]
+    public async Task ProductionPlanConsistency_InternalFuturePlanEqualRemainingDemand_IsAllowed()
+    {
+        var harness = CreateHarness(orderId: 73, orderRef: "073", orderQty: 1200);
+        SeedProductionPalletPrd(
+            harness,
+            orderId: 73,
+            orderLineId: 7301,
+            prdDocId: 730,
+            palletCount: 1,
+            palletQty: 600,
+            palletStatus: ProductionPalletStatus.Filled,
+            seedLedger: true,
+            docStatus: DocStatus.Closed);
+        SeedProductionPalletPrd(
+            harness,
+            orderId: 73,
+            orderLineId: 7301,
+            prdDocId: 731,
+            palletCount: 1,
+            palletQty: 600);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        using var response = await host.Client.GetAsync("/api/diagnostics/production-plan-consistency");
+
+        Assert.DoesNotContain(
+            (await ReadItems(response)).EnumerateArray(),
+            item => item.GetProperty("order_id").GetInt64() == 73);
+    }
+
+    [Fact]
+    public async Task ProductionPlanConsistency_InternalFuturePlanAboveRemainingDemand_IsDiagnosed()
+    {
+        var harness = CreateHarness(orderId: 74, orderRef: "074", orderQty: 1200);
+        SeedProductionPalletPrd(
+            harness,
+            orderId: 74,
+            orderLineId: 7401,
+            prdDocId: 740,
+            palletCount: 1,
+            palletQty: 600,
+            palletStatus: ProductionPalletStatus.Filled,
+            seedLedger: true,
+            docStatus: DocStatus.Closed);
+        SeedProductionPalletPrd(
+            harness,
+            orderId: 74,
+            orderLineId: 7401,
+            prdDocId: 741,
+            palletCount: 2,
+            palletQty: 600);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        using var response = await host.Client.GetAsync("/api/diagnostics/production-plan-consistency");
+
+        var item = Assert.Single((await ReadItems(response)).EnumerateArray()
+            .Where(item => item.GetProperty("order_id").GetInt64() == 74));
+        Assert.Equal(ProductionPlanConsistencyProblemCode.PalletsExceedOrderQty, item.GetProperty("problem_code").GetString());
+        Assert.Equal(600, item.GetProperty("pallet_filled_qty").GetDouble(), 3);
+        Assert.Equal(1200, item.GetProperty("open_pallet_planned_qty").GetDouble(), 3);
+        Assert.Equal(600, item.GetProperty("ledger_prd_qty").GetDouble(), 3);
+    }
+
+    [Fact]
     public async Task ProductionPlanConsistency_MergedOrderWithPalletPlan_IsDiagnosed()
     {
         var harness = CreateHarness(orderId: 66, orderRef: "066", orderQty: 1200, status: OrderStatus.Merged);
@@ -291,14 +354,15 @@ public sealed class ProductionPlanConsistencyDiagnosticsEndpointTests
         int palletCount,
         double palletQty,
         string palletStatus = ProductionPalletStatus.Printed,
-        bool seedLedger = false)
+        bool seedLedger = false,
+        DocStatus docStatus = DocStatus.Draft)
     {
         harness.SeedDoc(new Doc
         {
             Id = prdDocId,
             DocRef = $"PRD-{prdDocId:000}",
             Type = DocType.ProductionReceipt,
-            Status = DocStatus.Draft,
+            Status = docStatus,
             OrderId = orderId,
             OrderRef = orderId.ToString("000"),
             CreatedAt = new DateTime(2026, 5, 1, 11, 0, 0, DateTimeKind.Utc)

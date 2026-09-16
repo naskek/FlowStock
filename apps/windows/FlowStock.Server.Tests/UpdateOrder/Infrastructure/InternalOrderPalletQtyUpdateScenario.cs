@@ -26,7 +26,8 @@ internal static class InternalOrderPalletQtyUpdateScenario
         int filledPalletCount,
         int openPalletCount,
         bool openPalletsArePrinted = false,
-        bool filledPalletsWithoutComponentLines = false)
+        bool filledPalletsWithoutComponentLines = false,
+        bool filledPalletsInClosedPrd = false)
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
@@ -64,6 +65,21 @@ internal static class InternalOrderPalletQtyUpdateScenario
             OrderRef = DefaultOrderRef,
             CreatedAt = new DateTime(2026, 5, 13, 9, 0, 0)
         });
+        var filledPrdDocId = filledPalletsInClosedPrd ? DefaultPrdDocId - 1 : DefaultPrdDocId;
+        if (filledPalletsInClosedPrd)
+        {
+            harness.SeedDoc(new Doc
+            {
+                Id = filledPrdDocId,
+                DocRef = "PRD-2026-000071",
+                Type = DocType.ProductionReceipt,
+                Status = DocStatus.Closed,
+                OrderId = DefaultOrderId,
+                OrderRef = DefaultOrderRef,
+                CreatedAt = new DateTime(2026, 5, 13, 7, 0, 0),
+                ClosedAt = new DateTime(2026, 5, 13, 8, 0, 0)
+            });
+        }
 
         var nextPalletId = 1L;
         var nextDocLineId = 72001L;
@@ -73,7 +89,7 @@ internal static class InternalOrderPalletQtyUpdateScenario
             harness.SeedLine(new DocLine
             {
                 Id = nextDocLineId++,
-                DocId = DefaultPrdDocId,
+                DocId = filledPrdDocId,
                 OrderLineId = DefaultOrderLineId,
                 ItemId = DefaultItemId,
                 Qty = 600,
@@ -86,7 +102,12 @@ internal static class InternalOrderPalletQtyUpdateScenario
                 huCode: huCode,
                 status: ProductionPalletStatus.Filled,
                 includeComponentLines: !filledPalletsWithoutComponentLines,
-                docLineId: nextDocLineId - 1));
+                docLineId: nextDocLineId - 1,
+                prdDocId: filledPrdDocId));
+            if (filledPalletsInClosedPrd)
+            {
+                harness.SeedLedgerEntry(filledPrdDocId, DefaultItemId, 1, 600, huCode);
+            }
         }
 
         var openStatus = openPalletsArePrinted
@@ -148,12 +169,13 @@ internal static class InternalOrderPalletQtyUpdateScenario
         string huCode,
         string status,
         bool includeComponentLines,
-        long docLineId)
+        long docLineId,
+        long prdDocId = DefaultPrdDocId)
     {
         return new ProductionPallet
         {
             Id = id,
-            PrdDocId = DefaultPrdDocId,
+            PrdDocId = prdDocId,
             DocLineId = docLineId,
             OrderId = DefaultOrderId,
             OrderLineId = DefaultOrderLineId,

@@ -95,6 +95,45 @@ public sealed class ProductionPalletPostgresRegressionTests
     }
 
     [Fact]
+    public void DeleteProductionPalletPlanPallets_Sql_IsFailClosedForDraftFillAndMixedLedger()
+    {
+        var source = File.ReadAllText(GetPostgresDataStorePath());
+        var methodIndex = source.IndexOf(
+            "public ProductionPalletPlanCleanupCounts DeleteProductionPalletPlanPallets",
+            StringComparison.Ordinal);
+        Assert.True(methodIndex >= 0);
+        var methodEnd = source.IndexOf("public ProductionPalletPlanAdoptionResult AdoptProductionPalletPlan", methodIndex, StringComparison.Ordinal);
+        Assert.True(methodEnd > methodIndex);
+
+        var methodBody = source[methodIndex..methodEnd];
+        Assert.Equal(2, CountOccurrences(methodBody, "d.status = @draft_status"));
+        Assert.Equal(2, CountOccurrences(methodBody, "pp.filled_at IS NULL"));
+        Assert.Equal(2, CountOccurrences(methodBody, "progress.filled_at IS NOT NULL"));
+        Assert.Equal(2, CountOccurrences(methodBody, "l.doc_id = pp.prd_doc_id"));
+        Assert.Equal(2, CountOccurrences(methodBody, "FROM production_pallet_lines component"));
+        Assert.Equal(2, CountOccurrences(methodBody, "l.item_id IN ("));
+    }
+
+    [Fact]
+    public void GetProductionPalletIdsWithLedger_Sql_UsesParentAndEveryComponentItem()
+    {
+        var source = File.ReadAllText(GetPostgresDataStorePath());
+        var methodIndex = source.IndexOf(
+            "public IReadOnlySet<long> GetProductionPalletIdsWithLedger",
+            StringComparison.Ordinal);
+        Assert.True(methodIndex >= 0);
+        var methodEnd = source.IndexOf("public IReadOnlyList<DocLineView> GetDocLineViews", methodIndex, StringComparison.Ordinal);
+        Assert.True(methodEnd > methodIndex);
+
+        var methodBody = source[methodIndex..methodEnd];
+        Assert.Contains("pp.item_id", methodBody, StringComparison.Ordinal);
+        Assert.Contains("INNER JOIN production_pallet_lines pll", methodBody, StringComparison.Ordinal);
+        Assert.Contains("pll.item_id", methodBody, StringComparison.Ordinal);
+        Assert.Contains("l.doc_id = pi.prd_doc_id", methodBody, StringComparison.Ordinal);
+        Assert.Contains("l.item_id = pi.item_id", methodBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void NullableExcludePalletIdParameter_DoesNotFailPostgresTypeInference()
     {
         var connectionString = ResolvePostgresTestConnectionString();
@@ -252,6 +291,19 @@ DELETE FROM items WHERE barcode = @exact_token;";
         }
 
         return null;
+    }
+
+    private static int CountOccurrences(string source, string value)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = source.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+
+        return count;
     }
 
     private static string GetPostgresDataStorePath()

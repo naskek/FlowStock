@@ -3555,6 +3555,54 @@ WHERE doc_id = @doc_id
         });
     }
 
+    public IReadOnlySet<long> GetProductionPalletIdsWithLedger(IReadOnlyCollection<long> productionPalletIds)
+    {
+        var ids = productionPalletIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return new HashSet<long>();
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH pallet_items AS (
+    SELECT pp.id AS pallet_id,
+           pp.prd_doc_id,
+           pp.hu_code,
+           pp.item_id
+    FROM production_pallets pp
+    WHERE pp.id = ANY(@pallet_ids)
+    UNION
+    SELECT pp.id AS pallet_id,
+           pp.prd_doc_id,
+           pp.hu_code,
+           pll.item_id
+    FROM production_pallets pp
+    INNER JOIN production_pallet_lines pll ON pll.production_pallet_id = pp.id
+    WHERE pp.id = ANY(@pallet_ids)
+)
+SELECT DISTINCT pi.pallet_id
+FROM pallet_items pi
+INNER JOIN ledger l
+        ON l.doc_id = pi.prd_doc_id
+       AND l.item_id = pi.item_id
+       AND UPPER(BTRIM(COALESCE(l.hu_code, l.hu, ''))) = UPPER(BTRIM(COALESCE(pi.hu_code, '')));");
+            command.Parameters.AddWithValue("@pallet_ids", ids);
+            using var reader = command.ExecuteReader();
+            var result = new HashSet<long>();
+            while (reader.Read())
+            {
+                result.Add(reader.GetInt64(0));
+            }
+
+            return result;
+        });
+    }
+
     public IReadOnlyList<DocLineView> GetDocLineViews(long docId)
     {
         return WithConnection(connection =>
@@ -4557,11 +4605,25 @@ WITH target_pallets AS (
     INNER JOIN docs d ON d.id = pp.prd_doc_id
     WHERE pp.id = ANY(@pallet_ids)
       AND pp.status IN (@planned_status, @printed_status)
-      AND d.status <> @closed_status
+      AND d.status = @draft_status
+      AND pp.filled_at IS NULL
       AND NOT EXISTS (
           SELECT 1 FROM production_pallet_lines progress
           WHERE progress.production_pallet_id = pp.id
-            AND progress.filled_qty > @qty_tolerance
+            AND (progress.filled_qty > @qty_tolerance OR progress.filled_at IS NOT NULL)
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM ledger l
+          WHERE l.doc_id = pp.prd_doc_id
+            AND UPPER(BTRIM(COALESCE(l.hu_code, l.hu, ''))) = UPPER(BTRIM(COALESCE(pp.hu_code, '')))
+            AND l.item_id IN (
+                SELECT pp.item_id
+                UNION
+                SELECT component.item_id
+                FROM production_pallet_lines component
+                WHERE component.production_pallet_id = pp.id
+            )
       )
 ),
 target_doc_lines AS (
@@ -4599,7 +4661,7 @@ SELECT
                 count.Parameters.AddWithValue("@pallet_ids", ids);
                 count.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
                 count.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
-                count.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+                count.Parameters.AddWithValue("@draft_status", DocTypeMapper.StatusToString(DocStatus.Draft));
                 count.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
                 using var reader = count.ExecuteReader();
                 if (reader.Read())
@@ -4623,11 +4685,25 @@ WITH target_pallets AS (
     INNER JOIN docs d ON d.id = pp.prd_doc_id
     WHERE pp.id = ANY(@pallet_ids)
       AND pp.status IN (@planned_status, @printed_status)
-      AND d.status <> @closed_status
+      AND d.status = @draft_status
+      AND pp.filled_at IS NULL
       AND NOT EXISTS (
           SELECT 1 FROM production_pallet_lines progress
           WHERE progress.production_pallet_id = pp.id
-            AND progress.filled_qty > @qty_tolerance
+            AND (progress.filled_qty > @qty_tolerance OR progress.filled_at IS NOT NULL)
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM ledger l
+          WHERE l.doc_id = pp.prd_doc_id
+            AND UPPER(BTRIM(COALESCE(l.hu_code, l.hu, ''))) = UPPER(BTRIM(COALESCE(pp.hu_code, '')))
+            AND l.item_id IN (
+                SELECT pp.item_id
+                UNION
+                SELECT component.item_id
+                FROM production_pallet_lines component
+                WHERE component.production_pallet_id = pp.id
+            )
       )
 ),
 target_doc_lines AS (
@@ -4704,11 +4780,30 @@ WHERE dl.id = target.id;
                 cleanup.Parameters.AddWithValue("@pallet_ids", ids);
                 cleanup.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
                 cleanup.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
-                cleanup.Parameters.AddWithValue("@cancelled_status", ProductionPalletStatus.Cancelled);
-                cleanup.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+                cleanup.Parameters.AddWithValue("@draft_status", DocTypeMapper.StatusToString(DocStatus.Draft));
                 cleanup.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
                 cleanup.Parameters.AddWithValue("@plan_created_by", "PRODUCTION-PALLET-PLAN");
-                cleanup.ExecuteNonQuery();
+                removedLineCount = cleanup.ExecuteNonQuery();
+            }
+
+            if (removedPalletIds.Length > 0)
+            {
+                using var remaining = CreateCommand(connection, @"
+SELECT id
+FROM production_pallets
+WHERE id = ANY(@pallet_ids);");
+                remaining.Parameters.AddWithValue("@pallet_ids", removedPalletIds);
+                using var reader = remaining.ExecuteReader();
+                var remainingIds = new HashSet<long>();
+                while (reader.Read())
+                {
+                    remainingIds.Add(reader.GetInt64(0));
+                }
+
+                removedPalletIds = removedPalletIds
+                    .Where(id => !remainingIds.Contains(id))
+                    .ToArray();
+                removedPalletCount = removedPalletIds.Length;
             }
 
             return new ProductionPalletPlanCleanupCounts
@@ -7307,8 +7402,9 @@ pallet_rows AS (
            ) AS filled_qty,
            EXISTS (
                SELECT 1
-               FROM ledger hu_ledger
-               WHERE hu_ledger.item_id = COALESCE(pll.item_id, pp.item_id)
+                FROM ledger hu_ledger
+                WHERE hu_ledger.doc_id = pp.prd_doc_id
+                  AND hu_ledger.item_id = COALESCE(pll.item_id, pp.item_id)
                  AND UPPER(BTRIM(COALESCE(hu_ledger.hu_code, hu_ledger.hu))) = UPPER(BTRIM(pp.hu_code))
                  AND hu_ledger.qty_delta > @qty_tolerance
            ) AS has_positive_hu_ledger,
@@ -7346,6 +7442,11 @@ pallet_qty AS (
            SUM(filled_qty) AS pallet_filled_qty,
            SUM(CASE WHEN status = @filled_pallet_status THEN filled_qty ELSE 0 END) AS persisted_filled_pallet_qty,
            BOOL_OR(
+               prd_doc_status <> @closed_doc_status
+               AND status = @filled_pallet_status
+               AND NOT has_positive_hu_ledger
+           ) AS has_open_filled_pallet_missing_ledger,
+           BOOL_OR(
                is_partial_pallet
                AND has_positive_hu_ledger
            ) AS has_partial_pallet_with_ledger,
@@ -7361,7 +7462,9 @@ open_pallet_qty AS (
     SELECT order_id,
            line_item_id AS item_id,
            SUM(planned_qty) AS open_pallet_planned_qty,
-           SUM(filled_qty) AS open_pallet_filled_qty
+           SUM(filled_qty) AS open_pallet_filled_qty,
+           SUM(CASE WHEN status = @filled_pallet_status THEN filled_qty ELSE 0 END) AS open_persisted_filled_pallet_qty,
+           SUM(CASE WHEN status IN (@planned_pallet_status, @printed_pallet_status) THEN planned_qty ELSE 0 END) AS active_future_qty
     FROM pallet_rows
     WHERE prd_doc_status <> @closed_doc_status
     GROUP BY order_id,
@@ -7401,9 +7504,13 @@ rollup AS (
            COALESCE(pdq.closed_prd_doc_qty, 0) AS closed_prd_doc_qty,
            COALESCE(pdq.prd_doc_qty, 0) AS prd_doc_qty,
            COALESCE(opq.open_pallet_planned_qty, 0) AS open_pallet_planned_qty,
+           COALESCE(opq.open_pallet_filled_qty, 0) AS open_pallet_filled_qty,
+           COALESCE(opq.open_persisted_filled_pallet_qty, 0) AS open_persisted_filled_pallet_qty,
+           COALESCE(opq.active_future_qty, 0) AS active_future_qty,
            COALESCE(pq.pallet_planned_qty, 0) AS pallet_planned_qty,
            COALESCE(pq.pallet_filled_qty, 0) AS pallet_filled_qty,
            COALESCE(pq.persisted_filled_pallet_qty, 0) AS persisted_filled_pallet_qty,
+           COALESCE(pq.has_open_filled_pallet_missing_ledger, FALSE) AS has_open_filled_pallet_missing_ledger,
            COALESCE(pq.has_partial_pallet_with_ledger, FALSE) AS has_partial_pallet_with_ledger,
            COALESCE(pq.has_partial_pallet_invalid_status, FALSE) AS has_partial_pallet_invalid_status,
            COALESCE(lq.ledger_closed_prd_qty, 0) AS ledger_closed_prd_qty,
@@ -7429,41 +7536,47 @@ all_candidates AS (
            CASE
                WHEN order_status = @merged_order_status AND open_pallet_planned_qty > @qty_tolerance THEN @problem_merged_order_with_pallet_plan
                WHEN order_type = @customer_order_type AND order_status = @shipped_order_status AND has_open_prd THEN @problem_shipped_customer_with_open_prd
-               WHEN order_qty <= @qty_tolerance AND open_pallet_planned_qty > @qty_tolerance THEN @problem_order_zero_but_pallets_exist
-               WHEN has_open_prd
-                    AND NOT (order_type = @customer_order_type AND order_status = @shipped_order_status)
-                    AND open_pallet_planned_qty - order_qty > @qty_tolerance THEN @problem_pallets_exceed_order_qty
-               WHEN has_open_prd
-                    AND NOT (order_type = @customer_order_type AND order_status = @shipped_order_status)
-                    AND open_prd_doc_qty - order_qty > @qty_tolerance THEN @problem_prd_lines_exceed_order_qty
+                WHEN order_qty <= @qty_tolerance AND open_pallet_planned_qty > @qty_tolerance THEN @problem_order_zero_but_pallets_exist
+                WHEN has_open_prd
+                     AND order_type <> @internal_order_type
+                     AND NOT (order_type = @customer_order_type AND order_status = @shipped_order_status)
+                     AND open_pallet_planned_qty - order_qty > @qty_tolerance THEN @problem_pallets_exceed_order_qty
+                WHEN has_open_prd
+                     AND order_type <> @internal_order_type
+                     AND NOT (order_type = @customer_order_type AND order_status = @shipped_order_status)
+                     AND open_prd_doc_qty - order_qty > @qty_tolerance THEN @problem_prd_lines_exceed_order_qty
+                WHEN order_type = @internal_order_type
+                     AND has_open_prd
+                     AND open_prd_doc_qty - order_qty > @qty_tolerance
+                     AND active_future_qty - GREATEST(0, order_qty - ledger_prd_qty) <= @qty_tolerance THEN @problem_prd_lines_exceed_order_qty
                WHEN has_closed_prd
                     AND ABS(closed_prd_doc_qty - ledger_closed_prd_qty) > @qty_tolerance THEN @problem_closed_prd_ledger_mismatch
-               WHEN persisted_filled_pallet_qty > @qty_tolerance
-                    AND has_open_prd
-                    AND ledger_open_prd_qty <= @qty_tolerance THEN @problem_filled_pallet_missing_ledger
-               WHEN has_partial_pallet_invalid_status THEN @problem_partial_pallet_invalid_status
-               WHEN has_partial_pallet_with_ledger THEN @problem_partial_pallet_has_ledger
-               WHEN persisted_filled_pallet_qty > @qty_tolerance AND has_open_prd THEN @problem_filled_pallets_with_draft_prd
+                WHEN has_open_filled_pallet_missing_ledger THEN @problem_filled_pallet_missing_ledger
+                WHEN has_partial_pallet_invalid_status THEN @problem_partial_pallet_invalid_status
+                WHEN has_partial_pallet_with_ledger THEN @problem_partial_pallet_has_ledger
+                WHEN order_type = @internal_order_type
+                     AND active_future_qty - GREATEST(0, order_qty - ledger_prd_qty) > @qty_tolerance THEN @problem_pallets_exceed_order_qty
+                WHEN open_persisted_filled_pallet_qty > @qty_tolerance AND has_open_prd THEN @problem_filled_pallets_with_draft_prd
                ELSE NULL
            END AS problem_code,
            CASE
                WHEN order_type = @customer_order_type
-                    AND order_status = @shipped_order_status
-                    AND has_open_prd
-                    AND open_pallet_planned_qty <= @qty_tolerance
-                    AND pallet_filled_qty <= @qty_tolerance
+                     AND order_status = @shipped_order_status
+                     AND has_open_prd
+                     AND open_pallet_planned_qty <= @qty_tolerance
+                     AND open_pallet_filled_qty <= @qty_tolerance
                     AND ledger_open_prd_qty <= @qty_tolerance THEN @severity_warning
                WHEN order_type = @customer_order_type
-                    AND order_status = @shipped_order_status
-                    AND has_open_prd
-                    AND (open_pallet_planned_qty > @qty_tolerance
-                         OR pallet_filled_qty > @qty_tolerance
+                     AND order_status = @shipped_order_status
+                     AND has_open_prd
+                     AND (open_pallet_planned_qty > @qty_tolerance
+                          OR open_pallet_filled_qty > @qty_tolerance
                          OR ledger_open_prd_qty > @qty_tolerance)
                     AND (NOT open_prd_matches_open_pallets OR NOT open_pallets_match_fill) THEN @severity_error
                WHEN order_type = @customer_order_type
                     AND order_status = @shipped_order_status
                     AND has_open_prd THEN @severity_warning
-               WHEN pallet_filled_qty > @qty_tolerance AND has_open_prd THEN @severity_warning
+                WHEN open_pallet_filled_qty > @qty_tolerance AND has_open_prd THEN @severity_warning
                ELSE @severity_error
            END AS severity
     FROM rollup
@@ -7485,6 +7598,7 @@ candidates AS (
         command.Parameters.AddWithValue("@printed_pallet_status", ProductionPalletStatus.Printed);
         command.Parameters.AddWithValue("@cancelled_pallet_status", ProductionPalletStatus.Cancelled);
         command.Parameters.AddWithValue("@customer_order_type", OrderStatusMapper.TypeToString(OrderType.Customer));
+        command.Parameters.AddWithValue("@internal_order_type", OrderStatusMapper.TypeToString(OrderType.Internal));
         command.Parameters.AddWithValue("@shipped_order_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
         command.Parameters.AddWithValue("@merged_order_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
         command.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);

@@ -95,6 +95,28 @@ public sealed class InternalOrderPalletQtyApiIntegrationTests
     }
 
     [Fact]
+    public async Task DecreaseToConfirmedProduction_RefreshesPersistedStatusInsideUpdateTransaction()
+    {
+        var fixture = InternalOrderPalletQtyUpdateScenario.Create(
+            orderedQty: 2400,
+            filledPalletCount: 2,
+            openPalletCount: 2,
+            filledPalletsInClosedPrd: true);
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+
+        var payload = await UpdateOrderHttpApi.UpdateAsync(
+            host.Client,
+            fixture.OrderId,
+            InternalOrderPalletQtyUpdateScenario.BuildUpdateRequest(1200));
+
+        Assert.True(payload.Ok);
+        Assert.Equal(OrderStatus.Shipped, fixture.Harness.Store.GetOrder(fixture.OrderId)!.Status);
+        Assert.DoesNotContain(
+            fixture.Harness.Store.GetProductionPalletsByDoc(fixture.PrdDocId),
+            pallet => pallet.Status is ProductionPalletStatus.Planned or ProductionPalletStatus.Printed);
+    }
+
+    [Fact]
     public async Task Increase1200To2400_Succeeds_WithoutAppendingMissingPlannedPallets()
     {
         var fixture = InternalOrderPalletQtyUpdateScenario.Create(

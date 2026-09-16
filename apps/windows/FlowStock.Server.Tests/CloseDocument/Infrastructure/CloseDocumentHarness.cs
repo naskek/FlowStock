@@ -2573,6 +2573,26 @@ internal sealed class CloseDocumentHarness
                     .Sum(entry => entry.QtyDelta);
             });
 
+        _store.Setup(store => store.GetProductionPalletIdsWithLedger(It.IsAny<IReadOnlyCollection<long>>()))
+            .Returns<IReadOnlyCollection<long>>(palletIds =>
+            {
+                var ids = palletIds.Where(id => id > 0).Distinct().ToHashSet();
+                return _productionPallets.Values
+                    .Where(pallet => ids.Contains(pallet.Id))
+                    .Where(pallet =>
+                    {
+                        var itemIds = pallet.Lines.Select(line => line.ItemId).Append(pallet.ItemId).ToHashSet();
+                        return _postedLedger.Any(entry => entry.DocId == pallet.PrdDocId
+                                                          && itemIds.Contains(entry.ItemId)
+                                                          && string.Equals(
+                                                              NormalizeHu(entry.HuCode),
+                                                              NormalizeHu(pallet.HuCode),
+                                                              StringComparison.Ordinal));
+                    })
+                    .Select(pallet => pallet.Id)
+                    .ToHashSet();
+            });
+
         _store.Setup(store => store.CancelProductionPalletPlan(It.IsAny<long>()))
             .Returns<long>(docId =>
             {
@@ -3558,9 +3578,22 @@ internal sealed class CloseDocumentHarness
             var openPalletPlannedQty = openPalletRows.Sum(row => row.PlannedQty);
             var palletPlannedQty = itemPalletRows.Sum(row => row.PlannedQty);
             var palletFilledQty = itemPalletRows.Sum(row => row.FilledQty);
-            var persistedFilledPalletQty = itemPalletRows
+            var openPersistedFilledPalletQty = openPalletRows
                 .Where(row => string.Equals(row.Pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
                 .Sum(row => row.FilledQty);
+            var activeFutureQty = openPalletRows
+                .Where(row => string.Equals(row.Pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(row.Pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase))
+                .Sum(row => row.PlannedQty);
+            var hasOpenFilledPalletMissingLedger = openPalletRows.Any(row =>
+                string.Equals(row.Pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)
+                && !_postedLedger.Any(entry => entry.DocId == row.Pallet.PrdDocId
+                                               && entry.ItemId == key.ItemId
+                                               && entry.QtyDelta > StockQuantityRules.QtyTolerance
+                                               && string.Equals(
+                                                   NormalizeHu(entry.HuCode),
+                                                   NormalizeHu(row.Pallet.HuCode),
+                                                   StringComparison.OrdinalIgnoreCase)));
             var partialPallets = itemPalletRows
                 .Select(row => _productionPallets.GetValueOrDefault(row.Pallet.PalletId))
                 .Where(pallet => pallet?.IsMixedPallet == true && pallet.HasComponentProgress && !pallet.AreAllComponentsFilled)
@@ -3569,6 +3602,7 @@ internal sealed class CloseDocumentHarness
                 .ToArray();
             var hasPartialPalletWithLedger = partialPallets.Any(pallet =>
                 _postedLedger.Any(entry => entry.QtyDelta > StockQuantityRules.QtyTolerance
+                                            && entry.DocId == pallet.PrdDocId
                                             && entry.ItemId == key.ItemId
                                             && string.Equals(NormalizeHu(entry.HuCode), NormalizeHu(pallet.HuCode), StringComparison.OrdinalIgnoreCase)));
             var hasPartialPalletInvalidStatus = partialPallets.Any(pallet =>
@@ -3592,11 +3626,13 @@ internal sealed class CloseDocumentHarness
                 openPrdDocQty,
                 closedPrdDocQty,
                 openPalletPlannedQty,
-                persistedFilledPalletQty,
+                openPersistedFilledPalletQty,
+                activeFutureQty,
                 ledgerClosedPrdQty,
-                ledgerOpenPrdQty,
+                ledgerPrdQty,
                 hasOpenPrd,
                 hasClosedPrd,
+                hasOpenFilledPalletMissingLedger,
                 hasPartialPalletWithLedger,
                 hasPartialPalletInvalidStatus);
             if (string.IsNullOrWhiteSpace(problemCode))
@@ -3609,7 +3645,7 @@ internal sealed class CloseDocumentHarness
                 problemCode,
                 hasOpenPrd,
                 openPalletPlannedQty,
-                palletFilledQty,
+                openPalletFilledQty,
                 ledgerOpenPrdQty,
                 openPrdMatchesOpenPallets,
                 openPalletsMatchFill);
@@ -3812,11 +3848,13 @@ internal sealed class CloseDocumentHarness
         double openPrdDocQty,
         double closedPrdDocQty,
         double openPalletPlannedQty,
-        double persistedFilledPalletQty,
+        double openPersistedFilledPalletQty,
+        double activeFutureQty,
         double ledgerClosedPrdQty,
-        double ledgerOpenPrdQty,
+        double ledgerPrdQty,
         bool hasOpenPrd,
         bool hasClosedPrd,
+        bool hasOpenFilledPalletMissingLedger,
         bool hasPartialPalletWithLedger,
         bool hasPartialPalletInvalidStatus)
     {
@@ -3836,6 +3874,7 @@ internal sealed class CloseDocumentHarness
         }
 
         if (hasOpenPrd
+            && order.Type != OrderType.Internal
             && !(order.Type == OrderType.Customer && order.Status == OrderStatus.Shipped)
             && openPalletPlannedQty - orderQty > StockQuantityRules.QtyTolerance)
         {
@@ -3843,8 +3882,17 @@ internal sealed class CloseDocumentHarness
         }
 
         if (hasOpenPrd
+            && order.Type != OrderType.Internal
             && !(order.Type == OrderType.Customer && order.Status == OrderStatus.Shipped)
             && openPrdDocQty - orderQty > StockQuantityRules.QtyTolerance)
+        {
+            return ProductionPlanConsistencyProblemCode.PrdLinesExceedOrderQty;
+        }
+
+        if (order.Type == OrderType.Internal
+            && hasOpenPrd
+            && openPrdDocQty - orderQty > StockQuantityRules.QtyTolerance
+            && activeFutureQty - Math.Max(0d, orderQty - ledgerPrdQty) <= StockQuantityRules.QtyTolerance)
         {
             return ProductionPlanConsistencyProblemCode.PrdLinesExceedOrderQty;
         }
@@ -3854,9 +3902,7 @@ internal sealed class CloseDocumentHarness
             return ProductionPlanConsistencyProblemCode.ClosedPrdLedgerMismatch;
         }
 
-        if (persistedFilledPalletQty > StockQuantityRules.QtyTolerance
-            && hasOpenPrd
-            && ledgerOpenPrdQty <= StockQuantityRules.QtyTolerance)
+        if (hasOpenFilledPalletMissingLedger)
         {
             return ProductionPlanConsistencyProblemCode.FilledPalletMissingLedger;
         }
@@ -3871,7 +3917,13 @@ internal sealed class CloseDocumentHarness
             return ProductionPlanConsistencyProblemCode.PartialPalletHasLedger;
         }
 
-        if (persistedFilledPalletQty > StockQuantityRules.QtyTolerance && hasOpenPrd)
+        if (order.Type == OrderType.Internal
+            && activeFutureQty - Math.Max(0d, orderQty - ledgerPrdQty) > StockQuantityRules.QtyTolerance)
+        {
+            return ProductionPlanConsistencyProblemCode.PalletsExceedOrderQty;
+        }
+
+        if (openPersistedFilledPalletQty > StockQuantityRules.QtyTolerance && hasOpenPrd)
         {
             return ProductionPlanConsistencyProblemCode.FilledPalletsWithDraftPrd;
         }
@@ -3884,7 +3936,7 @@ internal sealed class CloseDocumentHarness
         string problemCode,
         bool hasOpenPrd,
         double openPalletPlannedQty,
-        double palletFilledQty,
+        double openPalletFilledQty,
         double ledgerOpenPrdQty,
         bool openPrdMatchesOpenPallets,
         bool openPalletsMatchFill)
@@ -3895,14 +3947,14 @@ internal sealed class CloseDocumentHarness
             && hasOpenPrd)
         {
             if (openPalletPlannedQty <= StockQuantityRules.QtyTolerance
-                && palletFilledQty <= StockQuantityRules.QtyTolerance
+                && openPalletFilledQty <= StockQuantityRules.QtyTolerance
                 && ledgerOpenPrdQty <= StockQuantityRules.QtyTolerance)
             {
                 return ProductionPlanConsistencySeverity.Warning;
             }
 
             if ((openPalletPlannedQty > StockQuantityRules.QtyTolerance
-                 || palletFilledQty > StockQuantityRules.QtyTolerance
+                 || openPalletFilledQty > StockQuantityRules.QtyTolerance
                  || ledgerOpenPrdQty > StockQuantityRules.QtyTolerance)
                 && (!openPrdMatchesOpenPallets || !openPalletsMatchFill))
             {
@@ -5647,9 +5699,21 @@ internal sealed class CloseDocumentHarness
         var ids = productionPalletIds.ToHashSet();
         var targetPallets = _productionPallets.Values
             .Where(pallet => ids.Contains(pallet.Id))
-            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase))
-            .Where(pallet => !string.Equals(pallet.Status, ProductionPalletStatus.Cancelled, StringComparison.OrdinalIgnoreCase))
-            .Where(pallet => !_docs.TryGetValue(pallet.PrdDocId, out var doc) || doc.Status != DocStatus.Closed)
+            .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                             || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase))
+            .Where(pallet => _docs.TryGetValue(pallet.PrdDocId, out var doc) && doc.Status == DocStatus.Draft)
+            .Where(pallet => !pallet.FilledAt.HasValue)
+            .Where(pallet => pallet.Lines.All(line => !line.FilledAt.HasValue && line.FilledQty <= StockQuantityRules.QtyTolerance))
+            .Where(pallet =>
+            {
+                var itemIds = pallet.Lines.Select(line => line.ItemId).Append(pallet.ItemId).ToHashSet();
+                return !_postedLedger.Any(entry => entry.DocId == pallet.PrdDocId
+                                                   && itemIds.Contains(entry.ItemId)
+                                                   && string.Equals(
+                                                       NormalizeHu(entry.HuCode),
+                                                       NormalizeHu(pallet.HuCode),
+                                                       StringComparison.Ordinal));
+            })
             .ToArray();
         var targetPalletIds = targetPallets.Select(pallet => pallet.Id).ToHashSet();
         var targetDocLineIds = targetPallets

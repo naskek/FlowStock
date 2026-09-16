@@ -1965,55 +1965,57 @@ public sealed class ProductionPalletService
 
     public ProductionPalletCancelPlanResult CancelOrderPlan(long orderId, IReadOnlyCollection<long> selectedPalletIds)
     {
-        var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
-        if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
-        {
-            throw new InvalidOperationException(order.Status == OrderStatus.Merged
-                ? "Заказ объединён с другим заказом. Выпуск по нему не требуется."
-                : "Заказ недоступен для удаления плана паллет.");
-        }
-
         var requestedIds = selectedPalletIds
             .Where(id => id > 0)
             .Distinct()
             .ToArray();
-        if (requestedIds.Length == 0)
-        {
-            return new ProductionPalletCancelPlanResult
-            {
-                OrderId = order.Id,
-                PrdDocId = 0,
-                Message = "Нет выбранных паллет для удаления.",
-                RequestedPalletIds = requestedIds,
-                SkippedPalletIds = requestedIds
-            };
-        }
 
         var prdDocIds = Array.Empty<long>();
         var removedPalletIds = Array.Empty<long>();
         var skippedPalletIds = requestedIds;
-        ProductionPalletPlanCleanupCounts cleanup = null!;
+        var cleanup = new ProductionPalletPlanCleanupCounts();
         _data.ExecuteInTransaction(store =>
         {
-            var docsById = store.GetDocsByOrder(order.Id)
+            if (!store.LockOrdersForUpdate(new[] { orderId }))
+            {
+                throw new InvalidOperationException("Заказ не найден.");
+            }
+
+            var order = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+            var orderBlockedReason = GetCancelPlanOrderBlockedReason(order);
+            if (orderBlockedReason != null)
+            {
+                throw new InvalidOperationException(orderBlockedReason);
+            }
+
+            if (requestedIds.Length == 0)
+            {
+                return;
+            }
+
+            var docsById = store.GetDocsByOrder(orderId)
                 .Where(doc => doc.Type == DocType.ProductionReceipt)
                 .ToDictionary(doc => doc.Id, doc => doc);
-            var selected = docsById.Values
+            var candidatePallets = docsById.Values
                 .SelectMany(doc => store.GetProductionPalletsByDoc(doc.Id))
                 .Where(pallet => requestedIds.Contains(pallet.Id))
-                .Where(pallet => pallet.OrderId == order.Id)
-                .Where(pallet => docsById.TryGetValue(pallet.PrdDocId, out var doc) && doc.Status != DocStatus.Closed)
-                .Where(IsRemovableFuturePlanPallet)
+                .Where(pallet => pallet.OrderId == orderId)
+                .Where(HasOrderLineOwnership)
+                .ToArray();
+            var palletIdsWithLedger = store.GetProductionPalletIdsWithLedger(candidatePallets.Select(pallet => pallet.Id).ToArray());
+            var selected = candidatePallets
+                .Where(pallet => EvaluateCancelPlanEligibility(
+                    order,
+                    docsById.GetValueOrDefault(pallet.PrdDocId),
+                    pallet,
+                    palletIdsWithLedger.Contains(pallet.Id)).IsEligible)
                 .ToArray();
 
             if (selected.Length == 0)
             {
-                cleanup = new ProductionPalletPlanCleanupCounts();
-                prdDocIds = Array.Empty<long>();
                 return;
             }
 
-            prdDocIds = selected.Select(pallet => pallet.PrdDocId).Distinct().ToArray();
             cleanup = store.DeleteProductionPalletPlanPallets(selected.Select(pallet => pallet.Id).ToArray());
             removedPalletIds = cleanup.RemovedPalletIds
                 .Where(id => id > 0)
@@ -2024,24 +2026,31 @@ public sealed class ProductionPalletService
                 .Except(removedPalletIds)
                 .Order()
                 .ToArray();
+            prdDocIds = selected
+                .Where(pallet => removedPalletIds.Contains(pallet.Id))
+                .Select(pallet => pallet.PrdDocId)
+                .Distinct()
+                .ToArray();
             foreach (var prdDocId in prdDocIds)
             {
-                EmptyDraftProductionReceiptCleanup.TryDeleteEmptyDraftProductionReceiptIfSafe(store, order.Id, prdDocId);
+                EmptyDraftProductionReceiptCleanup.TryDeleteEmptyDraftProductionReceiptIfSafe(store, orderId, prdDocId);
             }
 
             if (cleanup.RemovedPalletCount > 0)
             {
-                new OrderService(store).RefreshPersistedStatus(order.Id);
+                new OrderService(store).RefreshPersistedStatus(orderId);
             }
         });
 
         return new ProductionPalletCancelPlanResult
         {
-            OrderId = order.Id,
+            OrderId = orderId,
             PrdDocId = prdDocIds.FirstOrDefault(),
             Message = cleanup.RemovedPalletCount > 0
                 ? "Выбранные паллеты удалены из плана."
-                : "Нет доступных для удаления паллет.",
+                : requestedIds.Length == 0
+                    ? "Нет выбранных паллет для удаления."
+                    : "Нет доступных для удаления паллет.",
             RemovedPalletCount = cleanup.RemovedPalletCount,
             RemovedLineCount = cleanup.RemovedLineCount,
             RequestedPalletIds = requestedIds,
@@ -2061,24 +2070,22 @@ public sealed class ProductionPalletService
         var markingGenerated = order.EffectiveMarkingStatus == MarkingStatus.Printed
                                || order.MarkingExcelGeneratedAt.HasValue
                                || order.MarkingPrintedAt.HasValue;
-        var rows = docs
+        var pallets = docs
             .SelectMany(doc => _data.GetProductionPalletsByDoc(doc.Id))
             .Where(pallet => pallet.OrderId == orderId)
             .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
             .Where(HasOrderLineOwnership)
+            .ToArray();
+        var palletIdsWithLedger = _data.GetProductionPalletIdsWithLedger(pallets.Select(pallet => pallet.Id).ToArray());
+        var rows = pallets
             .Select(pallet =>
             {
                 docsById.TryGetValue(pallet.PrdDocId, out var doc);
-                var isClosedDoc = doc?.Status == DocStatus.Closed;
-                var isFilled = string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase);
-                var isSelectable = !isClosedDoc && IsRemovableFuturePlanPallet(pallet);
-                var disabledReason = isFilled
-                    ? "Нельзя удалить: паллета уже наполнена/выпущена"
-                    : isClosedDoc
-                        ? "Нельзя удалить: выпуск уже закрыт"
-                        : isSelectable
-                            ? null
-                            : "Нельзя удалить: статус паллеты не позволяет удаление";
+                var eligibility = EvaluateCancelPlanEligibility(
+                    order,
+                    doc,
+                    pallet,
+                    palletIdsWithLedger.Contains(pallet.Id));
                 return new ProductionPalletCancelPlanRow
                 {
                     PalletId = pallet.Id,
@@ -2090,9 +2097,9 @@ public sealed class ProductionPalletService
                     HuCode = pallet.HuCode,
                     PlannedQty = pallet.PlannedQty,
                     Status = pallet.Status,
-                    IsSelectable = isSelectable,
-                    IsSelectedByDefault = isSelectable,
-                    DisabledReason = disabledReason,
+                    IsSelectable = eligibility.IsEligible,
+                    IsSelectedByDefault = eligibility.IsEligible,
+                    DisabledReason = eligibility.DisabledReason,
                     HasMarkingWarning = markingGenerated
                                         && string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
                 };
@@ -4704,10 +4711,64 @@ public sealed class ProductionPalletService
         return pallet.CanFill;
     }
 
-    private static bool IsRemovableFuturePlanPallet(ProductionPallet pallet)
+    private static CancelPlanEligibility EvaluateCancelPlanEligibility(
+        Order order,
+        Doc? doc,
+        ProductionPallet pallet,
+        bool hasLedger)
     {
-        return pallet.CanFill && !pallet.HasComponentProgress;
+        var orderBlockedReason = GetCancelPlanOrderBlockedReason(order);
+        if (orderBlockedReason != null)
+        {
+            return new CancelPlanEligibility(false, orderBlockedReason);
+        }
+
+        if (doc?.Status != DocStatus.Draft)
+        {
+            return new CancelPlanEligibility(false, "Нельзя удалить: выпуск не находится в статусе DRAFT");
+        }
+
+        if (!string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase))
+        {
+            return new CancelPlanEligibility(false, "Нельзя удалить: паллета уже наполнена/выпущена");
+        }
+
+        if (pallet.FilledAt.HasValue
+            || pallet.Lines.Any(line => line.FilledAt.HasValue || line.FilledQty > QtyTolerance))
+        {
+            return new CancelPlanEligibility(false, "Нельзя удалить: по паллете уже начато наполнение");
+        }
+
+        if (hasLedger)
+        {
+            return new CancelPlanEligibility(false, "Нельзя удалить: по паллете уже есть движения склада");
+        }
+
+        return new CancelPlanEligibility(true, null);
     }
+
+    private static string? GetCancelPlanOrderBlockedReason(Order order)
+    {
+        if (order.Status == OrderStatus.Merged)
+        {
+            return "Заказ объединён с другим заказом. Выпуск по нему не требуется.";
+        }
+
+        if (order.Status == OrderStatus.Cancelled)
+        {
+            return "Нельзя удалить план: заказ отменён.";
+        }
+
+        if (order.Status == OrderStatus.Shipped && order.Type != OrderType.Internal)
+        {
+            return "Нельзя удалить план: завершённый клиентский заказ защищён от изменений.";
+        }
+
+        return null;
+    }
+
+    private readonly record struct CancelPlanEligibility(bool IsEligible, string? DisabledReason);
 
     private static bool HasOrderLineOwnership(ProductionPallet pallet)
     {
