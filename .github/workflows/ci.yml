@@ -298,6 +298,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Validate production deploy contract
+        shell: bash
+        run: python3 deploy/scripts/deploy-production.static.test.py
       - name: Validate and apply disposable migrations
         shell: bash
         run: |
