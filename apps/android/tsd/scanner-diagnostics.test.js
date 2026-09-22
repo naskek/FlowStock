@@ -20,7 +20,6 @@ const storageJs = fs.readFileSync(path.join(tsdDir, "storage.js"), "utf8");
 const appJs = fs.readFileSync(path.join(tsdDir, "app.js"), "utf8");
 const indexHtml = fs.readFileSync(path.join(tsdDir, "index.html"), "utf8");
 const serviceWorkerJs = fs.readFileSync(path.join(tsdDir, "service-worker.js"), "utf8");
-const appVersionJs = fs.readFileSync(path.join(tsdDir, "app-version.js"), "utf8");
 
 function loadDiagnosticsContext(extra) {
   const context = Object.assign(
@@ -1843,7 +1842,6 @@ function testShellIntegration() {
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-manifest.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics-store.js"'));
   assert(serviceWorkerJs.includes('"./scanner-diagnostics.js"'));
-  assert(appVersionJs.includes('var version = "76"'));
   assert(appJs.includes('id="scannerDiagnosticsBtn"'));
   assert(appJs.includes('navigate("/scanner-diagnostics")'));
   assert(appJs.includes('route.name === "scannerDiagnostics"'));

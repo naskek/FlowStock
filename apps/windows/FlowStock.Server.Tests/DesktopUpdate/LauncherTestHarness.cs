@@ -4,7 +4,7 @@ using FlowStock.DesktopUpdate;
 
 namespace FlowStock.Server.Tests.DesktopUpdate;
 
-internal sealed record ProcessShimInvocation(string WorkingDirectory, string[] Arguments);
+internal sealed record ProcessShimInvocation(string WorkingDirectory, string[] Arguments, int ProcessId);
 
 internal static class LauncherTestHarness
 {
@@ -63,15 +63,18 @@ internal static class LauncherTestHarness
 
     public static ProcessShimInvocation WaitForInvocation(string path)
     {
+        var timeoutLimit = TimeSpan.FromSeconds(10);
         var timeout = Stopwatch.StartNew();
-        while (timeout.Elapsed < TimeSpan.FromSeconds(10))
+        while (timeout.Elapsed < timeoutLimit)
         {
             try
             {
                 if (File.Exists(path))
                 {
-                    return JsonSerializer.Deserialize<ProcessShimInvocation>(File.ReadAllText(path))
-                           ?? throw new InvalidOperationException("Process shim output пуст.");
+                    var invocation = JsonSerializer.Deserialize<ProcessShimInvocation>(File.ReadAllText(path))
+                                     ?? throw new InvalidOperationException("Process shim output пуст.");
+                    WaitForProcessExit(invocation.ProcessId, timeoutLimit - timeout.Elapsed);
+                    return invocation;
                 }
             }
             catch (Exception exception) when (exception is IOException or JsonException)
@@ -83,6 +86,34 @@ internal static class LauncherTestHarness
         }
 
         throw new TimeoutException($"Process shim не записал invocation: {path}");
+    }
+
+    private static void WaitForProcessExit(int processId, TimeSpan timeout)
+    {
+        if (processId <= 0)
+        {
+            throw new InvalidOperationException($"Process shim вернул некорректный PID: {processId}");
+        }
+
+        Process process;
+        try
+        {
+            process = Process.GetProcessById(processId);
+        }
+        catch (ArgumentException)
+        {
+            // The shim may have already exited between writing the invocation file and this lookup.
+            return;
+        }
+
+        using (process)
+        {
+            var timeoutMilliseconds = Math.Max(0, (int)Math.Ceiling(timeout.TotalMilliseconds));
+            if (!process.WaitForExit(timeoutMilliseconds))
+            {
+                throw new TimeoutException($"Process shim PID {processId} не завершился за отведённое время.");
+            }
+        }
     }
 
     public static void CopyShimRuntime(string destination, string executableName)

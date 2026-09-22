@@ -384,6 +384,14 @@ dotnet test apps/windows/FlowStock.sln
 
 Отдельно зафиксируйте `Passed / Failed / Skipped`. Для migration/V0034/V0035, UOM remediation/rename concurrency, ADMIN single-session, promotion, partner-role persistence/fallback/backfill и identifier concurrency любое `Skipped` означает непройденный gate. В тестовой PostgreSQL обязательны: подготовленный duplicate и ожидаемый fail-fast V0034/V0035, legacy `шт` без master, remediation dry-run/apply, успешное повторное применение, отказ normalized indexes принимать duplicate, concurrent UOM rename с catalog/import writers, а также затронутые VAT/customer-price concurrency regressions.
 
+### GitHub Actions CI gate
+
+Workflow `CI` запускается для каждого pull request в `main`, каждого push в `main` и вручную. Он публикует пять стабильных checks: `windows-build-test`, `postgres-regression`, `web-tests`, `android-native`, `docker-migrations`. Workflow не выполняет production deploy, не читает production secrets и не собирает подписанный Android release.
+
+`postgres-regression` на `windows-2022` поднимает отдельную PostgreSQL 16, применяет полный migration chain через `deploy/scripts/run_migrations.sh`, выполняет четыре focused-класса из обязательного gate выше и затем весь solution с `FLOWSTOCK_POSTGRES_TEST_CONNECTION`. Каждый focused-класс обязан иметь выполненные тесты; любой `Failed`, `Skipped` или `NotExecuted` делает check неуспешным. В полном suite разрешены только явно зафиксированные legacy JSONL skips. Naming guard требует, чтобы DB-зависимые тесты содержали `Postgres` в имени класса и не выпадали между non-DB и PostgreSQL gates.
+
+`docker-migrations` независимо проверяет disposable Compose migrator, точное соответствие `schema_migrations` tracked-файлам и повторное идемпотентное применение, затем выполняет production Compose `config -q` и build `flowstock`/`discovery-relay` только с dummy CI values. Tracked generated-файлы под `**/artifacts/**` исключаются из Docker context через `.dockerignore`; их удаление остаётся отдельной technical-debt задачей и не блокирует CI.
+
 ### Необязательная разовая проверка чистого bootstrap
 
 Только на заведомо пустом сервере или во временном тестовом проекте (команда `down -v` удаляет данные):

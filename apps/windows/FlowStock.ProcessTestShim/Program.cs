@@ -3,7 +3,7 @@ using System.Text.Json;
 var outputPath = Environment.GetEnvironmentVariable("FLOWSTOCK_PROCESS_SHIM_OUTPUT");
 if (!string.IsNullOrWhiteSpace(outputPath))
 {
-    var invocation = new ProcessShimInvocation(Environment.CurrentDirectory, args);
+    var invocation = new ProcessShimInvocation(Environment.CurrentDirectory, args, Environment.ProcessId);
     File.WriteAllText(outputPath, JsonSerializer.Serialize(invocation));
 }
 
@@ -13,4 +13,4 @@ return int.TryParse(
     ? exitCode
     : 0;
 
-internal sealed record ProcessShimInvocation(string WorkingDirectory, string[] Arguments);
+internal sealed record ProcessShimInvocation(string WorkingDirectory, string[] Arguments, int ProcessId);

@@ -1,0 +1,15 @@
+.git
+.github
+
+**/.env
+**/.env.*
+**/*.secret
+**/*.secrets.*
+
+**/bin
+**/obj
+**/artifacts
+**/.tmp
+**/.nuget
+**/.gradle
+**/build
