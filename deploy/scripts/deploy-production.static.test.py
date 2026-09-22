@@ -24,6 +24,7 @@ checks = {
     "backup path": require(r'backup_dir="/opt/flowstock-backups/manual"', "canonical backup path is missing"),
     "exact server update": require(r"git merge --ff-only --quiet \"\$expected_commit\"", "exact server update is missing"),
     "source commit": require(r"export FLOWSTOCK_SOURCE_COMMIT=\"\$expected_commit\"", "source commit export is missing"),
+    "dotenv parser": require(r"config --environment", "Compose/dotenv environment parser is missing"),
     "base compose": require(r"-f deploy/docker-compose\.yml", "base Compose file is missing"),
     "conditional Telegram": require(
         r'if test "\$\{FLOWSTOCK_TELEGRAM_ENABLED:-0\}" = 1; then.*compose\+=\(-f deploy/docker-compose\.telegram\.yml\).*fi',
@@ -46,7 +47,7 @@ checks = {
 }
 
 telegram_gate = re.search(
-    r'if test "\$\{FLOWSTOCK_TELEGRAM_ENABLED:-0\}" = 1; then(?P<body>.*?)\nfi',
+    r'if test "\$telegram_enabled_value" = 1; then(?P<body>.*?)\nfi',
     source,
     re.MULTILINE | re.DOTALL,
 )
@@ -77,6 +78,14 @@ if not checks["backup verification"] < checks["exact server update"] < checks["d
 pre_backup = source[: checks["backup verification"]]
 if re.search(r'"\$\{compose\[@\]\}" (?:up|build|pull|restart|create)', pre_backup):
     raise AssertionError("mutating Compose command is forbidden before verified backup")
+
+if re.search(r'(?m)^\s*(?:source|\.)\s+deploy/\.env(?:\s|$)', source):
+    raise AssertionError("deploy/.env must never be executed as shell code")
+if re.search(r'(?m)^\s*set\s+-a(?:\s|$)', source):
+    raise AssertionError("automatic export of dotenv values is forbidden")
+exports = re.findall(r'(?m)^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=', source)
+if exports != ["FLOWSTOCK_SOURCE_COMMIT"]:
+    raise AssertionError("only FLOWSTOCK_SOURCE_COMMIT may be exported by the remote deploy script")
 
 if "config --format json | \"${validator[@]}\"" not in source:
     raise AssertionError("resolved Compose JSON must be piped directly to the validator")
