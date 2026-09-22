@@ -13,6 +13,7 @@ fi
 
 FLOWSTOCK_REPO_DIR="${FLOWSTOCK_REPO_DIR:-$(cd -- "${DEPLOY_DIR}/.." && pwd)}"
 FLOWSTOCK_COMPOSE_FILE="${FLOWSTOCK_COMPOSE_FILE:-${DEPLOY_DIR}/docker-compose.yml}"
+FLOWSTOCK_TELEGRAM_COMPOSE_FILE="${FLOWSTOCK_TELEGRAM_COMPOSE_FILE:-${DEPLOY_DIR}/docker-compose.telegram.yml}"
 FLOWSTOCK_PROJECT_NAME="${FLOWSTOCK_PROJECT_NAME:-flowstock}"
 FLOWSTOCK_RUNTIME_DIR="${FLOWSTOCK_RUNTIME_DIR:-${DEPLOY_DIR}/runtime}"
 FLOWSTOCK_BACKUP_OUTPUT_DIR="${FLOWSTOCK_BACKUP_OUTPUT_DIR:-${FLOWSTOCK_RUNTIME_DIR}/backups}"
@@ -69,6 +70,10 @@ ensure_docker() {
     require_file "$FLOWSTOCK_COMPOSE_FILE"
     require_file "$FLOWSTOCK_ENV_FILE"
     ensure_runtime_dirs
+}
+
+telegram_enabled() {
+    [[ "${FLOWSTOCK_TELEGRAM_ENABLED:-}" == "1" ]]
 }
 
 git_in_repo() {
@@ -287,6 +292,36 @@ compose() {
         --env-file "$FLOWSTOCK_ENV_FILE" \
         -f "$FLOWSTOCK_COMPOSE_FILE" \
         "$@"
+}
+
+compose_with_telegram() {
+    require_file "$FLOWSTOCK_TELEGRAM_COMPOSE_FILE"
+    docker compose \
+        --project-name "$FLOWSTOCK_PROJECT_NAME" \
+        --env-file "$FLOWSTOCK_ENV_FILE" \
+        -f "$FLOWSTOCK_COMPOSE_FILE" \
+        -f "$FLOWSTOCK_TELEGRAM_COMPOSE_FILE" \
+        "$@"
+}
+
+ensure_telegram_deploy_prerequisites() {
+    telegram_enabled || return 0
+
+    require_command python3
+    local secret_file="${FLOWSTOCK_TELEGRAM_BOT_TOKEN_SECRET_FILE:-}"
+    local network="${FLOWSTOCK_TELEGRAM_EGRESS_NETWORK:-reg-ru-imap-telegram_default}"
+    [[ -n "$secret_file" && -f "$secret_file" && -r "$secret_file" && -s "$secret_file" ]] \
+        || fail "Telegram token secret file is missing, unreadable, or empty"
+    docker network inspect "$network" >/dev/null 2>&1 \
+        || fail "Telegram egress Docker network is unavailable"
+    docker inspect reg-ru-imap-telegram-tailscale-egress --format '{{json .NetworkSettings.Networks}}' |
+        python3 -c '
+import json, sys
+network = sys.argv[1]
+networks = json.load(sys.stdin)
+if network not in networks:
+    raise SystemExit(1)
+' "$network" || fail "existing Telegram egress container is not attached to the configured network"
 }
 
 validate_int_range() {
