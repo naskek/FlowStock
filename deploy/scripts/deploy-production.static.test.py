@@ -24,19 +24,21 @@ checks = {
     "backup path": require(r'backup_dir="/opt/flowstock-backups/manual"', "canonical backup path is missing"),
     "exact server update": require(r"git merge --ff-only --quiet \"\$expected_commit\"", "exact server update is missing"),
     "source commit": require(r"export FLOWSTOCK_SOURCE_COMMIT=\"\$expected_commit\"", "source commit export is missing"),
-    "dotenv parser": require(r"config --environment", "Compose/dotenv environment parser is missing"),
+    "dotenv parser": require(r'compose_environment="\$\("\$\{compose\[@\]\}" config --environment\)" \|\| fail', "Compose/dotenv parser must fail closed"),
     "base compose": require(r"-f deploy/docker-compose\.yml", "base Compose file is missing"),
     "conditional Telegram": require(
-        r'if test "\$\{FLOWSTOCK_TELEGRAM_ENABLED:-0\}" = 1; then.*compose\+=\(-f deploy/docker-compose\.telegram\.yml\).*fi',
+        r'if test "\$telegram_enabled_value" = 1; then.*compose\+=\(-f deploy/docker-compose\.telegram\.yml\).*fi',
         "Telegram overlay is not conditional",
     ),
     "config": require(r'"\$\{compose\[@\]\}" config -q', "Compose config gate is missing"),
     "resolved validator": require(r"validate_resolved_compose\.py", "resolved Compose validator is missing"),
     "deploy": require(r'"\$\{compose\[@\]\}" up -d --remove-orphans', "Compose deploy is missing"),
-    "internal live": require(r"http://127\.0\.0\.1:18080/health/live", "server-side live check must use loopback"),
-    "internal ready": require(r"http://127\.0\.0\.1:18080/health/ready", "server-side ready check must use loopback"),
-    "internal identity endpoint": require(r"http://127\.0\.0\.1:18080/api/version", "server-side source identity check must use loopback"),
-    "internal TSD endpoint": require(r"http://127\.0\.0\.1:18080/tsd/app-version\.js", "server-side TSD check must use loopback"),
+    "loopback port": require(r'flowstock_port="\$\{compose_env\[FLOWSTOCK_PORT\]:-8080\}"', "loopback port must come from resolved Compose environment"),
+    "loopback URL": require(r'loopback_url="http://127\.0\.0\.1:\$flowstock_port"', "canonical loopback URL is missing"),
+    "internal live": require(r'curl -fsS "\$loopback_url/health/live"', "server-side live check must use canonical loopback URL"),
+    "internal ready": require(r'curl -fsS "\$loopback_url/health/ready"', "server-side ready check must use canonical loopback URL"),
+    "internal identity endpoint": require(r'curl -fsS "\$loopback_url/api/version"', "server-side source identity check must use canonical loopback URL"),
+    "internal TSD endpoint": require(r'curl -fsS "\$loopback_url/tsd/app-version\.js', "server-side TSD check must use canonical loopback URL"),
     "identity": require(r"desktop\.get\(\"target_commit\"\)==expected", "strict source identity gate is missing"),
     "TSD": require(r"deployed TSD version", "deployed TSD check is missing"),
     "disk": require(r'df -h \"\$repo\" \"\$backup_path\"', "disk-space report is missing"),
@@ -79,6 +81,8 @@ pre_backup = source[: checks["backup verification"]]
 if re.search(r'"\$\{compose\[@\]\}" (?:up|build|pull|restart|create)', pre_backup):
     raise AssertionError("mutating Compose command is forbidden before verified backup")
 
+if 'done < <("${compose[@]}" config --environment)' in source:
+    raise AssertionError("Compose environment parsing must not hide parser failure in process substitution")
 if re.search(r'(?m)^\s*(?:source|\.)\s+deploy/\.env(?:\s|$)', source):
     raise AssertionError("deploy/.env must never be executed as shell code")
 if re.search(r'(?m)^\s*set\s+-a(?:\s|$)', source):
