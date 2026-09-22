@@ -29,6 +29,21 @@ ensure_postgres_healthy
 backup_path="$(resolve_backup_path "${FLOWSTOCK_BACKUP_PATH_OVERRIDE:-}")"
 create_backup "$backup_path"
 
+if telegram_enabled; then
+    ensure_telegram_deploy_prerequisites
+    compose_with_telegram config -q
+    validator_args=(--postgres-host "${FLOWSTOCK_PG_BIND_HOST:-127.0.0.1}" --telegram-enabled)
+    if [[ -n "${FLOWSTOCK_PG_SECOND_BIND_HOST:-}" ]]; then
+        validator_args+=(--postgres-host "$FLOWSTOCK_PG_SECOND_BIND_HOST")
+    fi
+    compose_with_telegram config --format json |
+        python3 "${SCRIPT_DIR}/validate_resolved_compose.py" "${validator_args[@]}"
+
+    compose() {
+        compose_with_telegram "$@"
+    }
+fi
+
 log "pulling base images"
 compose pull postgres nginx pgbackup
 

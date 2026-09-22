@@ -1,6 +1,6 @@
 # Деплой FlowStock
 
-> **Compatibility warning для HU correction.** После первого committed `CORRECT_FILLED` в данных появляется `production_pallets.status = CORRECTED`. Старый runtime с условиями вида `status <> 'CANCELLED'` может ошибочно считать такую историческую ревизию активной. До применения миграции нужен свежий PostgreSQL backup. Если функция ещё не использовалась, additive schema допускает обычный code rollback. После появления `CORRECTED` сначала выключите `pc_hu_correction`; запуск старого runtime допускается только после forward-fix либо восстановления согласованного pre-deploy backup. Production deploy и backup выполняет пользователь вручную по действующему каноническому FlowStock PowerShell-процессу; Compose запускается из `/opt/FlowStock` с явными `-p flowstock --env-file deploy/.env -f deploy/docker-compose.yml`.
+> **Compatibility warning для HU correction.** После первого committed `CORRECT_FILLED` в данных появляется `production_pallets.status = CORRECTED`. Старый runtime с условиями вида `status <> 'CANCELLED'` может ошибочно считать такую историческую ревизию активной. До применения миграции нужен свежий PostgreSQL backup. Если функция ещё не использовалась, additive schema допускает обычный code rollback. После появления `CORRECTED` сначала выключите `pc_hu_correction`; запуск старого runtime допускается только после forward-fix либо восстановления согласованного pre-deploy backup. Production deploy и backup выполняет пользователь вручную по действующему каноническому FlowStock PowerShell-процессу; Compose запускается из `/opt/FlowStock` с явными `-p flowstock --env-file deploy/.env -f deploy/docker-compose.yml` и optional Telegram overlay только при включённой integration.
 
 > **Compatibility warning для ранней частичной отгрузки.** Миграция `V0031` добавляет `orders.allow_partial_outbound` и CHECK `terminal status => allow_partial_outbound = false`; новый runtime атомарно сбрасывает флаг при `SHIPPED`, `CANCELLED`, `MERGED`. Пока у всех активных заказов permission равен `false`, additive schema совместима с обычным code rollback. Если существует активный заказ с `allow_partial_outbound = true`, старый runtime нельзя запускать как штатный rollback: он не выполняет terminal-reset, и его попытка терминального перехода такого заказа будет fail-closed отклонена CHECK constraint. Поддерживаемые варианты в этом состоянии — forward-fix либо восстановление согласованного pre-deploy PostgreSQL backup. Ручной `UPDATE` production-БД не является rollback-процедурой. Production backup и deploy выполняет пользователь вручную по каноническому FlowStock-процессу.
 
@@ -8,7 +8,7 @@
 
 ## Обзор
 
-- Production deploy выполняется через `deploy/docker-compose.yml`.
+- Production deploy всегда использует `deploy/docker-compose.yml`; optional Telegram integration добавляет `deploy/docker-compose.telegram.yml` только при `FLOWSTOCK_TELEGRAM_ENABLED=1`.
 - Имя compose-проекта зафиксировано как `flowstock`, чтобы ручные команды `docker compose` не создавали параллельный стек `deploy-*`.
 - PostgreSQL init-скрипты в `deploy/postgres/init/` используются только для самого первого bootstrap пустого каталога данных.
 - Все последующие изменения схемы применяются через версионируемые SQL-миграции из `deploy/postgres/migrations/`.
@@ -17,7 +17,7 @@
 - Production deploy и update выполняются пользователем вручную через канонический FlowStock PowerShell-процесс:
   1. определить локальный expected commit и создать свежий PostgreSQL backup;
   2. обновить `/opt/FlowStock` и подтвердить server `HEAD`;
-  3. выполнить Compose config/resolved gate и build/deploy одной invocation `docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml ...`;
+  3. выполнить Compose config/resolved gate и build/deploy одной invocation с неизменным `-p flowstock --env-file deploy/.env -f deploy/docker-compose.yml`; при включённом Telegram та же invocation дополнительно содержит `-f deploy/docker-compose.telegram.yml`;
   4. проверить containers, live/ready, TSD version, disk space и путь backup.
 
 ### Сокращение для ручных команд
@@ -28,7 +28,13 @@
 DC='docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml'
 ```
 
-Задайте её один раз в сессии (`export DC=...` не нужен, достаточно `DC=...` и вызова `$DC ...` в том же shell) или используйте полную форму.
+Для production с `FLOWSTOCK_TELEGRAM_ENABLED=1` задайте вместо неё:
+
+```bash
+DC='docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml -f deploy/docker-compose.telegram.yml'
+```
+
+Задайте ровно один вариант один раз в сессии (`export DC=...` не нужен, достаточно `DC=...` и вызова `$DC ...` в том же shell) или используйте полную форму. Не меняйте набор `-f` между `config`, `up`, `ps` и `exec`.
 
 ## URL-схема
 
@@ -53,8 +59,12 @@ Production server source commit является authority для WPF update. К
 $expectedCommit = (git rev-parse --verify 'HEAD^{commit}').Trim().ToLowerInvariant()
 if ($expectedCommit -notmatch '^[0-9a-f]{40}$') { throw 'Invalid production source commit' }
 $env:FLOWSTOCK_SOURCE_COMMIT = $expectedCommit
-docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml config -q
-docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml build
+$composeArgs = @('-p', 'flowstock', '--env-file', 'deploy/.env', '-f', 'deploy/docker-compose.yml')
+if ($env:FLOWSTOCK_TELEGRAM_ENABLED -eq '1') {
+    $composeArgs += @('-f', 'deploy/docker-compose.telegram.yml')
+}
+docker compose @composeArgs config -q
+docker compose @composeArgs build
 ```
 
 Если Compose запускается по SSH, переменная задаётся в том же удалённом execution context, который непосредственно вызывает Compose. `FLOWSTOCK_SOURCE_COMMIT` не записывается в `deploy/.env`: это исключает случайное повторное использование SHA предыдущего deploy. Shell environment имеет приоритет при Compose interpolation.
@@ -133,10 +143,21 @@ FLOWSTOCK_PG_SECOND_BIND_HOST=100.66.142.112
 
 ```bash
 $DC config -q
-$DC config --format json
+set -a
+source deploy/.env
+set +a
+VALIDATOR_ARGS=(--postgres-host "${FLOWSTOCK_PG_BIND_HOST:-127.0.0.1}")
+if [ -n "${FLOWSTOCK_PG_SECOND_BIND_HOST:-}" ]; then
+  VALIDATOR_ARGS+=(--postgres-host "$FLOWSTOCK_PG_SECOND_BIND_HOST")
+fi
+if [ "${FLOWSTOCK_TELEGRAM_ENABLED:-0}" = "1" ]; then
+  VALIDATOR_ARGS+=(--telegram-enabled)
+fi
+$DC config --format json |
+  python3 deploy/scripts/validate_resolved_compose.py "${VALIDATOR_ARGS[@]}"
 ```
 
-Для single-bind resolved `services.postgres.ports` должен содержать ровно один mapping с `host_ip: 127.0.0.1`. Для production dual-bind должны присутствовать ровно два различных mapping с `host_ip: 192.168.1.3` и `host_ip: 100.66.142.112`; пустые и wildcard HostIp запрещены. Если фактическая production-версия Compose возвращает другой результат, deploy блокируется до отдельного архитектурного решения.
+Полный resolved JSON передаётся validator только через pipe — JSON не печатается и не сохраняется. Validator выводит лишь нормализованный `services.postgres.ports` и итог gate. Для single-bind fragment должен содержать ровно один mapping с `host_ip: 127.0.0.1`. Для production dual-bind должны присутствовать ровно два различных mapping с `host_ip: 192.168.1.3` и `host_ip: 100.66.142.112`; пустые и wildcard HostIp запрещены. При enabled Telegram тот же explicit overlay проверяется флагом `--telegram-enabled`. `python3` уже является fail-closed зависимостью deploy scripts. Если фактическая production-версия Compose возвращает другой результат, deploy блокируется до отдельного архитектурного решения.
 
 Конфигурация, прошедшая gate, применяется без изменения invocation:
 
@@ -147,7 +168,31 @@ POSTGRES_CONTAINER_ID="$($DC ps -q postgres)"
 docker inspect "$POSTGRES_CONTAINER_ID" --format '{{json .HostConfig.PortBindings}}'
 ```
 
-Таким образом `config`, `up`, `ps` и получение ID контейнера используют один `-p flowstock`, один `deploy/.env` и один `deploy/docker-compose.yml`.
+Таким образом `config`, `up`, `ps` и получение ID контейнера используют один `-p flowstock`, один `deploy/.env` и один набор Compose-файлов; overlay нельзя добавлять только к части команд.
+
+## Telegram через существующий Tailscale egress
+
+Telegram default-off: только точное `FLOWSTOCK_TELEGRAM_ENABLED=1` включает integration. Production не передаёт bot token через environment и не обращается к Telegram напрямую.
+
+1. Создайте secret file вне clone, например `/opt/flowstock-secrets/telegram/bot-token`; каталог должен иметь mode `700`, файл — `600`. Файл содержит token существующего bot и не добавляется в git.
+2. В `deploy/.env` задайте:
+
+   ```bash
+   FLOWSTOCK_TELEGRAM_ENABLED=1
+   FLOWSTOCK_TELEGRAM_BOT_TOKEN_SECRET_FILE=/opt/flowstock-secrets/telegram/bot-token
+   FLOWSTOCK_TELEGRAM_CHAT_ID=<existing-chat-id>
+   FLOWSTOCK_TELEGRAM_PROXY_URL=socks5://tailscale-egress:1055
+   FLOWSTOCK_TELEGRAM_EGRESS_NETWORK=reg-ru-imap-telegram_default
+   ```
+
+3. После обязательного свежего PostgreSQL backup, но до controlled recreate, выполните `ensure_telegram_deploy_prerequisites` в shell, где уже был подключён `deploy/scripts/common.sh`. Проверка подтверждает только metadata: source file является обычным читаемым непустым файлом; external network существует; контейнер `reg-ru-imap-telegram-tailscale-egress` подключён к ней. Функция не читает и не печатает secret. Затем production deploy использует explicit `compose_with_telegram`/`$DC` с overlay для `config`, validator, `up`, `ps` и `exec`.
+4. Overlay монтирует token read-only как `/run/secrets/flowstock_telegram_bot_token`; container environment содержит только `FLOWSTOCK_TELEGRAM_BOT_TOKEN_FILE` с этим путём. Chat id и proxy URL остаются configuration values. Новый bot, egress container или Tailscale instance FlowStock не создаёт.
+
+Общие operational helpers намеренно остаются base-only: `compose()`, `ensure_docker()` и `ensure_compose_config()` не подключают Telegram overlay и не проверяют Telegram secret/network. Поэтому `backup_now.sh`, `restore_dump.sh`, `migrate.sh`, backfill и rollback не зависят от Telegram даже при `FLOWSTOCK_TELEGRAM_ENABLED=1` в `deploy/.env`. Только Telegram-enabled ветка deploy после свежего backup и preflight явно переключает последующие deploy-команды на `compose_with_telegram()`.
+
+При отсутствующем/нечитаемом mounted secret, пустом chat id или неверном proxy server остаётся live/ready, а Telegram отключается либо теряет конкретную best-effort отправку. Не выводите `docker inspect ... .Config.Env`, полный resolved Compose, mounts, token, chat id или proxy URL. Для диагностики разрешены allowlisted health/status, PostgreSQL `PortBindings`, имена networks и безвыводная `test -r /run/secrets/flowstock_telegram_bot_token`.
+
+Ручной smoke ограничен четырьмя сценариями: Disabled — заявка создаётся без Telegram; Enabled — приходит фиксированное сообщение; нерабочий token/proxy — заявка всё равно создаётся без retry; Misconfigured — server и `/health/ready` работают без отправки. Overflow проверяется unit-тестом, а не production smoke.
 
 ### Разовый переход с ручного production drift
 
@@ -390,7 +435,7 @@ Workflow `CI` запускается для каждого pull request в `main
 
 `postgres-regression` на `windows-2022` поднимает отдельную PostgreSQL 16, применяет полный migration chain через `deploy/scripts/run_migrations.sh`, выполняет четыре focused-класса из обязательного gate выше и затем весь solution с `FLOWSTOCK_POSTGRES_TEST_CONNECTION`. Каждый focused-класс обязан иметь выполненные тесты; любой `Failed`, `Skipped` или `NotExecuted` делает check неуспешным. В полном suite разрешены только явно зафиксированные legacy JSONL skips. Naming guard требует, чтобы DB-зависимые тесты содержали `Postgres` в имени класса и не выпадали между non-DB и PostgreSQL gates.
 
-`docker-migrations` независимо проверяет disposable Compose migrator, точное соответствие `schema_migrations` tracked-файлам и повторное идемпотентное применение, затем выполняет production Compose `config -q` и build `flowstock`/`discovery-relay` только с dummy CI values. Tracked generated-файлы под `**/artifacts/**` исключаются из Docker context через `.dockerignore`; их удаление остаётся отдельной technical-debt задачей и не блокирует CI.
+`docker-migrations` независимо проверяет disposable Compose migrator, точное соответствие `schema_migrations` tracked-файлам и повторное идемпотентное применение, затем выполняет production Compose `config -q`, secret-safe single-bind/dual-bind validator, Telegram overlay config с временным synthetic secret file и build `flowstock`/`discovery-relay` только с dummy CI values. External Telegram network для config-only gate не создаётся. Tracked generated-файлы под `**/artifacts/**` исключаются из Docker context через `.dockerignore`; их удаление остаётся отдельной technical-debt задачей и не блокирует CI.
 
 ### Необязательная разовая проверка чистого bootstrap
 
@@ -411,6 +456,8 @@ Production update выполняет пользователь вручную с�
 ```bash
 docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml ...
 ```
+
+При `FLOWSTOCK_TELEGRAM_ENABLED=1` к каждой такой команде добавляется `-f deploy/docker-compose.telegram.yml`; base-only invocation остаётся canonical для default-off local/CI.
 
 `deploy_from_git.sh` и `deploy_update.sh` сохраняются как helper/legacy scripts для ограниченных вспомогательных сценариев. Они не являются каноническим production deploy-процессом и не запускаются вместо PowerShell-процесса.
 

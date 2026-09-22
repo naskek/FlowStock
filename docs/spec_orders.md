@@ -744,6 +744,7 @@ Legacy-расчет задач маркировки из производств�
 - Selector товара нового веб-заказа показывает только позиции с `items.is_active != false`; полный административный `GET /api/items` при этом не меняется.
 - При приёме `CREATE_ORDER` server повторно проверяет активность всех товаров до записи `order_requests` и отклоняет inactive item кодом `ITEM_INACTIVE_FOR_ORDER`.
 - Заявки сохраняются в `order_requests` со статусом `PENDING`.
+- После успешной записи `CREATE_ORDER` сервер best-effort ставит в bounded in-memory очередь Telegram marker без `request_id` и payload. Worker через явно настроенный SOCKS5 proxy выполняет одну попытку отправить `Новый заказ. Требуется подтверждение в FlowStock.`. Disabled/misconfigured configuration, overflow, restart/shutdown, timeout, HTTP/transport/proxy error приводят только к потере уведомления: persistence, retry, outbox и delivery journal отсутствуют, а результат создания заявки не меняется.
 - Confirm не доверяет проверке времени создания заявки: server dispatcher повторяет canonical validation. Если товар успел стать inactive, заказ не создаётся, заявка остаётся `PENDING` без `applied_order_id`.
 - Отправка заявки требует валидную server-side PC session активного аккаунта с `platform=PC|BOTH`; `created_by_login` и `created_by_device_id` сервер получает из session, а не из request body. `OPERATOR` и `ADMIN` могут создавать оба типа заказа.
 - При создании заказа номер подставляется автоматически как следующий числовой `order_ref` по текущей БД.

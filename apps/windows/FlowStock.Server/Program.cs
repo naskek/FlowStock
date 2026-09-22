@@ -12,6 +12,7 @@ using FlowStock.Data;
 using FlowStock.Server;
 using FlowStock.Server.Discovery;
 using FlowStock.Server.Maintenance;
+using FlowStock.Server.Telegram;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
@@ -57,6 +58,10 @@ var pcRoot = ServerPaths.PcRoot;
 var pcWebBundle = PcWebStaticFiles.Load(tsdRoot, pcRoot);
 var discoveryOptions = FlowStockDiscoveryOptions.FromConfiguration(builder.Configuration, appVersion);
 var wpfAdminApiKey = builder.Configuration["FLOWSTOCK_WPF_ADMIN_API_KEY"];
+var telegramConfiguration = TelegramNotificationConfiguration.Load(builder.Configuration);
+var telegramNotifications = telegramConfiguration.State == TelegramNotificationState.Enabled
+    ? OrderRequestTelegramQueue.CreateEnabled()
+    : OrderRequestTelegramQueue.CreateDisabled();
 
 builder.Services.AddSingleton<PostgresDataStore>(sp =>
 {
@@ -142,9 +147,18 @@ builder.Services.AddSingleton<ItemPackagingService>();
 builder.Services.AddSingleton<MarkingExcelService>();
 builder.Services.AddSingleton<LiveUpdateHub>();
 builder.Services.AddSingleton(discoveryOptions);
+builder.Services.AddSingleton(telegramNotifications);
+if (telegramConfiguration.State == TelegramNotificationState.Enabled)
+{
+    builder.Services.AddSingleton(_ => TelegramBotClient.Create(telegramConfiguration));
+    builder.Services.AddHostedService<TelegramNotificationWorker>(sp => new TelegramNotificationWorker(
+        sp.GetRequiredService<OrderRequestTelegramQueue>(),
+        sp.GetRequiredService<TelegramBotClient>()));
+}
 builder.Services.AddHostedService<FlowStockDiscoveryUdpService>();
 
 var app = builder.Build();
+telegramConfiguration.LogStartupWarning(app.Logger);
 var serverVersionPayload = ServerBuildIdentity.CreateVersionPayload(
     appVersion,
     pcWebBundle.Version,
@@ -2292,7 +2306,11 @@ app.MapGet("/api/orders/{orderId:long}/bound-hu", (long orderId, IDataStore stor
     return Results.Ok(rows);
 });
 
-app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStore store, IPcWebSessionResolver pcSessions) =>
+app.MapPost("/api/orders/requests/create", async (
+    HttpRequest request,
+    IDataStore store,
+    IPcWebSessionResolver pcSessions,
+    OrderRequestTelegramQueue telegramNotifications) =>
 {
     var identity = pcSessions.Resolve(request);
     if (identity == null)
@@ -2426,6 +2444,7 @@ app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStor
         CreatedByLogin = identity.Login,
         CreatedByDeviceId = identity.DeviceId
     });
+    telegramNotifications.TryEnqueue();
 
     return Results.Ok(new
     {
