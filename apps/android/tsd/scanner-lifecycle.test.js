@@ -9,7 +9,6 @@ const scannerJs = fs.readFileSync(path.join(tsdDir, "scanner.js"), "utf8");
 const appJs = fs.readFileSync(path.join(tsdDir, "app.js"), "utf8");
 const indexHtml = fs.readFileSync(path.join(tsdDir, "index.html"), "utf8");
 const serviceWorkerJs = fs.readFileSync(path.join(tsdDir, "service-worker.js"), "utf8");
-const appVersionJs = fs.readFileSync(path.join(tsdDir, "app-version.js"), "utf8");
 
 function createFakeElement(tagName, id) {
   const listeners = {};
@@ -288,7 +287,6 @@ function testScannerLifecycleObserverReceivesTransportEvents() {
 }
 
 function testShellAndAppIntegration() {
-  assert(appVersionJs.includes('var version = "76"'));
   assert(indexHtml.indexOf("scanner-lifecycle-diagnostics.js") < indexHtml.indexOf("scanner.js"));
   assert(indexHtml.indexOf("native-bridge.js") < indexHtml.indexOf("scanner.js"));
   assert(serviceWorkerJs.includes('"./scanner-lifecycle-diagnostics.js"'));

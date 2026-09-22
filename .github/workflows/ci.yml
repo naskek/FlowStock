@@ -1,0 +1,307 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+
+jobs:
+  windows-build-test:
+    name: windows-build-test
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: Configure NuGet packages path
+        shell: pwsh
+        run: |
+          "NUGET_PACKAGES=$env:RUNNER_TEMP\nuget-packages" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ runner.temp }}\nuget-packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('global.json', 'NuGet.Config', 'apps/windows/**/*.csproj') }}
+      - name: Restore and build
+        shell: pwsh
+        run: |
+          dotnet restore apps/windows/FlowStock.sln
+          dotnet build apps/windows/FlowStock.sln -c Release --no-restore
+      - name: Verify PostgreSQL test naming convention
+        shell: pwsh
+        run: |
+          $discovery = & dotnet test apps/windows/FlowStock.Server.Tests/FlowStock.Server.Tests.csproj `
+            -c Release --no-build --list-tests
+          if ($LASTEXITCODE -ne 0) { throw "Test discovery failed with exit code $LASTEXITCODE." }
+          $discovery | Set-Content -LiteralPath "$env:RUNNER_TEMP\server-tests.txt" -Encoding utf8
+          & tools/ci/assert-postgres-test-conventions.ps1 `
+            -SourceRoot apps/windows/FlowStock.Server.Tests `
+            -DiscoveredTestsPath "$env:RUNNER_TEMP\server-tests.txt"
+      - name: Run non-PostgreSQL tests
+        shell: pwsh
+        run: |
+          dotnet test apps/windows/FlowStock.sln -c Release --no-build `
+            --filter "FullyQualifiedName!~Postgres" `
+            --logger "trx;LogFilePrefix=windows" `
+            --results-directory "$env:RUNNER_TEMP\test-results\windows"
+          if ($LASTEXITCODE -ne 0) { throw "Tests failed with exit code $LASTEXITCODE." }
+
+          & tools/ci/assert-trx.ps1 `
+            -Path "$env:RUNNER_TEMP\test-results\windows" `
+            -RequireAnyTests `
+            -AllowedSkippedTests @(
+              "FlowStock.Server.Tests.CreateDocLine.LegacyBoundaryTests.JsonlImport_RemainsOutsideCanonicalLifecycle",
+              "FlowStock.Server.Tests.CreateDocDraft.LegacyBoundaryTests.JsonlImport_RemainsOutsideCanonicalDraftLifecycle"
+            )
+
+  postgres-regression:
+    name: postgres-regression
+    runs-on: windows-2022
+    timeout-minutes: 75
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: "55432"
+      PGDATABASE: flowstock_test
+      PGUSER: flowstock_test
+      PGPASSWORD: flowstock_test
+      FLOWSTOCK_POSTGRES_TEST_CONNECTION: Host=127.0.0.1;Port=55432;Database=flowstock_test;Username=flowstock_test;Password=flowstock_test;Pooling=false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: Configure NuGet packages path
+        shell: pwsh
+        run: |
+          "NUGET_PACKAGES=$env:RUNNER_TEMP\nuget-packages" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ runner.temp }}\nuget-packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('global.json', 'NuGet.Config', 'apps/windows/**/*.csproj') }}
+      - name: Provision PostgreSQL 16
+        uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee # v8
+        with:
+          username: flowstock_test
+          password: flowstock_test
+          database: flowstock_test
+          port: "55432"
+          postgres-version: "16"
+      - name: Verify PostgreSQL version
+        shell: pwsh
+        run: |
+          $version = [int](& psql -At -v ON_ERROR_STOP=1 -c "SHOW server_version_num")
+          if ($LASTEXITCODE -ne 0 -or $version -lt 160000 -or $version -ge 170000) {
+            throw "Expected PostgreSQL 16, got server_version_num=$version"
+          }
+      - name: Apply canonical migration chain
+        shell: bash
+        run: |
+          export MIGRATIONS_DIR="$(cygpath -m "$GITHUB_WORKSPACE")/deploy/postgres/migrations"
+          sh deploy/scripts/run_migrations.sh
+      - name: Verify migration chain
+        shell: pwsh
+        run: |
+          $expected = @(
+            Get-ChildItem deploy/postgres/migrations -File -Filter "V*.sql" |
+              Sort-Object Name |
+              ForEach-Object Name
+          )
+          $actual = @(
+            & psql -At -v ON_ERROR_STOP=1 `
+              -c "SELECT filename FROM schema_migrations ORDER BY filename"
+          )
+          if ($LASTEXITCODE -ne 0) { throw "Cannot read schema_migrations." }
+          if ($expected.Count -eq 0) { throw "No tracked migrations found." }
+          $difference = Compare-Object $expected $actual
+          if ($difference) {
+            $difference | Format-Table | Out-String | Write-Error
+            throw "Applied migration chain differs from tracked migration chain."
+          }
+      - name: Restore and build
+        shell: pwsh
+        run: |
+          dotnet restore apps/windows/FlowStock.sln
+          dotnet build apps/windows/FlowStock.sln -c Release --no-restore
+      - name: Run focused PostgreSQL release gate
+        shell: pwsh
+        run: |
+          $filter = @(
+            "FullyQualifiedName~CatalogCutoverPostgresTests"
+            "FullyQualifiedName~UomCatalogPostgresTests"
+            "FullyQualifiedName~CommercialCatalogPostgresConcurrencyTests"
+            "FullyQualifiedName~CommercialPriceShipmentConcurrencyPostgresTests"
+          ) -join "|"
+
+          dotnet test apps/windows/FlowStock.Server.Tests/FlowStock.Server.Tests.csproj `
+            -c Release --no-build `
+            --filter $filter `
+            --logger "trx;LogFilePrefix=postgres-focused" `
+            --results-directory "$env:RUNNER_TEMP\test-results\postgres-focused"
+          if ($LASTEXITCODE -ne 0) { throw "Focused PostgreSQL tests failed with exit code $LASTEXITCODE." }
+
+          & tools/ci/assert-trx.ps1 `
+            -Path "$env:RUNNER_TEMP\test-results\postgres-focused" `
+            -RequiredTestClasses @(
+              "FlowStock.Server.Tests.Catalog.CatalogCutoverPostgresTests",
+              "FlowStock.Server.Tests.Catalog.UomCatalogPostgresTests",
+              "FlowStock.Server.Tests.Commercial.CommercialCatalogPostgresConcurrencyTests",
+              "FlowStock.Server.Tests.Commercial.CommercialPriceShipmentConcurrencyPostgresTests"
+            ) `
+            -RequireOnlyPassed
+      - name: Run full suite with PostgreSQL
+        shell: pwsh
+        run: |
+          dotnet test apps/windows/FlowStock.sln -c Release --no-build `
+            --logger "trx;LogFilePrefix=postgres-full" `
+            --results-directory "$env:RUNNER_TEMP\test-results\postgres-full"
+          if ($LASTEXITCODE -ne 0) { throw "PostgreSQL test suite failed with exit code $LASTEXITCODE." }
+
+          & tools/ci/assert-trx.ps1 `
+            -Path "$env:RUNNER_TEMP\test-results\postgres-full" `
+            -RequireAnyTests `
+            -AllowedSkippedTests @(
+              "FlowStock.Server.Tests.CreateDocLine.LegacyBoundaryTests.JsonlImport_RemainsOutsideCanonicalLifecycle",
+              "FlowStock.Server.Tests.CreateDocDraft.LegacyBoundaryTests.JsonlImport_RemainsOutsideCanonicalDraftLifecycle"
+            )
+
+  web-tests:
+    name: web-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+      - name: Run tracked Node tests
+        shell: bash
+        run: |
+          mapfile -d '' tests < <(git ls-files -z ':(glob)apps/android/tsd/**/*.test.js')
+          (( ${#tests[@]} > 0 )) || { echo "No tracked web tests found"; exit 1; }
+
+          for test_file in "${tests[@]}"; do
+            echo "::group::$test_file"
+            node "$test_file"
+            echo "::endgroup::"
+          done
+
+  android-native:
+    name: android-native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - name: Verify Android SDK contract
+        shell: bash
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.1.0"
+          test -d "$ANDROID_HOME/platforms/android-36"
+          test -d "$ANDROID_HOME/build-tools/36.1.0"
+      - name: Test and assemble debug APK
+        shell: bash
+        working-directory: apps/android/tsd-native
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --no-parallel testDebugUnitTest assembleDebug
+
+  docker-migrations:
+    name: docker-migrations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate and apply disposable migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          compose=(docker compose --project-name flowstock-ci-migrations -f deploy/docker-compose.test-postgres.yml)
+          "${compose[@]}" config -q
+          "${compose[@]}" up -d --wait postgres-test
+          "${compose[@]}" run --rm migrator-test
+
+          find deploy/postgres/migrations -maxdepth 1 -type f -name 'V*.sql' -printf '%f\n' |
+            LC_ALL=C sort > "$RUNNER_TEMP/expected-migrations.txt"
+          test -s "$RUNNER_TEMP/expected-migrations.txt"
+          "${compose[@]}" exec -T postgres-test \
+            psql -U flowstock_test -d flowstock_test -At -v ON_ERROR_STOP=1 \
+            -c "SELECT filename FROM schema_migrations ORDER BY filename" \
+            > "$RUNNER_TEMP/applied-migrations-first.txt"
+          diff -u "$RUNNER_TEMP/expected-migrations.txt" "$RUNNER_TEMP/applied-migrations-first.txt"
+
+          "${compose[@]}" run --rm migrator-test
+          "${compose[@]}" exec -T postgres-test \
+            psql -U flowstock_test -d flowstock_test -At -v ON_ERROR_STOP=1 \
+            -c "SELECT filename FROM schema_migrations ORDER BY filename" \
+            > "$RUNNER_TEMP/applied-migrations-second.txt"
+          diff -u "$RUNNER_TEMP/applied-migrations-first.txt" "$RUNNER_TEMP/applied-migrations-second.txt"
+      - name: Validate production Compose and build images
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/flowstock-ci.env" <<'EOF'
+          POSTGRES_DB=flowstock_ci
+          POSTGRES_USER=flowstock_ci
+          POSTGRES_PASSWORD=ci_only_not_a_production_secret
+          FLOWSTOCK_PG_BIND_HOST=127.0.0.1
+          FLOWSTOCK_PG_SECOND_BIND_HOST=127.0.0.2
+          FLOWSTOCK_PORT=18080
+          FLOWSTOCK_HTTPS_PORT=17154
+          FLOWSTOCK_DISCOVERY_BACKEND_PORT=17155
+          FLOWSTOCK_DISCOVERY_RELAY_TIMEOUT_MS=2000
+          FLOWSTOCK_DISCOVERY_RELAY_MAX_IN_FLIGHT=64
+          FLOWSTOCK_PUBLIC_BASE_URL=https://flowstock.invalid:17154
+          FLOWSTOCK_INSTANCE_NAME=FlowStock-CI
+          FLOWSTOCK_WPF_ADMIN_API_KEY=ci_only_dummy_admin_key_at_least_32_chars
+          FLOWSTOCK_TLS_MODE=local_ca
+          FLOWSTOCK_TLS_SERVER_NAME=flowstock.invalid
+          FLOWSTOCK_TLS_SANS=DNS:flowstock.invalid
+          FLOWSTOCK_CA_DIR=/tmp/flowstock-ci-ca
+          FLOWSTOCK_SERVER_CERT_DAYS=30
+          FLOWSTOCK_SERVER_CERT_RENEW_BEFORE_DAYS=5
+          BACKUP_KEEP=1
+          BACKUP_INTERVAL_SECONDS=86400
+          POSTGRES_WAIT_TIMEOUT_SECONDS=120
+          EOF
+
+          compose=(docker compose --project-name flowstock-ci --env-file "$RUNNER_TEMP/flowstock-ci.env" -f deploy/docker-compose.yml)
+          FLOWSTOCK_SOURCE_COMMIT="$GITHUB_SHA" "${compose[@]}" config -q
+          FLOWSTOCK_SOURCE_COMMIT="$GITHUB_SHA" "${compose[@]}" build flowstock discovery-relay
+      - name: Clean up disposable PostgreSQL
+        if: always()
+        shell: bash
+        run: |
+          docker compose \
+            --project-name flowstock-ci-migrations \
+            -f deploy/docker-compose.test-postgres.yml \
+            down -v --remove-orphans
