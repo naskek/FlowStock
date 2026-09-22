@@ -96,11 +96,11 @@ jobs:
     timeout-minutes: 75
     env:
       PGHOST: 127.0.0.1
-      PGPORT: "55432"
+      PGPORT: "15432"
       PGDATABASE: flowstock_test
       PGUSER: flowstock_test
       PGPASSWORD: flowstock_test
-      FLOWSTOCK_POSTGRES_TEST_CONNECTION: Host=127.0.0.1;Port=55432;Database=flowstock_test;Username=flowstock_test;Password=flowstock_test;Pooling=false
+      FLOWSTOCK_POSTGRES_TEST_CONNECTION: Host=127.0.0.1;Port=15432;Database=flowstock_test;Username=flowstock_test;Password=flowstock_test;Pooling=false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -142,14 +142,14 @@ jobs:
           username: flowstock_test
           password: flowstock_test
           database: flowstock_test
-          port: "55432"
+          port: "15432"
           postgres-version: "16"
       - name: Restore PostgreSQL client environment
         shell: pwsh
         run: |
           @(
             "PGHOST=127.0.0.1"
-            "PGPORT=55432"
+            "PGPORT=15432"
             "PGDATABASE=flowstock_test"
             "PGUSER=flowstock_test"
             "PGPASSWORD=flowstock_test"
@@ -272,6 +272,8 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: ""
       - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
         with:
           cache-read-only: ${{ github.event_name == 'pull_request' }}
