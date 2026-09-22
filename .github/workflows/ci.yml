@@ -27,6 +27,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      # Emulate the source-run updater contract while runtime still depends on the canonical repository root.
+      - name: Map canonical repository root
+        shell: pwsh
+        run: |
+          $canonicalParent = "D:\Projects"
+          $canonicalRoot = Join-Path $canonicalParent "FlowStock"
+          New-Item -ItemType Directory -Path $canonicalParent -Force | Out-Null
+
+          if (Get-Item -LiteralPath $canonicalRoot -Force -ErrorAction SilentlyContinue) {
+            throw "Canonical repository root already exists: $canonicalRoot"
+          }
+
+          $junction = New-Item -ItemType Junction -Path $canonicalRoot -Target $env:GITHUB_WORKSPACE
+          $expectedTarget = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\')
+          $actualTarget = [IO.Path]::GetFullPath([string]$junction.Target).TrimEnd('\')
+          if ($junction.LinkType -ne "Junction" -or
+              -not $actualTarget.Equals($expectedTarget, [StringComparison]::OrdinalIgnoreCase) -or
+              -not (Test-Path -LiteralPath "$canonicalRoot\apps\windows\FlowStock.sln" -PathType Leaf)) {
+            throw "Canonical repository junction is not usable: $canonicalRoot -> $actualTarget"
+          }
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
@@ -85,6 +105,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      # Emulate the source-run updater contract while runtime still depends on the canonical repository root.
+      - name: Map canonical repository root
+        shell: pwsh
+        run: |
+          $canonicalParent = "D:\Projects"
+          $canonicalRoot = Join-Path $canonicalParent "FlowStock"
+          New-Item -ItemType Directory -Path $canonicalParent -Force | Out-Null
+
+          if (Get-Item -LiteralPath $canonicalRoot -Force -ErrorAction SilentlyContinue) {
+            throw "Canonical repository root already exists: $canonicalRoot"
+          }
+
+          $junction = New-Item -ItemType Junction -Path $canonicalRoot -Target $env:GITHUB_WORKSPACE
+          $expectedTarget = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\')
+          $actualTarget = [IO.Path]::GetFullPath([string]$junction.Target).TrimEnd('\')
+          if ($junction.LinkType -ne "Junction" -or
+              -not $actualTarget.Equals($expectedTarget, [StringComparison]::OrdinalIgnoreCase) -or
+              -not (Test-Path -LiteralPath "$canonicalRoot\apps\windows\FlowStock.sln" -PathType Leaf)) {
+            throw "Canonical repository junction is not usable: $canonicalRoot -> $actualTarget"
+          }
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
@@ -104,11 +144,25 @@ jobs:
           database: flowstock_test
           port: "55432"
           postgres-version: "16"
+      - name: Restore PostgreSQL client environment
+        shell: pwsh
+        run: |
+          @(
+            "PGHOST=127.0.0.1"
+            "PGPORT=55432"
+            "PGDATABASE=flowstock_test"
+            "PGUSER=flowstock_test"
+            "PGPASSWORD=flowstock_test"
+            "PGCONNECT_TIMEOUT=10"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Verify PostgreSQL version
         shell: pwsh
         run: |
-          $version = [int](& psql -At -v ON_ERROR_STOP=1 -c "SHOW server_version_num")
-          if ($LASTEXITCODE -ne 0 -or $version -lt 160000 -or $version -ge 170000) {
+          $versionText = & psql --no-password -At -v ON_ERROR_STOP=1 -c "SHOW server_version_num"
+          if ($LASTEXITCODE -ne 0) { throw "Cannot query PostgreSQL server version." }
+          $version = 0
+          if (-not [int]::TryParse($versionText.Trim(), [ref]$version) -or
+              $version -lt 160000 -or $version -ge 170000) {
             throw "Expected PostgreSQL 16, got server_version_num=$version"
           }
       - name: Apply canonical migration chain
@@ -217,6 +271,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
       - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
         with:
           cache-read-only: ${{ github.event_name == 'pull_request' }}
