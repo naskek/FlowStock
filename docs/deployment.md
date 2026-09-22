@@ -22,7 +22,7 @@
 
 ### Канонический ручной production deploy
 
-Запускайте entrypoint **на операторской машине из чистой локальной ветки `main`**, которая точно совпадает с `origin/main`. PowerShell сам выполняет `git fetch origin main`, вычисляет либо проверяет полный expected SHA и останавливается при несовпадении. Production-сервер должен быть доступен по SSH, а `flowstock.local` на операторской машине и сервере должен разрешаться в production endpoint с доверенным TLS-сертификатом.
+Запускайте entrypoint **на операторской машине из чистой локальной ветки `main`**, которая точно совпадает с `origin/main`. PowerShell сам выполняет `git fetch origin main`, вычисляет либо проверяет полный expected SHA и останавливается при несовпадении. Production-сервер должен быть доступен по SSH. `flowstock.local` должен разрешаться в production endpoint с доверенным TLS-сертификатом на операторской машине, где выполняются внешние HTTPS gates.
 
 ```powershell
 git switch main
@@ -39,9 +39,9 @@ pwsh ./deploy/scripts/deploy-production.ps1 `
   -ExpectedCommit 0123456789abcdef0123456789abcdef01234567
 ```
 
-Entrypoint последовательно и fail-closed проверяет локальные `main`/worktree/`origin/main`, создаёт и проверяет свежий PostgreSQL custom-format backup **до** обновления, fast-forward обновляет `/opt/FlowStock` до exact SHA и проверяет server `HEAD`. Затем он сверяет TSD source versions, экспортирует `FLOWSTOCK_SOURCE_COMMIT`, формирует один массив аргументов Compose, выполняет `config -q` и secret-safe resolved validation через pipe, build/deploy, проверку контейнеров, `live`/`ready`, строгую source identity `/api/version`, deployed TSD version и выводит disk space и путь backup. В конце те же HTTPS gates выполняются с операторской машины через `https://flowstock.local:7154`.
+Entrypoint последовательно и fail-closed проверяет локальные `main`/worktree/`origin/main`, создаёт и проверяет свежий PostgreSQL custom-format backup в `/opt/flowstock-backups/manual` **до** обновления, fast-forward обновляет `/opt/FlowStock` до exact SHA и проверяет server `HEAD`. Затем он сверяет TSD source versions, экспортирует `FLOWSTOCK_SOURCE_COMMIT`, формирует один массив аргументов Compose, выполняет `config -q` и secret-safe resolved validation через pipe, build/deploy и проверку контейнеров. Server-side gates `live`/`ready`, строгая source identity `/api/version` и deployed TSD version выполняются через loopback backend `http://127.0.0.1:18080`; затем выводятся disk space и путь backup. После успешного SSH/deploy отдельные внешние HTTPS gates выполняются с операторской машины через `https://flowstock.local:7154`.
 
-Entrypoint никогда не печатает `deploy/.env`, connection strings или resolved Compose JSON. При `FLOWSTOCK_TELEGRAM_ENABLED=1` он добавляет `deploy/docker-compose.telegram.yml` в единый массив Compose и выполняет Telegram preflight/runtime gates. При любом другом значении используется только base `deploy/docker-compose.yml`, а Telegram-файлы, secret, network и runtime не проверяются.
+Entrypoint никогда не печатает `deploy/.env`, connection strings или resolved Compose JSON. При `FLOWSTOCK_TELEGRAM_ENABLED=1` он добавляет `deploy/docker-compose.telegram.yml` в единый массив Compose и fail-closed проверяет absolute secret path, regular/readable/non-empty secret-файл с mode `600`, непустой chat id, непустой `socks5://` proxy, external network и подключение существующего egress-контейнера; после deploy сохраняются Telegram runtime gates. При любом другом значении используется только base `deploy/docker-compose.yml`, а Telegram-файлы, secret, network и runtime не проверяются.
 
 `deploy_from_git.sh` и `deploy_update.sh` остаются helper/legacy и не заменяют этот entrypoint. Скрипт не является unattended CD: production deploy всегда явно запускает оператор. Для проверки контракта без доступа к production используйте:
 

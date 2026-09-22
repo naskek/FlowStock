@@ -102,7 +102,19 @@ if test "${FLOWSTOCK_TELEGRAM_ENABLED:-0}" = 1; then
     telegram_enabled=1
     test -f deploy/docker-compose.telegram.yml || fail 'Telegram overlay is missing'
     token_file="${FLOWSTOCK_TELEGRAM_BOT_TOKEN_SECRET_FILE:-}"
-    test -n "$token_file" && test -r "$token_file" && test -s "$token_file" || fail 'Telegram token secret file is unavailable'
+    case "$token_file" in
+        /*) ;;
+        *) fail 'Telegram token secret file path must be absolute' ;;
+    esac
+    test -f "$token_file" && test -r "$token_file" && test -s "$token_file" || fail 'Telegram token secret file is unavailable'
+    token_mode="$(stat -c '%a' "$token_file")" || fail 'Cannot read Telegram token secret file mode'
+    test "$token_mode" = 600 || fail 'Telegram token secret file mode must be 600'
+    test -n "${FLOWSTOCK_TELEGRAM_CHAT_ID:-}" || fail 'Telegram chat id is missing'
+    telegram_proxy="${FLOWSTOCK_TELEGRAM_PROXY_URL:-}"
+    case "$telegram_proxy" in
+        socks5://?*) ;;
+        *) fail 'Telegram proxy must be a non-empty socks5:// URL' ;;
+    esac
     telegram_network="${FLOWSTOCK_TELEGRAM_EGRESS_NETWORK:-reg-ru-imap-telegram_default}"
     docker network inspect "$telegram_network" >/dev/null 2>&1 || fail 'Telegram egress network is unavailable'
     docker inspect reg-ru-imap-telegram-tailscale-egress --format '{{json .NetworkSettings.Networks}}' |
@@ -116,9 +128,9 @@ postgres_id="$("${compose[@]}" ps -q postgres)"
 test -n "$postgres_id" || fail 'running production postgres container is missing; refusing to mutate the stack before backup'
 status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$postgres_id")"
 test "$status" = healthy || fail 'production postgres is not healthy; refusing to mutate the stack before backup'
-backup_dir="$repo/deploy/runtime/backups/manual-production"
+backup_dir="/opt/flowstock-backups/manual"
 mkdir -p "$backup_dir"
-backup_path="$backup_dir/FlowStock_$(date -u +%Y%m%dT%H%M%SZ)_${expected_commit:0:12}.dump"
+backup_path="$backup_dir/flowstock-before-${expected_commit:0:12}-$(date -u +%Y%m%dT%H%M%SZ).dump"
 "${compose[@]}" exec -T postgres sh -eu -c 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"$backup_path"
 test -s "$backup_path" || fail 'backup is empty'
 "${compose[@]}" exec -T postgres pg_restore --list <"$backup_path" >/dev/null
@@ -165,9 +177,9 @@ if test "$telegram_enabled" = 1; then
         fail 'FlowStock is not attached to Telegram egress at runtime'
 fi
 
-curl -fsS https://flowstock.local:7154/health/live >/dev/null
-curl -fsS https://flowstock.local:7154/health/ready >/dev/null
-version_json="$(curl -fsS https://flowstock.local:7154/api/version)"
+curl -fsS http://127.0.0.1:18080/health/live >/dev/null
+curl -fsS http://127.0.0.1:18080/health/ready >/dev/null
+version_json="$(curl -fsS http://127.0.0.1:18080/api/version)"
 printf '%s' "$version_json" | python3 -c '
 import json,re,sys
 expected=sys.argv[1]
@@ -183,7 +195,7 @@ valid=(re.fullmatch(r"[0-9a-f]{40}", expected) is not None
 raise SystemExit(0 if valid else 1)
 ' "$expected_commit" || fail '/api/version source identity gate failed'
 
-deployed_tsd="$(curl -fsS https://flowstock.local:7154/tsd/app-version.js | sed -n 's/.*var version = "\([0-9][0-9]*\)";.*/\1/p')"
+deployed_tsd="$(curl -fsS http://127.0.0.1:18080/tsd/app-version.js | sed -n 's/.*var version = "\([0-9][0-9]*\)";.*/\1/p')"
 test "$deployed_tsd" = "$expected_tsd_version" || fail 'deployed TSD version differs from source'
 log "deployed TSD version: $deployed_tsd"
 df -h "$repo" "$backup_path"
