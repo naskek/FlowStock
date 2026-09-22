@@ -1,0 +1,3 @@
+interface:
+  display_name: "Ревью кода"
+  short_description: "Проверить diff по стандартам и спецификации"

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Реализация"
+  short_description: "Реализовать работу по спецификации или задачам"
+policy:
+  allow_implicit_invocation: false

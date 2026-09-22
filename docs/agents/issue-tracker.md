@@ -1,19 +1,34 @@
-# Issue tracker: Local Markdown
+# Issue tracker: GitHub
 
-Issues and PRDs for this repo live as markdown files in `.scratch/`.
+Для FlowStock канонический tracker — GitHub Issues в репозитории `naskek/FlowStock`.
+Изменения публикуются через Pull Request в этом же репозитории.
 
-## Conventions
+`.scratch/**` не является каноническим tracker и не должно использоваться для новых Issue/PRD без прямого запроса пользователя.
 
-- One feature per directory: `.scratch/<feature-slug>/`
-- The PRD is `.scratch/<feature-slug>/PRD.md`
-- Implementation issues are `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`
-- Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
-- Comments and conversation history append to the bottom of the file under a `## Comments` heading
+## Когда skill говорит "publish to the issue tracker"
 
-## When a skill says "publish to the issue tracker"
+Создай GitHub Issue в `naskek/FlowStock`.
 
-Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
+Issue должна быть самодостаточной и содержать:
+- цель;
+- необходимый контекст и ссылки на актуальные спеки;
+- ограничения и важные edge cases;
+- критерии готовности.
 
-## When a skill says "fetch the relevant ticket"
+Для нетривиальной реализации используй отдельную ветку и PR. PR должен ссылаться на Issue, например `Closes #123`.
 
-Read the file at the referenced path. The user will normally pass the path or the issue number directly.
+## Когда skill говорит "fetch the relevant ticket"
+
+Получай Issue из GitHub по полному reference:
+- URL Issue; или
+- `naskek/FlowStock#123`.
+
+Если пользователь дал только `#123`, трактуй его как Issue этого репозитория только когда контекст однозначно относится к FlowStock. При неоднозначности сначала уточни reference.
+
+Не подменяй GitHub Issue локальным markdown-файлом.
+
+## Review
+
+Для spec-review источником требований является originating GitHub Issue и указанные в нём актуальные FlowStock specs.
+
+GitHub CI и опубликованный PR являются источником истины для статуса опубликованных изменений. Отчёт агента сам по себе не подтверждает готовность к merge.
