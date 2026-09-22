@@ -94,9 +94,16 @@ test -z "$(git status --porcelain)" || fail 'server worktree is not clean'
 export FLOWSTOCK_SOURCE_COMMIT="$expected_commit"
 compose=(docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml)
 declare -A compose_env=()
+compose_environment="$("${compose[@]}" config --environment)" || fail 'Compose environment resolution failed'
 while IFS='=' read -r key value; do
     compose_env["$key"]="$value"
-done < <("${compose[@]}" config --environment)
+done <<<"$compose_environment"
+flowstock_port="${compose_env[FLOWSTOCK_PORT]:-8080}"
+case "$flowstock_port" in
+    ''|*[!0-9]*) fail 'FLOWSTOCK_PORT must be a numeric TCP port' ;;
+esac
+test "$flowstock_port" -ge 1 && test "$flowstock_port" -le 65535 || fail 'FLOWSTOCK_PORT must be between 1 and 65535'
+loopback_url="http://127.0.0.1:$flowstock_port"
 telegram_enabled_value="${compose_env[FLOWSTOCK_TELEGRAM_ENABLED]:-0}"
 telegram_enabled=0
 if test "$telegram_enabled_value" = 1; then
@@ -180,9 +187,9 @@ if test "$telegram_enabled" = 1; then
         fail 'FlowStock is not attached to Telegram egress at runtime'
 fi
 
-curl -fsS http://127.0.0.1:18080/health/live >/dev/null
-curl -fsS http://127.0.0.1:18080/health/ready >/dev/null
-version_json="$(curl -fsS http://127.0.0.1:18080/api/version)"
+curl -fsS $loopback_url/health/live >/dev/null
+curl -fsS $loopback_url/health/ready >/dev/null
+version_json="$(curl -fsS $loopback_url/api/version)"
 printf '%s' "$version_json" | python3 -c '
 import json,re,sys
 expected=sys.argv[1]
@@ -198,7 +205,7 @@ valid=(re.fullmatch(r"[0-9a-f]{40}", expected) is not None
 raise SystemExit(0 if valid else 1)
 ' "$expected_commit" || fail '/api/version source identity gate failed'
 
-deployed_tsd="$(curl -fsS http://127.0.0.1:18080/tsd/app-version.js | sed -n 's/.*var version = "\([0-9][0-9]*\)";.*/\1/p')"
+deployed_tsd="$(curl -fsS $loopback_url/tsd/app-version.js | sed -n 's/.*var version = "\([0-9][0-9]*\)";.*/\1/p')"
 test "$deployed_tsd" = "$expected_tsd_version" || fail 'deployed TSD version differs from source'
 log "deployed TSD version: $deployed_tsd"
 df -h "$repo" "$backup_path"
