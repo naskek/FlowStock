@@ -17,7 +17,7 @@ public sealed class DesktopUpdateCheckerTests
 
         var result = await checker.CheckAsync(
             new Uri("https://flowstock.example/"),
-            @"D:\FlowStock",
+            @"D:\Projects\FlowStock",
             BuildIdentity.Create("1.0.0", Commit),
             CancellationToken.None);
 
@@ -34,7 +34,7 @@ public sealed class DesktopUpdateCheckerTests
 
         var result = await checker.CheckAsync(
             new Uri("https://flowstock.example/"),
-            @"D:\FlowStock",
+            @"D:\Projects\FlowStock",
             BuildIdentity.Create("1.0.0", Commit),
             CancellationToken.None);
 
@@ -50,7 +50,7 @@ public sealed class DesktopUpdateCheckerTests
 
         var result = await checker.CheckAsync(
             new Uri("http://flowstock.local:7154/"),
-            @"D:\FlowStock",
+            @"D:\Projects\FlowStock",
             BuildIdentity.Create("1.0.0", Commit),
             CancellationToken.None);
 
@@ -67,7 +67,7 @@ public sealed class DesktopUpdateCheckerTests
 
         var result = await checker.CheckAsync(
             new Uri("https://flowstock.local:7154/"),
-            @"D:\FlowStock",
+            @"D:\Projects\FlowStock",
             BuildIdentity.Create("1.0.0", Commit),
             CancellationToken.None);
 

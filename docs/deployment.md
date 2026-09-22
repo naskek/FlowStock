@@ -75,7 +75,7 @@ Mismatch делает deploy неуспешным и не разрешает с�
 
 ## Первый rollout WPF updater
 
-Старый WPF не может установить subsystem, которого в нём ещё нет. Один раз вручную доставьте в repository root `D:\FlowStock` bootstrap commit с `FlowStock.DesktopUpdate`, `FlowStock.Updater`, обновлённым `FLOWSTOCK.cmd` и launcher. Запустите его обычной MAIN-командой. Production server к этому моменту должен быть развёрнут с deterministic identity contract; до этого AdminWindow показывает, что desktop update не поддерживается.
+Старый WPF не может установить subsystem, которого в нём ещё нет. Один раз вручную доставьте в repository root `D:\Projects\FlowStock` bootstrap commit с `FlowStock.DesktopUpdate`, `FlowStock.Updater`, обновлённым `FLOWSTOCK.cmd` и launcher. Запустите его обычной MAIN-командой. Production server к этому моменту должен быть развёрнут с deterministic identity contract; до этого AdminWindow показывает, что desktop update не поддерживается.
 
 На WPF-машине имя `flowstock.local` должно резолвиться в production server, а HTTPS certificate на `https://flowstock.local:7154` должен быть доверен Windows и содержать соответствующее имя. Operational подключение WPF может использовать другой `server.base_url` и `server.allow_invalid_tls`, но эти параметры не ослабляют desktop update TLS. Для отдельного доверенного стенда допускается process-level `FLOWSTOCK_UPDATE_SERVER_BASE_URL`; production/non-loopback override обязан быть HTTPS root URL.
 

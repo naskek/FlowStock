@@ -11,7 +11,7 @@ public static class DesktopUpdateConstants
     public const string RepositoryUrl = "https://github.com/naskek/FlowStock.git";
     public const string DefaultUpdateServerBaseUrl = "https://flowstock.local:7154";
     public const string UpdateServerBaseUrlEnvironmentVariable = "FLOWSTOCK_UPDATE_SERVER_BASE_URL";
-    public const string DefaultRepositoryRoot = @"D:\FlowStock";
+    public const string DefaultRepositoryRoot = @"D:\Projects\FlowStock";
     public const string DevelopmentRepositoryRoot = @"D:\FlowStock-dev";
     public const string AppMutexName = @"Local\FlowStock.Desktop";
     public const string UpdaterMutexName = @"Local\FlowStock.Updater";

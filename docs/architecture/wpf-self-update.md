@@ -6,7 +6,7 @@
 
 ## Контекст
 
-Production WPF исторически запускается через `dotnet run` из repository root `D:\FlowStock`; GitHub Releases и подписанного artifact pipeline нет. При этом GitHub `main` может опережать реально развёрнутый production server, а working tree оператора может содержать локальные изменения. Repository root, ветка `main` и active runtime — разные сущности.
+Production WPF исторически запускается через `dotnet run` из repository root `D:\Projects\FlowStock`; GitHub Releases и подписанного artifact pipeline нет. При этом GitHub `main` может опережать реально развёрнутый production server, а working tree оператора может содержать локальные изменения. Repository root, ветка `main` и active runtime — разные сущности.
 
 ## Решение
 

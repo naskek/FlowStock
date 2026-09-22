@@ -80,7 +80,7 @@ TSD работает только онлайн через `FlowStock.Server`. С
 - Для Gradle на этой машине можно использовать Android Studio JBR и ASCII Gradle cache:
   `cd apps/android/tsd-native`
   `$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"`
-  `$env:GRADLE_USER_HOME = "D:\FlowStock\.tmp\gradle-home"`
+  `$env:GRADLE_USER_HOME = "D:\Projects\FlowStock\.tmp\gradle-home"`
   `$env:GRADLE_OPTS = "-Dorg.gradle.workers.max=1"`
   `.\gradlew.bat --no-daemon --no-parallel testDebugUnitTest assembleDebug`
 - APK после сборки: `apps/android/tsd-native/app/build/outputs/apk/debug/app-debug.apk`.

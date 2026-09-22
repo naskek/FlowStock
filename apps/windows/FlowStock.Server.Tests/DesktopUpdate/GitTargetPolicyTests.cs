@@ -16,7 +16,7 @@ public sealed class GitTargetPolicyTests
     {
         var client = new GitRepositoryClient(new RelationRunner(Relation.Upgrade));
 
-        await client.ValidateTargetAsync(@"D:\FlowStock", Installed, Target, CancellationToken.None);
+        await client.ValidateTargetAsync(@"D:\Projects\FlowStock", Installed, Target, CancellationToken.None);
     }
 
     [Fact]
@@ -25,7 +25,7 @@ public sealed class GitTargetPolicyTests
         var client = new GitRepositoryClient(new RelationRunner(Relation.ClientAhead));
 
         await Assert.ThrowsAsync<ClientAheadException>(() =>
-            client.ValidateTargetAsync(@"D:\FlowStock", Installed, Target, CancellationToken.None));
+            client.ValidateTargetAsync(@"D:\Projects\FlowStock", Installed, Target, CancellationToken.None));
     }
 
     [Fact]
@@ -34,7 +34,7 @@ public sealed class GitTargetPolicyTests
         var client = new GitRepositoryClient(new RelationRunner(Relation.Diverged));
 
         await Assert.ThrowsAsync<DivergedClientException>(() =>
-            client.ValidateTargetAsync(@"D:\FlowStock", Installed, Target, CancellationToken.None));
+            client.ValidateTargetAsync(@"D:\Projects\FlowStock", Installed, Target, CancellationToken.None));
     }
 
     [Fact]
@@ -43,7 +43,7 @@ public sealed class GitTargetPolicyTests
         var client = new GitRepositoryClient(new RelationRunner(Relation.TargetOutsideRemote));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            client.ValidateTargetAsync(@"D:\FlowStock", Installed, Target, CancellationToken.None));
+            client.ValidateTargetAsync(@"D:\Projects\FlowStock", Installed, Target, CancellationToken.None));
     }
 
     private enum Relation

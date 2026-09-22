@@ -4,7 +4,7 @@
 
 Канонические термины:
 
-- **repository root** — физический Git repository `D:\FlowStock`; `main` — имя ветки, а не каталог или runtime;
+- **repository root** — физический Git repository `D:\Projects\FlowStock`; `main` — имя ветки, а не каталог или runtime;
 - **source-run bootstrap mode** — запуск WPF из repository root через `dotnet run`, пока active runtime отсутствует;
 - **active runtime** — side-by-side publish-каталог, выбранный `active-runtime.json`;
 - **product version** — вручную изменяемый SemVer;
@@ -34,7 +34,7 @@ Crash recovery восстанавливает pointer идемпотентно �
 
 Startup-ready event одинаков для `MainWindow` и startup `DbConnectionWindow`: сразу после первого отображения окна live candidate записывает ACK, не ожидая подключения БД, затем ожидает terminal update result и показывает/удаляет его один раз. Recovery-success target и fallback runtime получают session id без startup token: они не создают новый ACK, но однократно потребляют соответственно success или failure result.
 
-`FLOWSTOCK.cmd` MAIN запускает launcher; при отсутствии active manifest допустим прежний `dotnet run`. DEV всегда остаётся source-run, а production self-update из `D:\FlowStock-dev` запрещён. Для первого rollout один раз требуется вручную доставить в `D:\FlowStock` commit, уже содержащий updater subsystem и новый launcher. Последующие обновления repository root не изменяют.
+`FLOWSTOCK.cmd` MAIN запускает launcher; при отсутствии active manifest допустим прежний `dotnet run`. DEV всегда остаётся source-run, а production self-update из `D:\FlowStock-dev` запрещён. Для первого rollout один раз требуется вручную доставить в `D:\Projects\FlowStock` commit, уже содержащий updater subsystem и новый launcher. Последующие обновления repository root не изменяют.
 
 Updater не выполняет migrations, не изменяет production DB, ledger или документы и не развёртывает server. Подписанные release artifacts и Authenticode относятся к v2.
 

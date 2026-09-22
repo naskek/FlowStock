@@ -6,7 +6,7 @@ rem ============================================================
 rem FlowStock roots
 rem ============================================================
 
-set "ROOT_MAIN=D:\FlowStock"
+set "ROOT_MAIN=D:\Projects\FlowStock"
 set "ROOT_DEV=D:\FlowStock-dev"
 
 set "SLN_REL=apps\windows\FlowStock.sln"
