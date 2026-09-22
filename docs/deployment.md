@@ -14,15 +14,45 @@
 - Все последующие изменения схемы применяются через версионируемые SQL-миграции из `deploy/postgres/migrations/`.
 - На сервере должен быть обычный git clone репозитория.
 - Обновления из GitHub выполняются вручную по запросу; автоматического deploy-loop нет.
-- Production deploy и update выполняются пользователем вручную через канонический FlowStock PowerShell-процесс:
+- Production deploy и update выполняются пользователем вручную через versioned entrypoint `deploy/scripts/deploy-production.ps1`:
   1. определить локальный expected commit и создать свежий PostgreSQL backup;
   2. обновить `/opt/FlowStock` и подтвердить server `HEAD`;
   3. выполнить Compose config/resolved gate и build/deploy одной invocation с неизменным `-p flowstock --env-file deploy/.env -f deploy/docker-compose.yml`; при включённом Telegram та же invocation дополнительно содержит `-f deploy/docker-compose.telegram.yml`;
   4. проверить containers, live/ready, TSD version, disk space и путь backup.
 
-### Сокращение для ручных команд
+### Канонический ручной production deploy
 
-Все ручные команды `docker compose` в этом документе используют переменную:
+Запускайте entrypoint **на операторской машине из чистой локальной ветки `main`**, которая точно совпадает с `origin/main`. PowerShell сам выполняет `git fetch origin main`, вычисляет либо проверяет полный expected SHA и останавливается при несовпадении. Production-сервер должен быть доступен по SSH, а `flowstock.local` на операторской машине и сервере должен разрешаться в production endpoint с доверенным TLS-сертификатом.
+
+```powershell
+git switch main
+git pull --ff-only origin main
+pwsh ./deploy/scripts/deploy-production.ps1 -Server flowstock.local -SshUser <ssh-user>
+```
+
+Для дополнительного операторского подтверждения exact commit допустимо передать полный SHA; он всё равно обязан совпасть с актуальным `origin/main`:
+
+```powershell
+pwsh ./deploy/scripts/deploy-production.ps1 `
+  -Server flowstock.local `
+  -SshUser <ssh-user> `
+  -ExpectedCommit 0123456789abcdef0123456789abcdef01234567
+```
+
+Entrypoint последовательно и fail-closed проверяет локальные `main`/worktree/`origin/main`, создаёт и проверяет свежий PostgreSQL custom-format backup **до** обновления, fast-forward обновляет `/opt/FlowStock` до exact SHA и проверяет server `HEAD`. Затем он сверяет TSD source versions, экспортирует `FLOWSTOCK_SOURCE_COMMIT`, формирует один массив аргументов Compose, выполняет `config -q` и secret-safe resolved validation через pipe, build/deploy, проверку контейнеров, `live`/`ready`, строгую source identity `/api/version`, deployed TSD version и выводит disk space и путь backup. В конце те же HTTPS gates выполняются с операторской машины через `https://flowstock.local:7154`.
+
+Entrypoint никогда не печатает `deploy/.env`, connection strings или resolved Compose JSON. При `FLOWSTOCK_TELEGRAM_ENABLED=1` он добавляет `deploy/docker-compose.telegram.yml` в единый массив Compose и выполняет Telegram preflight/runtime gates. При любом другом значении используется только base `deploy/docker-compose.yml`, а Telegram-файлы, secret, network и runtime не проверяются.
+
+`deploy_from_git.sh` и `deploy_update.sh` остаются helper/legacy и не заменяют этот entrypoint. Скрипт не является unattended CD: production deploy всегда явно запускает оператор. Для проверки контракта без доступа к production используйте:
+
+```bash
+python3 deploy/scripts/deploy-production.static.test.py
+pwsh -NoProfile -Command '$errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "deploy/scripts/deploy-production.ps1"), [ref]$null, [ref]$errors) > $null; if ($errors.Count) { exit 1 }'
+```
+
+### Сокращение для неканонических ручных диагностических команд
+
+Все отдельные диагностические команды `docker compose` ниже используют переменную. Не собирайте из них альтернативный production deploy:
 
 ```bash
 DC='docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml'
@@ -449,7 +479,13 @@ $DC down -v
 
 ## Обычное обновление production
 
-Production update выполняет пользователь вручную существующим каноническим FlowStock PowerShell-процессом. Процесс определяет expected commit локально, создаёт свежий PostgreSQL backup, обновляет `/opt/FlowStock`, проверяет server `HEAD`, выполняет `config -q` и resolved gate, затем build/deploy и проверки containers, live/ready, TSD version, disk space и пути backup.
+Production update выполняет пользователь вручную каноническим versioned entrypoint из чистой локальной `main`:
+
+```powershell
+pwsh ./deploy/scripts/deploy-production.ps1 -Server flowstock.local -SshUser <ssh-user>
+```
+
+Процесс определяет expected commit локально, требует его точного равенства `origin/main`, создаёт и проверяет свежий PostgreSQL backup, обновляет `/opt/FlowStock`, проверяет server `HEAD`, выполняет `config -q` и resolved gate, затем build/deploy и проверки containers, live/ready, строгой source identity, TSD version, disk space и пути backup.
 
 Все Compose-команды этого процесса используют одну invocation:
 
@@ -459,7 +495,7 @@ docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml 
 
 При `FLOWSTOCK_TELEGRAM_ENABLED=1` к каждой такой команде добавляется `-f deploy/docker-compose.telegram.yml`; base-only invocation остаётся canonical для default-off local/CI.
 
-`deploy_from_git.sh` и `deploy_update.sh` сохраняются как helper/legacy scripts для ограниченных вспомогательных сценариев. Они не являются каноническим production deploy-процессом и не запускаются вместо PowerShell-процесса.
+`deploy_from_git.sh` и `deploy_update.sh` сохраняются как helper/legacy scripts для ограниченных вспомогательных сценариев. Они не являются каноническим production deploy-процессом и не запускаются вместо `deploy-production.ps1`.
 
 ## Проверка server clone
 
