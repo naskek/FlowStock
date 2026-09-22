@@ -90,18 +90,19 @@ test -f deploy/.env || fail 'deploy/.env is missing'
 test -f deploy/docker-compose.yml || fail 'base Compose file is missing'
 test -z "$(git status --porcelain)" || fail 'server worktree is not clean'
 
-# Select the one Compose invocation once, without printing deploy/.env.
-set -a
-# shellcheck disable=SC1091
-. deploy/.env
-set +a
+# Select the one Compose invocation once, without executing deploy/.env as shell code.
 export FLOWSTOCK_SOURCE_COMMIT="$expected_commit"
 compose=(docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml)
+declare -A compose_env=()
+while IFS='=' read -r key value; do
+    compose_env["$key"]="$value"
+done < <("${compose[@]}" config --environment)
+telegram_enabled_value="${compose_env[FLOWSTOCK_TELEGRAM_ENABLED]:-0}"
 telegram_enabled=0
-if test "${FLOWSTOCK_TELEGRAM_ENABLED:-0}" = 1; then
+if test "$telegram_enabled_value" = 1; then
     telegram_enabled=1
     test -f deploy/docker-compose.telegram.yml || fail 'Telegram overlay is missing'
-    token_file="${FLOWSTOCK_TELEGRAM_BOT_TOKEN_SECRET_FILE:-}"
+    token_file="${compose_env[FLOWSTOCK_TELEGRAM_BOT_TOKEN_SECRET_FILE]:-}"
     case "$token_file" in
         /*) ;;
         *) fail 'Telegram token secret file path must be absolute' ;;
@@ -109,13 +110,13 @@ if test "${FLOWSTOCK_TELEGRAM_ENABLED:-0}" = 1; then
     test -f "$token_file" && test -r "$token_file" && test -s "$token_file" || fail 'Telegram token secret file is unavailable'
     token_mode="$(stat -c '%a' "$token_file")" || fail 'Cannot read Telegram token secret file mode'
     test "$token_mode" = 600 || fail 'Telegram token secret file mode must be 600'
-    test -n "${FLOWSTOCK_TELEGRAM_CHAT_ID:-}" || fail 'Telegram chat id is missing'
-    telegram_proxy="${FLOWSTOCK_TELEGRAM_PROXY_URL:-}"
+    test -n "${compose_env[FLOWSTOCK_TELEGRAM_CHAT_ID]:-}" || fail 'Telegram chat id is missing'
+    telegram_proxy="${compose_env[FLOWSTOCK_TELEGRAM_PROXY_URL]:-}"
     case "$telegram_proxy" in
         socks5://?*) ;;
         *) fail 'Telegram proxy must be a non-empty socks5:// URL' ;;
     esac
-    telegram_network="${FLOWSTOCK_TELEGRAM_EGRESS_NETWORK:-reg-ru-imap-telegram_default}"
+    telegram_network="${compose_env[FLOWSTOCK_TELEGRAM_EGRESS_NETWORK]:-reg-ru-imap-telegram_default}"
     docker network inspect "$telegram_network" >/dev/null 2>&1 || fail 'Telegram egress network is unavailable'
     docker inspect reg-ru-imap-telegram-tailscale-egress --format '{{json .NetworkSettings.Networks}}' |
         python3 -c 'import json,sys; raise SystemExit(0 if sys.argv[1] in json.load(sys.stdin) else 1)' "$telegram_network" ||
@@ -152,8 +153,10 @@ test "$source_tsd_version" = "$expected_tsd_version" || fail 'server TSD source 
 test "$worker_tsd_version" = "$expected_tsd_version" || fail 'server TSD source versions are inconsistent'
 
 "${compose[@]}" config -q
-validator=(python3 deploy/scripts/validate_resolved_compose.py --postgres-host "${FLOWSTOCK_PG_BIND_HOST:-127.0.0.1}")
-test -z "${FLOWSTOCK_PG_SECOND_BIND_HOST:-}" || validator+=(--postgres-host "$FLOWSTOCK_PG_SECOND_BIND_HOST")
+postgres_bind_host="${compose_env[FLOWSTOCK_PG_BIND_HOST]:-127.0.0.1}"
+postgres_second_bind_host="${compose_env[FLOWSTOCK_PG_SECOND_BIND_HOST]:-}"
+validator=(python3 deploy/scripts/validate_resolved_compose.py --postgres-host "$postgres_bind_host")
+test -z "$postgres_second_bind_host" || validator+=(--postgres-host "$postgres_second_bind_host")
 test "$telegram_enabled" = 0 || validator+=(--telegram-enabled)
 "${compose[@]}" config --format json | "${validator[@]}" >/dev/null
 log 'secret-safe resolved Compose validation passed'
