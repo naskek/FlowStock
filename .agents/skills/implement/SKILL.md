@@ -1,15 +1,17 @@
 ---
 name: implement
-description: "Implement a piece of work based on a spec or set of tickets."
+description: "Реализовать работу по спецификации или набору задач."
 disable-model-invocation: true
 ---
 
-Implement the work described by the user in the spec or tickets.
+Реализуй работу, описанную пользователем в спецификации или задачах.
 
-Use /tdd where possible, at pre-agreed seams.
+По возможности используй `/tdd` в заранее согласованных точках.
 
-Run typechecking regularly, single test files regularly, and the full test suite once at the end.
+Регулярно запускай typechecking и релевантные отдельные тесты; полный набор тестов запускай один раз в конце.
 
-Once done, use /code-review to review the work.
+Перед review зафиксируй завершённую реализацию commit-ом в текущей ветке, чтобы review по commit diff видел весь результат.
 
-Commit your work to the current branch.
+После commit используй `/code-review`, передав fixed point ветки, от которой создана task branch (для FlowStock обычно `main` или `origin/main`).
+
+Если review обнаружил обязательные исправления, внеси их, повтори релевантные проверки, создай follow-up commit и снова запусти `/code-review`.
