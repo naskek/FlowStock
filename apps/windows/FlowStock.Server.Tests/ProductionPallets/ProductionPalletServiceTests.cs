@@ -3825,7 +3825,21 @@ public sealed class ProductionPalletServiceTests
             ToLocationId = 1,
             ToLocationCode = "MAIN",
             Status = sourcePalletStatus,
-            CreatedAt = new DateTime(2026, 5, 18, 16, 58, 10)
+            CreatedAt = new DateTime(2026, 5, 18, 16, 58, 10),
+            Lines =
+            [
+                new ProductionPalletComponentLine
+                {
+                    Id = 3501,
+                    ProductionPalletId = 35,
+                    DocLineId = 1752,
+                    OrderLineId = 171,
+                    ItemId = 100,
+                    ItemName = "Товар",
+                    PlannedQty = 600,
+                    CreatedAt = new DateTime(2026, 5, 18, 16, 58, 10)
+                }
+            ]
         });
         harness.SeedProductionPallet(new ProductionPallet
         {
@@ -3841,7 +3855,21 @@ public sealed class ProductionPalletServiceTests
             ToLocationId = 1,
             ToLocationCode = "MAIN",
             Status = sourcePalletStatus,
-            CreatedAt = new DateTime(2026, 5, 18, 16, 58, 10)
+            CreatedAt = new DateTime(2026, 5, 18, 16, 58, 10),
+            Lines =
+            [
+                new ProductionPalletComponentLine
+                {
+                    Id = 3601,
+                    ProductionPalletId = 36,
+                    DocLineId = 1753,
+                    OrderLineId = 171,
+                    ItemId = 100,
+                    ItemName = "Товар",
+                    PlannedQty = 600,
+                    CreatedAt = new DateTime(2026, 5, 18, 16, 58, 10)
+                }
+            ]
         });
 
         if (targetHasPlan)
