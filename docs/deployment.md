@@ -22,20 +22,20 @@
 
 ### Канонический ручной production deploy
 
-Запускайте entrypoint **на операторской машине из чистой локальной ветки `main`**, которая точно совпадает с `origin/main`. PowerShell сам выполняет `git fetch origin main`, вычисляет либо проверяет полный expected SHA и останавливается при несовпадении. Production-сервер должен быть доступен по SSH. `flowstock.local` должен разрешаться в production endpoint с доверенным TLS-сертификатом на операторской машине, где выполняются внешние HTTPS gates.
+Запускайте entrypoint **на операторской машине из чистой локальной ветки `main`**, которая точно совпадает с `origin/main`. PowerShell сам выполняет `git fetch origin main`, вычисляет либо проверяет полный expected SHA и останавливается при несовпадении. Production-сервер должен быть доступен по SSH через `debian-server` (канонический production SSH host). `flowstock.local` используется отдельно как внешний HTTPS endpoint и должен разрешаться с доверенным TLS-сертификатом на операторской машине, где выполняются внешние HTTPS gates.
 
 ```powershell
 git switch main
 git pull --ff-only origin main
-pwsh ./deploy/scripts/deploy-production.ps1 -Server flowstock.local -SshUser <ssh-user>
+pwsh ./deploy/scripts/deploy-production.ps1 -Server debian-server -SshUser semion
 ```
 
 Для дополнительного операторского подтверждения exact commit допустимо передать полный SHA; он всё равно обязан совпасть с актуальным `origin/main`:
 
 ```powershell
 pwsh ./deploy/scripts/deploy-production.ps1 `
-  -Server flowstock.local `
-  -SshUser <ssh-user> `
+  -Server debian-server `
+  -SshUser semion `
   -ExpectedCommit 0123456789abcdef0123456789abcdef01234567
 ```
 
@@ -482,7 +482,7 @@ $DC down -v
 Production update выполняет пользователь вручную каноническим versioned entrypoint из чистой локальной `main`:
 
 ```powershell
-pwsh ./deploy/scripts/deploy-production.ps1 -Server flowstock.local -SshUser <ssh-user>
+pwsh ./deploy/scripts/deploy-production.ps1 -Server debian-server -SshUser semion
 ```
 
 Процесс определяет expected commit локально, требует его точного равенства `origin/main`, создаёт и проверяет свежий PostgreSQL backup, обновляет `/opt/FlowStock`, проверяет server `HEAD`, выполняет `config -q` и resolved gate, затем build/deploy и проверки containers, live/ready, строгой source identity, TSD version, disk space и пути backup.
