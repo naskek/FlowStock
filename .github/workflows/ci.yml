@@ -258,6 +258,9 @@ jobs:
             node "$test_file"
             echo "::endgroup::"
           done
+      - name: Validate review-ready automation contract
+        shell: bash
+        run: python3 tools/ci/review-ready-workflow.static.test.py
 
   android-native:
     name: android-native
