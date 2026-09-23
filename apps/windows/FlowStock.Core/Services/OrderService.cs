@@ -715,7 +715,11 @@ public sealed class OrderService
                         && ResolveLinePurpose(type, line.ProductionPurpose) == entry.Key.ProductionPurpose);
                     var selectedExisting = selectedExistingByIncomingLine[incomingLine];
                     if (selectedExisting != null
-                        && incomingLine.QtyOrdered + QtyTolerance < selectedExisting.QtyOrdered)
+                        && (incomingLine.QtyOrdered + QtyTolerance < selectedExisting.QtyOrdered
+                            || !string.Equals(
+                                NormalizePalletGroup(incomingLine.ProductionPalletGroup),
+                                NormalizePalletGroup(selectedExisting.ProductionPalletGroup),
+                                StringComparison.OrdinalIgnoreCase)))
                     {
                         targetLineIdsRequiringCoverageReturn.Add(selectedExisting.Id);
                     }
