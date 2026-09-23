@@ -200,6 +200,53 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
     }
 
     [Fact]
+    public void CustomerQtyDecrease_ReturnsWholeAdoptedTransferBeforeQtyValidation()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        using var fixture = AdoptionFixture.Create(connectionString, mixed: false);
+        var store = new PostgresDataStore(connectionString);
+        store.Initialize();
+
+        store.AdoptSelectedProductionPallets(
+            fixture.TargetPrdDocId,
+            fixture.TargetOrderId,
+            [fixture.BuildSelectedAdoption()]);
+        fixture.ConsumeSourceDemandAndDeleteOperationalSourceRows();
+
+        var targetOrder = store.GetOrder(fixture.TargetOrderId)!;
+        var targetLine = Assert.Single(store.GetOrderLines(fixture.TargetOrderId));
+        new OrderService(store).UpdateOrder(
+            targetOrder.Id,
+            targetOrder.OrderRef,
+            fixture.TargetPartnerId,
+            targetOrder.DueDate,
+            targetOrder.Comment,
+            [
+                new OrderLineView
+                {
+                    Id = targetLine.Id,
+                    ItemId = targetLine.ItemId,
+                    QtyOrdered = 50,
+                    ProductionPurpose = ProductionLinePurpose.CustomerOrder
+                }
+            ],
+            OrderType.Customer);
+
+        Assert.Equal(50d, Assert.Single(store.GetOrderLines(fixture.TargetOrderId)).QtyOrdered, 6);
+        Assert.Equal(100d, Assert.Single(store.GetOrderLines(fixture.SourceOrderId)).QtyOrdered, 6);
+        var ownership = fixture.ReadPalletOwnership();
+        Assert.Equal(fixture.SourceOrderId, ownership.OrderId);
+        var transfer = Assert.Single(store.GetOrderCoverageTransfersByTargetOrder(fixture.TargetOrderId));
+        Assert.Equal(OrderCoverageCompensationKind.ReturnPlan, transfer.CompensationKind);
+        Assert.Equal(OrderStatus.InProgress, store.GetOrder(fixture.SourceOrderId)?.Status);
+    }
+
+    [Fact]
     public void CustomerCancel_DoesNotReverseAdoptedFilledPallet()
     {
         var connectionString = ResolvePostgresTestConnectionString();
@@ -301,6 +348,7 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
     {
         private readonly string _connectionString;
         private readonly long _locationId;
+        private readonly long _targetPartnerId;
         private readonly long[] _itemIds;
         private readonly long[] _sourceDocLineIds;
 
@@ -315,6 +363,7 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
             long targetPrdDocId,
             long productionPalletId,
             long locationId,
+            long targetPartnerId,
             long[] itemIds,
             long[] sourceDocLineIds,
             string huCode)
@@ -329,6 +378,7 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
             TargetPrdDocId = targetPrdDocId;
             ProductionPalletId = productionPalletId;
             _locationId = locationId;
+            _targetPartnerId = targetPartnerId;
             _itemIds = itemIds;
             _sourceDocLineIds = sourceDocLineIds;
             HuCode = huCode;
@@ -342,6 +392,7 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
         public long SourcePrdDocId { get; }
         public long TargetPrdDocId { get; }
         public long ProductionPalletId { get; }
+        public long TargetPartnerId => _targetPartnerId;
         public string HuCode { get; }
 
         public static AdoptionFixture Create(string connectionString, bool mixed)
@@ -380,13 +431,19 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
                 "INSERT INTO locations(code, name) VALUES (@code, @name) RETURNING id;",
                 ("code", $"{token}-loc"),
                 ("name", $"{token}-location"));
+            var targetPartnerId = Scalar(
+                "INSERT INTO partners(name, code, created_at) VALUES (@name, @code, @created) RETURNING id;",
+                ("name", $"{token}-partner"),
+                ("code", $"{token}-partner"),
+                ("created", "2042-01-01T00:00:00"));
             var sourceOrderId = Scalar(
                 "INSERT INTO orders(order_ref, order_type, status, created_at) VALUES (@ref, 'INTERNAL', 'IN_PROGRESS', @created) RETURNING id;",
                 ("ref", $"{token}-source"),
                 ("created", "2042-01-01T00:00:00"));
             var targetOrderId = Scalar(
-                "INSERT INTO orders(order_ref, order_type, status, created_at) VALUES (@ref, 'CUSTOMER', 'IN_PROGRESS', @created) RETURNING id;",
+                "INSERT INTO orders(order_ref, order_type, partner_id, status, created_at) VALUES (@ref, 'CUSTOMER', @partner_id, 'IN_PROGRESS', @created) RETURNING id;",
                 ("ref", $"{token}-target"),
+                ("partner_id", targetPartnerId),
                 ("created", "2042-01-01T00:00:00"));
 
             var sourceLineIds = new List<long>();
@@ -495,6 +552,7 @@ RETURNING id;",
                 targetPrdDocId,
                 productionPalletId,
                 locationId,
+                targetPartnerId,
                 itemIds.ToArray(),
                 sourceDocLineIds.ToArray(),
                 huCode);
@@ -667,6 +725,9 @@ WHERE order_id = ANY(@order_ids);
 DELETE FROM orders
 WHERE id = ANY(@order_ids);
 
+DELETE FROM partners
+WHERE id = @partner_id;
+
 DELETE FROM locations
 WHERE id = @location_id;
 
@@ -678,6 +739,7 @@ WHERE id = ANY(@item_ids);";
             command.Parameters.AddWithValue("doc_line_ids", _sourceDocLineIds);
             command.Parameters.AddWithValue("doc_ids", new[] { SourcePrdDocId, TargetPrdDocId });
             command.Parameters.AddWithValue("order_ids", new[] { SourceOrderId, TargetOrderId });
+            command.Parameters.AddWithValue("partner_id", _targetPartnerId);
             command.Parameters.AddWithValue("location_id", _locationId);
             command.Parameters.AddWithValue("item_ids", _itemIds);
             command.ExecuteNonQuery();
