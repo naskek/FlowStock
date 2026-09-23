@@ -293,7 +293,7 @@ RETURNING id;",
 
             var sourcePrdDocId = Scalar(
                 @"INSERT INTO docs(doc_ref, type, status, created_at, order_id, order_ref)
-VALUES(@ref, 'PRD', 'DRAFT', @created, @order_id, @order_ref)
+VALUES(@ref, 'PRODUCTION_RECEIPT', 'DRAFT', @created, @order_id, @order_ref)
 RETURNING id;",
                 ("ref", $"{token}-source-prd"),
                 ("created", "2042-01-01T00:00:00"),
@@ -301,7 +301,7 @@ RETURNING id;",
                 ("order_ref", $"{token}-source"));
             var targetPrdDocId = Scalar(
                 @"INSERT INTO docs(doc_ref, type, status, created_at, order_id, order_ref)
-VALUES(@ref, 'PRD', 'DRAFT', @created, @order_id, @order_ref)
+VALUES(@ref, 'PRODUCTION_RECEIPT', 'DRAFT', @created, @order_id, @order_ref)
 RETURNING id;",
                 ("ref", $"{token}-target-prd"),
                 ("created", "2042-01-01T00:00:00"),
