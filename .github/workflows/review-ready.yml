@@ -26,10 +26,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
         run: |
           set -euo pipefail
 
-          pr_numbers="$(gh api --paginate --slurp "repos/$REPO/pulls?state=open&base=main&per_page=100" --jq "flatten | map(select(.head.sha == \"$RUN_SHA\")) | .[] | .number")"
+          pr_numbers="$(
+            gh api --paginate --slurp "repos/$REPO/pulls?state=open&base=main&per_page=100" |
+              jq -r --arg sha "$RUN_SHA" --arg branch "$RUN_HEAD_BRANCH" --arg repo "$RUN_HEAD_REPO"                 'flatten | map(select(.head.sha == $sha and .head.ref == $branch and .head.repo.full_name == $repo)) | .[] | .number'
+          )"
           if [[ -z "$pr_numbers" ]]; then
             echo "No open main-targeting PR currently has CI SHA $RUN_SHA; skipping stale/closed run."
             exit 0
@@ -51,7 +56,10 @@ jobs:
           fi
 
           marker="<!-- flowstock-review-ready:$RUN_SHA -->"
-          existing="$(gh api --paginate --slurp "repos/$REPO/issues/$pr_number/comments?per_page=100" --jq "flatten | map(select(.body? != null and (.body | contains(\"$marker\")))) | length")"
+          existing="$(
+            gh api --paginate --slurp "repos/$REPO/issues/$pr_number/comments?per_page=100" |
+              jq -r --arg marker "$marker"                 '[flatten[] | select(.user.login == "github-actions[bot]" and ((.body // "") | contains($marker)))] | length'
+          )"
           if [[ "$existing" != "0" ]]; then
             echo "Review-ready marker already exists for PR #$pr_number HEAD $RUN_SHA."
             exit 0
