@@ -281,6 +281,91 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
     }
 
     [Fact]
+    public void CustomerQtyChange_UsesServerNormalizedReservationQtyForReturnPlanDecision()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        using var fixture = AdoptionFixture.Create(connectionString, mixed: false);
+        var store = new PostgresDataStore(connectionString);
+        store.Initialize();
+
+        store.AdoptSelectedProductionPallets(
+            fixture.TargetPrdDocId,
+            fixture.TargetOrderId,
+            [fixture.BuildSelectedAdoption()]);
+        fixture.ConsumeSourceDemandAndDeleteOperationalSourceRows();
+
+        var targetLine = Assert.Single(store.GetOrderLines(fixture.TargetOrderId));
+        var reservedHu = $"{fixture.Token}-RESERVED";
+        fixture.SeedTargetReservation(targetLine.Id, targetLine.ItemId, 60, reservedHu);
+        var targetOrder = store.GetOrder(fixture.TargetOrderId)!;
+
+        new OrderService(store).UpdateOrder(
+            targetOrder.Id,
+            targetOrder.OrderRef,
+            fixture.TargetPartnerId,
+            targetOrder.DueDate,
+            targetOrder.Comment,
+            [
+                new OrderLineView
+                {
+                    Id = targetLine.Id,
+                    ItemId = targetLine.ItemId,
+                    QtyOrdered = 120,
+                    ProductionPurpose = ProductionLinePurpose.CustomerOrder
+                }
+            ],
+            OrderType.Customer,
+            customerReservedHuSelectionsByOrderLineId:
+                new Dictionary<long, IReadOnlyList<string>>
+                {
+                    [targetLine.Id] = [reservedHu]
+                });
+
+        Assert.Equal(60d, Assert.Single(store.GetOrderLines(fixture.TargetOrderId)).QtyOrdered, 6);
+        Assert.Equal(100d, Assert.Single(store.GetOrderLines(fixture.SourceOrderId)).QtyOrdered, 6);
+        Assert.Equal(fixture.SourceOrderId, fixture.ReadPalletOwnership().OrderId);
+        Assert.Equal(
+            OrderCoverageCompensationKind.ReturnPlan,
+            Assert.Single(store.GetOrderCoverageTransfersByTargetOrder(fixture.TargetOrderId)).CompensationKind);
+    }
+
+    [Fact]
+    public void CustomerCancel_BlocksReturnPlanOnUnexpectedLedgerItemForSamePrdAndHu()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        using var fixture = AdoptionFixture.Create(connectionString, mixed: false);
+        var store = new PostgresDataStore(connectionString);
+        store.Initialize();
+
+        store.AdoptSelectedProductionPallets(
+            fixture.TargetPrdDocId,
+            fixture.TargetOrderId,
+            [fixture.BuildSelectedAdoption()]);
+        fixture.ConsumeSourceDemandAndDeleteOperationalSourceRows();
+        fixture.AddUnexpectedLedgerForTargetHu();
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            new OrderService(store).CancelOrder(fixture.TargetOrderId));
+
+        Assert.Contains("паллета уже изменилась", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(fixture.TargetOrderId, fixture.ReadPalletOwnership().OrderId);
+        Assert.Equal(OrderStatus.InProgress, store.GetOrder(fixture.TargetOrderId)?.Status);
+        Assert.Equal(OrderStatus.Merged, store.GetOrder(fixture.SourceOrderId)?.Status);
+        Assert.Null(Assert.Single(
+            store.GetOrderCoverageTransfersByTargetOrder(fixture.TargetOrderId)).CompensationKind);
+    }
+
+    [Fact]
     public void CustomerLineDelete_ReturnsWholeMixedAdoptedTransfer()
     {
         var connectionString = ResolvePostgresTestConnectionString();
@@ -437,6 +522,7 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
         private readonly long _locationId;
         private readonly long _targetPartnerId;
         private readonly long[] _itemIds;
+        private readonly List<long> _extraItemIds = new();
         private readonly long[] _sourceDocLineIds;
 
         private AdoptionFixture(
@@ -683,6 +769,52 @@ ORDER BY pll.id;";
             };
         }
 
+        public void SeedTargetReservation(long targetLineId, long itemId, double qty, string huCode)
+        {
+            using var connection = new NpgsqlConnection(_connectionString);
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+INSERT INTO order_receipt_plan_lines(
+    order_id, order_line_id, item_id, qty_planned, to_location_id, to_hu, sort_order)
+VALUES(@order_id, @order_line_id, @item_id, @qty, @location_id, @hu, 0);";
+            command.Parameters.AddWithValue("order_id", TargetOrderId);
+            command.Parameters.AddWithValue("order_line_id", targetLineId);
+            command.Parameters.AddWithValue("item_id", itemId);
+            command.Parameters.AddWithValue("qty", qty);
+            command.Parameters.AddWithValue("location_id", _locationId);
+            command.Parameters.AddWithValue("hu", huCode);
+            Assert.Equal(1, command.ExecuteNonQuery());
+        }
+
+        public void AddUnexpectedLedgerForTargetHu()
+        {
+            using var connection = new NpgsqlConnection(_connectionString);
+            connection.Open();
+
+            long itemId;
+            using (var itemCommand = connection.CreateCommand())
+            {
+                itemCommand.CommandText =
+                    "INSERT INTO items(name, barcode) VALUES (@name, @barcode) RETURNING id;";
+                itemCommand.Parameters.AddWithValue("name", $"{Token}-unexpected-ledger-item");
+                itemCommand.Parameters.AddWithValue("barcode", $"{Token}-unexpected-ledger-sku");
+                itemId = Convert.ToInt64(itemCommand.ExecuteScalar());
+                _extraItemIds.Add(itemId);
+            }
+
+            using var ledgerCommand = connection.CreateCommand();
+            ledgerCommand.CommandText = @"
+INSERT INTO ledger(doc_id, item_id, location_id, qty_delta, hu_code, hu, timestamp)
+VALUES(@doc_id, @item_id, @location_id, 1, @hu, @hu, @timestamp);";
+            ledgerCommand.Parameters.AddWithValue("doc_id", TargetPrdDocId);
+            ledgerCommand.Parameters.AddWithValue("item_id", itemId);
+            ledgerCommand.Parameters.AddWithValue("location_id", _locationId);
+            ledgerCommand.Parameters.AddWithValue("hu", HuCode);
+            ledgerCommand.Parameters.AddWithValue("timestamp", "2042-01-02T00:00:00");
+            Assert.Equal(1, ledgerCommand.ExecuteNonQuery());
+        }
+
         public void SetSingleSourceQty(double qty)
         {
             Assert.Single(SourceOrderLineIds);
@@ -814,6 +946,12 @@ WHERE id = @id;";
 DELETE FROM order_coverage_transfers
 WHERE source_order_id = @source_order_id OR target_order_id = @target_order_id;
 
+DELETE FROM order_receipt_plan_lines
+WHERE order_id = @target_order_id;
+
+DELETE FROM ledger
+WHERE UPPER(BTRIM(COALESCE(hu_code, hu, ''))) = UPPER(BTRIM(@hu));
+
 DELETE FROM production_pallet_lines
 WHERE production_pallet_id = @pallet_id;
 
@@ -850,7 +988,8 @@ WHERE id = ANY(@item_ids);";
             command.Parameters.AddWithValue("order_ids", new[] { SourceOrderId, TargetOrderId });
             command.Parameters.AddWithValue("partner_id", _targetPartnerId);
             command.Parameters.AddWithValue("location_id", _locationId);
-            command.Parameters.AddWithValue("item_ids", _itemIds);
+            command.Parameters.AddWithValue("hu", HuCode);
+            command.Parameters.AddWithValue("item_ids", _itemIds.Concat(_extraItemIds).ToArray());
             command.ExecuteNonQuery();
         }
     }
