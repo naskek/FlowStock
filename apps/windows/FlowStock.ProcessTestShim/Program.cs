@@ -15,7 +15,7 @@ if (!string.IsNullOrWhiteSpace(exitSignalPath))
 {
     var timeout = Stopwatch.StartNew();
     var ignoreExitSignal = Environment.GetEnvironmentVariable("FLOWSTOCK_PROCESS_SHIM_IGNORE_EXIT_SIGNAL") == "1";
-    while ((ignoreExitSignal || !File.Exists(exitSignalPath)) && timeout.Elapsed < TimeSpan.FromSeconds(5))
+    while ((ignoreExitSignal || !File.Exists(exitSignalPath)) && timeout.Elapsed < TimeSpan.FromSeconds(30))
     {
         Thread.Sleep(25);
     }
