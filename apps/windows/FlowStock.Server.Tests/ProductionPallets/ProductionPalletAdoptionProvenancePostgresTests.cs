@@ -281,6 +281,59 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
     }
 
     [Fact]
+    public void CustomerLineDelete_ReturnsWholeMixedAdoptedTransfer()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        using var fixture = AdoptionFixture.Create(connectionString, mixed: true);
+        var store = new PostgresDataStore(connectionString);
+        store.Initialize();
+
+        store.AdoptSelectedProductionPallets(
+            fixture.TargetPrdDocId,
+            fixture.TargetOrderId,
+            [fixture.BuildSelectedAdoption()]);
+        fixture.ConsumeSourceDemandAndDeleteOperationalSourceRows();
+
+        var targetOrder = store.GetOrder(fixture.TargetOrderId)!;
+        var remainingTargetLine = store.GetOrderLines(fixture.TargetOrderId)
+            .OrderBy(line => line.Id)
+            .Last();
+        new OrderService(store).UpdateOrder(
+            targetOrder.Id,
+            targetOrder.OrderRef,
+            fixture.TargetPartnerId,
+            targetOrder.DueDate,
+            targetOrder.Comment,
+            [
+                new OrderLineView
+                {
+                    Id = remainingTargetLine.Id,
+                    ItemId = remainingTargetLine.ItemId,
+                    QtyOrdered = remainingTargetLine.QtyOrdered,
+                    ProductionPurpose = ProductionLinePurpose.CustomerOrder
+                }
+            ],
+            OrderType.Customer);
+
+        var targetLines = store.GetOrderLines(fixture.TargetOrderId);
+        Assert.Single(targetLines);
+        Assert.Equal(remainingTargetLine.Id, targetLines[0].Id);
+        Assert.Equal(new[] { 40d, 60d }, store.GetOrderLines(fixture.SourceOrderId)
+            .Select(line => line.QtyOrdered)
+            .Order()
+            .ToArray());
+        Assert.Equal(fixture.SourceOrderId, fixture.ReadPalletOwnership().OrderId);
+        Assert.Equal(
+            OrderCoverageCompensationKind.ReturnPlan,
+            Assert.Single(store.GetOrderCoverageTransfersByTargetOrder(fixture.TargetOrderId)).CompensationKind);
+    }
+
+    [Fact]
     public void CustomerCancel_DoesNotReverseAdoptedFilledPallet()
     {
         var connectionString = ResolvePostgresTestConnectionString();
