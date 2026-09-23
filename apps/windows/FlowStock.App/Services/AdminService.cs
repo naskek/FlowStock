@@ -11,6 +11,8 @@ public sealed class AdminService
         "doc_lines",
         "production_pallets",
         "production_pallet_lines",
+        "order_coverage_transfers",
+        "order_coverage_transfer_lines",
         "ledger",
         "orders",
         "order_lines",
@@ -151,6 +153,7 @@ WHERE receipt_doc_id IS NOT NULL
    OR receipt_line_id IS NOT NULL;
 DELETE FROM warehouse_action_bundles;
 DELETE FROM order_receipt_plan_lines;
+DELETE FROM order_coverage_transfers;
 DELETE FROM production_pallet_lines;
 DELETE FROM production_pallets;
 DELETE FROM ledger;
@@ -203,6 +206,8 @@ DELETE FROM import_errors;
         "stock_reservation_lines",
         "tsd_devices",
         "ledger",
+        "order_coverage_transfer_lines",
+        "order_coverage_transfers",
         "doc_lines",
         "docs",
         "order_lines",

@@ -4827,10 +4827,27 @@ WHERE id = ANY(@pallet_ids);");
             throw new InvalidOperationException("Не заданы строки клиентского заказа для переноса плана паллет.");
         }
 
+        if (_transaction == null)
+        {
+            return ExecuteAtomic(store => store.AdoptProductionPalletPlan(
+                sourcePrdDocId,
+                targetPrdDocId,
+                sourceOrderId,
+                targetOrderId,
+                targetOrderLineIdByItemId));
+        }
+
         return WithConnection(connection =>
         {
             var values = string.Join(", ", targetOrderLineIdByItemId.Select((_, index) => $"(@item_id_{index}, @order_line_id_{index})"));
             var targetLineCte = $"WITH target_lines(item_id, target_order_line_id) AS (VALUES {values})";
+
+            var provenanceRows = BuildLegacyAdoptionProvenanceRows(
+                connection,
+                sourcePrdDocId,
+                sourceOrderId,
+                targetOrderLineIdByItemId);
+            var transferCreatedAt = DateTime.UtcNow;
 
             var transferredHuCodes = new List<string>();
             int transferredPalletCount;
@@ -4879,6 +4896,16 @@ ORDER BY pp.hu_code;
                 {
                     transferredHuCodes.Add(reader.GetString(0));
                 }
+            }
+
+            foreach (var provenanceRow in provenanceRows)
+            {
+                InsertOrderCoverageTransfer(
+                    connection,
+                    targetPrdDocId,
+                    targetOrderId,
+                    provenanceRow,
+                    transferCreatedAt);
             }
 
             using (var updatePalletLines = CreateCommand(connection, $@"
@@ -4997,12 +5024,27 @@ WHERE dl.id IN (
             return 0;
         }
 
+        if (_transaction == null)
+        {
+            return ExecuteAtomic(store => store.AdoptSelectedProductionPallets(
+                targetPrdDocId,
+                targetOrderId,
+                rows));
+        }
+
         return WithConnection(connection =>
         {
             var updated = 0;
+            var transferCreatedAt = DateTime.UtcNow;
             foreach (var row in rows)
             {
                 GuardSelectedProductionPalletLinesForAdoption(connection, row);
+                InsertOrderCoverageTransfer(
+                    connection,
+                    targetPrdDocId,
+                    targetOrderId,
+                    row,
+                    transferCreatedAt);
 
                 using (var updatePallet = CreateCommand(connection, @"
 UPDATE production_pallets pp
@@ -5114,6 +5156,423 @@ WHERE id = @doc_line_id
 
             return updated;
         });
+    }
+
+    public IReadOnlyList<OrderCoverageTransfer> GetOrderCoverageTransfersByTargetOrder(long targetOrderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT t.id,
+       t.transfer_type,
+       t.source_order_id,
+       t.source_order_ref,
+       t.source_order_status,
+       t.target_order_id,
+       t.target_order_ref,
+       t.source_prd_doc_id,
+       t.source_prd_doc_ref,
+       t.target_prd_doc_id,
+       t.target_prd_doc_ref,
+       t.production_pallet_id,
+       t.hu_code,
+       t.pallet_status_at_transfer,
+       t.printed_at_at_transfer,
+       t.transferred_qty,
+       t.created_at,
+       t.compensation_kind,
+       t.compensated_at,
+       l.id,
+       l.source_order_line_id,
+       l.target_order_line_id,
+       l.source_doc_line_id,
+       l.source_production_pallet_line_id,
+       l.item_id,
+       l.source_qty_ordered_before,
+       l.transferred_qty,
+       l.source_production_purpose,
+       l.source_production_pallet_group
+FROM order_coverage_transfers t
+LEFT JOIN order_coverage_transfer_lines l ON l.transfer_id = t.id
+WHERE t.target_order_id = @target_order_id
+ORDER BY t.id, l.id;");
+            command.Parameters.AddWithValue("@target_order_id", targetOrderId);
+
+            using var reader = command.ExecuteReader();
+            var result = new List<OrderCoverageTransfer>();
+            var linesByTransferId = new Dictionary<long, List<OrderCoverageTransferLine>>();
+
+            while (reader.Read())
+            {
+                var transferId = reader.GetInt64(0);
+                if (!linesByTransferId.TryGetValue(transferId, out var transferLines))
+                {
+                    transferLines = new List<OrderCoverageTransferLine>();
+                    linesByTransferId[transferId] = transferLines;
+                    result.Add(new OrderCoverageTransfer
+                    {
+                        Id = transferId,
+                        TransferType = reader.GetString(1),
+                        SourceOrderId = reader.GetInt64(2),
+                        SourceOrderRef = reader.GetString(3),
+                        SourceOrderStatus = reader.GetString(4),
+                        TargetOrderId = reader.GetInt64(5),
+                        TargetOrderRef = reader.GetString(6),
+                        SourcePrdDocId = reader.GetInt64(7),
+                        SourcePrdDocRef = reader.GetString(8),
+                        TargetPrdDocId = reader.GetInt64(9),
+                        TargetPrdDocRef = reader.GetString(10),
+                        ProductionPalletId = reader.GetInt64(11),
+                        HuCode = reader.GetString(12),
+                        PalletStatusAtTransfer = reader.GetString(13),
+                        PrintedAtAtTransfer = reader.IsDBNull(14) ? null : FromDbDate(reader.GetString(14)),
+                        TransferredQty = Convert.ToDouble(reader.GetValue(15), CultureInfo.InvariantCulture),
+                        CreatedAt = FromDbDate(reader.GetString(16)) ?? DateTime.MinValue,
+                        CompensationKind = reader.IsDBNull(17) ? null : reader.GetString(17),
+                        CompensatedAt = reader.IsDBNull(18) ? null : FromDbDate(reader.GetString(18)),
+                        Lines = transferLines
+                    });
+                }
+
+                if (!reader.IsDBNull(19))
+                {
+                    transferLines.Add(new OrderCoverageTransferLine
+                    {
+                        Id = reader.GetInt64(19),
+                        TransferId = transferId,
+                        SourceOrderLineId = reader.GetInt64(20),
+                        TargetOrderLineId = reader.GetInt64(21),
+                        SourceDocLineId = reader.GetInt64(22),
+                        SourceProductionPalletLineId = reader.IsDBNull(23) ? null : reader.GetInt64(23),
+                        ItemId = reader.GetInt64(24),
+                        SourceQtyOrderedBefore = Convert.ToDouble(reader.GetValue(25), CultureInfo.InvariantCulture),
+                        TransferredQty = Convert.ToDouble(reader.GetValue(26), CultureInfo.InvariantCulture),
+                        SourceProductionPurpose = reader.GetString(27),
+                        SourceProductionPalletGroup = reader.IsDBNull(28) ? null : reader.GetString(28)
+                    });
+                }
+            }
+
+            return result;
+        });
+    }
+
+    private IReadOnlyList<ProductionPalletSelectedAdoption> BuildLegacyAdoptionProvenanceRows(
+        NpgsqlConnection connection,
+        long sourcePrdDocId,
+        long sourceOrderId,
+        IReadOnlyDictionary<long, long> targetOrderLineIdByItemId)
+    {
+        var pallets = new List<(long Id, string HuCode, string Status, long? OrderLineId, long ItemId, long DocLineId, double PlannedQty)>();
+        using (var palletCommand = CreateCommand(connection, @"
+SELECT id, hu_code, status, order_line_id, item_id, doc_line_id, planned_qty
+FROM production_pallets
+WHERE prd_doc_id = @source_prd_doc_id
+  AND order_id = @source_order_id
+  AND status IN ('PLANNED', 'PRINTED', 'FILLED')
+ORDER BY id;"))
+        {
+            palletCommand.Parameters.AddWithValue("@source_prd_doc_id", sourcePrdDocId);
+            palletCommand.Parameters.AddWithValue("@source_order_id", sourceOrderId);
+            using var reader = palletCommand.ExecuteReader();
+            while (reader.Read())
+            {
+                pallets.Add((
+                    reader.GetInt64(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetInt64(3),
+                    reader.GetInt64(4),
+                    reader.GetInt64(5),
+                    Convert.ToDouble(reader.GetValue(6), CultureInfo.InvariantCulture)));
+            }
+        }
+
+        var result = new List<ProductionPalletSelectedAdoption>();
+        foreach (var pallet in pallets)
+        {
+            var componentLines = new List<ProductionPalletSelectedAdoptionLine>();
+            using (var lineCommand = CreateCommand(connection, @"
+SELECT doc_line_id, order_line_id, item_id, planned_qty
+FROM production_pallet_lines
+WHERE production_pallet_id = @production_pallet_id
+ORDER BY id;"))
+            {
+                lineCommand.Parameters.AddWithValue("@production_pallet_id", pallet.Id);
+                using var reader = lineCommand.ExecuteReader();
+                while (reader.Read())
+                {
+                    if (reader.IsDBNull(1))
+                    {
+                        throw new InvalidOperationException(
+                            "Нельзя сохранить provenance переноса: строка состава паллеты не связана с внутренним заказом.");
+                    }
+
+                    var itemId = reader.GetInt64(2);
+                    if (!targetOrderLineIdByItemId.TryGetValue(itemId, out var targetOrderLineId))
+                    {
+                        throw new InvalidOperationException(
+                            $"Нельзя сохранить provenance переноса: для номенклатуры id={itemId} нет строки клиентского заказа.");
+                    }
+
+                    componentLines.Add(new ProductionPalletSelectedAdoptionLine
+                    {
+                        DocLineId = reader.GetInt64(0),
+                        SourceOrderLineId = reader.GetInt64(1),
+                        TargetOrderLineId = targetOrderLineId,
+                        ItemId = itemId,
+                        PlannedQty = Convert.ToDouble(reader.GetValue(3), CultureInfo.InvariantCulture)
+                    });
+                }
+            }
+
+            if (componentLines.Count == 0)
+            {
+                if (!pallet.OrderLineId.HasValue)
+                {
+                    throw new InvalidOperationException(
+                        "Нельзя сохранить provenance переноса: паллета не связана со строкой внутреннего заказа.");
+                }
+
+                if (!targetOrderLineIdByItemId.TryGetValue(pallet.ItemId, out var targetOrderLineId))
+                {
+                    throw new InvalidOperationException(
+                        $"Нельзя сохранить provenance переноса: для номенклатуры id={pallet.ItemId} нет строки клиентского заказа.");
+                }
+
+                componentLines.Add(new ProductionPalletSelectedAdoptionLine
+                {
+                    DocLineId = pallet.DocLineId,
+                    SourceOrderLineId = pallet.OrderLineId.Value,
+                    TargetOrderLineId = targetOrderLineId,
+                    ItemId = pallet.ItemId,
+                    PlannedQty = pallet.PlannedQty
+                });
+            }
+
+            result.Add(new ProductionPalletSelectedAdoption
+            {
+                ProductionPalletId = pallet.Id,
+                SourceOrderId = sourceOrderId,
+                SourcePrdDocId = sourcePrdDocId,
+                ExpectedStatus = pallet.Status,
+                HuCode = pallet.HuCode,
+                TargetOrderLineId = targetOrderLineIdByItemId.TryGetValue(pallet.ItemId, out var headerTargetLineId)
+                    ? headerTargetLineId
+                    : null,
+                Lines = componentLines
+            });
+        }
+
+        return result;
+    }
+
+    private long InsertOrderCoverageTransfer(
+        NpgsqlConnection connection,
+        long targetPrdDocId,
+        long targetOrderId,
+        ProductionPalletSelectedAdoption row,
+        DateTime createdAt)
+    {
+        string sourceOrderRef;
+        string sourceOrderStatus;
+        string targetOrderRef;
+        string sourcePrdDocRef;
+        string targetPrdDocRef;
+        string huCode;
+        string palletStatus;
+        string? printedAt;
+
+        using (var snapshotCommand = CreateCommand(connection, @"
+SELECT so.order_ref,
+       so.status,
+       target_order.order_ref,
+       source_doc.doc_ref,
+       target_doc.doc_ref,
+       pp.hu_code,
+       pp.status,
+       pp.printed_at
+FROM production_pallets pp
+INNER JOIN docs source_doc ON source_doc.id = pp.prd_doc_id
+INNER JOIN orders so ON so.id = pp.order_id
+INNER JOIN docs target_doc ON target_doc.id = @target_prd_doc_id
+INNER JOIN orders target_order ON target_order.id = @target_order_id
+WHERE pp.id = @production_pallet_id
+  AND pp.prd_doc_id = @source_prd_doc_id
+  AND pp.order_id = @source_order_id;"))
+        {
+            snapshotCommand.Parameters.AddWithValue("@target_prd_doc_id", targetPrdDocId);
+            snapshotCommand.Parameters.AddWithValue("@target_order_id", targetOrderId);
+            snapshotCommand.Parameters.AddWithValue("@production_pallet_id", row.ProductionPalletId);
+            snapshotCommand.Parameters.AddWithValue("@source_prd_doc_id", row.SourcePrdDocId);
+            snapshotCommand.Parameters.AddWithValue("@source_order_id", row.SourceOrderId);
+            using var reader = snapshotCommand.ExecuteReader();
+            if (!reader.Read())
+            {
+                throw new InvalidOperationException(
+                    "Нельзя сохранить provenance переноса: исходная паллета, заказ или документ изменились.");
+            }
+
+            sourceOrderRef = reader.GetString(0);
+            sourceOrderStatus = reader.GetString(1);
+            targetOrderRef = reader.GetString(2);
+            sourcePrdDocRef = reader.GetString(3);
+            targetPrdDocRef = reader.GetString(4);
+            huCode = reader.GetString(5);
+            palletStatus = reader.GetString(6);
+            printedAt = reader.IsDBNull(7) ? null : reader.GetString(7);
+        }
+
+        var transferredQty = row.Lines.Sum(line => Math.Max(0, line.PlannedQty));
+        if (transferredQty <= StockQuantityRules.QtyTolerance)
+        {
+            throw new InvalidOperationException("Нельзя сохранить provenance переноса: количество переноса равно нулю.");
+        }
+
+        long transferId;
+        using (var insertTransfer = CreateCommand(connection, @"
+INSERT INTO order_coverage_transfers(
+    transfer_type,
+    source_order_id,
+    source_order_ref,
+    source_order_status,
+    target_order_id,
+    target_order_ref,
+    source_prd_doc_id,
+    source_prd_doc_ref,
+    target_prd_doc_id,
+    target_prd_doc_ref,
+    production_pallet_id,
+    hu_code,
+    pallet_status_at_transfer,
+    printed_at_at_transfer,
+    transferred_qty,
+    created_at)
+VALUES(
+    @transfer_type,
+    @source_order_id,
+    @source_order_ref,
+    @source_order_status,
+    @target_order_id,
+    @target_order_ref,
+    @source_prd_doc_id,
+    @source_prd_doc_ref,
+    @target_prd_doc_id,
+    @target_prd_doc_ref,
+    @production_pallet_id,
+    @hu_code,
+    @pallet_status_at_transfer,
+    @printed_at_at_transfer,
+    @transferred_qty,
+    @created_at)
+RETURNING id;"))
+        {
+            insertTransfer.Parameters.AddWithValue("@transfer_type", OrderCoverageTransferType.PlannedPalletAdoption);
+            insertTransfer.Parameters.AddWithValue("@source_order_id", row.SourceOrderId);
+            insertTransfer.Parameters.AddWithValue("@source_order_ref", sourceOrderRef);
+            insertTransfer.Parameters.AddWithValue("@source_order_status", sourceOrderStatus);
+            insertTransfer.Parameters.AddWithValue("@target_order_id", targetOrderId);
+            insertTransfer.Parameters.AddWithValue("@target_order_ref", targetOrderRef);
+            insertTransfer.Parameters.AddWithValue("@source_prd_doc_id", row.SourcePrdDocId);
+            insertTransfer.Parameters.AddWithValue("@source_prd_doc_ref", sourcePrdDocRef);
+            insertTransfer.Parameters.AddWithValue("@target_prd_doc_id", targetPrdDocId);
+            insertTransfer.Parameters.AddWithValue("@target_prd_doc_ref", targetPrdDocRef);
+            insertTransfer.Parameters.AddWithValue("@production_pallet_id", row.ProductionPalletId);
+            insertTransfer.Parameters.AddWithValue("@hu_code", huCode);
+            insertTransfer.Parameters.AddWithValue("@pallet_status_at_transfer", palletStatus);
+            insertTransfer.Parameters.AddWithValue(
+                "@printed_at_at_transfer",
+                string.IsNullOrWhiteSpace(printedAt) ? DBNull.Value : printedAt);
+            insertTransfer.Parameters.AddWithValue("@transferred_qty", transferredQty);
+            insertTransfer.Parameters.AddWithValue("@created_at", ToDbDate(createdAt));
+            transferId = Convert.ToInt64(insertTransfer.ExecuteScalar() ?? 0L, CultureInfo.InvariantCulture);
+            if (transferId <= 0)
+            {
+                throw new InvalidOperationException("Не удалось сохранить provenance переноса паллеты.");
+            }
+        }
+
+        foreach (var line in row.Lines)
+        {
+            double sourceQtyOrderedBefore;
+            string sourceProductionPurpose;
+            string? sourceProductionPalletGroup;
+            long? sourceProductionPalletLineId;
+
+            using (var sourceLineCommand = CreateCommand(connection, @"
+SELECT ol.qty_ordered,
+       ol.production_purpose,
+       ol.production_pallet_group,
+       pll.id
+FROM order_lines ol
+LEFT JOIN production_pallet_lines pll
+       ON pll.production_pallet_id = @production_pallet_id
+      AND pll.doc_line_id = @source_doc_line_id
+WHERE ol.id = @source_order_line_id
+  AND ol.order_id = @source_order_id
+  AND ol.item_id = @item_id;"))
+            {
+                sourceLineCommand.Parameters.AddWithValue("@production_pallet_id", row.ProductionPalletId);
+                sourceLineCommand.Parameters.AddWithValue("@source_doc_line_id", line.DocLineId);
+                sourceLineCommand.Parameters.AddWithValue("@source_order_line_id", line.SourceOrderLineId);
+                sourceLineCommand.Parameters.AddWithValue("@source_order_id", row.SourceOrderId);
+                sourceLineCommand.Parameters.AddWithValue("@item_id", line.ItemId);
+                using var reader = sourceLineCommand.ExecuteReader();
+                if (!reader.Read())
+                {
+                    throw new InvalidOperationException(
+                        "Нельзя сохранить provenance переноса: исходная строка внутреннего заказа изменилась.");
+                }
+
+                sourceQtyOrderedBefore = Convert.ToDouble(reader.GetValue(0), CultureInfo.InvariantCulture);
+                sourceProductionPurpose = reader.GetString(1);
+                sourceProductionPalletGroup = reader.IsDBNull(2) ? null : reader.GetString(2);
+                sourceProductionPalletLineId = reader.IsDBNull(3) ? null : reader.GetInt64(3);
+            }
+
+            using var insertLine = CreateCommand(connection, @"
+INSERT INTO order_coverage_transfer_lines(
+    transfer_id,
+    source_order_line_id,
+    target_order_line_id,
+    source_doc_line_id,
+    source_production_pallet_line_id,
+    item_id,
+    source_qty_ordered_before,
+    transferred_qty,
+    source_production_purpose,
+    source_production_pallet_group)
+VALUES(
+    @transfer_id,
+    @source_order_line_id,
+    @target_order_line_id,
+    @source_doc_line_id,
+    @source_production_pallet_line_id,
+    @item_id,
+    @source_qty_ordered_before,
+    @transferred_qty,
+    @source_production_purpose,
+    @source_production_pallet_group);");
+            insertLine.Parameters.AddWithValue("@transfer_id", transferId);
+            insertLine.Parameters.AddWithValue("@source_order_line_id", line.SourceOrderLineId);
+            insertLine.Parameters.AddWithValue("@target_order_line_id", line.TargetOrderLineId);
+            insertLine.Parameters.AddWithValue("@source_doc_line_id", line.DocLineId);
+            insertLine.Parameters.AddWithValue(
+                "@source_production_pallet_line_id",
+                sourceProductionPalletLineId.HasValue ? sourceProductionPalletLineId.Value : DBNull.Value);
+            insertLine.Parameters.AddWithValue("@item_id", line.ItemId);
+            insertLine.Parameters.AddWithValue("@source_qty_ordered_before", sourceQtyOrderedBefore);
+            insertLine.Parameters.AddWithValue("@transferred_qty", line.PlannedQty);
+            insertLine.Parameters.AddWithValue("@source_production_purpose", sourceProductionPurpose);
+            insertLine.Parameters.AddWithValue(
+                "@source_production_pallet_group",
+                string.IsNullOrWhiteSpace(sourceProductionPalletGroup)
+                    ? DBNull.Value
+                    : sourceProductionPalletGroup);
+            insertLine.ExecuteNonQuery();
+        }
+
+        return transferId;
     }
 
     private void GuardSelectedProductionPalletLinesForAdoption(
