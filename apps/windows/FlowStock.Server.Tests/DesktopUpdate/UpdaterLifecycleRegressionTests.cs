@@ -142,7 +142,8 @@ public sealed class UpdaterLifecycleRegressionTests
             DesktopUpdateConstants.DefaultRepositoryRoot,
             LauncherTestHarness.ShimExecutable,
             shimOutput,
-            shimExitCode: 17);
+            shimExitCode: 17,
+            shimRunsDetached: false);
 
         Assert.Equal(1, launcherResult.ExitCode);
         Assert.Equal(
