@@ -5376,6 +5376,7 @@ WHERE pp.id = @production_pallet_id
   AND pp.status IN (@planned_status, @printed_status)
   AND pp.filled_at IS NULL
   AND target_doc.id = pp.prd_doc_id
+  AND target_doc.order_id = @target_order_id
   AND target_doc.type = @production_receipt_type
   AND target_doc.status <> @closed_status
   AND source_doc.id = @source_prd_doc_id
@@ -5458,12 +5459,14 @@ SET doc_id = @source_prd_doc_id,
 WHERE id = @doc_line_id
   AND doc_id = @target_prd_doc_id
   AND order_line_id = @target_order_line_id
+  AND production_purpose = @target_purpose
   AND item_id = @item_id
   AND ABS(qty - @transferred_qty) <= @qty_tolerance;
 ");
                 updateDocLine.Parameters.AddWithValue("@source_prd_doc_id", compensation.RestoredSourcePrdDocId);
                 updateDocLine.Parameters.AddWithValue("@source_order_line_id", line.RestoredSourceOrderLineId);
                 updateDocLine.Parameters.AddWithValue("@source_purpose", ProductionLinePurposeMapper.ToDbValue(line.SourceProductionPurpose));
+                updateDocLine.Parameters.AddWithValue("@target_purpose", ProductionLinePurposeMapper.ToDbValue(ProductionLinePurpose.CustomerOrder));
                 updateDocLine.Parameters.AddWithValue("@doc_line_id", line.SourceDocLineId);
                 updateDocLine.Parameters.AddWithValue("@target_prd_doc_id", compensation.TargetPrdDocId);
                 updateDocLine.Parameters.AddWithValue("@target_order_line_id", line.TargetOrderLineId);
