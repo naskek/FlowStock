@@ -658,6 +658,7 @@ public sealed class OrderService
             var priceUpdatesByLineId = new Dictionary<long, decimal>();
             var commercialTermsResolver = new CommercialTermsResolver(store);
             var selectedExistingByIncomingLine = new Dictionary<OrderLineView, OrderLine?>();
+            var normalizedCustomerQtyByLineId = new Dictionary<long, double>();
             var itemIdsRequiringActiveState = new HashSet<long>();
 
             foreach (var line in normalized)
@@ -714,8 +715,26 @@ public sealed class OrderService
                         line.ItemId == entry.Key.ItemId
                         && ResolveLinePurpose(type, line.ProductionPurpose) == entry.Key.ProductionPurpose);
                     var selectedExisting = selectedExistingByIncomingLine[incomingLine];
+                    var effectiveIncomingQty = incomingLine.QtyOrdered;
                     if (selectedExisting != null
-                        && (incomingLine.QtyOrdered + QtyTolerance < selectedExisting.QtyOrdered
+                        && Math.Abs(selectedExisting.QtyOrdered - incomingLine.QtyOrdered) > QtyTolerance)
+                    {
+                        effectiveIncomingQty = NormalizeCustomerQtyForAdjustableReservations(
+                            store,
+                            orderId,
+                            selectedExisting,
+                            incomingLine.QtyOrdered,
+                            customerReservedHuSelectionsByOrderLineId != null
+                                && customerReservedHuSelectionsByOrderLineId.TryGetValue(
+                                    selectedExisting.Id,
+                                    out var selectedHuCodes)
+                                ? selectedHuCodes
+                                : null);
+                        normalizedCustomerQtyByLineId[selectedExisting.Id] = effectiveIncomingQty;
+                    }
+
+                    if (selectedExisting != null
+                        && (effectiveIncomingQty + QtyTolerance < selectedExisting.QtyOrdered
                             || !string.Equals(
                                 NormalizePalletGroup(incomingLine.ProductionPalletGroup),
                                 NormalizePalletGroup(selectedExisting.ProductionPalletGroup),
@@ -840,15 +859,17 @@ public sealed class OrderService
                     if (Math.Abs(primary.QtyOrdered - line.QtyOrdered) > QtyTolerance)
                     {
                         var orderedQty = type == OrderType.Customer
-                            ? NormalizeCustomerQtyForAdjustableReservations(
-                                store,
-                                orderId,
-                                primary,
-                                line.QtyOrdered,
-                                customerReservedHuSelectionsByOrderLineId != null
-                                    && customerReservedHuSelectionsByOrderLineId.TryGetValue(primary.Id, out var selectedHuCodes)
-                                    ? selectedHuCodes
-                                    : null)
+                            ? normalizedCustomerQtyByLineId.TryGetValue(primary.Id, out var precomputedQty)
+                                ? precomputedQty
+                                : NormalizeCustomerQtyForAdjustableReservations(
+                                    store,
+                                    orderId,
+                                    primary,
+                                    line.QtyOrdered,
+                                    customerReservedHuSelectionsByOrderLineId != null
+                                        && customerReservedHuSelectionsByOrderLineId.TryGetValue(primary.Id, out var selectedHuCodes)
+                                        ? selectedHuCodes
+                                        : null)
                             : line.QtyOrdered;
                         ValidateOrderLineQtyCanChange(store, orderId, primary, orderedQty, type);
                         store.UpdateOrderLineQty(primary.Id, orderedQty);
