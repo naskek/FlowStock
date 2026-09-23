@@ -3525,6 +3525,9 @@ public sealed class ProductionPalletServiceTests
         Assert.Equal(OrderStatus.Merged, harness.Store.GetOrder(66)?.Status);
         Assert.Contains("Объединён с заказом №067", harness.Store.GetOrder(66)?.Comment ?? string.Empty, StringComparison.Ordinal);
         Assert.DoesNotContain(harness.Store.GetActiveProductionPalletWorkItems(), item => item.OrderId == 66);
+        Assert.Empty(harness.Store.GetOrderLines(66));
+        harness.VerifySelectedProductionPalletAdoption(Times.Once());
+        harness.VerifyLegacyProductionPalletAdoption(Times.Never());
     }
 
     [Fact]
@@ -3570,14 +3573,38 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
-    public void AdoptPlanFromInternal_RejectsTargetExistingPlan()
+    public void AdoptPlanFromInternal_WithExistingTargetPlan_UsesAuthoritativeSelectedWorkflow()
     {
         var harness = CreateHarnessForAdopt(targetHasPlan: true);
         var service = new ProductionPalletService(harness.Store);
 
-        var ex = Assert.Throws<ProductionPalletPlanAdoptionException>(() => service.AdoptPlanFromInternal(67, 66));
+        var result = service.AdoptPlanFromInternal(67, 66);
 
-        Assert.Equal("TARGET_ALREADY_HAS_PALLET_PLAN", ex.Code);
+        Assert.True(result.Success);
+        Assert.Equal(163, result.TargetPrdDocId);
+        Assert.Equal(2, result.TransferredPalletCount);
+        Assert.Equal(3, harness.Store.GetProductionPalletsByDoc(163).Count);
+        Assert.Empty(harness.Store.GetOrderLines(66));
+        Assert.Equal(OrderStatus.Merged, harness.Store.GetOrder(66)?.Status);
+        harness.VerifySelectedProductionPalletAdoption(Times.Once());
+        harness.VerifyLegacyProductionPalletAdoption(Times.Never());
+    }
+
+    [Fact]
+    public void AdoptPlanFromInternal_ReducesOnlyTransferredSourceDemand()
+    {
+        var harness = CreateHarnessForAdopt(sourceQty: 1800);
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.AdoptPlanFromInternal(67, 66);
+
+        Assert.True(result.Success);
+        var sourceLine = Assert.Single(harness.Store.GetOrderLines(66));
+        Assert.Equal(600, sourceLine.QtyOrdered);
+        Assert.Equal(OrderStatus.InProgress, harness.Store.GetOrder(66)?.Status);
+        Assert.Equal("IN_PROGRESS", result.SourceOrderStatus);
+        harness.VerifySelectedProductionPalletAdoption(Times.Once());
+        harness.VerifyLegacyProductionPalletAdoption(Times.Never());
     }
 
     [Fact]
@@ -3706,7 +3733,8 @@ public sealed class ProductionPalletServiceTests
         string sourcePalletStatus = ProductionPalletStatus.Planned,
         DocStatus sourceDocStatus = DocStatus.Draft,
         bool targetHasPlan = false,
-        bool targetHasMatchingLine = true)
+        bool targetHasMatchingLine = true,
+        double sourceQty = 1200)
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
@@ -3731,7 +3759,7 @@ public sealed class ProductionPalletServiceTests
             Id = 171,
             OrderId = 66,
             ItemId = 100,
-            QtyOrdered = 0
+            QtyOrdered = sourceQty
         });
         harness.SeedOrder(new Order
         {
