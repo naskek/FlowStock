@@ -5391,14 +5391,7 @@ WHERE pp.id = @production_pallet_id
       SELECT 1
       FROM ledger l
       WHERE l.doc_id = pp.prd_doc_id
-        AND UPPER(BTRIM(COALESCE(l.hu_code, l.hu, ''))) = UPPER(BTRIM(COALESCE(pp.hu_code, '')))
-        AND (
-            l.item_id = pp.item_id
-            OR EXISTS (
-                SELECT 1
-                FROM production_pallet_lines ledger_line
-                WHERE ledger_line.production_pallet_id = pp.id
-                  AND ledger_line.item_id = l.item_id)));
+        AND UPPER(BTRIM(COALESCE(l.hu_code, l.hu, ''))) = UPPER(BTRIM(COALESCE(pp.hu_code, ''))));
 "))
             {
                 updatePallet.Parameters.AddWithValue("@source_prd_doc_id", compensation.RestoredSourcePrdDocId);
