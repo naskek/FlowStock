@@ -74,6 +74,24 @@ internal sealed class CloseDocumentHarness
     public IReadOnlyList<MarkingOrder> MarkingOrders => _markingOrders.Values.OrderBy(order => order.CreatedAt).ToArray();
     public IReadOnlyList<MarkingCode> MarkingCodes => _markingCodes.Values.OrderBy(code => code.CreatedAt).ToArray();
 
+    public void VerifySelectedProductionPalletAdoption(Times times)
+    {
+        _store.Verify(store => store.AdoptSelectedProductionPallets(
+            It.IsAny<long>(),
+            It.IsAny<long>(),
+            It.IsAny<IReadOnlyList<ProductionPalletSelectedAdoption>>()), times);
+    }
+
+    public void VerifyLegacyProductionPalletAdoption(Times times)
+    {
+        _store.Verify(store => store.AdoptProductionPalletPlan(
+            It.IsAny<long>(),
+            It.IsAny<long>(),
+            It.IsAny<long>(),
+            It.IsAny<long>(),
+            It.IsAny<IReadOnlyDictionary<long, long>>()), times);
+    }
+
     public void VerifyNoGlobalHuFateReads()
     {
         _store.Verify(store => store.GetOrders(), Times.Never);
