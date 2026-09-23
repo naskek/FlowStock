@@ -57,21 +57,23 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
         Assert.Equal(100d, transfer.TransferredQty, 6);
         Assert.Equal(2, transfer.Lines.Count);
         Assert.Equal(
-            fixture.SourceOrderLineIds.Order(),
-            transfer.Lines.Select(line => line.SourceOrderLineId).Order());
+            fixture.SourceOrderLineIds.Order().ToArray(),
+            transfer.Lines.Select(line => line.SourceOrderLineId).Order().ToArray());
         Assert.All(transfer.Lines, line =>
         {
             Assert.Equal("INTERNAL_STOCK", line.SourceProductionPurpose);
             Assert.Equal("MIX-1", line.SourceProductionPalletGroup);
-            Assert.True(line.SourceProductionPalletLineId > 0);
+            Assert.True(
+                line.SourceProductionPalletLineId.HasValue
+                && line.SourceProductionPalletLineId.Value > 0);
         });
 
         fixture.DeleteSourceOrderLines();
 
         var persisted = Assert.Single(store.GetOrderCoverageTransfersByTargetOrder(fixture.TargetOrderId));
         Assert.Equal(
-            fixture.SourceOrderLineIds.Order(),
-            persisted.Lines.Select(line => line.SourceOrderLineId).Order());
+            fixture.SourceOrderLineIds.Order().ToArray(),
+            persisted.Lines.Select(line => line.SourceOrderLineId).Order().ToArray());
         Assert.Equal(new[] { 40d, 60d }, persisted.Lines.Select(line => line.TransferredQty).Order().ToArray());
     }
 
@@ -131,8 +133,8 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
         Assert.Equal(100d, transfer.TransferredQty, 6);
         Assert.Equal(2, transfer.Lines.Count);
         Assert.Equal(
-            fixture.TargetOrderLineIdsByItemId.Values.Order(),
-            transfer.Lines.Select(line => line.TargetOrderLineId).Order());
+            fixture.TargetOrderLineIdsByItemId.Values.Order().ToArray(),
+            transfer.Lines.Select(line => line.TargetOrderLineId).Order().ToArray());
     }
 
     private static string GetRepoFilePath(params string[] parts)
@@ -179,7 +181,6 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
         private readonly long _locationId;
         private readonly long[] _itemIds;
         private readonly long[] _sourceDocLineIds;
-        private bool _sourceLinesDeleted;
 
         private AdoptionFixture(
             string connectionString,
@@ -423,7 +424,6 @@ ORDER BY pll.id;";
             command.CommandText = "DELETE FROM order_lines WHERE id = ANY(@ids);";
             command.Parameters.AddWithValue("ids", SourceOrderLineIds);
             command.ExecuteNonQuery();
-            _sourceLinesDeleted = true;
         }
 
         public (long? OrderId, long PrdDocId, long? OrderLineId) ReadPalletOwnership()
