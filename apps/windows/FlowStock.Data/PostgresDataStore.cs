@@ -5268,7 +5268,7 @@ ORDER BY id;");
         });
     }
 
-    private static IReadOnlyList<ProductionPalletSelectedAdoption> BuildLegacyAdoptionProvenanceRows(
+    private IReadOnlyList<ProductionPalletSelectedAdoption> BuildLegacyAdoptionProvenanceRows(
         NpgsqlConnection connection,
         long sourcePrdDocId,
         long sourceOrderId,
@@ -5378,7 +5378,7 @@ ORDER BY id;"))
         return result;
     }
 
-    private static long InsertOrderCoverageTransfer(
+    private long InsertOrderCoverageTransfer(
         NpgsqlConnection connection,
         long targetPrdDocId,
         long targetOrderId,
