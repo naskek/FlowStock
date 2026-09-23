@@ -179,7 +179,8 @@ internal static class OrderCoveragePlanCompensationService
                 DateTime.UtcNow);
             if (!applied)
             {
-                continue;
+                throw new InvalidOperationException(
+                    "Production coverage изменился одновременно с compensation. Повторите операцию.");
             }
 
             compensatedCount++;
