@@ -35,8 +35,15 @@ require(
     r"pulls\?state=open&base=main&per_page=100",
     "PR discovery must be limited to open PRs targeting main",
 )
-if r'select(.head.sha == \"$RUN_SHA\")' not in source:
-    raise AssertionError("PR discovery must match the exact successful CI HEAD SHA")
+for marker, message in {
+    "RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}": "workflow must bind to the completed run head branch",
+    "RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}": "workflow must bind to the completed run head repository",
+    ".head.sha == $sha": "PR discovery must match the exact successful CI HEAD SHA",
+    ".head.ref == $branch": "PR discovery must match the completed run head branch",
+    ".head.repo.full_name == $repo": "PR discovery must match the completed run head repository",
+}.items():
+    if marker not in source:
+        raise AssertionError(message)
 require(
     r'\[\.state, \.base\.ref, \.head\.sha\].*current_sha',
     "workflow must re-read current PR state/base/head before commenting",
@@ -46,8 +53,8 @@ require(
     "stale, closed, or retargeted PRs must be skipped",
 )
 require(r"flowstock-review-ready:\$RUN_SHA", "dedupe marker must include the exact PR HEAD SHA")
-if "comments?per_page=100" not in source or r'contains(\"$marker\")' not in source:
-    raise AssertionError("existing SHA marker must be checked before posting")
+if "comments?per_page=100" not in source or "github-actions[bot]" not in source or "contains($marker)" not in source:
+    raise AssertionError("dedupe must only trust the GitHub Actions bot marker for the exact SHA")
 require(
     r'gh api --method POST "repos/\$REPO/issues/\$pr_number/comments"',
     "automation must publish only a top-level PR comment",
