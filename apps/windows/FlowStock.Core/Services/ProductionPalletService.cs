@@ -410,50 +410,14 @@ public sealed class ProductionPalletService
                     wasExisting = false;
                 }
 
-                ValidateSourceQuantityReductionForAdoption(store, adopted);
-                int transferredCount;
-                try
-                {
-                    transferredCount = store.AdoptSelectedProductionPallets(
-                        prdDocId,
-                        orderId,
-                        BuildSelectedAdoptionRows(adopted));
-                }
-                catch (InvalidOperationException ex)
-                {
-                    throw SelectedCoverageError(
+                _ = AdoptProjectedInternalPalletsInStore(
+                    store,
+                    targetOrder,
+                    prdDocId,
+                    adopted,
+                    ex => SelectedCoverageError(
                         "STALE_INTERNAL_SELECTION",
-                        ex.Message);
-                }
-
-                if (transferredCount != adopted.Count)
-                {
-                    throw SelectedCoverageError(
-                        "STALE_INTERNAL_SELECTION",
-                        "Нельзя перенести planned HU: часть выбранных паллет изменилась до переноса. Обновите preview и повторите действие.");
-                }
-
-                ReduceSourceInternalOrderLines(store, adopted);
-
-                foreach (var sourceDocId in adopted.Select(candidate => candidate.SourcePrdDocId).Distinct())
-                {
-                    var sourceOrderId = adopted.First(candidate => candidate.SourcePrdDocId == sourceDocId).SourceOrderId;
-                    EmptyDraftProductionReceiptCleanup.TryDeleteEmptyDraftProductionReceiptIfSafe(
-                        store,
-                        sourceOrderId,
-                        sourceDocId);
-                }
-
-                CleanupDepletedSourceInternalOrderLines(store, adopted);
-
-                foreach (var sourceOrderId in adopted.Select(candidate => candidate.SourceOrderId).Distinct())
-                {
-                    InternalOrderMergeService.TryMarkAsMerged(
-                        store,
-                        sourceOrderId,
-                        orderId,
-                        targetOrder.OrderRef);
-                }
+                        ex.Message));
             }
 
             var palletIdsBeforeAppend = GetProductionPalletsByOrder(store, orderId)
@@ -592,38 +556,11 @@ public sealed class ProductionPalletService
                     wasExisting = false;
                 }
 
-                ValidateSourceQuantityReductionForAdoption(store, adopted);
-                var transferredCount = store.AdoptSelectedProductionPallets(
+                _ = AdoptProjectedInternalPalletsInStore(
+                    store,
+                    targetOrder,
                     prdDocId,
-                    orderId,
-                    BuildSelectedAdoptionRows(adopted));
-                if (transferredCount != adopted.Count)
-                {
-                    throw new InvalidOperationException(
-                        "Нельзя перенести planned HU: часть выбранных паллет изменилась до переноса. Обновите заказ и повторите планирование.");
-                }
-
-                ReduceSourceInternalOrderLines(store, adopted);
-
-                foreach (var sourceDocId in adopted.Select(candidate => candidate.SourcePrdDocId).Distinct())
-                {
-                    var sourceOrderId = adopted.First(candidate => candidate.SourcePrdDocId == sourceDocId).SourceOrderId;
-                    EmptyDraftProductionReceiptCleanup.TryDeleteEmptyDraftProductionReceiptIfSafe(
-                        store,
-                        sourceOrderId,
-                        sourceDocId);
-                }
-
-                CleanupDepletedSourceInternalOrderLines(store, adopted);
-
-                foreach (var sourceOrderId in adopted.Select(candidate => candidate.SourceOrderId).Distinct())
-                {
-                    InternalOrderMergeService.TryMarkAsMerged(
-                        store,
-                        sourceOrderId,
-                        orderId,
-                        targetOrder.OrderRef);
-                }
+                    adopted);
             }
 
             var palletIdsBeforeAppend = GetProductionPalletsByOrder(store, orderId)
@@ -679,6 +616,80 @@ public sealed class ProductionPalletService
             NewlyPlannedPalletCount = newlyPlannedPalletCount,
             NewlyPlannedQty = newlyPlannedQty
         };
+    }
+
+    private static InternalPlanAdoptionMutationResult AdoptProjectedInternalPalletsInStore(
+        IDataStore store,
+        Order targetOrder,
+        long targetPrdDocId,
+        IReadOnlyList<ProductionPalletProjectedAdoptionHu> adopted,
+        Func<InvalidOperationException, Exception>? adoptionFailureFactory = null)
+    {
+        if (adopted.Count == 0)
+        {
+            return new InternalPlanAdoptionMutationResult(
+                0,
+                new Dictionary<long, InternalOrderMergeResult>());
+        }
+
+        ValidateSourceQuantityReductionForAdoption(store, adopted);
+
+        int transferredCount;
+        try
+        {
+            transferredCount = store.AdoptSelectedProductionPallets(
+                targetPrdDocId,
+                targetOrder.Id,
+                BuildSelectedAdoptionRows(adopted));
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (adoptionFailureFactory != null)
+            {
+                throw adoptionFailureFactory(ex);
+            }
+
+            throw;
+        }
+
+        if (transferredCount != adopted.Count)
+        {
+            var ex = new InvalidOperationException(
+                "Нельзя перенести planned HU: часть выбранных паллет изменилась до переноса. Обновите заказ и повторите планирование.");
+            if (adoptionFailureFactory != null)
+            {
+                throw adoptionFailureFactory(ex);
+            }
+
+            throw ex;
+        }
+
+        ReduceSourceInternalOrderLines(store, adopted);
+
+        foreach (var sourceDocId in adopted.Select(candidate => candidate.SourcePrdDocId).Distinct())
+        {
+            var sourceOrderId = adopted.First(candidate => candidate.SourcePrdDocId == sourceDocId).SourceOrderId;
+            EmptyDraftProductionReceiptCleanup.TryDeleteEmptyDraftProductionReceiptIfSafe(
+                store,
+                sourceOrderId,
+                sourceDocId);
+        }
+
+        CleanupDepletedSourceInternalOrderLines(store, adopted);
+
+        var sourceMergeResults = new Dictionary<long, InternalOrderMergeResult>();
+        foreach (var sourceOrderId in adopted.Select(candidate => candidate.SourceOrderId).Distinct())
+        {
+            sourceMergeResults[sourceOrderId] = InternalOrderMergeService.TryMarkAsMerged(
+                store,
+                sourceOrderId,
+                targetOrder.Id,
+                targetOrder.OrderRef);
+        }
+
+        return new InternalPlanAdoptionMutationResult(
+            transferredCount,
+            sourceMergeResults);
     }
 
     private static IReadOnlyList<ProductionPalletSelectedAdoption> BuildSelectedAdoptionRows(
@@ -1248,6 +1259,10 @@ public sealed class ProductionPalletService
             ProjectedRemainingQtyAfterAdoption = adoptionProjection.RemainingQtyAfterAdoption
         };
     }
+
+    private sealed record InternalPlanAdoptionMutationResult(
+        int TransferredPalletCount,
+        IReadOnlyDictionary<long, InternalOrderMergeResult> SourceMergeResults);
 
     private sealed record InternalPlanAdoptionProjection(
         IReadOnlyList<ProductionPalletProjectedAdoptionHu> Adoptable,
@@ -2122,6 +2137,17 @@ public sealed class ProductionPalletService
         ProductionPalletPlanAdoptionResult result = null!;
         _data.ExecuteInTransaction(store =>
         {
+            var lockOrderIds = new[] { sourceInternalOrderId, targetCustomerOrderId }
+                .Distinct()
+                .OrderBy(id => id)
+                .ToArray();
+            if (!store.LockOrdersForUpdate(lockOrderIds))
+            {
+                throw new ProductionPalletPlanAdoptionException(
+                    "ORDER_LOCK_FAILED",
+                    "Не удалось заблокировать заказы для переноса плана паллет.");
+            }
+
             var sourceOrder = store.GetOrder(sourceInternalOrderId)
                               ?? throw new ProductionPalletPlanAdoptionException("SOURCE_ORDER_NOT_FOUND", "Внутренний заказ-источник не найден.");
             var targetOrder = store.GetOrder(targetCustomerOrderId)
@@ -2137,12 +2163,12 @@ public sealed class ProductionPalletService
                 throw new ProductionPalletPlanAdoptionException("TARGET_NOT_CUSTOMER", "Получатель должен быть клиентским заказом.");
             }
 
-            if (sourceOrder.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
+            if (sourceOrder.Status is not (OrderStatus.Draft or OrderStatus.InProgress))
             {
                 throw new ProductionPalletPlanAdoptionException("SOURCE_ORDER_NOT_EDITABLE", "Внутренний заказ недоступен для переноса плана паллет.");
             }
 
-            if (targetOrder.Status is OrderStatus.Shipped or OrderStatus.Cancelled)
+            if (targetOrder.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
             {
                 throw new ProductionPalletPlanAdoptionException("TARGET_ORDER_NOT_EDITABLE", "Клиентский заказ недоступен для переноса плана паллет.");
             }
@@ -2154,17 +2180,10 @@ public sealed class ProductionPalletService
                 throw new ProductionPalletPlanAdoptionException("SOURCE_PRD_CLOSED", "Нельзя перенести план паллет: выпуск уже закрыт.");
             }
 
-            if (TargetHasActiveProductionPalletPlan(store, targetCustomerOrderId))
-            {
-                throw new ProductionPalletPlanAdoptionException(
-                    "TARGET_ALREADY_HAS_PALLET_PLAN",
-                    "У клиентского заказа уже есть план паллет. Сначала удалите текущий план паллет.");
-            }
-
             var sourcePallets = store.GetProductionPalletsByDoc(sourceDoc.Id)
                 .Where(pallet => ProductionPalletStatus.IsOperational(pallet.Status))
-                .ToList();
-            if (sourcePallets.Count == 0)
+                .ToArray();
+            if (sourcePallets.Length == 0)
             {
                 throw new ProductionPalletPlanAdoptionException("SOURCE_HAS_NO_ACTIVE_PALLETS", "У внутреннего выпуска нет активных паллет для переноса.");
             }
@@ -2179,9 +2198,7 @@ public sealed class ProductionPalletService
                 throw new ProductionPalletPlanAdoptionException("SOURCE_HAS_PARTIAL_PALLETS", "Нельзя перенести план паллет: есть частично наполненные микс-паллеты.");
             }
 
-            if (sourcePallets.Any(pallet =>
-                    !string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)))
+            if (sourcePallets.Any(pallet => !IsEmptyAdoptablePalletStatus(pallet.Status)))
             {
                 throw new ProductionPalletPlanAdoptionException("INVALID_OPERATION", "Перенести можно только паллеты PLANNED/PRINTED.");
             }
@@ -2191,38 +2208,51 @@ public sealed class ProductionPalletService
                 throw new ProductionPalletPlanAdoptionException("SOURCE_HAS_LEDGER", "Нельзя перенести план паллет: по внутреннему выпуску уже есть движения склада.");
             }
 
-            var targetLinesByItemId = store.GetOrderLines(targetCustomerOrderId)
-                .GroupBy(line => line.ItemId)
-                .ToDictionary(group => group.Key, group => group.OrderBy(line => line.Id).First().Id);
+            var targetLines = store.GetOrderLines(targetCustomerOrderId);
+            var targetItemIds = targetLines.Select(line => line.ItemId).ToHashSet();
             var sourceItemIds = sourcePallets
                 .SelectMany(pallet => GetPalletLines(pallet).Select(line => line.ItemId).DefaultIfEmpty(pallet.ItemId))
                 .Distinct()
-                .ToList();
-            foreach (var itemId in sourceItemIds)
+                .ToArray();
+            var missingTargetItemId = sourceItemIds.FirstOrDefault(itemId => !targetItemIds.Contains(itemId));
+            if (missingTargetItemId > 0)
             {
-                if (!targetLinesByItemId.ContainsKey(itemId))
-                {
-                    throw new ProductionPalletPlanAdoptionException("TARGET_LINE_NOT_FOUND", $"В клиентском заказе нет строки для номенклатуры id={itemId}.");
-                }
+                throw new ProductionPalletPlanAdoptionException(
+                    "TARGET_LINE_NOT_FOUND",
+                    $"В клиентском заказе нет строки для номенклатуры id={missingTargetItemId}.");
             }
 
-            var targetDoc = FindReusableEmptyProductionReceipt(store, targetCustomerOrderId)
+            var linesToPlan = GetLinesNeedingPalletAppend(store, targetOrder)
+                .Where(line => line.QtyRemaining > QtyTolerance)
+                .ToArray();
+            var projection = BuildInternalPlanAdoptionProjection(
+                store,
+                targetOrder,
+                linesToPlan,
+                new[] { sourceInternalOrderId });
+            var sourcePalletIds = sourcePallets.Select(pallet => pallet.Id).ToHashSet();
+            var adopted = projection.Adoptable
+                .Where(candidate => candidate.SourcePrdDocId == sourceDoc.Id)
+                .Where(candidate => sourcePalletIds.Contains(candidate.ProductionPalletId))
+                .ToArray();
+            if (adopted.Length != sourcePallets.Length)
+            {
+                throw new ProductionPalletPlanAdoptionException(
+                    "SOURCE_PLAN_NOT_ADOPTABLE",
+                    "Нельзя перенести весь план паллет: часть HU не помещается в актуальную потребность клиентского заказа или не соответствует его строкам.");
+            }
+
+            var targetDoc = FindPreparedOpenProductionReceipt(store, targetCustomerOrderId, requireRemaining: false)
+                            ?? FindReusableEmptyProductionReceipt(store, targetCustomerOrderId)
                             ?? CreateProductionReceipt(store, targetOrder);
-            var adoptResult = store.AdoptProductionPalletPlan(
-                sourceDoc.Id,
+            var mutation = AdoptProjectedInternalPalletsInStore(
+                store,
+                targetOrder,
                 targetDoc.Id,
-                sourceInternalOrderId,
-                targetCustomerOrderId,
-                targetLinesByItemId);
-            EmptyDraftProductionReceiptCleanup.TryDeleteEmptyDraftProductionReceiptIfSafe(
-                store,
-                sourceInternalOrderId,
-                sourceDoc.Id);
-            var mergeResult = InternalOrderMergeService.TryMarkAsMerged(
-                store,
-                sourceInternalOrderId,
-                targetCustomerOrderId,
-                targetOrder.OrderRef);
+                adopted);
+
+            var mergeResult = mutation.SourceMergeResults.GetValueOrDefault(sourceInternalOrderId)
+                              ?? InternalOrderMergeResult.Skipped();
             var warnings = new List<ProductionPalletPlanAdoptionWarning>();
             if (!string.IsNullOrWhiteSpace(mergeResult.WarningCode))
             {
@@ -2243,17 +2273,24 @@ public sealed class ProductionPalletService
 
             result = new ProductionPalletPlanAdoptionResult
             {
-                Success = adoptResult.Success,
-                Message = adoptResult.Message,
-                SourceOrderId = adoptResult.SourceOrderId,
-                TargetOrderId = adoptResult.TargetOrderId,
-                SourcePrdDocId = adoptResult.SourcePrdDocId,
-                TargetPrdDocId = adoptResult.TargetPrdDocId,
-                TransferredPalletCount = adoptResult.TransferredPalletCount,
-                TransferredLineCount = adoptResult.TransferredLineCount,
-                TransferredHuCodes = adoptResult.TransferredHuCodes,
+                Success = true,
+                Message = "План паллет перенесён на клиентский заказ.",
+                SourceOrderId = sourceInternalOrderId,
+                TargetOrderId = targetCustomerOrderId,
+                SourcePrdDocId = sourceDoc.Id,
+                TargetPrdDocId = targetDoc.Id,
+                TransferredPalletCount = adopted.Length,
+                TransferredLineCount = adopted.Sum(candidate => candidate.Lines.Count),
+                TransferredHuCodes = adopted
+                    .Select(candidate => candidate.HuCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
                 Warnings = warnings,
-                SourceOrderStatus = OrderStatusMapper.StatusToString(mergeResult.IsMerged ? OrderStatus.Merged : sourceOrder.Status),
+                SourceOrderStatus = OrderStatusMapper.StatusToString(
+                    mergeResult.IsMerged
+                        ? OrderStatus.Merged
+                        : store.GetOrder(sourceInternalOrderId)?.Status ?? sourceOrder.Status),
                 SourceOrderCommentUpdated = mergeResult.CommentUpdated
             };
         });
