@@ -5265,7 +5265,8 @@ ORDER BY t.id, l.id;");
 
         if (_transaction == null)
         {
-            return ExecuteAtomic(store => store.CompensatePlannedOrderCoverageTransfer(compensation, compensatedAt));
+            throw new InvalidOperationException(
+                "RETURN_PLAN compensation должна выполняться внутри общей business transaction.");
         }
 
         return WithConnection(connection =>
