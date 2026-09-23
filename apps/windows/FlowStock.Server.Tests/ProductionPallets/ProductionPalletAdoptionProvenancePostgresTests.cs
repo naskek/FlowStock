@@ -805,8 +805,8 @@ VALUES(@order_id, @order_line_id, @item_id, @qty, @location_id, @hu, 0);";
 
             using var ledgerCommand = connection.CreateCommand();
             ledgerCommand.CommandText = @"
-INSERT INTO ledger(doc_id, item_id, location_id, qty_delta, hu_code, hu, timestamp)
-VALUES(@doc_id, @item_id, @location_id, 1, @hu, @hu, @timestamp);";
+INSERT INTO ledger(ts, doc_id, item_id, location_id, qty_delta, hu_code, hu)
+VALUES(@timestamp, @doc_id, @item_id, @location_id, 1, @hu, @hu);";
             ledgerCommand.Parameters.AddWithValue("doc_id", TargetPrdDocId);
             ledgerCommand.Parameters.AddWithValue("item_id", itemId);
             ledgerCommand.Parameters.AddWithValue("location_id", _locationId);
