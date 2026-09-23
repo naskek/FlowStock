@@ -82,17 +82,11 @@ internal static class LauncherTestHarness
                 {
                     var invocation = JsonSerializer.Deserialize<ProcessShimInvocation>(File.ReadAllText(path))
                                      ?? throw new InvalidOperationException("Process shim output пуст.");
-                    try
-                    {
-                        SignalShimExit(invocation, path);
-                    }
-                    catch
-                    {
-                        TerminateProcess(invocation.ProcessId);
-                        throw;
-                    }
-
-                    WaitForProcessExit(invocation.ProcessId, timeoutLimit - timeout.Elapsed);
+                    ReleaseShim(
+                        invocation,
+                        path,
+                        timeoutLimit - timeout.Elapsed,
+                        requireDetachedProcessHandle: true);
                     return invocation;
                 }
             }
@@ -129,32 +123,86 @@ internal static class LauncherTestHarness
 
     private static string GetExitSignalPath(string invocationPath) => $"{invocationPath}.exit-signal";
 
-    private static void WaitForProcessExit(int processId, TimeSpan timeout)
+    private static void ReleaseShim(
+        ProcessShimInvocation invocation,
+        string invocationPath,
+        TimeSpan timeout,
+        bool requireDetachedProcessHandle)
+    {
+        if (invocation.ExitSignalPath is null)
+        {
+            WaitForProcessExit(invocation.ProcessId, timeout);
+            return;
+        }
+
+        Process? process = null;
+        try
+        {
+            process = GetProcess(invocation.ProcessId, requireDetachedProcessHandle);
+            if (process is null)
+            {
+                return;
+            }
+
+            SignalShimExit(invocation, invocationPath);
+            WaitForProcessExit(process, timeout);
+        }
+        catch
+        {
+            if (process is not null)
+            {
+                TerminateProcess(process);
+            }
+
+            throw;
+        }
+        finally
+        {
+            process?.Dispose();
+        }
+    }
+
+    private static Process? GetProcess(int processId, bool requireRunning)
     {
         if (processId <= 0)
         {
             throw new InvalidOperationException($"Process shim вернул некорректный PID: {processId}");
         }
 
-        Process process;
         try
         {
-            process = Process.GetProcessById(processId);
+            return Process.GetProcessById(processId);
+        }
+        catch (ArgumentException exception) when (requireRunning)
+        {
+            throw new InvalidOperationException(
+                $"Detached process shim PID {processId} завершился до установки lifecycle handshake.",
+                exception);
         }
         catch (ArgumentException)
         {
-            // The shim may have already exited between writing the invocation file and this lookup.
+            return null;
+        }
+    }
+
+    private static void WaitForProcessExit(int processId, TimeSpan timeout)
+    {
+        using var process = GetProcess(processId, requireRunning: false);
+        if (process is null)
+        {
             return;
         }
 
-        using (process)
+        WaitForProcessExit(process, timeout);
+    }
+
+    private static void WaitForProcessExit(Process process, TimeSpan timeout)
+    {
+        var timeoutMilliseconds = Math.Max(0, (int)Math.Ceiling(timeout.TotalMilliseconds));
+        if (!process.WaitForExit(timeoutMilliseconds))
         {
-            var timeoutMilliseconds = Math.Max(0, (int)Math.Ceiling(timeout.TotalMilliseconds));
-            if (!process.WaitForExit(timeoutMilliseconds))
-            {
-                TerminateProcess(process);
-                throw new TimeoutException($"Process shim PID {processId} не завершился за отведённое время.");
-            }
+            TerminateProcess(process);
+            throw new TimeoutException($"Process shim PID {process.Id} не завершился за отведённое время.");
         }
     }
 
@@ -162,7 +210,6 @@ internal static class LauncherTestHarness
     {
         try
         {
-            File.WriteAllText(GetExitSignalPath(invocationPath), string.Empty);
             var cleanupTimeout = Stopwatch.StartNew();
             while (cleanupTimeout.Elapsed < TimeSpan.FromSeconds(1))
             {
@@ -173,11 +220,19 @@ internal static class LauncherTestHarness
                     {
                         try
                         {
-                            WaitForProcessExit(invocation.ProcessId, TimeSpan.FromSeconds(1));
+                            ReleaseShim(
+                                invocation,
+                                invocationPath,
+                                TimeSpan.FromSeconds(1),
+                                requireDetachedProcessHandle: false);
                         }
                         catch (TimeoutException)
                         {
-                            // WaitForProcessExit already terminated and reaped the shim.
+                            // ReleaseShim already terminated and reaped the shim.
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            // The shim already exited before emergency cleanup acquired a handle.
                         }
 
                         return;
