@@ -35,10 +35,8 @@ require(
     r"pulls\?state=open&base=main&per_page=100",
     "PR discovery must be limited to open PRs targeting main",
 )
-require(
-    r'select\(\.head\.sha == \\"\$RUN_SHA\\"\)',
-    "PR discovery must match the exact successful CI HEAD SHA",
-)
+if r'select(.head.sha == \"$RUN_SHA\")' not in source:
+    raise AssertionError("PR discovery must match the exact successful CI HEAD SHA")
 require(
     r'\[\.state, \.base\.ref, \.head\.sha\].*current_sha',
     "workflow must re-read current PR state/base/head before commenting",
@@ -48,10 +46,8 @@ require(
     "stale, closed, or retargeted PRs must be skipped",
 )
 require(r"flowstock-review-ready:\$RUN_SHA", "dedupe marker must include the exact PR HEAD SHA")
-require(
-    r'comments\?per_page=100.*contains\(\\"\$marker\\"\).*existing',
-    "existing SHA marker must be checked before posting",
-)
+if "comments?per_page=100" not in source or r'contains(\"$marker\")' not in source:
+    raise AssertionError("existing SHA marker must be checked before posting")
 require(
     r'gh api --method POST "repos/\$REPO/issues/\$pr_number/comments"',
     "automation must publish only a top-level PR comment",
