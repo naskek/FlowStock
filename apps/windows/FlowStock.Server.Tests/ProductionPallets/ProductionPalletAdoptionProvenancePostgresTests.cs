@@ -109,6 +109,40 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
     }
 
     [Fact]
+    public void CustomerCancel_Internal300Adopts100_RestoresExistingSourceDemandTo300()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        using var fixture = AdoptionFixture.Create(connectionString, mixed: false);
+        var store = new PostgresDataStore(connectionString);
+        store.Initialize();
+        fixture.SetSingleSourceQty(300);
+
+        store.AdoptSelectedProductionPallets(
+            fixture.TargetPrdDocId,
+            fixture.TargetOrderId,
+            [fixture.BuildSelectedAdoption()]);
+        fixture.SetSingleSourceQty(200);
+        fixture.DeleteSourcePrdDoc();
+
+        new OrderService(store).CancelOrder(fixture.TargetOrderId);
+
+        var sourceLine = Assert.Single(store.GetOrderLines(fixture.SourceOrderId));
+        Assert.Equal(fixture.SourceOrderLineIds.Single(), sourceLine.Id);
+        Assert.Equal(300d, sourceLine.QtyOrdered, 6);
+        Assert.Equal(OrderStatus.InProgress, store.GetOrder(fixture.SourceOrderId)?.Status);
+        var ownership = fixture.ReadPalletOwnership();
+        Assert.Equal(fixture.SourceOrderId, ownership.OrderId);
+        Assert.Equal(sourceLine.Id, ownership.OrderLineId);
+        Assert.Equal(OrderCoverageCompensationKind.ReturnPlan,
+            Assert.Single(store.GetOrderCoverageTransfersByTargetOrder(fixture.TargetOrderId)).CompensationKind);
+    }
+
+    [Fact]
     public void CustomerCancel_ReversesMixedPlannedAdoption_RestoresMergedInternalAndIsIdempotent()
     {
         var connectionString = ResolvePostgresTestConnectionString();
@@ -594,6 +628,28 @@ ORDER BY pll.id;";
                 TargetOrderLineId = TargetOrderLineIdsByItemId[_itemIds[0]],
                 Lines = lines
             };
+        }
+
+        public void SetSingleSourceQty(double qty)
+        {
+            Assert.Single(SourceOrderLineIds);
+            using var connection = new NpgsqlConnection(_connectionString);
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE order_lines SET qty_ordered = @qty WHERE id = @line_id;";
+            command.Parameters.AddWithValue("qty", qty);
+            command.Parameters.AddWithValue("line_id", SourceOrderLineIds.Single());
+            Assert.Equal(1, command.ExecuteNonQuery());
+        }
+
+        public void DeleteSourcePrdDoc()
+        {
+            using var connection = new NpgsqlConnection(_connectionString);
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM docs WHERE id = @doc_id;";
+            command.Parameters.AddWithValue("doc_id", SourcePrdDocId);
+            Assert.Equal(1, command.ExecuteNonQuery());
         }
 
         public void SetPalletPrinted(DateTime printedAt)
