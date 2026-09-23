@@ -76,23 +76,28 @@ internal static class LauncherTestHarness
         var timeout = Stopwatch.StartNew();
         while (timeout.Elapsed < timeoutLimit)
         {
+            ProcessShimInvocation? invocation = null;
             try
             {
                 if (File.Exists(path))
                 {
-                    var invocation = JsonSerializer.Deserialize<ProcessShimInvocation>(File.ReadAllText(path))
-                                     ?? throw new InvalidOperationException("Process shim output пуст.");
-                    ReleaseShim(
-                        invocation,
-                        path,
-                        timeoutLimit - timeout.Elapsed,
-                        requireDetachedProcessHandle: true);
-                    return invocation;
+                    invocation = JsonSerializer.Deserialize<ProcessShimInvocation>(File.ReadAllText(path))
+                                 ?? throw new InvalidOperationException("Process shim output пуст.");
                 }
             }
             catch (Exception exception) when (exception is IOException or JsonException)
             {
                 // Child process may still be replacing the output file.
+            }
+
+            if (invocation is not null)
+            {
+                ReleaseShim(
+                    invocation,
+                    path,
+                    timeoutLimit - timeout.Elapsed,
+                    requireDetachedProcessHandle: true);
+                return invocation;
             }
 
             Thread.Sleep(50);
