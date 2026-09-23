@@ -151,6 +151,7 @@ public interface IDataStore
         long targetPrdDocId,
         long targetOrderId,
         IReadOnlyList<ProductionPalletSelectedAdoption> selectedPallets);
+    IReadOnlyList<OrderCoverageTransfer> GetOrderCoverageTransfersByTargetOrder(long targetOrderId);
     void AssignProductionPalletToPrdDoc(long productionPalletId, long targetPrdDocId);
     double GetFilledProductionPalletQtyByOrderLine(long orderLineId, long? excludePalletId = null);
     void UpdateProductionPalletHu(long palletId, string huCode);
