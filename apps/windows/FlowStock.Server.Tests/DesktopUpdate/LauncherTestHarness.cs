@@ -4,7 +4,11 @@ using FlowStock.DesktopUpdate;
 
 namespace FlowStock.Server.Tests.DesktopUpdate;
 
-internal sealed record ProcessShimInvocation(string WorkingDirectory, string[] Arguments, int ProcessId);
+internal sealed record ProcessShimInvocation(
+    string WorkingDirectory,
+    string[] Arguments,
+    int ProcessId,
+    string? ExitSignalPath);
 
 internal static class LauncherTestHarness
 {
@@ -15,7 +19,8 @@ internal static class LauncherTestHarness
         string repositoryRoot,
         string dotnetExecutable,
         string? shimOutput = null,
-        int shimExitCode = 0)
+        int shimExitCode = 0,
+        bool shimRunsDetached = true)
     {
         var script = Path.Combine(
             DesktopUpdateConstants.DefaultRepositoryRoot,
@@ -36,6 +41,10 @@ internal static class LauncherTestHarness
         if (shimOutput is not null)
         {
             info.Environment["FLOWSTOCK_PROCESS_SHIM_OUTPUT"] = shimOutput;
+            if (shimRunsDetached)
+            {
+                info.Environment["FLOWSTOCK_PROCESS_SHIM_EXIT_SIGNAL"] = GetExitSignalPath(shimOutput);
+            }
         }
 
         foreach (var argument in new[]
@@ -61,20 +70,19 @@ internal static class LauncherTestHarness
         return new ProcessResult(process.ExitCode, stdout, stderr);
     }
 
-    public static ProcessShimInvocation WaitForInvocation(string path)
+    public static ProcessShimInvocation WaitForInvocation(string path, TimeSpan? timeoutOverride = null)
     {
-        var timeoutLimit = TimeSpan.FromSeconds(10);
+        var timeoutLimit = timeoutOverride ?? TimeSpan.FromSeconds(10);
         var timeout = Stopwatch.StartNew();
         while (timeout.Elapsed < timeoutLimit)
         {
+            ProcessShimInvocation? invocation = null;
             try
             {
                 if (File.Exists(path))
                 {
-                    var invocation = JsonSerializer.Deserialize<ProcessShimInvocation>(File.ReadAllText(path))
-                                     ?? throw new InvalidOperationException("Process shim output пуст.");
-                    WaitForProcessExit(invocation.ProcessId, timeoutLimit - timeout.Elapsed);
-                    return invocation;
+                    invocation = JsonSerializer.Deserialize<ProcessShimInvocation>(File.ReadAllText(path))
+                                 ?? throw new InvalidOperationException("Process shim output пуст.");
                 }
             }
             catch (Exception exception) when (exception is IOException or JsonException)
@@ -82,38 +90,194 @@ internal static class LauncherTestHarness
                 // Child process may still be replacing the output file.
             }
 
+            if (invocation is not null)
+            {
+                ReleaseShim(
+                    invocation,
+                    path,
+                    timeoutLimit - timeout.Elapsed,
+                    requireDetachedProcessHandle: true);
+                return invocation;
+            }
+
             Thread.Sleep(50);
         }
 
+        SignalTimedOutShimExit(path);
         throw new TimeoutException($"Process shim не записал invocation: {path}");
     }
 
-    private static void WaitForProcessExit(int processId, TimeSpan timeout)
+    private static void SignalShimExit(ProcessShimInvocation invocation, string invocationPath)
+    {
+        if (invocation.ExitSignalPath is null)
+        {
+            return;
+        }
+
+        var expectedExitSignalPath = Path.GetFullPath(GetExitSignalPath(invocationPath));
+        if (!string.Equals(
+                Path.GetFullPath(invocation.ExitSignalPath),
+                expectedExitSignalPath,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Process shim вернул неожиданный exit signal path.");
+        }
+
+        File.WriteAllText(expectedExitSignalPath, string.Empty);
+    }
+
+    private static string GetExitSignalPath(string invocationPath) => $"{invocationPath}.exit-signal";
+
+    private static void ReleaseShim(
+        ProcessShimInvocation invocation,
+        string invocationPath,
+        TimeSpan timeout,
+        bool requireDetachedProcessHandle)
+    {
+        if (invocation.ExitSignalPath is null)
+        {
+            WaitForProcessExit(invocation.ProcessId, timeout);
+            return;
+        }
+
+        Process? process = null;
+        try
+        {
+            process = GetProcess(invocation.ProcessId, requireDetachedProcessHandle);
+            if (process is null)
+            {
+                return;
+            }
+
+            SignalShimExit(invocation, invocationPath);
+            WaitForProcessExit(process, timeout);
+        }
+        catch
+        {
+            if (process is not null)
+            {
+                TerminateProcess(process);
+            }
+
+            throw;
+        }
+        finally
+        {
+            process?.Dispose();
+        }
+    }
+
+    private static Process? GetProcess(int processId, bool requireRunning)
     {
         if (processId <= 0)
         {
             throw new InvalidOperationException($"Process shim вернул некорректный PID: {processId}");
         }
 
-        Process process;
         try
         {
-            process = Process.GetProcessById(processId);
+            return Process.GetProcessById(processId);
+        }
+        catch (ArgumentException exception) when (requireRunning)
+        {
+            throw new InvalidOperationException(
+                $"Detached process shim PID {processId} завершился до установки lifecycle handshake.",
+                exception);
         }
         catch (ArgumentException)
         {
-            // The shim may have already exited between writing the invocation file and this lookup.
+            return null;
+        }
+    }
+
+    private static void WaitForProcessExit(int processId, TimeSpan timeout)
+    {
+        using var process = GetProcess(processId, requireRunning: false);
+        if (process is null)
+        {
             return;
         }
 
-        using (process)
+        WaitForProcessExit(process, timeout);
+    }
+
+    private static void WaitForProcessExit(Process process, TimeSpan timeout)
+    {
+        var timeoutMilliseconds = Math.Max(0, (int)Math.Ceiling(timeout.TotalMilliseconds));
+        if (!process.WaitForExit(timeoutMilliseconds))
         {
-            var timeoutMilliseconds = Math.Max(0, (int)Math.Ceiling(timeout.TotalMilliseconds));
-            if (!process.WaitForExit(timeoutMilliseconds))
+            TerminateProcess(process);
+            throw new TimeoutException($"Process shim PID {process.Id} не завершился за отведённое время.");
+        }
+    }
+
+    private static void SignalTimedOutShimExit(string invocationPath)
+    {
+        try
+        {
+            var cleanupTimeout = Stopwatch.StartNew();
+            while (cleanupTimeout.Elapsed < TimeSpan.FromSeconds(1))
             {
-                throw new TimeoutException($"Process shim PID {processId} не завершился за отведённое время.");
+                if (File.Exists(invocationPath))
+                {
+                    var invocation = JsonSerializer.Deserialize<ProcessShimInvocation>(File.ReadAllText(invocationPath));
+                    if (invocation is not null)
+                    {
+                        try
+                        {
+                            ReleaseShim(
+                                invocation,
+                                invocationPath,
+                                TimeSpan.FromSeconds(1),
+                                requireDetachedProcessHandle: false);
+                        }
+                        catch (TimeoutException)
+                        {
+                            // ReleaseShim already terminated and reaped the shim.
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            // The shim already exited before emergency cleanup acquired a handle.
+                        }
+
+                        return;
+                    }
+                }
+
+                Thread.Sleep(25);
             }
         }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            // Preserve the original invocation timeout when emergency cleanup cannot complete.
+        }
+    }
+
+    private static void TerminateProcess(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            TerminateProcess(process);
+        }
+        catch (ArgumentException)
+        {
+            // The process already exited.
+        }
+    }
+
+    private static void TerminateProcess(Process process)
+    {
+        try
+        {
+            process.Kill(entireProcessTree: true);
+        }
+        catch (InvalidOperationException)
+        {
+            // The process exited between the check and the kill request.
+        }
+
+        process.WaitForExit();
     }
 
     public static void CopyShimRuntime(string destination, string executableName)
