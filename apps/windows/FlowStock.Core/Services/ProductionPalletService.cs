@@ -1415,7 +1415,8 @@ public sealed class ProductionPalletService
         IDataStore store,
         Order targetOrder,
         IReadOnlyList<OrderReceiptLine> linesToPlan,
-        IReadOnlyCollection<long>? allowedSourceOrderIds = null)
+        IReadOnlyCollection<long>? allowedSourceOrderIds = null,
+        IReadOnlyCollection<long>? allowedSourcePrdDocIds = null)
     {
         if (targetOrder.Type != OrderType.Customer || linesToPlan.Count == 0)
         {
@@ -1441,6 +1442,7 @@ public sealed class ProductionPalletService
         var itemNamesById = store.GetItems(null).ToDictionary(item => item.Id, item => item.Name);
         var neededItems = linesToPlan.Select(line => line.ItemId).ToHashSet();
         var allowedSourceOrderIdSet = allowedSourceOrderIds?.ToHashSet();
+        var allowedSourcePrdDocIdSet = allowedSourcePrdDocIds?.ToHashSet();
         var adoptable = new List<ProductionPalletProjectedAdoptionHu>();
         var skipped = new List<ProductionPalletAdoptionSkippedCandidate>();
 
@@ -1452,6 +1454,7 @@ public sealed class ProductionPalletService
         {
             foreach (var sourceDoc in store.GetDocsByOrder(sourceOrder.Id)
                          .Where(doc => doc.Type == DocType.ProductionReceipt)
+                         .Where(doc => allowedSourcePrdDocIdSet == null || allowedSourcePrdDocIdSet.Contains(doc.Id))
                          .OrderBy(doc => doc.Id))
             {
                 var docHasLedger = store.CountLedgerEntriesByDocId(sourceDoc.Id) > 0;
@@ -2229,7 +2232,8 @@ public sealed class ProductionPalletService
                 store,
                 targetOrder,
                 linesToPlan,
-                new[] { sourceInternalOrderId });
+                new[] { sourceInternalOrderId },
+                new[] { sourceDoc.Id });
             var sourcePalletIds = sourcePallets.Select(pallet => pallet.Id).ToHashSet();
             var adopted = projection.Adoptable
                 .Where(candidate => candidate.SourcePrdDocId == sourceDoc.Id)
