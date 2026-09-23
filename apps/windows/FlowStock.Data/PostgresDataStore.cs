@@ -5162,10 +5162,27 @@ WHERE id = @doc_line_id
     {
         return WithConnection(connection =>
         {
-            var linesByTransferId = new Dictionary<long, List<OrderCoverageTransferLine>>();
-            using (var lineCommand = CreateCommand(connection, @"
-SELECT l.id,
-       l.transfer_id,
+            using var command = CreateCommand(connection, @"
+SELECT t.id,
+       t.transfer_type,
+       t.source_order_id,
+       t.source_order_ref,
+       t.source_order_status,
+       t.target_order_id,
+       t.target_order_ref,
+       t.source_prd_doc_id,
+       t.source_prd_doc_ref,
+       t.target_prd_doc_id,
+       t.target_prd_doc_ref,
+       t.production_pallet_id,
+       t.hu_code,
+       t.pallet_status_at_transfer,
+       t.printed_at_at_transfer,
+       t.transferred_qty,
+       t.created_at,
+       t.compensation_kind,
+       t.compensated_at,
+       l.id,
        l.source_order_line_id,
        l.target_order_line_id,
        l.source_doc_line_id,
@@ -5175,93 +5192,65 @@ SELECT l.id,
        l.transferred_qty,
        l.source_production_purpose,
        l.source_production_pallet_group
-FROM order_coverage_transfer_lines l
-INNER JOIN order_coverage_transfers t ON t.id = l.transfer_id
+FROM order_coverage_transfers t
+LEFT JOIN order_coverage_transfer_lines l ON l.transfer_id = t.id
 WHERE t.target_order_id = @target_order_id
-ORDER BY l.transfer_id, l.id;"))
-            {
-                lineCommand.Parameters.AddWithValue("@target_order_id", targetOrderId);
-                using var reader = lineCommand.ExecuteReader();
-                while (reader.Read())
-                {
-                    var line = new OrderCoverageTransferLine
-                    {
-                        Id = reader.GetInt64(0),
-                        TransferId = reader.GetInt64(1),
-                        SourceOrderLineId = reader.GetInt64(2),
-                        TargetOrderLineId = reader.GetInt64(3),
-                        SourceDocLineId = reader.GetInt64(4),
-                        SourceProductionPalletLineId = reader.IsDBNull(5) ? null : reader.GetInt64(5),
-                        ItemId = reader.GetInt64(6),
-                        SourceQtyOrderedBefore = Convert.ToDouble(reader.GetValue(7), CultureInfo.InvariantCulture),
-                        TransferredQty = Convert.ToDouble(reader.GetValue(8), CultureInfo.InvariantCulture),
-                        SourceProductionPurpose = reader.GetString(9),
-                        SourceProductionPalletGroup = reader.IsDBNull(10) ? null : reader.GetString(10)
-                    };
-                    if (!linesByTransferId.TryGetValue(line.TransferId, out var transferLines))
-                    {
-                        transferLines = new List<OrderCoverageTransferLine>();
-                        linesByTransferId[line.TransferId] = transferLines;
-                    }
-
-                    transferLines.Add(line);
-                }
-            }
-
-            using var command = CreateCommand(connection, @"
-SELECT id,
-       transfer_type,
-       source_order_id,
-       source_order_ref,
-       source_order_status,
-       target_order_id,
-       target_order_ref,
-       source_prd_doc_id,
-       source_prd_doc_ref,
-       target_prd_doc_id,
-       target_prd_doc_ref,
-       production_pallet_id,
-       hu_code,
-       pallet_status_at_transfer,
-       printed_at_at_transfer,
-       transferred_qty,
-       created_at,
-       compensation_kind,
-       compensated_at
-FROM order_coverage_transfers
-WHERE target_order_id = @target_order_id
-ORDER BY id;");
+ORDER BY t.id, l.id;");
             command.Parameters.AddWithValue("@target_order_id", targetOrderId);
-            using var headerReader = command.ExecuteReader();
+
+            using var reader = command.ExecuteReader();
             var result = new List<OrderCoverageTransfer>();
-            while (headerReader.Read())
+            var linesByTransferId = new Dictionary<long, List<OrderCoverageTransferLine>>();
+
+            while (reader.Read())
             {
-                var transferId = headerReader.GetInt64(0);
-                result.Add(new OrderCoverageTransfer
+                var transferId = reader.GetInt64(0);
+                if (!linesByTransferId.TryGetValue(transferId, out var transferLines))
                 {
-                    Id = transferId,
-                    TransferType = headerReader.GetString(1),
-                    SourceOrderId = headerReader.GetInt64(2),
-                    SourceOrderRef = headerReader.GetString(3),
-                    SourceOrderStatus = headerReader.GetString(4),
-                    TargetOrderId = headerReader.GetInt64(5),
-                    TargetOrderRef = headerReader.GetString(6),
-                    SourcePrdDocId = headerReader.GetInt64(7),
-                    SourcePrdDocRef = headerReader.GetString(8),
-                    TargetPrdDocId = headerReader.GetInt64(9),
-                    TargetPrdDocRef = headerReader.GetString(10),
-                    ProductionPalletId = headerReader.GetInt64(11),
-                    HuCode = headerReader.GetString(12),
-                    PalletStatusAtTransfer = headerReader.GetString(13),
-                    PrintedAtAtTransfer = headerReader.IsDBNull(14) ? null : FromDbDate(headerReader.GetString(14)),
-                    TransferredQty = Convert.ToDouble(headerReader.GetValue(15), CultureInfo.InvariantCulture),
-                    CreatedAt = FromDbDate(headerReader.GetString(16)) ?? DateTime.MinValue,
-                    CompensationKind = headerReader.IsDBNull(17) ? null : headerReader.GetString(17),
-                    CompensatedAt = headerReader.IsDBNull(18) ? null : FromDbDate(headerReader.GetString(18)),
-                    Lines = linesByTransferId.TryGetValue(transferId, out var transferLines)
-                        ? transferLines.ToArray()
-                        : Array.Empty<OrderCoverageTransferLine>()
-                });
+                    transferLines = new List<OrderCoverageTransferLine>();
+                    linesByTransferId[transferId] = transferLines;
+                    result.Add(new OrderCoverageTransfer
+                    {
+                        Id = transferId,
+                        TransferType = reader.GetString(1),
+                        SourceOrderId = reader.GetInt64(2),
+                        SourceOrderRef = reader.GetString(3),
+                        SourceOrderStatus = reader.GetString(4),
+                        TargetOrderId = reader.GetInt64(5),
+                        TargetOrderRef = reader.GetString(6),
+                        SourcePrdDocId = reader.GetInt64(7),
+                        SourcePrdDocRef = reader.GetString(8),
+                        TargetPrdDocId = reader.GetInt64(9),
+                        TargetPrdDocRef = reader.GetString(10),
+                        ProductionPalletId = reader.GetInt64(11),
+                        HuCode = reader.GetString(12),
+                        PalletStatusAtTransfer = reader.GetString(13),
+                        PrintedAtAtTransfer = reader.IsDBNull(14) ? null : FromDbDate(reader.GetString(14)),
+                        TransferredQty = Convert.ToDouble(reader.GetValue(15), CultureInfo.InvariantCulture),
+                        CreatedAt = FromDbDate(reader.GetString(16)) ?? DateTime.MinValue,
+                        CompensationKind = reader.IsDBNull(17) ? null : reader.GetString(17),
+                        CompensatedAt = reader.IsDBNull(18) ? null : FromDbDate(reader.GetString(18)),
+                        Lines = transferLines
+                    });
+                }
+
+                if (!reader.IsDBNull(19))
+                {
+                    transferLines.Add(new OrderCoverageTransferLine
+                    {
+                        Id = reader.GetInt64(19),
+                        TransferId = transferId,
+                        SourceOrderLineId = reader.GetInt64(20),
+                        TargetOrderLineId = reader.GetInt64(21),
+                        SourceDocLineId = reader.GetInt64(22),
+                        SourceProductionPalletLineId = reader.IsDBNull(23) ? null : reader.GetInt64(23),
+                        ItemId = reader.GetInt64(24),
+                        SourceQtyOrderedBefore = Convert.ToDouble(reader.GetValue(25), CultureInfo.InvariantCulture),
+                        TransferredQty = Convert.ToDouble(reader.GetValue(26), CultureInfo.InvariantCulture),
+                        SourceProductionPurpose = reader.GetString(27),
+                        SourceProductionPalletGroup = reader.IsDBNull(28) ? null : reader.GetString(28)
+                    });
+                }
             }
 
             return result;
