@@ -1,0 +1,77 @@
+name: Review Ready
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: review-ready-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  mark-review-ready:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Mark exact PR HEAD ready for ChatGPT review
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          pr_numbers="$(
+            gh api --paginate --slurp               "repos/$REPO/pulls?state=open&base=main&per_page=100"               --jq "flatten | map(select(.head.sha == \"$RUN_SHA\")) | .[] | .number"
+          )"
+
+          if [[ -z "$pr_numbers" ]]; then
+            echo "No open main-targeting PR currently has CI SHA $RUN_SHA; skipping stale/closed run."
+            exit 0
+          fi
+
+          mapfile -t matching_prs <<<"$pr_numbers"
+          if (( ${#matching_prs[@]} != 1 )); then
+            echo "Expected exactly one open PR for HEAD $RUN_SHA, found ${#matching_prs[@]}." >&2
+            exit 1
+          fi
+
+          pr_number="${matching_prs[0]}"
+          IFS=$'\t' read -r state base_ref current_sha < <(
+            gh api "repos/$REPO/pulls/$pr_number"               --jq '[.state, .base.ref, .head.sha] | @tsv'
+          )
+
+          if [[ "$state" != "open" || "$base_ref" != "main" || "$current_sha" != "$RUN_SHA" ]]; then
+            echo "PR #$pr_number moved, closed, or changed base while CI completed; skipping."
+            exit 0
+          fi
+
+          marker="<!-- flowstock-review-ready:$RUN_SHA -->"
+          existing="$(
+            gh api --paginate --slurp               "repos/$REPO/issues/$pr_number/comments?per_page=100"               --jq "flatten | map(select(.body? != null and (.body | contains(\"$marker\")))) | length"
+          )"
+
+          if [[ "$existing" != "0" ]]; then
+            echo "Review-ready marker already exists for PR #$pr_number HEAD $RUN_SHA."
+            exit 0
+          fi
+
+          short_sha="${RUN_SHA:0:12}"
+          body="$(cat <<EOF
+$marker
+✅ Canonical CI passed for `$short_sha`, and this SHA is still the current PR HEAD. Ready for ChatGPT review.
+EOF
+)"
+
+          gh api --method POST "repos/$REPO/issues/$pr_number/comments" -f body="$body" >/dev/null
+          echo "Marked PR #$pr_number HEAD $RUN_SHA ready for ChatGPT review."
