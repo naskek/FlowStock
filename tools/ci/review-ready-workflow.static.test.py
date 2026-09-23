@@ -36,7 +36,7 @@ require(
     "PR discovery must be limited to open PRs targeting main",
 )
 require(
-    r"select\(\.head\.sha == \\"\$RUN_SHA\\"\)",
+    r'select\(\.head\.sha == \\"\$RUN_SHA\\"\)',
     "PR discovery must match the exact successful CI HEAD SHA",
 )
 require(
@@ -49,7 +49,7 @@ require(
 )
 require(r"flowstock-review-ready:\$RUN_SHA", "dedupe marker must include the exact PR HEAD SHA")
 require(
-    r"comments\?per_page=100.*contains\(\\\"\$marker\\\"\).*existing",
+    r'comments\?per_page=100.*contains\(\\"\$marker\\"\).*existing',
     "existing SHA marker must be checked before posting",
 )
 require(
