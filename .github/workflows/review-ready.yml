@@ -47,9 +47,36 @@ jobs:
           fi
 
           pr_number="${matching_prs[0]}"
-          IFS=$'\t' read -r state base_ref current_sha < <(
-            gh api "repos/$REPO/pulls/$pr_number"               --jq '[.state, .base.ref, .head.sha] | @tsv'
-          )
+          pr_snapshot="$(
+            gh api "repos/$REPO/pulls/$pr_number" \
+              --jq '[.state, .base.ref, .head.sha] | @tsv'
+          )"
+          IFS=
+          if [[ "$state" != "open" || "$base_ref" != "main" || "$current_sha" != "$RUN_SHA" ]]; then
+            echo "PR #$pr_number moved, closed, or changed base while CI completed; skipping."
+            exit 0
+          fi
+
+          marker="<!-- flowstock-review-ready:$RUN_SHA -->"
+          existing="$(
+            gh api --paginate --slurp               "repos/$REPO/issues/$pr_number/comments?per_page=100"               --jq "flatten | map(select(.body? != null and (.body | contains(\"$marker\")))) | length"
+          )"
+
+          if [[ "$existing" != "0" ]]; then
+            echo "Review-ready marker already exists for PR #$pr_number HEAD $RUN_SHA."
+            exit 0
+          fi
+
+          short_sha="${RUN_SHA:0:12}"
+          body="$(cat <<EOF
+$marker
+✅ Canonical CI passed for SHA $short_sha, and this SHA is still the current PR HEAD. Ready for ChatGPT review.
+EOF
+)"
+
+          gh api --method POST "repos/$REPO/issues/$pr_number/comments" -f body="$body" >/dev/null
+          echo "Marked PR #$pr_number HEAD $RUN_SHA ready for ChatGPT review."
+\t' read -r state base_ref current_sha <<<"$pr_snapshot"
 
           if [[ "$state" != "open" || "$base_ref" != "main" || "$current_sha" != "$RUN_SHA" ]]; then
             echo "PR #$pr_number moved, closed, or changed base while CI completed; skipping."
