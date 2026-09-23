@@ -137,6 +137,8 @@ Updater не выполняет migrations, не изменяет production DB,
 - `doc_lines(id, doc_id, replaces_line_id NULL, order_line_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu)`
 - `production_pallets(id, prd_doc_id, doc_line_id, order_id, order_line_id, item_id, hu_code, planned_qty, to_location_id, status, pallet_no, pallet_count, printed_at, filled_at, filled_by_device_id, cancel_reason NULL, cancelled_at NULL, created_at)` // header плановой паллеты/HU; для микс-паллеты является одним HU с несколькими строками состава
 - `production_pallet_lines(id, production_pallet_id, doc_line_id, order_line_id, item_id, planned_qty, filled_qty, filled_at TEXT NULL, created_at)` // состав паллеты; одиночная паллета имеет одну строку, mixed pallet имеет несколько строк; component progress не является складским выпуском
+- `order_coverage_transfers(...)` // durable header provenance INTERNAL → CUSTOMER production-plan adoption: source/target order+PRD snapshots, pallet/HU identity, status/print snapshot, transferred qty; operational entity ids намеренно не имеют FK, чтобы история переживала cleanup
+- `order_coverage_transfer_lines(...)` // component/line provenance transfer: source/target order line ids, source doc/component ids, item, source semantic snapshots и transferred qty; FK только на `order_coverage_transfers(id)`
 - `production_pallet_filling_adjustments(...)` и `production_pallet_filling_adjustment_lines(...)` // committed-аудит и источник успешной идемпотентности WPF-коррекции наполнения HU; бизнес-отказы без commit не сохраняются
 - `production_marking_transition_audit(...)` // неизменяемый аудит атомарного `Applied → Reserved` при COR
 - `ledger(id, ts, doc_id, item_id, location_id, qty_delta, hu_code)`
