@@ -10,6 +10,7 @@ public sealed class AdminServiceResetMovementsSqlTests
         AssertDeleteBefore(source, "DELETE FROM production_pallet_lines;", "DELETE FROM production_pallets;");
         AssertDeleteBefore(source, "DELETE FROM production_pallets;", "DELETE FROM doc_lines;");
         AssertDeleteBefore(source, "DELETE FROM order_receipt_plan_lines;", "DELETE FROM order_lines;");
+        AssertDeleteBefore(source, "DELETE FROM order_coverage_transfers;", "DELETE FROM order_lines;");
         AssertDeleteBefore(source, "DELETE FROM warehouse_action_bundles;", "DELETE FROM docs;");
         AssertDeleteBefore(source, "DELETE FROM marking_order", "DELETE FROM orders;");
         Assert.Contains("SET reprint_of_batch_id = NULL", source, StringComparison.Ordinal);
