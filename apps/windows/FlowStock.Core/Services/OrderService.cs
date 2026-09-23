@@ -537,10 +537,9 @@ public sealed class OrderService
 
         _data.ExecuteInTransaction(store =>
         {
-            if (!store.LockOrdersForUpdate([orderId]))
-            {
-                throw new InvalidOperationException("Заказ не найден.");
-            }
+            var lockedCoverageTransfers = OrderCoveragePlanCompensationService.LockAndLoadForTarget(
+                store,
+                orderId);
 
             var existing = store.GetOrder(orderId)
                 ?? throw new InvalidOperationException("Заказ не найден.");
@@ -695,6 +694,48 @@ public sealed class OrderService
             OrderItemActivityGuard.EnsureActiveForAdditionalOrderQuantity(
                 store,
                 itemIdsRequiringActiveState);
+
+            if (existing.Type == OrderType.Customer)
+            {
+                var targetLineIdsRequiringCoverageReturn = new HashSet<long>();
+                foreach (var entry in existingByItem)
+                {
+                    if (!incomingKeys.Contains(entry.Key))
+                    {
+                        foreach (var staleLine in entry.Value)
+                        {
+                            targetLineIdsRequiringCoverageReturn.Add(staleLine.Id);
+                        }
+
+                        continue;
+                    }
+
+                    var incomingLine = normalized.First(line =>
+                        line.ItemId == entry.Key.ItemId
+                        && ResolveLinePurpose(type, line.ProductionPurpose) == entry.Key.ProductionPurpose);
+                    var selectedExisting = selectedExistingByIncomingLine[incomingLine];
+                    if (selectedExisting != null
+                        && incomingLine.QtyOrdered + QtyTolerance < selectedExisting.QtyOrdered)
+                    {
+                        targetLineIdsRequiringCoverageReturn.Add(selectedExisting.Id);
+                    }
+
+                    foreach (var duplicateLine in entry.Value.Where(line => line.Id != selectedExisting?.Id))
+                    {
+                        targetLineIdsRequiringCoverageReturn.Add(duplicateLine.Id);
+                    }
+                }
+
+                var compensation = OrderCoveragePlanCompensationService.ReverseForTargetLines(
+                    store,
+                    orderId,
+                    lockedCoverageTransfers,
+                    targetLineIdsRequiringCoverageReturn);
+                foreach (var affectedTargetLineId in compensation.AffectedTargetOrderLineIds)
+                {
+                    additionallyAffectedPalletLineIds.Add(affectedTargetLineId);
+                }
+            }
 
             foreach (var line in normalized)
             {
@@ -1508,10 +1549,9 @@ public sealed class OrderService
             throw new InvalidOperationException("Ручное изменение статуса заказа отключено. Статус определяется автоматически по выпуску и отгрузке.");
         }
 
-        if (!store.LockOrdersForUpdate([orderId]))
-        {
-            throw new InvalidOperationException("Заказ не найден.");
-        }
+        var lockedCoverageTransfers = OrderCoveragePlanCompensationService.LockAndLoadForTarget(
+            store,
+            orderId);
 
         var existing = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         if (existing.Status == OrderStatus.Shipped)
@@ -1522,6 +1562,14 @@ public sealed class OrderService
         if (existing.Status == OrderStatus.Cancelled)
         {
             return;
+        }
+
+        if (existing.Type == OrderType.Customer)
+        {
+            OrderCoveragePlanCompensationService.ReverseAll(
+                store,
+                orderId,
+                lockedCoverageTransfers);
         }
 
         TryClearOrderReceiptPlan(store, orderId);
