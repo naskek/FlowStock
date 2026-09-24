@@ -72,3 +72,39 @@ function Invoke-ProcessWithRawStdin {
         $process.Dispose()
     }
 }
+
+
+function ConvertTo-ShellSingleQuotedArgument {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Value
+    )
+
+    return "'" + $Value.Replace("'", "'\"'\"'") + "'"
+}
+
+function Invoke-RemoteBashScriptViaSsh {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$SshTarget,
+
+        [Parameter(Mandatory = $true)]
+        [byte[]]$ScriptBytes,
+
+        [string[]]$RemoteArgumentList = @()
+    )
+
+    $remoteScriptPath = "/tmp/flowstock-deploy-$([Guid]::NewGuid().ToString('N')).sh"
+    $quotedPath = ConvertTo-ShellSingleQuotedArgument $remoteScriptPath
+    $quotedArguments = @($RemoteArgumentList | ForEach-Object { ConvertTo-ShellSingleQuotedArgument $_ })
+    $argumentSuffix = if ($quotedArguments.Count -eq 0) { '' } else { ' ' + ($quotedArguments -join ' ') }
+
+    # stdin is consumed completely by cat before bash starts reading the file.
+    # Therefore nested commands in the deploy script cannot drain the script source.
+    $remoteCommand = "umask 077; trap 'rm -f $remoteScriptPath' EXIT; cat > $quotedPath || exit; bash $quotedPath$argumentSuffix"
+
+    return Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @($SshTarget, $remoteCommand) -StdinBytes $ScriptBytes
+}
