@@ -2403,6 +2403,16 @@ assert.match(
   "PC auth must expose the dedicated session refresh endpoint"
 );
 assert.match(
+  pcAuthSource,
+  /result && result\.expires_at[\s\S]*currentSessionExpiresAt = parsedExpiresAt[\s\S]*getSessionExpiresAt/,
+  "PC auth must retain the server-owned session expiry for the kiosk expiry timer"
+);
+assert.match(
+  pcAppSource,
+  /function scheduleSessionExpiryLogout\(\)[\s\S]*getSessionExpiresAt\(\)[\s\S]*window\.setTimeout[\s\S]*redirectToLoginAfterSessionExpiry\(\)/,
+  "kiosk must redirect to login when the known server session expiry is reached"
+);
+assert.match(
   pcAppSource,
   /function submit\(\)[\s\S]*setStatus\("Проверка сессии\.\.\."\);[\s\S]*refreshSessionForActivity\(true\)[\s\S]*fetchJson\("\/api\/orders\/requests\/create"/,
   "new-order submit must refresh the session before sending the request"
@@ -2534,6 +2544,7 @@ async function runPcSessionLifecycleTests() {
             },
             capabilities: [],
             blocks: {},
+            expires_at: new Date(Date.now() + 60000).toISOString(),
           });
         },
       });
@@ -2548,6 +2559,11 @@ async function runPcSessionLifecycleTests() {
   pc.__setLastSessionRefreshAtForTest(0);
   await pc.refreshSessionForActivity(false);
   assert.strictEqual(refreshCalls, 1, "user activity must refresh a stale renewal timestamp");
+  assert.notStrictEqual(
+    pc.getSessionRefreshState().expiryTimerId,
+    0,
+    "successful renewal must arm the exact-expiry kiosk logout timer"
+  );
 
   auth.saveAccount({
     device_id: "PC-SESSION-TEST",
@@ -2575,6 +2591,11 @@ async function runPcSessionLifecycleTests() {
     reloadCount,
     reloadBeforeUnauthorizedRefresh + 1,
     "401 during session refresh must immediately reload to the login state"
+  );
+  assert.strictEqual(
+    pc.getSessionRefreshState().expiryTimerId,
+    0,
+    "invalid-session redirect must cancel the previous expiry timer"
   );
 
   context.fetch = originalFetch;
