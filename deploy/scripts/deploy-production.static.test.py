@@ -46,6 +46,18 @@ checks = {
     "external live/ready": require(r'Invoke-WebRequest -UseBasicParsing -Uri "\$PublicUrl\$endpoint"', "external operator health gate is missing"),
     "external identity": require(r'Invoke-RestMethod -Uri "\$PublicUrl/api/version"', "external operator identity gate is missing"),
     "external TSD": require(r'\$PublicUrl/tsd/app-version\.js', "external operator TSD gate is missing"),
+    "LF normalization": require(
+        r'\$remoteScript = \$remoteScript\.Replace\("\x60r\x60n", "\x60n"\)\.Replace\("\x60r", "\x60n"\)',
+        "remote bash script must normalize Windows CRLF/CR to LF",
+    ),
+    "UTF-8 base64 transport": require(
+        r'\[System\.Text\.Encoding\]::UTF8\.GetBytes\(\$remoteScript\).*?ToBase64String\(\$remoteBytes\)',
+        "normalized remote script must be transported as UTF-8 base64",
+    ),
+    "remote base64 decode": require(
+        r"base64 -d \| bash -s --",
+        "remote transport must decode bytes before invoking bash",
+    ),
 }
 
 telegram_gate = re.search(
@@ -80,6 +92,9 @@ if not checks["backup verification"] < checks["exact server update"] < checks["d
 pre_backup = source[: checks["backup verification"]]
 if re.search(r'"\$\{compose\[@\]\}" (?:up|build|pull|restart|create)', pre_backup):
     raise AssertionError("mutating Compose command is forbidden before verified backup")
+
+if re.search(r'\$remoteScript\s*\|\s*&\s*ssh', source):
+    raise AssertionError("raw PowerShell text must not be piped directly to remote bash")
 
 if 'done < <("${compose[@]}" config --environment)' in source:
     raise AssertionError("Compose environment parsing must not hide parser failure in process substitution")
