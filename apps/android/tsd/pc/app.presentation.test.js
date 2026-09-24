@@ -41,6 +41,8 @@ function createVersionFetchResponse(payload) {
 const context = {
   console,
   Headers: global.Headers,
+  setTimeout: setTimeout,
+  clearTimeout: clearTimeout,
   clearInterval: function (timerId) {
     activeIntervals.delete(timerId);
   },
