@@ -6,7 +6,9 @@ import re
 
 
 SCRIPT = Path(__file__).with_name("deploy-production.ps1")
+TRANSPORT = Path(__file__).with_name("deploy-transport.ps1")
 source = SCRIPT.read_text(encoding="utf-8")
+transport_source = TRANSPORT.read_text(encoding="utf-8")
 
 
 def require(pattern: str, message: str) -> int:
@@ -134,5 +136,20 @@ if exports != ["FLOWSTOCK_SOURCE_COMMIT"]:
 
 if "config --format json | \"${validator[@]}\"" not in source:
     raise AssertionError("resolved Compose JSON must be piped directly to the validator")
+
+
+for marker, message in {
+    "cat > '$remoteScriptPath' || exit": "remote helper must materialize stdin into a script file before execution",
+    "bash '$remoteScriptPath'$argumentSuffix": "remote helper must execute the materialized script file",
+    "trap 'rm -f $remoteScriptPath' EXIT": "remote helper must clean up the temporary script file",
+    "Invoke-ProcessWithRawStdin -FilePath 'ssh'": "remote helper must use raw ssh stdin transport",
+}.items():
+    if marker not in transport_source:
+        raise AssertionError(message)
+
+if "bash -s" in transport_source:
+    raise AssertionError("remote production helper must not execute deploy scripts directly from stdin")
+if transport_source.find("cat > '$remoteScriptPath' || exit") > transport_source.find("bash '$remoteScriptPath'$argumentSuffix"):
+    raise AssertionError("remote helper must finish materializing stdin before starting bash")
 
 print("deploy-production.ps1 static contract tests passed")
