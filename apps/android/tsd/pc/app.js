@@ -4137,6 +4137,9 @@
       app.innerHTML = renderPageShell('<section class="pc-card"><div class="pc-status">Проверка сессии...</div></section>');
     }
     loadSession()
+      .then(function () {
+        return refreshSession();
+      })
       .then(function (account) {
         enterAuthenticatedState(account);
       })
