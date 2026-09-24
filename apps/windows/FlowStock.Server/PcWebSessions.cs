@@ -237,44 +237,85 @@ LIMIT 1;";
             return null;
         }
 
+        var tokenHash = HashToken(rawToken);
         using var connection = OpenConnection();
         using var transaction = connection.BeginTransaction();
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = @"
-SELECT d.id, d.device_id, d.login, d.platform, d.access_role, s.expires_at
-FROM pc_web_sessions s
-JOIN tsd_devices d ON d.id = s.account_id
-WHERE s.token_hash = @token_hash
-  AND s.revoked_at IS NULL
-  AND s.expires_at > @now
-  AND d.is_active = TRUE
-  AND UPPER(COALESCE(d.platform, 'TSD')) IN ('PC', 'BOTH')
-LIMIT 1
-FOR UPDATE OF s, d;";
-        AddParam(command, "@token_hash", HashToken(rawToken));
-        AddParam(command, "@now", now.UtcDateTime);
 
         long accountId;
+        using (var lookup = connection.CreateCommand())
+        {
+            lookup.Transaction = transaction;
+            lookup.CommandText = @"
+SELECT account_id
+FROM pc_web_sessions
+WHERE token_hash = @token_hash
+LIMIT 1;";
+            AddParam(lookup, "@token_hash", tokenHash);
+            var rawAccountId = lookup.ExecuteScalar();
+            if (rawAccountId == null || rawAccountId == DBNull.Value)
+            {
+                transaction.Rollback();
+                return null;
+            }
+
+            accountId = Convert.ToInt64(rawAccountId, CultureInfo.InvariantCulture);
+        }
+
         string deviceId;
         string login;
         string platform;
         string accessRole;
-        DateTimeOffset expiresAt;
-        using (var reader = command.ExecuteReader())
+        using (var account = connection.CreateCommand())
         {
+            account.Transaction = transaction;
+            account.CommandText = @"
+SELECT device_id, login, platform, access_role, is_active
+FROM tsd_devices
+WHERE id = @account_id
+FOR UPDATE;";
+            AddParam(account, "@account_id", accountId);
+            using var reader = account.ExecuteReader();
             if (!reader.Read())
             {
                 transaction.Rollback();
                 return null;
             }
 
-            accountId = reader.GetInt64(0);
-            deviceId = reader.GetString(1);
-            login = reader.GetString(2);
-            platform = reader.IsDBNull(3) ? "PC" : reader.GetString(3).Trim().ToUpperInvariant();
-            accessRole = PcAccessRole.Normalize(reader.IsDBNull(4) ? null : reader.GetString(4));
-            expiresAt = new DateTimeOffset(reader.GetDateTime(5), TimeSpan.Zero);
+            deviceId = reader.GetString(0);
+            login = reader.GetString(1);
+            platform = reader.IsDBNull(2) ? "PC" : reader.GetString(2).Trim().ToUpperInvariant();
+            accessRole = PcAccessRole.Normalize(reader.IsDBNull(3) ? null : reader.GetString(3));
+            var isActive = reader.GetBoolean(4);
+            if (!isActive || !IsPcPlatform(platform))
+            {
+                transaction.Rollback();
+                return null;
+            }
+        }
+
+        DateTimeOffset expiresAt;
+        using (var session = connection.CreateCommand())
+        {
+            session.Transaction = transaction;
+            session.CommandText = @"
+SELECT expires_at
+FROM pc_web_sessions
+WHERE account_id = @account_id
+  AND token_hash = @token_hash
+  AND revoked_at IS NULL
+  AND expires_at > @now
+FOR UPDATE;";
+            AddParam(session, "@account_id", accountId);
+            AddParam(session, "@token_hash", tokenHash);
+            AddParam(session, "@now", now.UtcDateTime);
+            var rawExpiresAt = session.ExecuteScalar();
+            if (rawExpiresAt is not DateTime expiresAtUtc)
+            {
+                transaction.Rollback();
+                return null;
+            }
+
+            expiresAt = new DateTimeOffset(DateTime.SpecifyKind(expiresAtUtc, DateTimeKind.Utc));
         }
 
         var renewalBoundary = now.Add(Lifetime - RefreshWriteInterval);
@@ -286,11 +327,13 @@ FOR UPDATE OF s, d;";
             update.CommandText = @"
 UPDATE pc_web_sessions
 SET expires_at = @expires_at
-WHERE token_hash = @token_hash
+WHERE account_id = @account_id
+  AND token_hash = @token_hash
   AND revoked_at IS NULL
   AND expires_at > @now;";
             AddParam(update, "@expires_at", expiresAt.UtcDateTime);
-            AddParam(update, "@token_hash", HashToken(rawToken));
+            AddParam(update, "@account_id", accountId);
+            AddParam(update, "@token_hash", tokenHash);
             AddParam(update, "@now", now.UtcDateTime);
             if (update.ExecuteNonQuery() != 1)
             {
