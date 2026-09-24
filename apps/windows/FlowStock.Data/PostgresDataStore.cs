@@ -5257,6 +5257,250 @@ ORDER BY t.id, l.id;");
         });
     }
 
+    public bool CompensatePlannedOrderCoverageTransfer(
+        OrderCoveragePlanCompensation compensation,
+        DateTime compensatedAt)
+    {
+        ArgumentNullException.ThrowIfNull(compensation);
+
+        if (_transaction == null)
+        {
+            throw new InvalidOperationException(
+                "RETURN_PLAN compensation должна выполняться внутри общей business transaction.");
+        }
+
+        return WithConnection(connection =>
+        {
+            string? compensationKind;
+            using (var lockTransfer = CreateCommand(connection, @"
+SELECT compensation_kind,
+       source_order_id,
+       target_order_id,
+       target_prd_doc_id,
+       production_pallet_id,
+       hu_code,
+       transfer_type
+FROM order_coverage_transfers
+WHERE id = @transfer_id
+FOR UPDATE;"))
+            {
+                lockTransfer.Parameters.AddWithValue("@transfer_id", compensation.TransferId);
+                using var reader = lockTransfer.ExecuteReader();
+                if (!reader.Read())
+                {
+                    throw new InvalidOperationException("Не найден provenance переноса production coverage.");
+                }
+
+                compensationKind = reader.IsDBNull(0) ? null : reader.GetString(0);
+                if (!string.IsNullOrWhiteSpace(compensationKind))
+                {
+                    return false;
+                }
+
+                if (reader.GetInt64(1) != compensation.SourceOrderId
+                    || reader.GetInt64(2) != compensation.TargetOrderId
+                    || reader.GetInt64(3) != compensation.TargetPrdDocId
+                    || reader.GetInt64(4) != compensation.ProductionPalletId
+                    || !string.Equals(reader.GetString(5).Trim(), compensation.HuCode.Trim(), StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(reader.GetString(6), OrderCoverageTransferType.PlannedPalletAdoption, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "Нельзя компенсировать production coverage: provenance изменился или не соответствует текущей операции.");
+                }
+            }
+
+            var persistedLines = new List<(long TargetOrderLineId, long SourceDocLineId, long? SourcePalletLineId, long ItemId, double Qty, string Purpose)>();
+            using (var loadLines = CreateCommand(connection, @"
+SELECT target_order_line_id,
+       source_doc_line_id,
+       source_production_pallet_line_id,
+       item_id,
+       transferred_qty,
+       source_production_purpose
+FROM order_coverage_transfer_lines
+WHERE transfer_id = @transfer_id
+ORDER BY id;"))
+            {
+                loadLines.Parameters.AddWithValue("@transfer_id", compensation.TransferId);
+                using var reader = loadLines.ExecuteReader();
+                while (reader.Read())
+                {
+                    persistedLines.Add((
+                        reader.GetInt64(0),
+                        reader.GetInt64(1),
+                        reader.IsDBNull(2) ? null : reader.GetInt64(2),
+                        reader.GetInt64(3),
+                        Convert.ToDouble(reader.GetValue(4), CultureInfo.InvariantCulture),
+                        reader.GetString(5)));
+                }
+            }
+
+            if (persistedLines.Count == 0 || persistedLines.Count != compensation.Lines.Count)
+            {
+                throw new InvalidOperationException(
+                    "Нельзя компенсировать production coverage: состав provenance неполный.");
+            }
+
+            foreach (var line in compensation.Lines)
+            {
+                var matched = persistedLines.Any(persisted =>
+                    persisted.TargetOrderLineId == line.TargetOrderLineId
+                    && persisted.SourceDocLineId == line.SourceDocLineId
+                    && persisted.SourcePalletLineId == line.SourceProductionPalletLineId
+                    && persisted.ItemId == line.ItemId
+                    && Math.Abs(persisted.Qty - line.TransferredQty) <= StockQuantityRules.QtyTolerance
+                    && string.Equals(
+                        persisted.Purpose,
+                        ProductionLinePurposeMapper.ToDbValue(line.SourceProductionPurpose),
+                        StringComparison.OrdinalIgnoreCase));
+                if (!matched)
+                {
+                    throw new InvalidOperationException(
+                        "Нельзя компенсировать production coverage: строки provenance изменились.");
+                }
+            }
+
+            using (var updatePallet = CreateCommand(connection, @"
+UPDATE production_pallets pp
+SET prd_doc_id = @source_prd_doc_id,
+    order_id = @source_order_id,
+    order_line_id = @source_order_line_id,
+    status = @planned_status,
+    printed_at = NULL
+FROM docs target_doc,
+     docs source_doc
+WHERE pp.id = @production_pallet_id
+  AND pp.prd_doc_id = @target_prd_doc_id
+  AND pp.order_id = @target_order_id
+  AND UPPER(BTRIM(pp.hu_code)) = UPPER(BTRIM(@hu_code))
+  AND pp.status IN (@planned_status, @printed_status)
+  AND pp.filled_at IS NULL
+  AND target_doc.id = pp.prd_doc_id
+  AND target_doc.order_id = @target_order_id
+  AND target_doc.type = @production_receipt_type
+  AND target_doc.status <> @closed_status
+  AND source_doc.id = @source_prd_doc_id
+  AND source_doc.order_id = @source_order_id
+  AND source_doc.type = @production_receipt_type
+  AND source_doc.status <> @closed_status
+  AND NOT EXISTS (
+      SELECT 1
+      FROM production_pallet_lines pll
+      WHERE pll.production_pallet_id = pp.id
+        AND (pll.filled_qty > @qty_tolerance OR pll.filled_at IS NOT NULL))
+  AND NOT EXISTS (
+      SELECT 1
+      FROM ledger l
+      WHERE l.doc_id = pp.prd_doc_id
+        AND UPPER(BTRIM(COALESCE(l.hu_code, l.hu, ''))) = UPPER(BTRIM(COALESCE(pp.hu_code, ''))));
+"))
+            {
+                updatePallet.Parameters.AddWithValue("@source_prd_doc_id", compensation.RestoredSourcePrdDocId);
+                updatePallet.Parameters.AddWithValue("@source_order_id", compensation.SourceOrderId);
+                updatePallet.Parameters.AddWithValue(
+                    "@source_order_line_id",
+                    compensation.RestoredSourceOrderLineId.HasValue
+                        ? compensation.RestoredSourceOrderLineId.Value
+                        : DBNull.Value);
+                updatePallet.Parameters.AddWithValue("@target_prd_doc_id", compensation.TargetPrdDocId);
+                updatePallet.Parameters.AddWithValue("@target_order_id", compensation.TargetOrderId);
+                updatePallet.Parameters.AddWithValue("@production_pallet_id", compensation.ProductionPalletId);
+                updatePallet.Parameters.AddWithValue("@hu_code", compensation.HuCode);
+                updatePallet.Parameters.AddWithValue("@planned_status", ProductionPalletStatus.Planned);
+                updatePallet.Parameters.AddWithValue("@printed_status", ProductionPalletStatus.Printed);
+                updatePallet.Parameters.AddWithValue("@production_receipt_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+                updatePallet.Parameters.AddWithValue("@closed_status", DocTypeMapper.StatusToString(DocStatus.Closed));
+                updatePallet.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+                if (updatePallet.ExecuteNonQuery() != 1)
+                {
+                    throw new InvalidOperationException(
+                        "Нельзя вернуть adopted HU в INTERNAL: паллета уже изменилась, заполнена, проведена или находится в закрытом PRD.");
+                }
+            }
+
+            foreach (var line in compensation.Lines)
+            {
+                using (var updatePalletLine = CreateCommand(connection, @"
+UPDATE production_pallet_lines
+SET order_line_id = @source_order_line_id
+WHERE production_pallet_id = @production_pallet_id
+  AND doc_line_id = @doc_line_id
+  AND order_line_id = @target_order_line_id
+  AND item_id = @item_id
+  AND ABS(planned_qty - @transferred_qty) <= @qty_tolerance
+  AND filled_qty <= @qty_tolerance
+  AND filled_at IS NULL
+  AND (@pallet_line_id IS NULL OR id = @pallet_line_id);
+"))
+                {
+                    updatePalletLine.Parameters.AddWithValue("@source_order_line_id", line.RestoredSourceOrderLineId);
+                    updatePalletLine.Parameters.AddWithValue("@production_pallet_id", compensation.ProductionPalletId);
+                    updatePalletLine.Parameters.AddWithValue("@doc_line_id", line.SourceDocLineId);
+                    updatePalletLine.Parameters.AddWithValue("@target_order_line_id", line.TargetOrderLineId);
+                    updatePalletLine.Parameters.AddWithValue("@item_id", line.ItemId);
+                    updatePalletLine.Parameters.AddWithValue("@transferred_qty", line.TransferredQty);
+                    updatePalletLine.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+                    updatePalletLine.Parameters.Add("@pallet_line_id", NpgsqlDbType.Bigint).Value =
+                        line.SourceProductionPalletLineId.HasValue
+                            ? line.SourceProductionPalletLineId.Value
+                            : DBNull.Value;
+                    if (updatePalletLine.ExecuteNonQuery() != 1)
+                    {
+                        throw new InvalidOperationException(
+                            "Нельзя вернуть adopted HU в INTERNAL: component line изменилась до компенсации.");
+                    }
+                }
+
+                using var updateDocLine = CreateCommand(connection, @"
+UPDATE doc_lines
+SET doc_id = @source_prd_doc_id,
+    order_line_id = @source_order_line_id,
+    production_purpose = @source_purpose
+WHERE id = @doc_line_id
+  AND doc_id = @target_prd_doc_id
+  AND order_line_id = @target_order_line_id
+  AND production_purpose = @target_purpose
+  AND item_id = @item_id
+  AND ABS(qty - @transferred_qty) <= @qty_tolerance;
+");
+                updateDocLine.Parameters.AddWithValue("@source_prd_doc_id", compensation.RestoredSourcePrdDocId);
+                updateDocLine.Parameters.AddWithValue("@source_order_line_id", line.RestoredSourceOrderLineId);
+                updateDocLine.Parameters.AddWithValue("@source_purpose", ProductionLinePurposeMapper.ToDbValue(line.SourceProductionPurpose));
+                updateDocLine.Parameters.AddWithValue("@target_purpose", ProductionLinePurposeMapper.ToDbValue(ProductionLinePurpose.CustomerOrder));
+                updateDocLine.Parameters.AddWithValue("@doc_line_id", line.SourceDocLineId);
+                updateDocLine.Parameters.AddWithValue("@target_prd_doc_id", compensation.TargetPrdDocId);
+                updateDocLine.Parameters.AddWithValue("@target_order_line_id", line.TargetOrderLineId);
+                updateDocLine.Parameters.AddWithValue("@item_id", line.ItemId);
+                updateDocLine.Parameters.AddWithValue("@transferred_qty", line.TransferredQty);
+                updateDocLine.Parameters.AddWithValue("@qty_tolerance", StockQuantityRules.QtyTolerance);
+                if (updateDocLine.ExecuteNonQuery() != 1)
+                {
+                    throw new InvalidOperationException(
+                        "Нельзя вернуть adopted HU в INTERNAL: строка PRD изменилась до компенсации.");
+                }
+            }
+
+            using var markCompensated = CreateCommand(connection, @"
+UPDATE order_coverage_transfers
+SET compensation_kind = @compensation_kind,
+    compensated_at = @compensated_at
+WHERE id = @transfer_id
+  AND compensation_kind IS NULL
+  AND compensated_at IS NULL;
+");
+            markCompensated.Parameters.AddWithValue("@compensation_kind", OrderCoverageCompensationKind.ReturnPlan);
+            markCompensated.Parameters.AddWithValue("@compensated_at", ToDbDate(compensatedAt));
+            markCompensated.Parameters.AddWithValue("@transfer_id", compensation.TransferId);
+            if (markCompensated.ExecuteNonQuery() != 1)
+            {
+                throw new InvalidOperationException(
+                    "Нельзя завершить compensation: provenance уже изменился.");
+            }
+
+            return true;
+        });
+    }
+
     private IReadOnlyList<ProductionPalletSelectedAdoption> BuildLegacyAdoptionProvenanceRows(
         NpgsqlConnection connection,
         long sourcePrdDocId,

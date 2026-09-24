@@ -537,10 +537,9 @@ public sealed class OrderService
 
         _data.ExecuteInTransaction(store =>
         {
-            if (!store.LockOrdersForUpdate([orderId]))
-            {
-                throw new InvalidOperationException("Заказ не найден.");
-            }
+            var lockedCoverageTransfers = OrderCoveragePlanCompensationService.LockAndLoadForTarget(
+                store,
+                orderId);
 
             var existing = store.GetOrder(orderId)
                 ?? throw new InvalidOperationException("Заказ не найден.");
@@ -659,6 +658,7 @@ public sealed class OrderService
             var priceUpdatesByLineId = new Dictionary<long, decimal>();
             var commercialTermsResolver = new CommercialTermsResolver(store);
             var selectedExistingByIncomingLine = new Dictionary<OrderLineView, OrderLine?>();
+            var normalizedCustomerQtyByLineId = new Dictionary<long, double>();
             var itemIdsRequiringActiveState = new HashSet<long>();
 
             foreach (var line in normalized)
@@ -695,6 +695,70 @@ public sealed class OrderService
             OrderItemActivityGuard.EnsureActiveForAdditionalOrderQuantity(
                 store,
                 itemIdsRequiringActiveState);
+
+            if (existing.Type == OrderType.Customer)
+            {
+                var targetLineIdsRequiringCoverageReturn = new HashSet<long>();
+                foreach (var entry in existingByItem)
+                {
+                    if (!incomingKeys.Contains(entry.Key))
+                    {
+                        foreach (var staleLine in entry.Value)
+                        {
+                            targetLineIdsRequiringCoverageReturn.Add(staleLine.Id);
+                        }
+
+                        continue;
+                    }
+
+                    var incomingLine = normalized.First(line =>
+                        line.ItemId == entry.Key.ItemId
+                        && ResolveLinePurpose(type, line.ProductionPurpose) == entry.Key.ProductionPurpose);
+                    var selectedExisting = selectedExistingByIncomingLine[incomingLine];
+                    var effectiveIncomingQty = incomingLine.QtyOrdered;
+                    if (selectedExisting != null
+                        && Math.Abs(selectedExisting.QtyOrdered - incomingLine.QtyOrdered) > QtyTolerance)
+                    {
+                        effectiveIncomingQty = NormalizeCustomerQtyForAdjustableReservations(
+                            store,
+                            orderId,
+                            selectedExisting,
+                            incomingLine.QtyOrdered,
+                            customerReservedHuSelectionsByOrderLineId != null
+                                && customerReservedHuSelectionsByOrderLineId.TryGetValue(
+                                    selectedExisting.Id,
+                                    out var selectedHuCodes)
+                                ? selectedHuCodes
+                                : null);
+                        normalizedCustomerQtyByLineId[selectedExisting.Id] = effectiveIncomingQty;
+                    }
+
+                    if (selectedExisting != null
+                        && (effectiveIncomingQty + QtyTolerance < selectedExisting.QtyOrdered
+                            || !string.Equals(
+                                NormalizePalletGroup(incomingLine.ProductionPalletGroup),
+                                NormalizePalletGroup(selectedExisting.ProductionPalletGroup),
+                                StringComparison.OrdinalIgnoreCase)))
+                    {
+                        targetLineIdsRequiringCoverageReturn.Add(selectedExisting.Id);
+                    }
+
+                    foreach (var duplicateLine in entry.Value.Where(line => line.Id != selectedExisting?.Id))
+                    {
+                        targetLineIdsRequiringCoverageReturn.Add(duplicateLine.Id);
+                    }
+                }
+
+                var compensation = OrderCoveragePlanCompensationService.ReverseForTargetLines(
+                    store,
+                    orderId,
+                    lockedCoverageTransfers,
+                    targetLineIdsRequiringCoverageReturn);
+                foreach (var affectedTargetLineId in compensation.AffectedTargetOrderLineIds)
+                {
+                    additionallyAffectedPalletLineIds.Add(affectedTargetLineId);
+                }
+            }
 
             foreach (var line in normalized)
             {
@@ -795,15 +859,17 @@ public sealed class OrderService
                     if (Math.Abs(primary.QtyOrdered - line.QtyOrdered) > QtyTolerance)
                     {
                         var orderedQty = type == OrderType.Customer
-                            ? NormalizeCustomerQtyForAdjustableReservations(
-                                store,
-                                orderId,
-                                primary,
-                                line.QtyOrdered,
-                                customerReservedHuSelectionsByOrderLineId != null
-                                    && customerReservedHuSelectionsByOrderLineId.TryGetValue(primary.Id, out var selectedHuCodes)
-                                    ? selectedHuCodes
-                                    : null)
+                            ? normalizedCustomerQtyByLineId.TryGetValue(primary.Id, out var precomputedQty)
+                                ? precomputedQty
+                                : NormalizeCustomerQtyForAdjustableReservations(
+                                    store,
+                                    orderId,
+                                    primary,
+                                    line.QtyOrdered,
+                                    customerReservedHuSelectionsByOrderLineId != null
+                                        && customerReservedHuSelectionsByOrderLineId.TryGetValue(primary.Id, out var selectedHuCodes)
+                                        ? selectedHuCodes
+                                        : null)
                             : line.QtyOrdered;
                         ValidateOrderLineQtyCanChange(store, orderId, primary, orderedQty, type);
                         store.UpdateOrderLineQty(primary.Id, orderedQty);
@@ -1508,10 +1574,9 @@ public sealed class OrderService
             throw new InvalidOperationException("Ручное изменение статуса заказа отключено. Статус определяется автоматически по выпуску и отгрузке.");
         }
 
-        if (!store.LockOrdersForUpdate([orderId]))
-        {
-            throw new InvalidOperationException("Заказ не найден.");
-        }
+        var lockedCoverageTransfers = OrderCoveragePlanCompensationService.LockAndLoadForTarget(
+            store,
+            orderId);
 
         var existing = store.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         if (existing.Status == OrderStatus.Shipped)
@@ -1522,6 +1587,14 @@ public sealed class OrderService
         if (existing.Status == OrderStatus.Cancelled)
         {
             return;
+        }
+
+        if (existing.Type == OrderType.Customer)
+        {
+            OrderCoveragePlanCompensationService.ReverseAll(
+                store,
+                orderId,
+                lockedCoverageTransfers);
         }
 
         TryClearOrderReceiptPlan(store, orderId);
