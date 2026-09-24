@@ -1589,6 +1589,8 @@ public sealed class OrderService
             return;
         }
 
+        var producedCompensationSourceOrderIds = Array.Empty<long>();
+
         if (existing.Type == OrderType.Customer)
         {
             OrderCoveragePlanCompensationService.ReverseAll(
@@ -1620,6 +1622,12 @@ public sealed class OrderService
                 store,
                 orderId,
                 remainingCoverageTransfers);
+            producedCompensationSourceOrderIds = remainingCoverageTransfers
+                .Select(transfer => transfer.SourceOrderId)
+                .Where(sourceOrderId => sourceOrderId > 0)
+                .Distinct()
+                .OrderBy(sourceOrderId => sourceOrderId)
+                .ToArray();
         }
 
         TryClearOrderReceiptPlan(store, orderId);
@@ -1628,6 +1636,10 @@ public sealed class OrderService
         if (existing.Type == OrderType.Customer)
         {
             TryRefreshCustomerReceiptPlans(store);
+            foreach (var sourceOrderId in producedCompensationSourceOrderIds)
+            {
+                new OrderService(store).RefreshPersistedStatus(sourceOrderId);
+            }
         }
     }
 
