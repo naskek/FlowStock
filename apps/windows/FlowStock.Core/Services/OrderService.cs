@@ -1589,8 +1589,6 @@ public sealed class OrderService
             return;
         }
 
-        var producedCompensationSourceOrderIds = Array.Empty<long>();
-
         if (existing.Type == OrderType.Customer)
         {
             OrderCoveragePlanCompensationService.ReverseAll(
@@ -1622,12 +1620,6 @@ public sealed class OrderService
                 store,
                 orderId,
                 remainingCoverageTransfers);
-            producedCompensationSourceOrderIds = remainingCoverageTransfers
-                .Select(transfer => transfer.SourceOrderId)
-                .Where(sourceOrderId => sourceOrderId > 0)
-                .Distinct()
-                .OrderBy(sourceOrderId => sourceOrderId)
-                .ToArray();
         }
 
         TryClearOrderReceiptPlan(store, orderId);
@@ -1636,10 +1628,6 @@ public sealed class OrderService
         if (existing.Type == OrderType.Customer)
         {
             TryRefreshCustomerReceiptPlans(store);
-            foreach (var sourceOrderId in producedCompensationSourceOrderIds)
-            {
-                new OrderService(store).RefreshPersistedStatus(sourceOrderId);
-            }
         }
     }
 
@@ -2719,6 +2707,40 @@ public sealed class OrderService
         };
     }
 
+    internal static OrderStatus DetermineInternalOrderStatus(
+        Order order,
+        IReadOnlyList<OrderLine> orderLines,
+        IReadOnlyDictionary<long, double> producedByLine)
+    {
+        var anyProduced = orderLines.Any(line =>
+        {
+            var produced = producedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
+            return produced > QtyTolerance;
+        });
+        var linesWithDemand = orderLines.Where(line => line.QtyOrdered > QtyTolerance).ToList();
+        var fullyProduced = anyProduced
+                            && linesWithDemand.Count > 0
+                            && linesWithDemand.All(line =>
+                            {
+                                var produced = producedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
+                                return produced + QtyTolerance >= line.QtyOrdered;
+                            });
+
+        if (fullyProduced)
+        {
+            return OrderStatus.Shipped;
+        }
+
+        if (anyProduced)
+        {
+            return OrderStatus.InProgress;
+        }
+
+        return order.Status == OrderStatus.Draft
+            ? OrderStatus.Draft
+            : OrderStatus.InProgress;
+    }
+
     private OrderStatus DetermineAutoStatus(Order order)
     {
         if (order.Status is OrderStatus.Cancelled or OrderStatus.Merged)
@@ -2729,34 +2751,11 @@ public sealed class OrderService
         if (order.Type == OrderType.Internal)
         {
             var orderLines = _data.GetOrderLines(order.Id);
-            var internalProducedByLine = OrderReceiptRemainingCalculator.BuildGrossReceiptLedgerTotalsByOrderLine(_data, order.Id, orderLines);
-            var anyProduced = orderLines.Any(line =>
-            {
-                var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
-                return produced > QtyTolerance;
-            });
-            var linesWithDemand = orderLines.Where(line => line.QtyOrdered > QtyTolerance).ToList();
-            var fullyProduced = anyProduced
-                                && linesWithDemand.Count > 0
-                                && linesWithDemand.All(line =>
-                                {
-                                    var produced = internalProducedByLine.TryGetValue(line.Id, out var qty) ? qty : 0d;
-                                    return produced + QtyTolerance >= line.QtyOrdered;
-                                });
-
-            if (fullyProduced)
-            {
-                return OrderStatus.Shipped;
-            }
-
-            if (anyProduced)
-            {
-                return OrderStatus.InProgress;
-            }
-
-            return order.Status == OrderStatus.Draft
-                ? OrderStatus.Draft
-                : OrderStatus.InProgress;
+            var internalProducedByLine = OrderReceiptRemainingCalculator.BuildGrossReceiptLedgerTotalsByOrderLine(
+                _data,
+                order.Id,
+                orderLines);
+            return DetermineInternalOrderStatus(order, orderLines, internalProducedByLine);
         }
 
         if (order.Status == OrderStatus.Draft)
