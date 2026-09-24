@@ -178,13 +178,21 @@
 
     var ownerDeviceId = String((draft && draft.owner_device_id) || "");
     var currentDeviceId = String((account && account.device_id) || "");
-    try {
-      storage.removeItem(NEW_ORDER_DRAFT_STORAGE_KEY);
-    } catch (_error) {}
     if (ownerDeviceId && currentDeviceId && ownerDeviceId !== currentDeviceId) {
       return null;
     }
-    return isMeaningfulNewOrderDraft(draft) ? draft : null;
+
+    if (!isMeaningfulNewOrderDraft(draft)) {
+      try {
+        storage.removeItem(NEW_ORDER_DRAFT_STORAGE_KEY);
+      } catch (_error) {}
+      return null;
+    }
+
+    try {
+      storage.removeItem(NEW_ORDER_DRAFT_STORAGE_KEY);
+    } catch (_error) {}
+    return draft;
   }
 
   function restorePersistedNewOrderDraft(account) {
