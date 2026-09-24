@@ -123,6 +123,12 @@
     return deps.fetchJson("/api/pc/session").then(applySession);
   }
 
+  function refreshSession() {
+    return deps
+      .fetchJson("/api/pc/session/refresh", { method: "POST" })
+      .then(applySession);
+  }
+
   function apiLogout() {
     return deps.fetchJson("/api/pc/logout", { method: "POST" }).finally(clearAccount);
   }
@@ -233,6 +239,7 @@
     setLoginState: setLoginState,
     apiLogin: apiLogin,
     loadSession: loadSession,
+    refreshSession: refreshSession,
     apiLogout: apiLogout,
     loadClientBlocks: loadClientBlocks,
     renderLogin: renderLogin,
