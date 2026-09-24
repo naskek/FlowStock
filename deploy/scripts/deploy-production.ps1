@@ -211,6 +211,7 @@ log "deployed TSD version: $deployed_tsd"
 df -h "$repo" "$backup_path"
 log "verified backup path: $backup_path"
 log "deployed source commit: $expected_commit"
+printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
 '@
 
     # PowerShell here-strings use the host platform newline. Normalize explicitly
@@ -219,11 +220,21 @@ log "deployed source commit: $expected_commit"
     $remoteScript = $remoteScript.Replace("`r`n", "`n").Replace("`r", "`n")
     $remoteBytes = [System.Text.Encoding]::UTF8.GetBytes($remoteScript)
     $remoteBase64 = [Convert]::ToBase64String($remoteBytes)
-    $remoteCommand = "printf '%s' '$remoteBase64' | base64 -d | bash -s -- '$ExpectedCommit' '$expectedTsdVersion'"
+    $remoteCommand = "base64 -d | bash -s -- '$ExpectedCommit' '$expectedTsdVersion'"
 
-    & ssh $sshTarget $remoteCommand 2>&1 | Out-Host
-    if ($LASTEXITCODE -ne 0) {
-        throw "Remote production deploy failed with exit code $LASTEXITCODE"
+    $remoteOutput = @(
+        $remoteBase64 | & ssh $sshTarget $remoteCommand 2>&1
+    )
+    $sshExitCode = $LASTEXITCODE
+    $remoteOutput | Out-Host
+
+    if ($sshExitCode -ne 0) {
+        throw "Remote production deploy failed with exit code $sshExitCode"
+    }
+
+    $successMarker = "FLOWSTOCK_DEPLOY_OK=$ExpectedCommit"
+    if ($remoteOutput -notcontains $successMarker) {
+        throw "Remote production deploy did not return exact completion marker: $successMarker"
     }
 
     foreach ($endpoint in @('/health/live', '/health/ready')) {
