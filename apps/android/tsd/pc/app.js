@@ -198,6 +198,10 @@
   }
 
   function restorePersistedNewOrderDraft(account) {
+    if (!isClientBlockEnabled("pc_orders")) {
+      return false;
+    }
+
     var draft = takePersistedNewOrderDraft(account, false);
     if (!draft) {
       return false;
