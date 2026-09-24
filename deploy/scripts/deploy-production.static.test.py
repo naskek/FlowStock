@@ -6,7 +6,9 @@ import re
 
 
 SCRIPT = Path(__file__).with_name("deploy-production.ps1")
+TRANSPORT = Path(__file__).with_name("deploy-transport.ps1")
 source = SCRIPT.read_text(encoding="utf-8")
+transport_source = TRANSPORT.read_text(encoding="utf-8")
 
 
 def require(pattern: str, message: str) -> int:
@@ -50,9 +52,9 @@ checks = {
         r"FLOWSTOCK_TRANSPORT_OK",
         "real SSH transport preflight marker is missing",
     ),
-    "transport preflight raw stdin": require(
-        r"Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @\(\$sshTarget, 'bash -s'\) -StdinBytes \$transportProbeBytes",
-        "transport preflight must use the same raw ssh stdin helper as deploy",
+    "transport preflight script file": require(
+        r"Invoke-RemoteBashScriptViaSsh -SshTarget \$sshTarget -ScriptBytes \$transportProbeBytes",
+        "transport preflight must use the same remote script-file helper as deploy",
     ),
     "transport preflight marker gate": require(
         r"\$transportOutputLines -notcontains \$transportMarker",
@@ -70,13 +72,9 @@ checks = {
         r'\[System\.Text\.UTF8Encoding\]::new\(\$false\)\.GetBytes\(\$remoteScript\)',
         "normalized remote script must be encoded once as raw UTF-8 bytes",
     ),
-    "raw SSH stdin": require(
-        r"Invoke-ProcessWithRawStdin -FilePath 'ssh'.*?-StdinBytes \$remoteBytes",
-        "remote script bytes must be written directly to ssh stdin",
-    ),
-    "remote bash stdin": require(
-        r'\$remoteCommand = "bash -s --',
-        "remote command must execute bash directly from stdin",
+    "remote script file": require(
+        r"Invoke-RemoteBashScriptViaSsh -SshTarget \$sshTarget -ScriptBytes \$remoteBytes -RemoteArgumentList @\(\$ExpectedCommit, \$expectedTsdVersion\)",
+        "production deploy must use the remote script-file helper",
     ),
     "remote completion marker": require(
         r"FLOWSTOCK_DEPLOY_OK=%s",
@@ -114,7 +112,7 @@ if remote_match is None:
 if "https://flowstock.local:7154" in remote_match.group("body"):
     raise AssertionError("server-side post-deploy gates must not depend on external HTTPS")
 
-if not checks["transport preflight raw stdin"] < checks["backup verification"] < checks["exact server update"] < checks["deploy"]:
+if not checks["transport preflight script file"] < checks["backup verification"] < checks["exact server update"] < checks["deploy"]:
     raise AssertionError("transport preflight, backup, exact update and deploy order is unsafe")
 
 pre_backup = source[: checks["backup verification"]]
@@ -138,5 +136,20 @@ if exports != ["FLOWSTOCK_SOURCE_COMMIT"]:
 
 if "config --format json | \"${validator[@]}\"" not in source:
     raise AssertionError("resolved Compose JSON must be piped directly to the validator")
+
+
+for marker, message in {
+    "cat > '$remoteScriptPath' || exit": "remote helper must materialize stdin into a script file before execution",
+    "bash '$remoteScriptPath'$argumentSuffix": "remote helper must execute the materialized script file",
+    "trap 'rm -f $remoteScriptPath' EXIT": "remote helper must clean up the temporary script file",
+    "Invoke-ProcessWithRawStdin -FilePath 'ssh'": "remote helper must use raw ssh stdin transport",
+}.items():
+    if marker not in transport_source:
+        raise AssertionError(message)
+
+if "bash -s" in transport_source:
+    raise AssertionError("remote production helper must not execute deploy scripts directly from stdin")
+if transport_source.find("cat > '$remoteScriptPath' || exit") > transport_source.find("bash '$remoteScriptPath'$argumentSuffix"):
+    raise AssertionError("remote helper must finish materializing stdin before starting bash")
 
 print("deploy-production.ps1 static contract tests passed")
