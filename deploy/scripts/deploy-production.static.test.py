@@ -58,10 +58,6 @@ checks = {
         r'\$remoteBase64\s*\|\s*&\s*ssh\s+\$sshTarget\s+\$remoteCommand',
         "base64 payload must travel over SSH stdin instead of the remote command line",
     ),
-    "remote base64 decode": require(
-        r'\$remoteCommand = "base64 -d \| bash -s --',
-        "remote transport must decode stdin before invoking bash",
-    ),
     "remote completion marker": require(
         r"FLOWSTOCK_DEPLOY_OK=%s",
         "remote deploy must emit an exact completion marker",
@@ -109,6 +105,8 @@ if re.search(r'\$remoteScript\s*\|\s*&\s*ssh', source):
     raise AssertionError("raw PowerShell text must not be piped directly to remote bash")
 if re.search(r'\$remoteCommand\s*=.*\$remoteBase64', source):
     raise AssertionError("base64 payload must not be embedded in the SSH remote command")
+if r"tr -d '\r\n' | base64 -d | bash -s --" not in source:
+    raise AssertionError("SSH stdin transport must remove Windows CR/LF before base64 decoding")
 
 if 'done < <("${compose[@]}" config --environment)' in source:
     raise AssertionError("Compose environment parsing must not hide parser failure in process substitution")
