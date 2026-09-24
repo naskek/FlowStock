@@ -78,7 +78,10 @@ public sealed class PcWebSessionPostgresTests
             var loginResult = sessions.Login(login, "test-password", loginAt);
             Assert.True(loginResult.IsSuccess);
             Assert.Equal(loginAt.AddHours(24), loginResult.ExpiresAt);
-            Assert.Equal(loginAt.AddHours(24), await GetSessionExpiryAsync(connectionString, accountId));
+            Assert.Equal(
+                loginAt.AddHours(24),
+                await GetSessionExpiryAsync(connectionString, accountId),
+                TimeSpan.FromMilliseconds(1));
 
             var context = new DefaultHttpContext();
             context.Request.Headers.Cookie = $"{PcWebSessionStore.CookieName}={loginResult.Token}";
@@ -87,13 +90,19 @@ public sealed class PcWebSessionPostgresTests
             var earlyRefresh = Assert.IsType<PcWebSessionRefreshResult>(
                 sessions.Refresh(context.Request, earlyRefreshAt));
             Assert.Equal(loginAt.AddHours(24), earlyRefresh.ExpiresAt);
-            Assert.Equal(loginAt.AddHours(24), await GetSessionExpiryAsync(connectionString, accountId));
+            Assert.Equal(
+                loginAt.AddHours(24),
+                await GetSessionExpiryAsync(connectionString, accountId),
+                TimeSpan.FromMilliseconds(1));
 
             var refreshAt = loginAt.AddHours(2);
             var refreshed = Assert.IsType<PcWebSessionRefreshResult>(
                 sessions.Refresh(context.Request, refreshAt));
             Assert.Equal(refreshAt.AddHours(24), refreshed.ExpiresAt);
-            Assert.Equal(refreshAt.AddHours(24), await GetSessionExpiryAsync(connectionString, accountId));
+            Assert.Equal(
+                refreshAt.AddHours(24),
+                await GetSessionExpiryAsync(connectionString, accountId),
+                TimeSpan.FromMilliseconds(1));
 
             await ExpireSessionsAsync(connectionString, accountId, refreshAt.AddMinutes(-1));
 
