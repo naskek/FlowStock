@@ -82,7 +82,7 @@ printf 'FLOWSTOCK_TRANSPORT_OK\n'
 '@
     $transportProbe = $transportProbe.Replace("`r`n", "`n").Replace("`r", "`n")
     $transportProbeBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($transportProbe)
-    $transportProbeResult = Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @($sshTarget, 'bash -s') -StdinBytes $transportProbeBytes
+    $transportProbeResult = Invoke-RemoteBashScriptViaSsh -SshTarget $sshTarget -ScriptBytes $transportProbeBytes
 
     if ($transportProbeResult.StdOut) {
         Write-Host -NoNewline $transportProbeResult.StdOut
@@ -247,9 +247,7 @@ printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
     # and send the resulting UTF-8 bytes directly to ssh stdin.
     $remoteScript = $remoteScript.Replace("`r`n", "`n").Replace("`r", "`n")
     $remoteBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($remoteScript)
-    $remoteCommand = "bash -s -- '$ExpectedCommit' '$expectedTsdVersion'"
-
-    $remoteResult = Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @($sshTarget, $remoteCommand) -StdinBytes $remoteBytes
+    $remoteResult = Invoke-RemoteBashScriptViaSsh -SshTarget $sshTarget -ScriptBytes $remoteBytes -RemoteArgumentList @($ExpectedCommit, $expectedTsdVersion)
     if ($remoteResult.StdOut) {
         Write-Host -NoNewline $remoteResult.StdOut
     }
