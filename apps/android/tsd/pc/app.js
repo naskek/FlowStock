@@ -150,7 +150,7 @@
     }
   }
 
-  function takePersistedNewOrderDraft(account) {
+  function takePersistedNewOrderDraft(account, consume) {
     var storage = getDraftStorage();
     if (!storage) {
       return null;
@@ -189,25 +189,39 @@
       return null;
     }
 
-    try {
-      storage.removeItem(NEW_ORDER_DRAFT_STORAGE_KEY);
-    } catch (_error) {}
+    if (consume !== false) {
+      try {
+        storage.removeItem(NEW_ORDER_DRAFT_STORAGE_KEY);
+      } catch (_error) {}
+    }
     return draft;
   }
 
   function restorePersistedNewOrderDraft(account) {
-    var draft = takePersistedNewOrderDraft(account);
+    var draft = takePersistedNewOrderDraft(account, false);
     if (!draft) {
       return false;
     }
 
     currentView = "orders";
     renderView(currentView);
-    openNewOrderModal(function () {
-      if (typeof activeLiveRefreshHandler === "function") {
-        activeLiveRefreshHandler();
+    openNewOrderModal(
+      function () {
+        if (typeof activeLiveRefreshHandler === "function") {
+          activeLiveRefreshHandler();
+        }
+      },
+      draft,
+      function () {
+        var storage = getDraftStorage();
+        if (!storage) {
+          return;
+        }
+        try {
+          storage.removeItem(NEW_ORDER_DRAFT_STORAGE_KEY);
+        } catch (_error) {}
       }
-    }, draft);
+    );
     return true;
   }
 
@@ -2623,7 +2637,7 @@
       });
   }
 
-  function openNewOrderModal(onSubmitted, initialDraft) {
+  function openNewOrderModal(onSubmitted, initialDraft, onDraftRestored) {
     var modal = document.createElement("div");
     modal.className = "pc-modal";
     modal.innerHTML =
@@ -3817,6 +3831,9 @@
           syncInternalOrderState();
           setStatus("Введённые данные восстановлены после повторного входа.");
           restoreDraft = null;
+          if (typeof onDraftRestored === "function") {
+            onDraftRestored();
+          }
         } else {
           updatePartnerHint();
           if (refs.internalInput) {
