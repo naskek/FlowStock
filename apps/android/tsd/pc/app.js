@@ -663,32 +663,11 @@
     modal.innerHTML = renderProductionNeedPreviewModalContent(rows);
     document.body.appendChild(modal);
 
-    function snapshotDraft() {
-      return {
-        internal_order: isInternalOrderRequested(),
-        partner_id: selectedPartnerId,
-        partner_query: refs.partnerInput ? String(refs.partnerInput.value || "") : "",
-        due_date: refs.dueDateInput ? String(refs.dueDateInput.value || "") : "",
-        comment: refs.commentInput ? String(refs.commentInput.value || "") : "",
-        lines: linesState.map(function (line) {
-          return {
-            item_id: Number(line && line.item_id) || 0,
-            qty_ordered: String((line && line.qty_ordered) || ""),
-            query: String((line && line.query) || ""),
-            locked: !!(line && line.locked),
-          };
-        }),
-      };
-    }
-
     function close() {
       if (closed) {
         return;
       }
       closed = true;
-      if (activeNewOrderDraftController && activeNewOrderDraftController.modal === modal) {
-        activeNewOrderDraftController = null;
-      }
       disposeDismiss();
       if (modal.parentNode) {
         modal.parentNode.removeChild(modal);
@@ -2888,11 +2867,32 @@
       }
     }
 
+    function snapshotDraft() {
+      return {
+        internal_order: isInternalOrderRequested(),
+        partner_id: selectedPartnerId,
+        partner_query: refs.partnerInput ? String(refs.partnerInput.value || "") : "",
+        due_date: refs.dueDateInput ? String(refs.dueDateInput.value || "") : "",
+        comment: refs.commentInput ? String(refs.commentInput.value || "") : "",
+        lines: linesState.map(function (line) {
+          return {
+            item_id: Number(line && line.item_id) || 0,
+            qty_ordered: String((line && line.qty_ordered) || ""),
+            query: String((line && line.query) || ""),
+            locked: !!(line && line.locked),
+          };
+        }),
+      };
+    }
+
     function close() {
       if (closed) {
         return;
       }
       closed = true;
+      if (activeNewOrderDraftController && activeNewOrderDraftController.modal === modal) {
+        activeNewOrderDraftController = null;
+      }
       disposeDismiss();
       if (duplicateWarningTimer) {
         window.clearTimeout(duplicateWarningTimer);
