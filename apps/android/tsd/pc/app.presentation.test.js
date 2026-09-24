@@ -2495,6 +2495,13 @@ async function runPcSessionLifecycleTests() {
     "typed order data must be considered recoverable"
   );
 
+  auth.saveAccount({
+    device_id: "PC-SESSION-TEST",
+    login: "operator",
+    platform: "PC",
+    access_role: "OPERATOR",
+  });
+
   pc.__setActiveNewOrderDraftControllerForTest({
     snapshot: function () {
       return {
@@ -2510,7 +2517,22 @@ async function runPcSessionLifecycleTests() {
   const reloadBeforeExpiry = reloadCount;
   pc.redirectToLoginAfterSessionExpiry();
   assert.strictEqual(reloadCount, reloadBeforeExpiry + 1, "invalid session must force login-state reload");
-  const recoveredDraft = pc.takePersistedNewOrderDraft({ device_id: "" });
+  const storedDraftAfterFirstRedirect = context.window.sessionStorage.getItem("flowstock_pc_new_order_draft");
+  assert.strictEqual(JSON.parse(storedDraftAfterFirstRedirect).owner_device_id, "PC-SESSION-TEST");
+
+  pc.redirectToLoginAfterSessionExpiry();
+  assert.strictEqual(
+    reloadCount,
+    reloadBeforeExpiry + 1,
+    "parallel 401 responses must not trigger repeated invalid-session reloads"
+  );
+  assert.strictEqual(
+    context.window.sessionStorage.getItem("flowstock_pc_new_order_draft"),
+    storedDraftAfterFirstRedirect,
+    "parallel 401 responses must not overwrite the saved draft after account state is cleared"
+  );
+
+  const recoveredDraft = pc.takePersistedNewOrderDraft({ device_id: "PC-SESSION-TEST" });
   assert.strictEqual(recoveredDraft.comment, "не потерять");
   assert.strictEqual(recoveredDraft.lines[0].qty_ordered, "12");
   assert.strictEqual(
@@ -2518,6 +2540,7 @@ async function runPcSessionLifecycleTests() {
     null,
     "draft must be consumed once after successful re-authentication"
   );
+  pc.__setSessionInvalidRedirectingForTest(false);
 
   auth.saveAccount({
     device_id: "PC-SESSION-TEST",
