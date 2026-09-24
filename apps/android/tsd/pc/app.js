@@ -4260,6 +4260,9 @@
     window.FlowStockPcTestHooks.__setLastSessionRefreshAtForTest = function (value) {
       lastSessionRefreshAt = Number(value) || 0;
     };
+    window.FlowStockPcTestHooks.__setSessionInvalidRedirectingForTest = function (value) {
+      sessionInvalidRedirecting = !!value;
+    };
     window.FlowStockPcTestHooks.getSessionRefreshState = function () {
       return {
         lastRefreshAt: lastSessionRefreshAt,
