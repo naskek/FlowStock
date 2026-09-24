@@ -23,6 +23,7 @@
   var versionCheckTimerId = 0;
   var lastSessionRefreshAt = 0;
   var sessionRefreshInFlight = null;
+  var sessionExpiryTimerId = 0;
   var activeNewOrderDraftController = null;
   var loadedPcWebVersion = versionMeta
     ? String(versionMeta.getAttribute("content") || "").trim()
@@ -84,6 +85,7 @@
   var loadAccount = auth.loadAccount;
   var saveAccount = auth.saveAccount;
   var clearAccount = auth.clearAccount;
+  var getSessionExpiresAt = auth.getSessionExpiresAt;
   var setAccountLabel = auth.setAccountLabel;
   var setLoginState = auth.setLoginState;
   var apiLogin = auth.apiLogin;
@@ -200,7 +202,32 @@
     return true;
   }
 
+  function stopSessionExpiryTimer() {
+    if (!sessionExpiryTimerId) {
+      return;
+    }
+    window.clearTimeout(sessionExpiryTimerId);
+    sessionExpiryTimerId = 0;
+  }
+
+  function scheduleSessionExpiryLogout() {
+    stopSessionExpiryTimer();
+    var expiresAt = getSessionExpiresAt ? Number(getSessionExpiresAt()) : 0;
+    if (!expiresAt || !isFinite(expiresAt)) {
+      return;
+    }
+
+    var delay = Math.max(0, expiresAt - Date.now());
+    sessionExpiryTimerId = window.setTimeout(function () {
+      sessionExpiryTimerId = 0;
+      if (hasPcAccess(loadAccount())) {
+        redirectToLoginAfterSessionExpiry();
+      }
+    }, delay);
+  }
+
   function redirectToLoginAfterSessionExpiry() {
+    stopSessionExpiryTimer();
     persistActiveNewOrderDraft();
     if (clearAccount) {
       clearAccount();
@@ -232,6 +259,7 @@
     sessionRefreshInFlight = refreshSession()
       .then(function (account) {
         lastSessionRefreshAt = Date.now();
+        scheduleSessionExpiryLogout();
         setAccountLabel(account);
         syncTabsVisibility();
         syncAdminMenuVisibility();
@@ -256,6 +284,7 @@
 
   function enterAuthenticatedState(account) {
     lastSessionRefreshAt = Date.now();
+    scheduleSessionExpiryLogout();
     setLoginState(true);
     setAccountLabel(account);
     startVersionWatcher();
@@ -4119,6 +4148,7 @@
     }
 
     function showLogin() {
+      stopSessionExpiryTimer();
       stopVersionWatcher();
       stopLiveUpdates();
       clearAccount();
@@ -4229,6 +4259,7 @@
         lastRefreshAt: lastSessionRefreshAt,
         inFlight: !!sessionRefreshInFlight,
         minIntervalMs: SESSION_REFRESH_MIN_INTERVAL_MS,
+        expiryTimerId: sessionExpiryTimerId,
       };
     };
     window.FlowStockPcTestHooks.getVersionWatcherState = function () {
@@ -4255,6 +4286,7 @@
   if (logoutBtn) {
     logoutBtn.addEventListener("click", function () {
       apiLogout().finally(function () {
+        stopSessionExpiryTimer();
         clearAccount();
         stopVersionWatcher();
         stopLiveUpdates();
