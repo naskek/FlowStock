@@ -2425,6 +2425,11 @@ assert.match(
 );
 assert.match(
   pcAppSource,
+  /takePersistedNewOrderDraft\(account, false\)[\s\S]*openNewOrderModal\([\s\S]*draft,[\s\S]*storage\.removeItem\(NEW_ORDER_DRAFT_STORAGE_KEY\)/,
+  "persisted draft must only be consumed after the restored modal has applied reference data"
+);
+assert.match(
+  pcAppSource,
   /loadSession\(\)[\s\S]*return refreshSession\(\);[\s\S]*enterAuthenticatedState\(account\)/,
   "startup must refresh a still-valid session before exposing authenticated kiosk UI"
 );
@@ -2557,6 +2562,31 @@ async function runPcSessionLifecycleTests() {
     null,
     "draft must be consumed once after successful re-authentication by its owner"
   );
+
+  const deferredConsumeDraft = {
+    owner_device_id: "PC-SESSION-TEST",
+    comment: "ждать справочники",
+    lines: [{ item_id: 5, qty_ordered: "3", query: "Товар", locked: true }],
+  };
+  context.window.sessionStorage.setItem(
+    "flowstock_pc_new_order_draft",
+    JSON.stringify(deferredConsumeDraft)
+  );
+  const peekedDraft = pc.takePersistedNewOrderDraft({ device_id: "PC-SESSION-TEST" }, false);
+  assert.strictEqual(peekedDraft.comment, "ждать справочники");
+  assert.notStrictEqual(
+    context.window.sessionStorage.getItem("flowstock_pc_new_order_draft"),
+    null,
+    "draft must remain persisted until reference data has loaded and restore is applied"
+  );
+  const consumedDeferredDraft = pc.takePersistedNewOrderDraft({ device_id: "PC-SESSION-TEST" });
+  assert.strictEqual(consumedDeferredDraft.comment, "ждать справочники");
+  assert.strictEqual(
+    context.window.sessionStorage.getItem("flowstock_pc_new_order_draft"),
+    null,
+    "draft can be consumed after restore succeeds"
+  );
+
   pc.__setSessionInvalidRedirectingForTest(false);
 
   auth.saveAccount({
