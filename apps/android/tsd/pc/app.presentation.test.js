@@ -2430,6 +2430,11 @@ assert.match(
 );
 assert.match(
   pcAppSource,
+  /function restorePersistedNewOrderDraft\(account\) \{\s*if \(!isClientBlockEnabled\("pc_orders"\)\) \{\s*return false;/,
+  "saved order draft must not reopen while the PC orders block is disabled"
+);
+assert.match(
+  pcAppSource,
   /loadSession\(\)[\s\S]*return refreshSession\(\);[\s\S]*enterAuthenticatedState\(account\)/,
   "startup must refresh a still-valid session before exposing authenticated kiosk UI"
 );
