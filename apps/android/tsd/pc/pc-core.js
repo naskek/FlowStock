@@ -23,6 +23,7 @@
       url !== "/api/tsd/login" &&
       url !== "/api/pc/login" &&
       url !== "/api/pc/session" &&
+      url !== "/api/pc/session/refresh" &&
       url !== "/api/pc/logout"
     );
   }
