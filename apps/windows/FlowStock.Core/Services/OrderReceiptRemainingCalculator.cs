@@ -240,7 +240,9 @@ internal static class OrderReceiptRemainingCalculator
     {
         try
         {
-            foreach (var entry in dataStore.GetCompensatedProducedCoverageBySourceOrderLine(orderId))
+            var compensated = dataStore.GetCompensatedProducedCoverageBySourceOrderLine(orderId)
+                              ?? new Dictionary<long, double>();
+            foreach (var entry in compensated)
             {
                 if (totals.ContainsKey(entry.Key))
                 {
