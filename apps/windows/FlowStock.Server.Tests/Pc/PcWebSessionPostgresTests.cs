@@ -33,22 +33,29 @@ public sealed class PcWebSessionPostgresTests
             await SetRoleAsync(connectionString, accountId, PcAccessRole.Operator);
             identity = Assert.IsType<PcWebIdentity>(restartedSessions.Resolve(context.Request));
             Assert.False(identity.CanManagePendingRequests);
+            Assert.False(Assert.IsType<PcWebSessionRefreshResult>(
+                restartedSessions.Refresh(context.Request, loginAt.AddMinutes(10))).Identity.CanManagePendingRequests);
 
             await SetRoleAsync(connectionString, accountId, PcAccessRole.Admin);
             Assert.True(Assert.IsType<PcWebIdentity>(restartedSessions.Resolve(context.Request)).CanManagePendingRequests);
+            Assert.True(Assert.IsType<PcWebSessionRefreshResult>(
+                restartedSessions.Refresh(context.Request, loginAt.AddMinutes(11))).Identity.CanManagePendingRequests);
 
             await SetActiveAsync(connectionString, accountId, false);
             Assert.Null(restartedSessions.Resolve(context.Request));
+            Assert.Null(restartedSessions.Refresh(context.Request, loginAt.AddMinutes(12)));
             await SetActiveAsync(connectionString, accountId, true);
             Assert.NotNull(restartedSessions.Resolve(context.Request));
 
             await SetPlatformAsync(connectionString, accountId, "TSD");
             Assert.Null(restartedSessions.Resolve(context.Request));
+            Assert.Null(restartedSessions.Refresh(context.Request, loginAt.AddMinutes(13)));
             await SetPlatformAsync(connectionString, accountId, "BOTH");
             Assert.NotNull(restartedSessions.Resolve(context.Request));
 
-            new PcWebSessionStore(connectionString).Revoke(context.Request, loginAt.AddMinutes(2));
+            new PcWebSessionStore(connectionString).Revoke(context.Request, loginAt.AddMinutes(14));
             Assert.Null(restartedSessions.Resolve(context.Request));
+            Assert.Null(restartedSessions.Refresh(context.Request, loginAt.AddMinutes(15)));
         }
         finally
         {
@@ -57,7 +64,7 @@ public sealed class PcWebSessionPostgresTests
     }
 
     [PostgresFact]
-    public async Task Session_UsesAbsoluteTwelveHourExpiryStoredInPostgres()
+    public async Task Session_UsesTwentyFourHourSlidingExpiryStoredInPostgres()
     {
         var connectionString = TsdOutboundEligibilityPostgresTests.ResolvePostgresTestConnectionString()!;
         var suffix = Guid.NewGuid().ToString("N");
@@ -66,18 +73,32 @@ public sealed class PcWebSessionPostgresTests
 
         try
         {
-            var loginAt = DateTimeOffset.UtcNow.AddMinutes(-1);
-            var loginResult = new PcWebSessionStore(connectionString).Login(login, "test-password", loginAt);
+            var loginAt = DateTimeOffset.UtcNow.AddHours(-2);
+            var sessions = new PcWebSessionStore(connectionString);
+            var loginResult = sessions.Login(login, "test-password", loginAt);
             Assert.True(loginResult.IsSuccess);
-            Assert.Equal(loginAt.AddHours(12), loginResult.ExpiresAt);
+            Assert.Equal(loginAt.AddHours(24), loginResult.ExpiresAt);
+            Assert.Equal(loginAt.AddHours(24), await GetSessionExpiryAsync(connectionString, accountId));
 
             var context = new DefaultHttpContext();
             context.Request.Headers.Cookie = $"{PcWebSessionStore.CookieName}={loginResult.Token}";
-            Assert.NotNull(new PcWebSessionStore(connectionString).Resolve(context.Request));
 
-            await ExpireSessionsAsync(connectionString, accountId, DateTimeOffset.UtcNow.AddMinutes(-1));
+            var earlyRefreshAt = loginAt.AddMinutes(30);
+            var earlyRefresh = Assert.IsType<PcWebSessionRefreshResult>(
+                sessions.Refresh(context.Request, earlyRefreshAt));
+            Assert.Equal(loginAt.AddHours(24), earlyRefresh.ExpiresAt);
+            Assert.Equal(loginAt.AddHours(24), await GetSessionExpiryAsync(connectionString, accountId));
 
-            Assert.Null(new PcWebSessionStore(connectionString).Resolve(context.Request));
+            var refreshAt = loginAt.AddHours(2);
+            var refreshed = Assert.IsType<PcWebSessionRefreshResult>(
+                sessions.Refresh(context.Request, refreshAt));
+            Assert.Equal(refreshAt.AddHours(24), refreshed.ExpiresAt);
+            Assert.Equal(refreshAt.AddHours(24), await GetSessionExpiryAsync(connectionString, accountId));
+
+            await ExpireSessionsAsync(connectionString, accountId, refreshAt.AddMinutes(-1));
+
+            Assert.Null(sessions.Refresh(context.Request, refreshAt));
+            Assert.Null(sessions.Resolve(context.Request));
         }
         finally
         {
@@ -138,6 +159,19 @@ RETURNING id;", connection);
             "UPDATE tsd_devices SET platform = @value WHERE id = @id;",
             accountId,
             platform);
+    }
+
+    private static async Task<DateTimeOffset> GetSessionExpiryAsync(string connectionString, long accountId)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT expires_at FROM pc_web_sessions WHERE account_id = @account_id ORDER BY id DESC LIMIT 1;",
+            connection);
+        command.Parameters.AddWithValue("@account_id", accountId);
+        var value = await command.ExecuteScalarAsync();
+        var expiresAt = Assert.IsType<DateTime>(value);
+        return new DateTimeOffset(DateTime.SpecifyKind(expiresAt, DateTimeKind.Utc));
     }
 
     private static async Task ExpireSessionsAsync(
