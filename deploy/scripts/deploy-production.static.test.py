@@ -102,11 +102,9 @@ if re.search(r'"\$\{compose\[@\]\}" (?:up|build|pull|restart|create)', pre_backu
     raise AssertionError("mutating Compose command is forbidden before verified backup")
 
 if re.search(r'\$remoteScript\s*\|\s*&\s*ssh', source):
-    raise AssertionError("raw PowerShell text must not be piped directly to remote bash")
-if re.search(r'\$remoteCommand\s*=.*\$remoteBase64', source):
-    raise AssertionError("base64 payload must not be embedded in the SSH remote command")
-if r"tr -d '\r\n' | base64 -d | bash -s --" not in source:
-    raise AssertionError("SSH stdin transport must remove Windows CR/LF before base64 decoding")
+    raise AssertionError("PowerShell text pipeline must not transport the remote script")
+if "ToBase64String($remoteBytes)" in source or "base64 -d" in source:
+    raise AssertionError("deploy transport must not use base64")
 
 if 'done < <("${compose[@]}" config --environment)' in source:
     raise AssertionError("Compose environment parsing must not hide parser failure in process substitution")
