@@ -46,6 +46,18 @@ checks = {
     "external live/ready": require(r'Invoke-WebRequest -UseBasicParsing -Uri "\$PublicUrl\$endpoint"', "external operator health gate is missing"),
     "external identity": require(r'Invoke-RestMethod -Uri "\$PublicUrl/api/version"', "external operator identity gate is missing"),
     "external TSD": require(r'\$PublicUrl/tsd/app-version\.js', "external operator TSD gate is missing"),
+    "transport preflight marker": require(
+        r"FLOWSTOCK_TRANSPORT_OK",
+        "real SSH transport preflight marker is missing",
+    ),
+    "transport preflight raw stdin": require(
+        r"Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @\(\$sshTarget, 'bash -s'\) -StdinBytes \$transportProbeBytes",
+        "transport preflight must use the same raw ssh stdin helper as deploy",
+    ),
+    "transport preflight marker gate": require(
+        r"\$transportOutputLines -notcontains \$transportMarker",
+        "transport preflight must require the exact marker",
+    ),
     "LF normalization": require(
         r'\$remoteScript = \$remoteScript\.Replace\("\x60r\x60n", "\x60n"\)\.Replace\("\x60r", "\x60n"\)',
         "remote bash script must normalize Windows CRLF/CR to LF",
@@ -102,8 +114,8 @@ if remote_match is None:
 if "https://flowstock.local:7154" in remote_match.group("body"):
     raise AssertionError("server-side post-deploy gates must not depend on external HTTPS")
 
-if not checks["backup verification"] < checks["exact server update"] < checks["deploy"]:
-    raise AssertionError("backup, exact update and deploy order is unsafe")
+if not checks["transport preflight raw stdin"] < checks["backup verification"] < checks["exact server update"] < checks["deploy"]:
+    raise AssertionError("transport preflight, backup, exact update and deploy order is unsafe")
 
 pre_backup = source[: checks["backup verification"]]
 if re.search(r'"\$\{compose\[@\]\}" (?:up|build|pull|restart|create)', pre_backup):
