@@ -306,7 +306,9 @@ jobs:
           persist-credentials: false
       - name: Validate production deploy contract
         shell: bash
-        run: python3 deploy/scripts/deploy-production.static.test.py
+        run: |
+          python3 deploy/scripts/deploy-production.static.test.py
+          bash deploy/scripts/deploy-script-file.test.sh
       - name: Validate and apply disposable migrations
         shell: bash
         run: |
