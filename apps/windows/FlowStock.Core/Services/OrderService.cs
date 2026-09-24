@@ -1596,7 +1596,8 @@ public sealed class OrderService
                 orderId,
                 lockedCoverageTransfers);
 
-            var remainingCoverageTransfers = store.GetOrderCoverageTransfersByTargetOrder(orderId)
+            var remainingCoverageTransfers = (store.GetOrderCoverageTransfersByTargetOrder(orderId)
+                                              ?? Array.Empty<OrderCoverageTransfer>())
                 .Where(transfer =>
                     string.Equals(
                         transfer.TransferType,
