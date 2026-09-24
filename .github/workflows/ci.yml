@@ -63,6 +63,9 @@ jobs:
         run: |
           dotnet restore apps/windows/FlowStock.sln
           dotnet build apps/windows/FlowStock.sln -c Release --no-restore
+      - name: Validate production deploy raw-byte transport
+        shell: pwsh
+        run: ./deploy/scripts/deploy-transport.test.ps1
       - name: Verify PostgreSQL test naming convention
         shell: pwsh
         run: |
