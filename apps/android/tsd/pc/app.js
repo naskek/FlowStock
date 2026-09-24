@@ -24,6 +24,7 @@
   var lastSessionRefreshAt = 0;
   var sessionRefreshInFlight = null;
   var sessionExpiryTimerId = 0;
+  var sessionInvalidRedirecting = false;
   var activeNewOrderDraftController = null;
   var loadedPcWebVersion = versionMeta
     ? String(versionMeta.getAttribute("content") || "").trim()
@@ -227,6 +228,10 @@
   }
 
   function redirectToLoginAfterSessionExpiry() {
+    if (sessionInvalidRedirecting) {
+      return;
+    }
+    sessionInvalidRedirecting = true;
     stopSessionExpiryTimer();
     persistActiveNewOrderDraft();
     if (clearAccount) {
@@ -283,6 +288,7 @@
   }
 
   function enterAuthenticatedState(account) {
+    sessionInvalidRedirecting = false;
     lastSessionRefreshAt = Date.now();
     scheduleSessionExpiryLogout();
     setLoginState(true);
@@ -4260,6 +4266,7 @@
         inFlight: !!sessionRefreshInFlight,
         minIntervalMs: SESSION_REFRESH_MIN_INTERVAL_MS,
         expiryTimerId: sessionExpiryTimerId,
+        invalidRedirecting: sessionInvalidRedirecting,
       };
     };
     window.FlowStockPcTestHooks.getVersionWatcherState = function () {
