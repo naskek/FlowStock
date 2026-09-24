@@ -50,9 +50,9 @@ checks = {
         r"FLOWSTOCK_TRANSPORT_OK",
         "real SSH transport preflight marker is missing",
     ),
-    "transport preflight raw stdin": require(
-        r"Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @\(\$sshTarget, 'bash -s'\) -StdinBytes \$transportProbeBytes",
-        "transport preflight must use the same raw ssh stdin helper as deploy",
+    "transport preflight script file": require(
+        r"Invoke-RemoteBashScriptViaSsh -SshTarget \$sshTarget -ScriptBytes \$transportProbeBytes",
+        "transport preflight must use the same remote script-file helper as deploy",
     ),
     "transport preflight marker gate": require(
         r"\$transportOutputLines -notcontains \$transportMarker",
@@ -70,13 +70,9 @@ checks = {
         r'\[System\.Text\.UTF8Encoding\]::new\(\$false\)\.GetBytes\(\$remoteScript\)',
         "normalized remote script must be encoded once as raw UTF-8 bytes",
     ),
-    "raw SSH stdin": require(
-        r"Invoke-ProcessWithRawStdin -FilePath 'ssh'.*?-StdinBytes \$remoteBytes",
-        "remote script bytes must be written directly to ssh stdin",
-    ),
-    "remote bash stdin": require(
-        r'\$remoteCommand = "bash -s --',
-        "remote command must execute bash directly from stdin",
+    "remote script file": require(
+        r"Invoke-RemoteBashScriptViaSsh -SshTarget \$sshTarget -ScriptBytes \$remoteBytes -RemoteArgumentList @\(\$ExpectedCommit, \$expectedTsdVersion\)",
+        "production deploy must use the remote script-file helper",
     ),
     "remote completion marker": require(
         r"FLOWSTOCK_DEPLOY_OK=%s",
@@ -114,7 +110,7 @@ if remote_match is None:
 if "https://flowstock.local:7154" in remote_match.group("body"):
     raise AssertionError("server-side post-deploy gates must not depend on external HTTPS")
 
-if not checks["transport preflight raw stdin"] < checks["backup verification"] < checks["exact server update"] < checks["deploy"]:
+if not checks["transport preflight script file"] < checks["backup verification"] < checks["exact server update"] < checks["deploy"]:
     raise AssertionError("transport preflight, backup, exact update and deploy order is unsafe")
 
 pre_backup = source[: checks["backup verification"]]
