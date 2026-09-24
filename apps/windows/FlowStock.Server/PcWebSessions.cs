@@ -251,7 +251,7 @@ WHERE s.token_hash = @token_hash
   AND d.is_active = TRUE
   AND UPPER(COALESCE(d.platform, 'TSD')) IN ('PC', 'BOTH')
 LIMIT 1
-FOR UPDATE OF s;";
+FOR UPDATE OF s, d;";
         AddParam(command, "@token_hash", HashToken(rawToken));
         AddParam(command, "@now", now.UtcDateTime);
 
