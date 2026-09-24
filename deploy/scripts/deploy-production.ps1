@@ -74,6 +74,33 @@ try {
     $sshTarget = if ([string]::IsNullOrWhiteSpace($SshUser)) { $Server } else { "${SshUser}@${Server}" }
     Write-Host "Deploying exact origin/main commit $ExpectedCommit to $sshTarget"
 
+    # Prove the exact Windows -> OpenSSH -> Linux bash stdin path before any
+    # backup, repository mutation, image build, or container change is attempted.
+    $transportProbe = @'
+set -Eeuo pipefail
+printf 'FLOWSTOCK_TRANSPORT_OK\n'
+'@
+    $transportProbe = $transportProbe.Replace("`r`n", "`n").Replace("`r", "`n")
+    $transportProbeBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($transportProbe)
+    $transportProbeResult = Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @($sshTarget, 'bash -s') -StdinBytes $transportProbeBytes
+
+    if ($transportProbeResult.StdOut) {
+        Write-Host -NoNewline $transportProbeResult.StdOut
+    }
+    if ($transportProbeResult.StdErr) {
+        Write-Host -NoNewline $transportProbeResult.StdErr
+    }
+    if ($transportProbeResult.ExitCode -ne 0) {
+        throw "SSH transport preflight failed with exit code $($transportProbeResult.ExitCode)"
+    }
+
+    $transportMarker = 'FLOWSTOCK_TRANSPORT_OK'
+    $transportOutputLines = @($transportProbeResult.StdOut -split '\r?\n')
+    if ($transportOutputLines -notcontains $transportMarker) {
+        throw "SSH transport preflight did not return exact marker: $transportMarker"
+    }
+    Write-Host 'SSH transport preflight passed'
+
     $remoteScript = @'
 set -Eeuo pipefail
 expected_commit="$1"
@@ -217,8 +244,7 @@ printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
 '@
 
     # PowerShell here-strings use the host platform newline. Normalize explicitly
-    # before transporting the script to Linux bash, then send it as opaque UTF-8
-    # bytes so Windows native-pipeline line endings cannot reintroduce CRLF.
+    # and send the resulting UTF-8 bytes directly to ssh stdin.
     $remoteScript = $remoteScript.Replace("`r`n", "`n").Replace("`r", "`n")
     $remoteBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($remoteScript)
     $remoteCommand = "bash -s -- '$ExpectedCommit' '$expectedTsdVersion'"
