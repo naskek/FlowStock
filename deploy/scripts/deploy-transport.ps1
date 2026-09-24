@@ -73,7 +73,6 @@ function Invoke-ProcessWithRawStdin {
     }
 }
 
-
 function Invoke-RemoteBashScriptViaSsh {
     [CmdletBinding()]
     param(
@@ -89,14 +88,11 @@ function Invoke-RemoteBashScriptViaSsh {
 
     $remoteScriptPath = "/tmp/flowstock-deploy-$([Guid]::NewGuid().ToString('N')).sh"
     foreach ($argument in $RemoteArgumentList) {
-        if ($argument -notmatch '^[A-Za-z0-9._:+-]+
-
-    return Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @($SshTarget, $remoteCommand) -StdinBytes $ScriptBytes
-}
-) {
+        if ($argument -notmatch '^[A-Za-z0-9._:+-]+$') {
             throw "Unsafe remote bash argument: $argument"
         }
     }
+
     $quotedArguments = @($RemoteArgumentList | ForEach-Object { "'$_'" })
     $argumentSuffix = if ($quotedArguments.Count -eq 0) { '' } else { ' ' + ($quotedArguments -join ' ') }
 
