@@ -2407,6 +2407,11 @@ assert.match(
 );
 assert.match(
   pcAppSource,
+  /loadSession\(\)[\s\S]*return refreshSession\(\);[\s\S]*enterAuthenticatedState\(account\)/,
+  "startup must refresh a still-valid session before exposing authenticated kiosk UI"
+);
+assert.match(
+  pcAppSource,
   /apiLogout\(\)\.finally\(function \(\) \{[\s\S]*clearAccount\(\);[\s\S]*syncAdminMenuVisibility\(\);[\s\S]*renderLogin\(\)/,
   "logout must close capability-owned UI before rendering login"
 );
@@ -4087,8 +4092,8 @@ function runLatestOrdersLoadGateTests() {
 async function runAsyncRegressions() {
   runLatestOrdersLoadGateTests();
   runAttentionModalTests();
-  await runPcSessionLifecycleTests();
   await runPcVersionWatcherTests();
+  await runPcSessionLifecycleTests();
   await runCatalogModalTests();
   await runCatalogPackagingDirtyRegression();
   await runCatalogPriceHandlerRegression();
