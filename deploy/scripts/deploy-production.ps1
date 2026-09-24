@@ -220,7 +220,7 @@ printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
     $remoteScript = $remoteScript.Replace("`r`n", "`n").Replace("`r", "`n")
     $remoteBytes = [System.Text.Encoding]::UTF8.GetBytes($remoteScript)
     $remoteBase64 = [Convert]::ToBase64String($remoteBytes)
-    $remoteCommand = "base64 -d | bash -s -- '$ExpectedCommit' '$expectedTsdVersion'"
+    $remoteCommand = "tr -d '\r\n' | base64 -d | bash -s -- '$ExpectedCommit' '$expectedTsdVersion'"
 
     $remoteOutput = @(
         $remoteBase64 | & ssh $sshTarget $remoteCommand 2>&1
