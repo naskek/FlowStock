@@ -90,11 +90,11 @@ public sealed class PcWebSessionPostgresTests
             var earlyRefresh = Assert.IsType<PcWebSessionRefreshResult>(
                 sessions.Refresh(context.Request, earlyRefreshAt));
             Assert.Equal(
-                loginAt.AddHours(24),
+                earlyRefreshAt.AddHours(24),
                 earlyRefresh.ExpiresAt,
                 TimeSpan.FromMilliseconds(1));
             Assert.Equal(
-                loginAt.AddHours(24),
+                earlyRefreshAt.AddHours(24),
                 await GetSessionExpiryAsync(connectionString, accountId),
                 TimeSpan.FromMilliseconds(1));
 
