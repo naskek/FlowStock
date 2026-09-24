@@ -18,7 +18,12 @@
   var currentView = "orders";
   var LAST_VIEW_KEY = "flowstock_pc_last_view";
   var VERSION_CHECK_INTERVAL_MS = 600000;
+  var SESSION_REFRESH_MIN_INTERVAL_MS = 1800000;
+  var NEW_ORDER_DRAFT_STORAGE_KEY = "flowstock_pc_new_order_draft";
   var versionCheckTimerId = 0;
+  var lastSessionRefreshAt = 0;
+  var sessionRefreshInFlight = null;
+  var activeNewOrderDraftController = null;
   var loadedPcWebVersion = versionMeta
     ? String(versionMeta.getAttribute("content") || "").trim()
     : "";
@@ -47,9 +52,7 @@
     getBlockKeyForView: getBlockKeyForView,
     handleBlockedClientRequest: handleBlockedClientRequest,
     handleUnauthorized: function () {
-      if (clearAccount) clearAccount();
-      syncAdminMenuVisibility();
-      init();
+      redirectToLoginAfterSessionExpiry();
     },
   });
   var fetchJson = core.fetchJson;
@@ -67,13 +70,8 @@
   var bindModalDismiss = core.bindModalDismiss;
   auth.init({
     fetchJson: fetchJson,
-    onLoginSuccess: function () {
-      startVersionWatcher();
-      startLiveUpdates();
-      currentView = resolveAllowedView(currentView) || getDefaultView();
-      syncTabsVisibility();
-      syncAdminMenuVisibility();
-      renderView(currentView);
+    onLoginSuccess: function (account) {
+      enterAuthenticatedState(account);
     },
   });
   var getDefaultClientBlocks = auth.getDefaultClientBlocks;
@@ -90,10 +88,186 @@
   var setLoginState = auth.setLoginState;
   var apiLogin = auth.apiLogin;
   var loadSession = auth.loadSession;
+  var refreshSession = auth.refreshSession;
   var apiLogout = auth.apiLogout;
   var loadClientBlocks = auth.loadClientBlocks;
   var renderLogin = auth.renderLogin;
   var wireLogin = auth.wireLogin;
+
+  function getDraftStorage() {
+    try {
+      return window.sessionStorage || null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function isMeaningfulNewOrderDraft(draft) {
+    if (!draft || typeof draft !== "object") {
+      return false;
+    }
+    if (
+      draft.internal_order ||
+      String(draft.partner_query || "").trim() ||
+      String(draft.due_date || "").trim() ||
+      String(draft.comment || "").trim()
+    ) {
+      return true;
+    }
+    return Array.isArray(draft.lines) && draft.lines.some(function (line) {
+      return !!(
+        Number(line && line.item_id) ||
+        String((line && line.query) || "").trim() ||
+        String((line && line.qty_ordered) || "").trim()
+      );
+    });
+  }
+
+  function persistActiveNewOrderDraft() {
+    var storage = getDraftStorage();
+    if (!storage || !activeNewOrderDraftController || typeof activeNewOrderDraftController.snapshot !== "function") {
+      return false;
+    }
+
+    var draft = activeNewOrderDraftController.snapshot();
+    if (!isMeaningfulNewOrderDraft(draft)) {
+      try {
+        storage.removeItem(NEW_ORDER_DRAFT_STORAGE_KEY);
+      } catch (_error) {}
+      return false;
+    }
+
+    var account = loadAccount();
+    draft.owner_device_id = account && account.device_id ? String(account.device_id) : "";
+    try {
+      storage.setItem(NEW_ORDER_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function takePersistedNewOrderDraft(account) {
+    var storage = getDraftStorage();
+    if (!storage) {
+      return null;
+    }
+
+    var raw = "";
+    try {
+      raw = storage.getItem(NEW_ORDER_DRAFT_STORAGE_KEY) || "";
+    } catch (_error) {
+      return null;
+    }
+    if (!raw) {
+      return null;
+    }
+
+    var draft = null;
+    try {
+      draft = JSON.parse(raw);
+    } catch (_error) {
+      try {
+        storage.removeItem(NEW_ORDER_DRAFT_STORAGE_KEY);
+      } catch (_removeError) {}
+      return null;
+    }
+
+    var ownerDeviceId = String((draft && draft.owner_device_id) || "");
+    var currentDeviceId = String((account && account.device_id) || "");
+    try {
+      storage.removeItem(NEW_ORDER_DRAFT_STORAGE_KEY);
+    } catch (_error) {}
+    if (ownerDeviceId && currentDeviceId && ownerDeviceId !== currentDeviceId) {
+      return null;
+    }
+    return isMeaningfulNewOrderDraft(draft) ? draft : null;
+  }
+
+  function restorePersistedNewOrderDraft(account) {
+    var draft = takePersistedNewOrderDraft(account);
+    if (!draft) {
+      return false;
+    }
+
+    currentView = "orders";
+    renderView(currentView);
+    openNewOrderModal(function () {
+      if (typeof activeLiveRefreshHandler === "function") {
+        activeLiveRefreshHandler();
+      }
+    }, draft);
+    return true;
+  }
+
+  function redirectToLoginAfterSessionExpiry() {
+    persistActiveNewOrderDraft();
+    if (clearAccount) {
+      clearAccount();
+    }
+    if (window.location && typeof window.location.reload === "function") {
+      window.location.reload();
+      return;
+    }
+    init();
+  }
+
+  function refreshSessionForActivity(force) {
+    if (!hasPcAccess(loadAccount())) {
+      return Promise.resolve(null);
+    }
+
+    var now = Date.now();
+    if (
+      !force &&
+      lastSessionRefreshAt &&
+      now - lastSessionRefreshAt < SESSION_REFRESH_MIN_INTERVAL_MS
+    ) {
+      return Promise.resolve(loadAccount());
+    }
+    if (sessionRefreshInFlight) {
+      return sessionRefreshInFlight;
+    }
+
+    sessionRefreshInFlight = refreshSession()
+      .then(function (account) {
+        lastSessionRefreshAt = Date.now();
+        setAccountLabel(account);
+        syncTabsVisibility();
+        syncAdminMenuVisibility();
+        return account;
+      });
+    sessionRefreshInFlight = sessionRefreshInFlight.then(
+      function (account) {
+        sessionRefreshInFlight = null;
+        return account;
+      },
+      function (error) {
+        sessionRefreshInFlight = null;
+        throw error;
+      }
+    );
+    return sessionRefreshInFlight;
+  }
+
+  function noteAuthenticatedUserActivity() {
+    refreshSessionForActivity(false).catch(function () {});
+  }
+
+  function enterAuthenticatedState(account) {
+    lastSessionRefreshAt = Date.now();
+    setLoginState(true);
+    setAccountLabel(account);
+    startVersionWatcher();
+    startLiveUpdates();
+    syncTabsVisibility();
+    syncAdminMenuVisibility();
+    if (!restorePersistedNewOrderDraft(account)) {
+      currentView = resolveAllowedView(currentView) || getDefaultView();
+      renderView(currentView);
+    }
+  }
+
   var orderModal = window.FlowStockPcOrderModal;
   orderModal.init({
     fetchJson: fetchJson,
@@ -489,11 +663,32 @@
     modal.innerHTML = renderProductionNeedPreviewModalContent(rows);
     document.body.appendChild(modal);
 
+    function snapshotDraft() {
+      return {
+        internal_order: isInternalOrderRequested(),
+        partner_id: selectedPartnerId,
+        partner_query: refs.partnerInput ? String(refs.partnerInput.value || "") : "",
+        due_date: refs.dueDateInput ? String(refs.dueDateInput.value || "") : "",
+        comment: refs.commentInput ? String(refs.commentInput.value || "") : "",
+        lines: linesState.map(function (line) {
+          return {
+            item_id: Number(line && line.item_id) || 0,
+            qty_ordered: String((line && line.qty_ordered) || ""),
+            query: String((line && line.query) || ""),
+            locked: !!(line && line.locked),
+          };
+        }),
+      };
+    }
+
     function close() {
       if (closed) {
         return;
       }
       closed = true;
+      if (activeNewOrderDraftController && activeNewOrderDraftController.modal === modal) {
+        activeNewOrderDraftController = null;
+      }
       disposeDismiss();
       if (modal.parentNode) {
         modal.parentNode.removeChild(modal);
@@ -2406,7 +2601,7 @@
       });
   }
 
-  function openNewOrderModal(onSubmitted) {
+  function openNewOrderModal(onSubmitted, initialDraft) {
     var modal = document.createElement("div");
     modal.className = "pc-modal";
     modal.innerHTML =
@@ -2461,6 +2656,7 @@
       return { item_id: 0, qty_ordered: "", query: "", locked: false };
     }
     var linesState = [createEmptyLine()];
+    var restoreDraft = initialDraft && typeof initialDraft === "object" ? initialDraft : null;
     var activeLineIndex = 0;
     var selectedPartnerId = 0;
     var activeSuggestIndex = -1;
@@ -2722,6 +2918,11 @@
     }
 
     disposeDismiss = bindModalDismiss(modal, close);
+    activeNewOrderDraftController = {
+      modal: modal,
+      snapshot: snapshotDraft,
+      close: close,
+    };
 
     function buildPartnerLabel(partner) {
       if (!partner) {
@@ -3404,38 +3605,49 @@
         return;
       }
       if (!hasPcAccess(loadAccount())) {
-        setStatus("Сессия неактивна. Войдите повторно.");
-        return;
-      }
-      if (!window.confirm("Полностью ли заполнен заказ?")) {
+        redirectToLoginAfterSessionExpiry();
         return;
       }
 
       if (refs.submitBtn) {
         refs.submitBtn.disabled = true;
       }
-      setStatus("Отправка заявки...");
+      setStatus("Проверка сессии...");
 
-      fetchJson("/api/orders/requests/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          order_type: internalOrder ? "INTERNAL" : "CUSTOMER",
-          partner_id: internalOrder ? null : partnerId,
-          due_date: dueDate || null,
-          comment: comment || null,
-          lines: lines,
-        }),
-      })
-        .then(function (result) {
-          var requestId = result && result.request_id ? String(result.request_id) : "-";
-          setStatus("Заявка #" + requestId + " отправлена. Ожидается подтверждение.");
-          if (typeof onSubmitted === "function") {
-            onSubmitted();
+      refreshSessionForActivity(true)
+        .then(function (account) {
+          if (closed || !account) {
+            return null;
           }
-          window.setTimeout(close, 500);
+          if (!window.confirm("Полностью ли заполнен заказ?")) {
+            return null;
+          }
+
+          setStatus("Отправка заявки...");
+          return fetchJson("/api/orders/requests/create", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              order_type: internalOrder ? "INTERNAL" : "CUSTOMER",
+              partner_id: internalOrder ? null : partnerId,
+              due_date: dueDate || null,
+              comment: comment || null,
+              lines: lines,
+            }),
+          }).then(function (result) {
+            var requestId = result && result.request_id ? String(result.request_id) : "-";
+            setStatus("Заявка #" + requestId + " отправлена. Ожидается подтверждение.");
+            if (typeof onSubmitted === "function") {
+              onSubmitted();
+            }
+            window.setTimeout(close, 500);
+            return result;
+          });
         })
         .catch(function (error) {
+          if (error && error.status === 401) {
+            return;
+          }
           var message = error && error.message ? error.message : "REQUEST_FAILED";
           setStatus("Ошибка отправки: " + message);
         })
@@ -3526,15 +3738,53 @@
           return left < right ? -1 : left > right ? 1 : 0;
         });
 
-        updatePartnerHint();
-        if (refs.internalInput) {
-          refs.internalInput.checked = false;
+        if (restoreDraft) {
+          if (refs.internalInput) {
+            refs.internalInput.checked = !!restoreDraft.internal_order;
+          }
+          if (refs.dueDateInput) {
+            refs.dueDateInput.value = String(restoreDraft.due_date || "");
+          }
+          if (refs.commentInput) {
+            refs.commentInput.value = String(restoreDraft.comment || "");
+          }
+
+          selectedPartnerId = Number(restoreDraft.partner_id) || 0;
+          if (refs.partnerInput) {
+            var restoredPartner = getPartnerById(selectedPartnerId);
+            refs.partnerInput.value = restoredPartner
+              ? buildPartnerLabel(restoredPartner)
+              : String(restoreDraft.partner_query || "");
+          }
+
+          var restoredLines = Array.isArray(restoreDraft.lines) ? restoreDraft.lines : [];
+          linesState = restoredLines.length
+            ? restoredLines.map(function (line) {
+                var restoredItemId = Number(line && line.item_id) || 0;
+                var restoredItem = getItemById(restoredItemId);
+                return {
+                  item_id: restoredItem ? restoredItemId : 0,
+                  qty_ordered: String((line && line.qty_ordered) || ""),
+                  query: String((line && line.query) || ""),
+                  locked: !!restoredItem && !!(line && line.locked),
+                };
+              })
+            : [createEmptyLine()];
+          activeLineIndex = 0;
+          syncInternalOrderState();
+          setStatus("Введённые данные восстановлены после повторного входа.");
+          restoreDraft = null;
+        } else {
+          updatePartnerHint();
+          if (refs.internalInput) {
+            refs.internalInput.checked = false;
+          }
+          syncInternalOrderState();
+          linesState = [createEmptyLine()];
+          activeLineIndex = 0;
+          renderLines();
+          setStatus("");
         }
-        syncInternalOrderState();
-        linesState = [createEmptyLine()];
-        activeLineIndex = 0;
-        renderLines();
-        setStatus("");
       })
       .catch(function () {
         if (!closed && modal.isConnected !== false) {
@@ -3888,14 +4138,7 @@
     }
     loadSession()
       .then(function (account) {
-        setLoginState(true);
-        setAccountLabel(account);
-        startVersionWatcher();
-        startLiveUpdates();
-        syncTabsVisibility();
-        syncAdminMenuVisibility();
-        currentView = resolveAllowedView(currentView) || getDefaultView();
-        renderView(currentView);
+        enterAuthenticatedState(account);
       })
       .catch(showLogin);
   }
@@ -3967,6 +4210,24 @@
     window.FlowStockPcTestHooks.startVersionWatcher = startVersionWatcher;
     window.FlowStockPcTestHooks.stopVersionWatcher = stopVersionWatcher;
     window.FlowStockPcTestHooks.reloadForNewVersion = reloadForNewVersion;
+    window.FlowStockPcTestHooks.refreshSessionForActivity = refreshSessionForActivity;
+    window.FlowStockPcTestHooks.redirectToLoginAfterSessionExpiry = redirectToLoginAfterSessionExpiry;
+    window.FlowStockPcTestHooks.isMeaningfulNewOrderDraft = isMeaningfulNewOrderDraft;
+    window.FlowStockPcTestHooks.persistActiveNewOrderDraft = persistActiveNewOrderDraft;
+    window.FlowStockPcTestHooks.takePersistedNewOrderDraft = takePersistedNewOrderDraft;
+    window.FlowStockPcTestHooks.__setActiveNewOrderDraftControllerForTest = function (controller) {
+      activeNewOrderDraftController = controller || null;
+    };
+    window.FlowStockPcTestHooks.__setLastSessionRefreshAtForTest = function (value) {
+      lastSessionRefreshAt = Number(value) || 0;
+    };
+    window.FlowStockPcTestHooks.getSessionRefreshState = function () {
+      return {
+        lastRefreshAt: lastSessionRefreshAt,
+        inFlight: !!sessionRefreshInFlight,
+        minIntervalMs: SESSION_REFRESH_MIN_INTERVAL_MS,
+      };
+    };
     window.FlowStockPcTestHooks.getVersionWatcherState = function () {
       return {
         loadedPcWebVersion: loadedPcWebVersion,
@@ -4012,6 +4273,7 @@
     if (!hasPcAccess(loadAccount())) {
       return;
     }
+    refreshSessionForActivity(true).catch(function () {});
     checkServerVersionAndShowUpdateBanner();
     refreshClientBlocksIfChanged();
   });
@@ -4020,9 +4282,14 @@
     if (document.hidden || !hasPcAccess(loadAccount())) {
       return;
     }
+    refreshSessionForActivity(true).catch(function () {});
     checkServerVersionAndShowUpdateBanner();
     refreshClientBlocksIfChanged();
   });
+
+  document.addEventListener("pointerdown", noteAuthenticatedUserActivity);
+  document.addEventListener("keydown", noteAuthenticatedUserActivity);
+  document.addEventListener("input", noteAuthenticatedUserActivity);
 
   window.addEventListener("beforeunload", function () {
     stopLiveUpdates();
