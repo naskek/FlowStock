@@ -54,7 +54,7 @@ public interface IPcWebSessionResolver
 public sealed class PcWebSessionStore(string connectionString) : IPcWebSessionResolver
 {
     public const string CookieName = "flowstock_pc_session";
-    public static readonly TimeSpan Lifetime = TimeSpan.FromHours(12);
+    public static readonly TimeSpan Lifetime = TimeSpan.FromHours(24);
 
     public PcWebLoginResult Login(string login, string password, DateTimeOffset now)
     {
@@ -229,6 +229,120 @@ LIMIT 1;";
             PcAccessRole.Normalize(reader.IsDBNull(4) ? null : reader.GetString(4)));
     }
 
+    public PcWebSessionRefreshResult? Refresh(HttpRequest request, DateTimeOffset now)
+    {
+        if (!request.Cookies.TryGetValue(CookieName, out var rawToken) || string.IsNullOrWhiteSpace(rawToken))
+        {
+            return null;
+        }
+
+        var tokenHash = HashToken(rawToken);
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+
+        long accountId;
+        using (var lookup = connection.CreateCommand())
+        {
+            lookup.Transaction = transaction;
+            lookup.CommandText = @"
+SELECT account_id
+FROM pc_web_sessions
+WHERE token_hash = @token_hash
+LIMIT 1;";
+            AddParam(lookup, "@token_hash", tokenHash);
+            var rawAccountId = lookup.ExecuteScalar();
+            if (rawAccountId == null || rawAccountId == DBNull.Value)
+            {
+                transaction.Rollback();
+                return null;
+            }
+
+            accountId = Convert.ToInt64(rawAccountId, CultureInfo.InvariantCulture);
+        }
+
+        string deviceId;
+        string login;
+        string platform;
+        string accessRole;
+        using (var account = connection.CreateCommand())
+        {
+            account.Transaction = transaction;
+            account.CommandText = @"
+SELECT device_id, login, platform, access_role, is_active
+FROM tsd_devices
+WHERE id = @account_id
+FOR UPDATE;";
+            AddParam(account, "@account_id", accountId);
+            using var reader = account.ExecuteReader();
+            if (!reader.Read())
+            {
+                return null;
+            }
+
+            deviceId = reader.GetString(0);
+            login = reader.GetString(1);
+            platform = reader.IsDBNull(2) ? "PC" : reader.GetString(2).Trim().ToUpperInvariant();
+            accessRole = PcAccessRole.Normalize(reader.IsDBNull(3) ? null : reader.GetString(3));
+            var isActive = reader.GetBoolean(4);
+            if (!isActive || !IsPcPlatform(platform))
+            {
+                return null;
+            }
+        }
+
+        DateTimeOffset expiresAt;
+        using (var session = connection.CreateCommand())
+        {
+            session.Transaction = transaction;
+            session.CommandText = @"
+SELECT expires_at
+FROM pc_web_sessions
+WHERE account_id = @account_id
+  AND token_hash = @token_hash
+  AND revoked_at IS NULL
+  AND expires_at > @now
+FOR UPDATE;";
+            AddParam(session, "@account_id", accountId);
+            AddParam(session, "@token_hash", tokenHash);
+            AddParam(session, "@now", now.UtcDateTime);
+            var rawExpiresAt = session.ExecuteScalar();
+            if (rawExpiresAt is not DateTime expiresAtUtc)
+            {
+                transaction.Rollback();
+                return null;
+            }
+
+            expiresAt = new DateTimeOffset(DateTime.SpecifyKind(expiresAtUtc, DateTimeKind.Utc));
+        }
+
+        expiresAt = now.Add(Lifetime);
+        using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.CommandText = @"
+UPDATE pc_web_sessions
+SET expires_at = @expires_at
+WHERE account_id = @account_id
+  AND token_hash = @token_hash
+  AND revoked_at IS NULL
+  AND expires_at > @now;";
+            AddParam(update, "@expires_at", expiresAt.UtcDateTime);
+            AddParam(update, "@account_id", accountId);
+            AddParam(update, "@token_hash", tokenHash);
+            AddParam(update, "@now", now.UtcDateTime);
+            if (update.ExecuteNonQuery() != 1)
+            {
+                transaction.Rollback();
+                return null;
+            }
+        }
+
+        transaction.Commit();
+        return new PcWebSessionRefreshResult(
+            new PcWebIdentity(accountId, deviceId, login, platform, accessRole),
+            expiresAt);
+    }
+
     public void Revoke(HttpRequest request, DateTimeOffset now)
     {
         if (!request.Cookies.TryGetValue(CookieName, out var rawToken) || string.IsNullOrWhiteSpace(rawToken))
@@ -319,6 +433,8 @@ public sealed record PcWebLoginResult(
     public static PcWebLoginResult Invalid(string error) => new(false, error, null, null, null);
 }
 
+public sealed record PcWebSessionRefreshResult(PcWebIdentity Identity, DateTimeOffset ExpiresAt);
+
 public static class PcWebSessionEndpoints
 {
     public static void Map(WebApplication app)
@@ -357,6 +473,26 @@ public static class PcWebSessionEndpoints
             return identity == null
                 ? Results.Json(new ApiResult(false, "INVALID_SESSION"), statusCode: StatusCodes.Status401Unauthorized)
                 : Results.Ok(BuildSessionEnvelope(identity, (DateTimeOffset?)null, store));
+        });
+
+        app.MapPost("/api/pc/session/refresh", (HttpRequest request, HttpResponse response, PcWebSessionStore sessions, IDataStore store) =>
+        {
+            var refreshed = sessions.Refresh(request, DateTimeOffset.UtcNow);
+            if (refreshed == null)
+            {
+                return Results.Json(new ApiResult(false, "INVALID_SESSION"), statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            if (request.Cookies.TryGetValue(PcWebSessionStore.CookieName, out var rawToken)
+                && !string.IsNullOrWhiteSpace(rawToken))
+            {
+                response.Cookies.Append(
+                    PcWebSessionStore.CookieName,
+                    rawToken,
+                    BuildCookie(refreshed.ExpiresAt));
+            }
+
+            return Results.Ok(BuildSessionEnvelope(refreshed.Identity, refreshed.ExpiresAt, store));
         });
 
         app.MapPost("/api/pc/logout", (HttpRequest request, HttpResponse response, PcWebSessionStore sessions) =>

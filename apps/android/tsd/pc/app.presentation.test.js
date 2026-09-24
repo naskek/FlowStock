@@ -11,6 +11,8 @@ const stockPath = path.join(__dirname, "pc-stock.js");
 const appPath = path.join(__dirname, "app.js");
 const indexPath = path.join(__dirname, "index.html");
 const styles = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
+const pcCoreSource = fs.readFileSync(corePath, "utf8");
+const pcAuthSource = fs.readFileSync(authPath, "utf8");
 const hooks = {};
 const versionBanner = { hidden: true };
 const versionReloadHandlers = {};
@@ -39,6 +41,9 @@ function createVersionFetchResponse(payload) {
 
 const context = {
   console,
+  Headers: global.Headers,
+  setTimeout: setTimeout,
+  clearTimeout: clearTimeout,
   clearInterval: function (timerId) {
     activeIntervals.delete(timerId);
   },
@@ -62,6 +67,8 @@ const context = {
       activeIntervals.set(nextTimerId, { handler, intervalMs });
       return nextTimerId;
     },
+    setTimeout: setTimeout,
+    clearTimeout: clearTimeout,
   },
   document: {
     getElementById: function (id) {
@@ -2383,8 +2390,53 @@ assert.match(
 );
 assert.match(
   pcAppSource,
-  /handleUnauthorized:[\s\S]*clearAccount\(\);[\s\S]*syncAdminMenuVisibility\(\);[\s\S]*init\(\);/,
-  "INVALID_SESSION handling must close capability-owned UI before rendering login"
+  /handleUnauthorized:[\s\S]*redirectToLoginAfterSessionExpiry\(\)/,
+  "INVALID_SESSION handling must immediately enter the re-auth flow"
+);
+assert.match(
+  pcAppSource,
+  /function redirectToLoginAfterSessionExpiry\(\)[\s\S]*persistActiveNewOrderDraft\(\);[\s\S]*clearAccount\(\);[\s\S]*window\.location\.reload\(\)/,
+  "expired sessions must preserve an editable order draft and reload into login-state"
+);
+assert.match(
+  pcCoreSource,
+  /url !== "\/api\/pc\/session\/refresh"/,
+  "session refresh must not inherit the current client-block header"
+);
+assert.match(
+  pcAuthSource,
+  /fetchJson\("\/api\/pc\/session\/refresh", \{ method: "POST" \}\)[\s\S]*then\(applySession\)/,
+  "PC auth must expose the dedicated session refresh endpoint"
+);
+assert.match(
+  pcAuthSource,
+  /result && result\.expires_at[\s\S]*currentSessionExpiresAt = parsedExpiresAt[\s\S]*getSessionExpiresAt/,
+  "PC auth must retain the server-owned session expiry for the kiosk expiry timer"
+);
+assert.match(
+  pcAppSource,
+  /function scheduleSessionExpiryLogout\(\)[\s\S]*getSessionExpiresAt\(\)[\s\S]*window\.setTimeout[\s\S]*redirectToLoginAfterSessionExpiry\(\)/,
+  "kiosk must redirect to login when the known server session expiry is reached"
+);
+assert.match(
+  pcAppSource,
+  /function submit\(\)[\s\S]*setStatus\("Проверка сессии\.\.\."\);[\s\S]*refreshSessionForActivity\(true\)[\s\S]*fetchJson\("\/api\/orders\/requests\/create"/,
+  "new-order submit must refresh the session before sending the request"
+);
+assert.match(
+  pcAppSource,
+  /takePersistedNewOrderDraft\(account, false\)[\s\S]*openNewOrderModal\([\s\S]*draft,[\s\S]*storage\.removeItem\(NEW_ORDER_DRAFT_STORAGE_KEY\)/,
+  "persisted draft must only be consumed after the restored modal has applied reference data"
+);
+assert.match(
+  pcAppSource,
+  /function restorePersistedNewOrderDraft\(account\) \{\s*if \(!isClientBlockEnabled\("pc_orders"\)\) \{\s*return false;/,
+  "saved order draft must not reopen while the PC orders block is disabled"
+);
+assert.match(
+  pcAppSource,
+  /loadSession\(\)[\s\S]*return refreshSession\(\);[\s\S]*enterAuthenticatedState\(account\)/,
+  "startup must refresh a still-valid session before exposing authenticated kiosk UI"
 );
 assert.match(
   pcAppSource,
@@ -2417,8 +2469,8 @@ assert.strictEqual(
 );
 assert.strictEqual(
   (pcAppSource.match(/window\.location\.reload\(\)/g) || []).length,
-  1,
-  "only the explicit version update action may reload the page"
+  2,
+  "page reloads are limited to explicit version update and invalid-session re-auth"
 );
 assert.doesNotMatch(
   pcAppSource,
@@ -2427,14 +2479,204 @@ assert.doesNotMatch(
 );
 assert.match(
   pcAppSource,
-  /onLoginSuccess:\s*function\s*\(\)\s*\{\s*startVersionWatcher\(\)/,
-  "successful PC authentication should start the existing version watcher"
+  /onLoginSuccess:\s*function\s*\(account\)\s*\{\s*enterAuthenticatedState\(account\);/,
+  "successful PC authentication should enter the shared authenticated session lifecycle"
 );
 assert.match(
   pcAppSource,
   /clearAccount\(\);\s*stopVersionWatcher\(\)/,
   "PC logout should stop the existing version watcher"
 );
+
+async function runPcSessionLifecycleTests() {
+  const auth = context.window.FlowStockPcAuth;
+  const originalFetch = context.fetch;
+  const storageValues = new Map();
+  context.window.sessionStorage = {
+    getItem: function (key) {
+      return storageValues.has(key) ? storageValues.get(key) : null;
+    },
+    setItem: function (key, value) {
+      storageValues.set(key, String(value));
+    },
+    removeItem: function (key) {
+      storageValues.delete(key);
+    },
+  };
+
+  assert.strictEqual(pc.isMeaningfulNewOrderDraft({ lines: [] }), false);
+  assert.strictEqual(
+    pc.isMeaningfulNewOrderDraft({ comment: "сохранить", lines: [] }),
+    true,
+    "typed order data must be considered recoverable"
+  );
+
+  auth.saveAccount({
+    device_id: "PC-SESSION-TEST",
+    login: "operator",
+    platform: "PC",
+    access_role: "OPERATOR",
+  });
+
+  pc.__setActiveNewOrderDraftControllerForTest({
+    snapshot: function () {
+      return {
+        internal_order: false,
+        partner_id: 17,
+        partner_query: "Клиент",
+        due_date: "2026-09-30",
+        comment: "не потерять",
+        lines: [{ item_id: 5, qty_ordered: "12", query: "Товар", locked: true }],
+      };
+    },
+  });
+  const reloadBeforeExpiry = reloadCount;
+  pc.redirectToLoginAfterSessionExpiry();
+  assert.strictEqual(reloadCount, reloadBeforeExpiry + 1, "invalid session must force login-state reload");
+  const storedDraftAfterFirstRedirect = context.window.sessionStorage.getItem("flowstock_pc_new_order_draft");
+  assert.strictEqual(JSON.parse(storedDraftAfterFirstRedirect).owner_device_id, "PC-SESSION-TEST");
+
+  pc.redirectToLoginAfterSessionExpiry();
+  assert.strictEqual(
+    reloadCount,
+    reloadBeforeExpiry + 1,
+    "parallel 401 responses must not trigger repeated invalid-session reloads"
+  );
+  assert.strictEqual(
+    context.window.sessionStorage.getItem("flowstock_pc_new_order_draft"),
+    storedDraftAfterFirstRedirect,
+    "parallel 401 responses must not overwrite the saved draft after account state is cleared"
+  );
+
+  assert.strictEqual(
+    pc.takePersistedNewOrderDraft({ device_id: "OTHER-PC-ACCOUNT" }),
+    null,
+    "a different account must not receive another account's saved draft"
+  );
+  assert.strictEqual(
+    context.window.sessionStorage.getItem("flowstock_pc_new_order_draft"),
+    storedDraftAfterFirstRedirect,
+    "a different login must not consume the original account's saved draft"
+  );
+
+  const recoveredDraft = pc.takePersistedNewOrderDraft({ device_id: "PC-SESSION-TEST" });
+  assert.strictEqual(recoveredDraft.comment, "не потерять");
+  assert.strictEqual(recoveredDraft.lines[0].qty_ordered, "12");
+  assert.strictEqual(
+    context.window.sessionStorage.getItem("flowstock_pc_new_order_draft"),
+    null,
+    "draft must be consumed once after successful re-authentication by its owner"
+  );
+
+  const deferredConsumeDraft = {
+    owner_device_id: "PC-SESSION-TEST",
+    comment: "ждать справочники",
+    lines: [{ item_id: 5, qty_ordered: "3", query: "Товар", locked: true }],
+  };
+  context.window.sessionStorage.setItem(
+    "flowstock_pc_new_order_draft",
+    JSON.stringify(deferredConsumeDraft)
+  );
+  const peekedDraft = pc.takePersistedNewOrderDraft({ device_id: "PC-SESSION-TEST" }, false);
+  assert.strictEqual(peekedDraft.comment, "ждать справочники");
+  assert.notStrictEqual(
+    context.window.sessionStorage.getItem("flowstock_pc_new_order_draft"),
+    null,
+    "draft must remain persisted until reference data has loaded and restore is applied"
+  );
+  const consumedDeferredDraft = pc.takePersistedNewOrderDraft({ device_id: "PC-SESSION-TEST" });
+  assert.strictEqual(consumedDeferredDraft.comment, "ждать справочники");
+  assert.strictEqual(
+    context.window.sessionStorage.getItem("flowstock_pc_new_order_draft"),
+    null,
+    "draft can be consumed after restore succeeds"
+  );
+
+  pc.__setSessionInvalidRedirectingForTest(false);
+
+  auth.saveAccount({
+    device_id: "PC-SESSION-TEST",
+    login: "operator",
+    platform: "PC",
+    access_role: "OPERATOR",
+  });
+
+  let refreshCalls = 0;
+  context.fetch = function (url) {
+    if (url === "/api/pc/session/refresh") {
+      refreshCalls += 1;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: function () {
+          return Promise.resolve({
+            ok: true,
+            account: {
+              device_id: "PC-SESSION-TEST",
+              login: "operator",
+              platform: "PC",
+              access_role: "OPERATOR",
+            },
+            capabilities: [],
+            blocks: {},
+            expires_at: new Date(Date.now() + 60000).toISOString(),
+          });
+        },
+      });
+    }
+    return originalFetch.apply(null, arguments);
+  };
+
+  pc.__setLastSessionRefreshAtForTest(Date.now());
+  await pc.refreshSessionForActivity(false);
+  assert.strictEqual(refreshCalls, 0, "recently refreshed active session must be throttled");
+
+  pc.__setLastSessionRefreshAtForTest(0);
+  await pc.refreshSessionForActivity(false);
+  assert.strictEqual(refreshCalls, 1, "user activity must refresh a stale renewal timestamp");
+  assert.notStrictEqual(
+    pc.getSessionRefreshState().expiryTimerId,
+    0,
+    "successful renewal must arm the exact-expiry kiosk logout timer"
+  );
+
+  auth.saveAccount({
+    device_id: "PC-SESSION-TEST",
+    login: "operator",
+    platform: "PC",
+    access_role: "OPERATOR",
+  });
+  pc.__setLastSessionRefreshAtForTest(0);
+  context.fetch = function (url) {
+    if (url === "/api/pc/session/refresh") {
+      return Promise.resolve({
+        ok: false,
+        status: 401,
+        json: function () {
+          return Promise.resolve({ ok: false, error: "INVALID_SESSION" });
+        },
+      });
+    }
+    return originalFetch.apply(null, arguments);
+  };
+
+  const reloadBeforeUnauthorizedRefresh = reloadCount;
+  await pc.refreshSessionForActivity(true).catch(function () {});
+  assert.strictEqual(
+    reloadCount,
+    reloadBeforeUnauthorizedRefresh + 1,
+    "401 during session refresh must immediately reload to the login state"
+  );
+  assert.strictEqual(
+    pc.getSessionRefreshState().expiryTimerId,
+    0,
+    "invalid-session redirect must cancel the previous expiry timer"
+  );
+
+  context.fetch = originalFetch;
+  delete context.window.sessionStorage;
+  pc.__setActiveNewOrderDraftControllerForTest(null);
+}
 
 async function runPcVersionWatcherTests() {
   assert.strictEqual(pc.getVersionWatcherState().loadedPcWebVersion, "loaded-version");
@@ -3949,6 +4191,7 @@ async function runAsyncRegressions() {
   runLatestOrdersLoadGateTests();
   runAttentionModalTests();
   await runPcVersionWatcherTests();
+  await runPcSessionLifecycleTests();
   await runCatalogModalTests();
   await runCatalogPackagingDirtyRegression();
   await runCatalogPriceHandlerRegression();
