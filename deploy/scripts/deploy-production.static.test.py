@@ -50,20 +50,28 @@ checks = {
         r'\$remoteScript = \$remoteScript\.Replace\("\x60r\x60n", "\x60n"\)\.Replace\("\x60r", "\x60n"\)',
         "remote bash script must normalize Windows CRLF/CR to LF",
     ),
-    "UTF-8 base64 transport": require(
-        r'\[System\.Text\.Encoding\]::UTF8\.GetBytes\(\$remoteScript\).*?ToBase64String\(\$remoteBytes\)',
-        "normalized remote script must be transported as UTF-8 base64",
+    "raw transport helper": require(
+        r"\. \(Join-Path \$PSScriptRoot 'deploy-transport\.ps1'\)",
+        "raw stdin transport helper must be loaded",
     ),
-    "base64 stdin transport": require(
-        r'\$remoteBase64\s*\|\s*&\s*ssh\s+\$sshTarget\s+\$remoteCommand',
-        "base64 payload must travel over SSH stdin instead of the remote command line",
+    "UTF-8 raw bytes": require(
+        r'\[System\.Text\.UTF8Encoding\]::new\(\$false\)\.GetBytes\(\$remoteScript\)',
+        "normalized remote script must be encoded once as raw UTF-8 bytes",
+    ),
+    "raw SSH stdin": require(
+        r"Invoke-ProcessWithRawStdin -FilePath 'ssh'.*?-StdinBytes \$remoteBytes",
+        "remote script bytes must be written directly to ssh stdin",
+    ),
+    "remote bash stdin": require(
+        r'\$remoteCommand = "bash -s --',
+        "remote command must execute bash directly from stdin",
     ),
     "remote completion marker": require(
         r"FLOWSTOCK_DEPLOY_OK=%s",
         "remote deploy must emit an exact completion marker",
     ),
     "local completion marker gate": require(
-        r'\$successMarker = "FLOWSTOCK_DEPLOY_OK=\$ExpectedCommit".*?\$remoteOutput -notcontains \$successMarker',
+        r'\$successMarker = "FLOWSTOCK_DEPLOY_OK=\$ExpectedCommit".*?\$remoteOutputLines -notcontains \$successMarker',
         "local deploy must require the exact remote completion marker",
     ),
 }
