@@ -2538,13 +2538,24 @@ async function runPcSessionLifecycleTests() {
     "parallel 401 responses must not overwrite the saved draft after account state is cleared"
   );
 
+  assert.strictEqual(
+    pc.takePersistedNewOrderDraft({ device_id: "OTHER-PC-ACCOUNT" }),
+    null,
+    "a different account must not receive another account's saved draft"
+  );
+  assert.strictEqual(
+    context.window.sessionStorage.getItem("flowstock_pc_new_order_draft"),
+    storedDraftAfterFirstRedirect,
+    "a different login must not consume the original account's saved draft"
+  );
+
   const recoveredDraft = pc.takePersistedNewOrderDraft({ device_id: "PC-SESSION-TEST" });
   assert.strictEqual(recoveredDraft.comment, "не потерять");
   assert.strictEqual(recoveredDraft.lines[0].qty_ordered, "12");
   assert.strictEqual(
     context.window.sessionStorage.getItem("flowstock_pc_new_order_draft"),
     null,
-    "draft must be consumed once after successful re-authentication"
+    "draft must be consumed once after successful re-authentication by its owner"
   );
   pc.__setSessionInvalidRedirectingForTest(false);
 
