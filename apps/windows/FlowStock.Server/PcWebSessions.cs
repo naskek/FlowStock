@@ -277,7 +277,6 @@ FOR UPDATE;";
             using var reader = account.ExecuteReader();
             if (!reader.Read())
             {
-                transaction.Rollback();
                 return null;
             }
 
@@ -288,7 +287,6 @@ FOR UPDATE;";
             var isActive = reader.GetBoolean(4);
             if (!isActive || !IsPcPlatform(platform))
             {
-                transaction.Rollback();
                 return null;
             }
         }
