@@ -4,6 +4,7 @@
   var deps = {};
   var clientBlocks = getDefaultClientBlocks();
   var currentAccount = null;
+  var currentSessionExpiresAt = 0;
   var capabilities = [];
 
   function init(shared) {
@@ -69,7 +70,12 @@
 
   function clearAccount() {
     currentAccount = null;
+    currentSessionExpiresAt = 0;
     capabilities = [];
+  }
+
+  function getSessionExpiresAt() {
+    return currentSessionExpiresAt;
   }
 
   function applySession(result) {
@@ -84,6 +90,10 @@
       access_role: String(rawAccount.access_role || "OPERATOR").trim().toUpperCase(),
     };
     capabilities = Array.isArray(result.capabilities) ? result.capabilities.slice() : [];
+    var parsedExpiresAt = result && result.expires_at ? Date.parse(String(result.expires_at)) : NaN;
+    if (isFinite(parsedExpiresAt)) {
+      currentSessionExpiresAt = parsedExpiresAt;
+    }
     applyClientBlocks(result.blocks);
     return currentAccount;
   }
@@ -235,6 +245,7 @@
     loadAccount: loadAccount,
     saveAccount: saveAccount,
     clearAccount: clearAccount,
+    getSessionExpiresAt: getSessionExpiresAt,
     setAccountLabel: setAccountLabel,
     setLoginState: setLoginState,
     apiLogin: apiLogin,
