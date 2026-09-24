@@ -15,6 +15,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+. (Join-Path $PSScriptRoot 'deploy-transport.ps1')
+
 function Invoke-CheckedNative {
     param(
         [Parameter(Mandatory = $true)] [string]$FilePath,
@@ -218,22 +220,24 @@ printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
     # before transporting the script to Linux bash, then send it as opaque UTF-8
     # bytes so Windows native-pipeline line endings cannot reintroduce CRLF.
     $remoteScript = $remoteScript.Replace("`r`n", "`n").Replace("`r", "`n")
-    $remoteBytes = [System.Text.Encoding]::UTF8.GetBytes($remoteScript)
-    $remoteBase64 = [Convert]::ToBase64String($remoteBytes)
-    $remoteCommand = "tr -d '\r\n' | base64 -d | bash -s -- '$ExpectedCommit' '$expectedTsdVersion'"
+    $remoteBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($remoteScript)
+    $remoteCommand = "bash -s -- '$ExpectedCommit' '$expectedTsdVersion'"
 
-    $remoteOutput = @(
-        $remoteBase64 | & ssh $sshTarget $remoteCommand 2>&1
-    )
-    $sshExitCode = $LASTEXITCODE
-    $remoteOutput | Out-Host
+    $remoteResult = Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @($sshTarget, $remoteCommand) -StdinBytes $remoteBytes
+    if ($remoteResult.StdOut) {
+        Write-Host -NoNewline $remoteResult.StdOut
+    }
+    if ($remoteResult.StdErr) {
+        Write-Host -NoNewline $remoteResult.StdErr
+    }
 
-    if ($sshExitCode -ne 0) {
-        throw "Remote production deploy failed with exit code $sshExitCode"
+    if ($remoteResult.ExitCode -ne 0) {
+        throw "Remote production deploy failed with exit code $($remoteResult.ExitCode)"
     }
 
     $successMarker = "FLOWSTOCK_DEPLOY_OK=$ExpectedCommit"
-    if ($remoteOutput -notcontains $successMarker) {
+    $remoteOutputLines = @($remoteResult.StdOut -split '\r?\n')
+    if ($remoteOutputLines -notcontains $successMarker) {
         throw "Remote production deploy did not return exact completion marker: $successMarker"
     }
 
