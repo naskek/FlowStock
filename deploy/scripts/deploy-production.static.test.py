@@ -46,24 +46,44 @@ checks = {
     "external live/ready": require(r'Invoke-WebRequest -UseBasicParsing -Uri "\$PublicUrl\$endpoint"', "external operator health gate is missing"),
     "external identity": require(r'Invoke-RestMethod -Uri "\$PublicUrl/api/version"', "external operator identity gate is missing"),
     "external TSD": require(r'\$PublicUrl/tsd/app-version\.js', "external operator TSD gate is missing"),
+    "transport preflight marker": require(
+        r"FLOWSTOCK_TRANSPORT_OK",
+        "real SSH transport preflight marker is missing",
+    ),
+    "transport preflight raw stdin": require(
+        r"Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @\(\$sshTarget, 'bash -s'\) -StdinBytes \$transportProbeBytes",
+        "transport preflight must use the same raw ssh stdin helper as deploy",
+    ),
+    "transport preflight marker gate": require(
+        r"\$transportOutputLines -notcontains \$transportMarker",
+        "transport preflight must require the exact marker",
+    ),
     "LF normalization": require(
         r'\$remoteScript = \$remoteScript\.Replace\("\x60r\x60n", "\x60n"\)\.Replace\("\x60r", "\x60n"\)',
         "remote bash script must normalize Windows CRLF/CR to LF",
     ),
-    "UTF-8 base64 transport": require(
-        r'\[System\.Text\.Encoding\]::UTF8\.GetBytes\(\$remoteScript\).*?ToBase64String\(\$remoteBytes\)',
-        "normalized remote script must be transported as UTF-8 base64",
+    "raw transport helper": require(
+        r"\. \(Join-Path \$PSScriptRoot 'deploy-transport\.ps1'\)",
+        "raw stdin transport helper must be loaded",
     ),
-    "base64 stdin transport": require(
-        r'\$remoteBase64\s*\|\s*&\s*ssh\s+\$sshTarget\s+\$remoteCommand',
-        "base64 payload must travel over SSH stdin instead of the remote command line",
+    "UTF-8 raw bytes": require(
+        r'\[System\.Text\.UTF8Encoding\]::new\(\$false\)\.GetBytes\(\$remoteScript\)',
+        "normalized remote script must be encoded once as raw UTF-8 bytes",
+    ),
+    "raw SSH stdin": require(
+        r"Invoke-ProcessWithRawStdin -FilePath 'ssh'.*?-StdinBytes \$remoteBytes",
+        "remote script bytes must be written directly to ssh stdin",
+    ),
+    "remote bash stdin": require(
+        r'\$remoteCommand = "bash -s --',
+        "remote command must execute bash directly from stdin",
     ),
     "remote completion marker": require(
         r"FLOWSTOCK_DEPLOY_OK=%s",
         "remote deploy must emit an exact completion marker",
     ),
     "local completion marker gate": require(
-        r'\$successMarker = "FLOWSTOCK_DEPLOY_OK=\$ExpectedCommit".*?\$remoteOutput -notcontains \$successMarker',
+        r'\$successMarker = "FLOWSTOCK_DEPLOY_OK=\$ExpectedCommit".*?\$remoteOutputLines -notcontains \$successMarker',
         "local deploy must require the exact remote completion marker",
     ),
 }
@@ -94,19 +114,17 @@ if remote_match is None:
 if "https://flowstock.local:7154" in remote_match.group("body"):
     raise AssertionError("server-side post-deploy gates must not depend on external HTTPS")
 
-if not checks["backup verification"] < checks["exact server update"] < checks["deploy"]:
-    raise AssertionError("backup, exact update and deploy order is unsafe")
+if not checks["transport preflight raw stdin"] < checks["backup verification"] < checks["exact server update"] < checks["deploy"]:
+    raise AssertionError("transport preflight, backup, exact update and deploy order is unsafe")
 
 pre_backup = source[: checks["backup verification"]]
 if re.search(r'"\$\{compose\[@\]\}" (?:up|build|pull|restart|create)', pre_backup):
     raise AssertionError("mutating Compose command is forbidden before verified backup")
 
 if re.search(r'\$remoteScript\s*\|\s*&\s*ssh', source):
-    raise AssertionError("raw PowerShell text must not be piped directly to remote bash")
-if re.search(r'\$remoteCommand\s*=.*\$remoteBase64', source):
-    raise AssertionError("base64 payload must not be embedded in the SSH remote command")
-if r"tr -d '\r\n' | base64 -d | bash -s --" not in source:
-    raise AssertionError("SSH stdin transport must remove Windows CR/LF before base64 decoding")
+    raise AssertionError("PowerShell text pipeline must not transport the remote script")
+if "ToBase64String($remoteBytes)" in source or "base64 -d" in source:
+    raise AssertionError("deploy transport must not use base64")
 
 if 'done < <("${compose[@]}" config --environment)' in source:
     raise AssertionError("Compose environment parsing must not hide parser failure in process substitution")

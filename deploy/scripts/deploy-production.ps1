@@ -15,6 +15,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+. (Join-Path $PSScriptRoot 'deploy-transport.ps1')
+
 function Invoke-CheckedNative {
     param(
         [Parameter(Mandatory = $true)] [string]$FilePath,
@@ -71,6 +73,33 @@ try {
 
     $sshTarget = if ([string]::IsNullOrWhiteSpace($SshUser)) { $Server } else { "${SshUser}@${Server}" }
     Write-Host "Deploying exact origin/main commit $ExpectedCommit to $sshTarget"
+
+    # Prove the exact Windows -> OpenSSH -> Linux bash stdin path before any
+    # backup, repository mutation, image build, or container change is attempted.
+    $transportProbe = @'
+set -Eeuo pipefail
+printf 'FLOWSTOCK_TRANSPORT_OK\n'
+'@
+    $transportProbe = $transportProbe.Replace("`r`n", "`n").Replace("`r", "`n")
+    $transportProbeBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($transportProbe)
+    $transportProbeResult = Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @($sshTarget, 'bash -s') -StdinBytes $transportProbeBytes
+
+    if ($transportProbeResult.StdOut) {
+        Write-Host -NoNewline $transportProbeResult.StdOut
+    }
+    if ($transportProbeResult.StdErr) {
+        Write-Host -NoNewline $transportProbeResult.StdErr
+    }
+    if ($transportProbeResult.ExitCode -ne 0) {
+        throw "SSH transport preflight failed with exit code $($transportProbeResult.ExitCode)"
+    }
+
+    $transportMarker = 'FLOWSTOCK_TRANSPORT_OK'
+    $transportOutputLines = @($transportProbeResult.StdOut -split '\r?\n')
+    if ($transportOutputLines -notcontains $transportMarker) {
+        throw "SSH transport preflight did not return exact marker: $transportMarker"
+    }
+    Write-Host 'SSH transport preflight passed'
 
     $remoteScript = @'
 set -Eeuo pipefail
@@ -215,25 +244,26 @@ printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
 '@
 
     # PowerShell here-strings use the host platform newline. Normalize explicitly
-    # before transporting the script to Linux bash, then send it as opaque UTF-8
-    # bytes so Windows native-pipeline line endings cannot reintroduce CRLF.
+    # and send the resulting UTF-8 bytes directly to ssh stdin.
     $remoteScript = $remoteScript.Replace("`r`n", "`n").Replace("`r", "`n")
-    $remoteBytes = [System.Text.Encoding]::UTF8.GetBytes($remoteScript)
-    $remoteBase64 = [Convert]::ToBase64String($remoteBytes)
-    $remoteCommand = "tr -d '\r\n' | base64 -d | bash -s -- '$ExpectedCommit' '$expectedTsdVersion'"
+    $remoteBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($remoteScript)
+    $remoteCommand = "bash -s -- '$ExpectedCommit' '$expectedTsdVersion'"
 
-    $remoteOutput = @(
-        $remoteBase64 | & ssh $sshTarget $remoteCommand 2>&1
-    )
-    $sshExitCode = $LASTEXITCODE
-    $remoteOutput | Out-Host
+    $remoteResult = Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @($sshTarget, $remoteCommand) -StdinBytes $remoteBytes
+    if ($remoteResult.StdOut) {
+        Write-Host -NoNewline $remoteResult.StdOut
+    }
+    if ($remoteResult.StdErr) {
+        Write-Host -NoNewline $remoteResult.StdErr
+    }
 
-    if ($sshExitCode -ne 0) {
-        throw "Remote production deploy failed with exit code $sshExitCode"
+    if ($remoteResult.ExitCode -ne 0) {
+        throw "Remote production deploy failed with exit code $($remoteResult.ExitCode)"
     }
 
     $successMarker = "FLOWSTOCK_DEPLOY_OK=$ExpectedCommit"
-    if ($remoteOutput -notcontains $successMarker) {
+    $remoteOutputLines = @($remoteResult.StdOut -split '\r?\n')
+    if ($remoteOutputLines -notcontains $successMarker) {
         throw "Remote production deploy did not return exact completion marker: $successMarker"
     }
 
