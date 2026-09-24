@@ -68,7 +68,7 @@ internal static class OrderCoveragePlanCompensationService
             store,
             targetOrderId,
             lockedTransfers,
-            _ => true);
+            transfer => IsCurrentPlanLayerTransfer(store, transfer));
     }
 
     internal static OrderCoveragePlanCompensationResult ReverseForTargetLines(
@@ -407,6 +407,27 @@ internal static class OrderCoveragePlanCompensationService
                    StringComparison.Ordinal)
                && string.IsNullOrWhiteSpace(transfer.CompensationKind)
                && !transfer.CompensatedAt.HasValue;
+    }
+
+    private static bool IsCurrentPlanLayerTransfer(IDataStore store, OrderCoverageTransfer transfer)
+    {
+        var targetDoc = store.GetDoc(transfer.TargetPrdDocId);
+        if (targetDoc == null || targetDoc.Status == DocStatus.Closed)
+        {
+            return false;
+        }
+
+        var pallet = store.GetProductionPalletByHu(transfer.HuCode);
+        return pallet != null
+               && pallet.Id == transfer.ProductionPalletId
+               && pallet.PrdDocId == transfer.TargetPrdDocId
+               && pallet.OrderId == transfer.TargetOrderId
+               && (string.Equals(pallet.Status, ProductionPalletStatus.Planned, StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase))
+               && !pallet.FilledAt.HasValue
+               && pallet.Lines.All(line =>
+                   line.FilledQty <= QtyTolerance
+                   && !line.FilledAt.HasValue);
     }
 
     private static string? NormalizeGroup(string? value) =>

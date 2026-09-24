@@ -1595,6 +1595,20 @@ public sealed class OrderService
                 store,
                 orderId,
                 lockedCoverageTransfers);
+
+            var remainingCoverageTransfers = store.GetOrderCoverageTransfersByTargetOrder(orderId)
+                .Where(transfer =>
+                    string.Equals(
+                        transfer.TransferType,
+                        OrderCoverageTransferType.PlannedPalletAdoption,
+                        StringComparison.Ordinal)
+                    && string.IsNullOrWhiteSpace(transfer.CompensationKind)
+                    && !transfer.CompensatedAt.HasValue)
+                .ToArray();
+            OrderCoverageProducedCompensationService.CompensateAll(
+                store,
+                orderId,
+                remainingCoverageTransfers);
         }
 
         TryClearOrderReceiptPlan(store, orderId);

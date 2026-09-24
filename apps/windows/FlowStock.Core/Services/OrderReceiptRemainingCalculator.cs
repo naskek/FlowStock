@@ -65,6 +65,7 @@ internal static class OrderReceiptRemainingCalculator
                     DistributeUnlinkedQtyByItem(totals, linesByItem, itemTotals.Key, itemTotals.Value);
                 }
 
+                AddCompensatedProducedCoverage(dataStore, orderId, totals);
                 return totals;
             }
 
@@ -82,9 +83,11 @@ internal static class OrderReceiptRemainingCalculator
         }
         catch (Exception ex) when (IsMockStoreException(ex))
         {
+            AddCompensatedProducedCoverage(dataStore, orderId, totals);
             return totals;
         }
 
+        AddCompensatedProducedCoverage(dataStore, orderId, totals);
         return totals;
     }
 
@@ -120,9 +123,11 @@ internal static class OrderReceiptRemainingCalculator
         }
         catch (Exception ex) when (IsMockStoreException(ex))
         {
+            AddCompensatedProducedCoverage(dataStore, orderId, totals);
             return totals;
         }
 
+        AddCompensatedProducedCoverage(dataStore, orderId, totals);
         return totals;
     }
 
@@ -220,10 +225,33 @@ internal static class OrderReceiptRemainingCalculator
         }
         catch (Exception ex) when (IsMockStoreException(ex))
         {
+            AddCompensatedProducedCoverage(dataStore, orderId, totals);
             return totals;
         }
 
+        AddCompensatedProducedCoverage(dataStore, orderId, totals);
         return totals;
+    }
+
+    private static void AddCompensatedProducedCoverage(
+        IDataStore dataStore,
+        long orderId,
+        IDictionary<long, double> totals)
+    {
+        try
+        {
+            foreach (var entry in dataStore.GetCompensatedProducedCoverageBySourceOrderLine(orderId))
+            {
+                if (totals.ContainsKey(entry.Key))
+                {
+                    AddProducedQty(totals, entry.Key, entry.Value);
+                }
+            }
+        }
+        catch (Exception ex) when (IsMockStoreException(ex))
+        {
+            // Compatibility for strict mocks that predate produced-coverage compensation.
+        }
     }
 
     private static void DistributeUnlinkedQtyByItem(
