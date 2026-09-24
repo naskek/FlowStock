@@ -11,6 +11,7 @@ const stockPath = path.join(__dirname, "pc-stock.js");
 const appPath = path.join(__dirname, "app.js");
 const indexPath = path.join(__dirname, "index.html");
 const styles = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
+const pcCoreSource = fs.readFileSync(corePath, "utf8");
 const pcAuthSource = fs.readFileSync(authPath, "utf8");
 const hooks = {};
 const versionBanner = { hidden: true };
@@ -2396,6 +2397,11 @@ assert.match(
   pcAppSource,
   /function redirectToLoginAfterSessionExpiry\(\)[\s\S]*persistActiveNewOrderDraft\(\);[\s\S]*clearAccount\(\);[\s\S]*window\.location\.reload\(\)/,
   "expired sessions must preserve an editable order draft and reload into login-state"
+);
+assert.match(
+  pcCoreSource,
+  /url !== "\/api\/pc\/session\/refresh"/,
+  "session refresh must not inherit the current client-block header"
 );
 assert.match(
   pcAuthSource,
