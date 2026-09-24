@@ -54,7 +54,8 @@ public interface IPcWebSessionResolver
 public sealed class PcWebSessionStore(string connectionString) : IPcWebSessionResolver
 {
     public const string CookieName = "flowstock_pc_session";
-    public static readonly TimeSpan Lifetime = TimeSpan.FromHours(12);
+    public static readonly TimeSpan Lifetime = TimeSpan.FromHours(24);
+    public static readonly TimeSpan RefreshWriteInterval = TimeSpan.FromHours(1);
 
     public PcWebLoginResult Login(string login, string password, DateTimeOffset now)
     {
@@ -229,6 +230,81 @@ LIMIT 1;";
             PcAccessRole.Normalize(reader.IsDBNull(4) ? null : reader.GetString(4)));
     }
 
+    public PcWebSessionRefreshResult? Refresh(HttpRequest request, DateTimeOffset now)
+    {
+        if (!request.Cookies.TryGetValue(CookieName, out var rawToken) || string.IsNullOrWhiteSpace(rawToken))
+        {
+            return null;
+        }
+
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = @"
+SELECT d.id, d.device_id, d.login, d.platform, d.access_role, s.expires_at
+FROM pc_web_sessions s
+JOIN tsd_devices d ON d.id = s.account_id
+WHERE s.token_hash = @token_hash
+  AND s.revoked_at IS NULL
+  AND s.expires_at > @now
+  AND d.is_active = TRUE
+  AND UPPER(COALESCE(d.platform, 'TSD')) IN ('PC', 'BOTH')
+LIMIT 1
+FOR UPDATE OF s;";
+        AddParam(command, "@token_hash", HashToken(rawToken));
+        AddParam(command, "@now", now.UtcDateTime);
+
+        long accountId;
+        string deviceId;
+        string login;
+        string platform;
+        string accessRole;
+        DateTimeOffset expiresAt;
+        using (var reader = command.ExecuteReader())
+        {
+            if (!reader.Read())
+            {
+                transaction.Rollback();
+                return null;
+            }
+
+            accountId = reader.GetInt64(0);
+            deviceId = reader.GetString(1);
+            login = reader.GetString(2);
+            platform = reader.IsDBNull(3) ? "PC" : reader.GetString(3).Trim().ToUpperInvariant();
+            accessRole = PcAccessRole.Normalize(reader.IsDBNull(4) ? null : reader.GetString(4));
+            expiresAt = new DateTimeOffset(reader.GetDateTime(5), TimeSpan.Zero);
+        }
+
+        var renewalBoundary = now.Add(Lifetime - RefreshWriteInterval);
+        if (expiresAt <= renewalBoundary)
+        {
+            expiresAt = now.Add(Lifetime);
+            using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = @"
+UPDATE pc_web_sessions
+SET expires_at = @expires_at
+WHERE token_hash = @token_hash
+  AND revoked_at IS NULL
+  AND expires_at > @now;";
+            AddParam(update, "@expires_at", expiresAt.UtcDateTime);
+            AddParam(update, "@token_hash", HashToken(rawToken));
+            AddParam(update, "@now", now.UtcDateTime);
+            if (update.ExecuteNonQuery() != 1)
+            {
+                transaction.Rollback();
+                return null;
+            }
+        }
+
+        transaction.Commit();
+        return new PcWebSessionRefreshResult(
+            new PcWebIdentity(accountId, deviceId, login, platform, accessRole),
+            expiresAt);
+    }
+
     public void Revoke(HttpRequest request, DateTimeOffset now)
     {
         if (!request.Cookies.TryGetValue(CookieName, out var rawToken) || string.IsNullOrWhiteSpace(rawToken))
@@ -319,6 +395,8 @@ public sealed record PcWebLoginResult(
     public static PcWebLoginResult Invalid(string error) => new(false, error, null, null, null);
 }
 
+public sealed record PcWebSessionRefreshResult(PcWebIdentity Identity, DateTimeOffset ExpiresAt);
+
 public static class PcWebSessionEndpoints
 {
     public static void Map(WebApplication app)
@@ -357,6 +435,26 @@ public static class PcWebSessionEndpoints
             return identity == null
                 ? Results.Json(new ApiResult(false, "INVALID_SESSION"), statusCode: StatusCodes.Status401Unauthorized)
                 : Results.Ok(BuildSessionEnvelope(identity, (DateTimeOffset?)null, store));
+        });
+
+        app.MapPost("/api/pc/session/refresh", (HttpRequest request, HttpResponse response, PcWebSessionStore sessions, IDataStore store) =>
+        {
+            var refreshed = sessions.Refresh(request, DateTimeOffset.UtcNow);
+            if (refreshed == null)
+            {
+                return Results.Json(new ApiResult(false, "INVALID_SESSION"), statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            if (request.Cookies.TryGetValue(PcWebSessionStore.CookieName, out var rawToken)
+                && !string.IsNullOrWhiteSpace(rawToken))
+            {
+                response.Cookies.Append(
+                    PcWebSessionStore.CookieName,
+                    rawToken,
+                    BuildCookie(refreshed.ExpiresAt));
+            }
+
+            return Results.Ok(BuildSessionEnvelope(refreshed.Identity, refreshed.ExpiresAt, store));
         });
 
         app.MapPost("/api/pc/logout", (HttpRequest request, HttpResponse response, PcWebSessionStore sessions) =>
