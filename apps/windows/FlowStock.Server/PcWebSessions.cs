@@ -55,7 +55,6 @@ public sealed class PcWebSessionStore(string connectionString) : IPcWebSessionRe
 {
     public const string CookieName = "flowstock_pc_session";
     public static readonly TimeSpan Lifetime = TimeSpan.FromHours(24);
-    public static readonly TimeSpan RefreshWriteInterval = TimeSpan.FromHours(1);
 
     public PcWebLoginResult Login(string login, string password, DateTimeOffset now)
     {
@@ -316,11 +315,9 @@ FOR UPDATE;";
             expiresAt = new DateTimeOffset(DateTime.SpecifyKind(expiresAtUtc, DateTimeKind.Utc));
         }
 
-        var renewalBoundary = now.Add(Lifetime - RefreshWriteInterval);
-        if (expiresAt <= renewalBoundary)
+        expiresAt = now.Add(Lifetime);
+        using (var update = connection.CreateCommand())
         {
-            expiresAt = now.Add(Lifetime);
-            using var update = connection.CreateCommand();
             update.Transaction = transaction;
             update.CommandText = @"
 UPDATE pc_web_sessions
