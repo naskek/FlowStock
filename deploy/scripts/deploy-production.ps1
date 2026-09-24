@@ -213,8 +213,15 @@ log "verified backup path: $backup_path"
 log "deployed source commit: $expected_commit"
 '@
 
-    $remoteScript | & ssh $sshTarget 'bash' '-s' '--' $ExpectedCommit $expectedTsdVersion 2>&1 |
-        Tee-Object -Variable remoteOutput | Out-Host
+    # PowerShell here-strings use the host platform newline. Normalize explicitly
+    # before transporting the script to Linux bash, then send it as opaque UTF-8
+    # bytes so Windows native-pipeline line endings cannot reintroduce CRLF.
+    $remoteScript = $remoteScript.Replace("`r`n", "`n").Replace("`r", "`n")
+    $remoteBytes = [System.Text.Encoding]::UTF8.GetBytes($remoteScript)
+    $remoteBase64 = [Convert]::ToBase64String($remoteBytes)
+    $remoteCommand = "printf '%s' '$remoteBase64' | base64 -d | bash -s -- '$ExpectedCommit' '$expectedTsdVersion'"
+
+    & ssh $sshTarget $remoteCommand 2>&1 | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "Remote production deploy failed with exit code $LASTEXITCODE"
     }
