@@ -71,7 +71,7 @@ for forbidden, message in {
     "secrets.": "workflow must not read repository secrets",
     "@codex": "Codex review must not be triggered by this automation",
     "ssh ": "review-ready automation must not run SSH/production actions",
-    "/opt/FlowStock": "review-ready automation must not reference production checkout",
+    "/opt/" + "FlowStock": "review-ready automation must not reference production checkout",
     "deploy-production": "review-ready automation must not invoke deploy tooling",
 }.items():
     if forbidden in source:
