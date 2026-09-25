@@ -267,6 +267,9 @@ jobs:
       - name: Validate review-ready automation contract
         shell: bash
         run: python3 tools/ci/review-ready-workflow.static.test.py
+      - name: Validate public repository hygiene
+        shell: bash
+        run: python3 tools/ci/public-repo-hygiene.static.test.py
 
   android-native:
     name: android-native
