@@ -52,7 +52,7 @@ ORDER BY version;
 ")"
 expected_history="$(printf '%s\n%s' \
     'V0036|V0036__aggregate_marking_subjects_and_ready_hu.sql' \
-    'V0041|V0043__order_coverage_transfer_provenance.sql')"
+    'V0043|V0043__order_coverage_transfer_provenance.sql')"
 
 if [ "$legacy_history" != "$expected_history" ]; then
     echo "[migration-compat] historical V0036 / current V0043 history mismatch" >&2
