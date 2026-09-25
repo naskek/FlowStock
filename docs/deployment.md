@@ -1,6 +1,6 @@
 # Деплой FlowStock
 
-> **Compatibility warning для HU correction.** После первого committed `CORRECT_FILLED` в данных появляется `production_pallets.status = CORRECTED`. Старый runtime с условиями вида `status <> 'CANCELLED'` может ошибочно считать такую историческую ревизию активной. До применения миграции нужен свежий PostgreSQL backup. Если функция ещё не использовалась, additive schema допускает обычный code rollback. После появления `CORRECTED` сначала выключите `pc_hu_correction`; запуск старого runtime допускается только после forward-fix либо восстановления согласованного pre-deploy backup. Production deploy и backup выполняет пользователь вручную по действующему каноническому FlowStock PowerShell-процессу; Compose запускается из `/opt/FlowStock` с явными `-p flowstock --env-file deploy/.env -f deploy/docker-compose.yml` и optional Telegram overlay только при включённой integration.
+> **Compatibility warning для HU correction.** После первого committed `CORRECT_FILLED` в данных появляется `production_pallets.status = CORRECTED`. Старый runtime с условиями вида `status <> 'CANCELLED'` может ошибочно считать такую историческую ревизию активной. До применения миграции нужен свежий PostgreSQL backup. Если функция ещё не использовалась, additive schema допускает обычный code rollback. После появления `CORRECTED` сначала выключите `pc_hu_correction`; запуск старого runtime допускается только после forward-fix либо восстановления согласованного pre-deploy backup. Production deploy и backup выполняет пользователь вручную по действующему каноническому FlowStock PowerShell-процессу; Compose запускается из `<REMOTE_REPO_PATH>` с явными `-p flowstock --env-file deploy/.env -f deploy/docker-compose.yml` и optional Telegram overlay только при включённой integration.
 
 > **Compatibility warning для ранней частичной отгрузки.** Миграция `V0031` добавляет `orders.allow_partial_outbound` и CHECK `terminal status => allow_partial_outbound = false`; новый runtime атомарно сбрасывает флаг при `SHIPPED`, `CANCELLED`, `MERGED`. Пока у всех активных заказов permission равен `false`, additive schema совместима с обычным code rollback. Если существует активный заказ с `allow_partial_outbound = true`, старый runtime нельзя запускать как штатный rollback: он не выполняет terminal-reset, и его попытка терминального перехода такого заказа будет fail-closed отклонена CHECK constraint. Поддерживаемые варианты в этом состоянии — forward-fix либо восстановление согласованного pre-deploy PostgreSQL backup. Ручной `UPDATE` production-БД не является rollback-процедурой. Production backup и deploy выполняет пользователь вручную по каноническому FlowStock-процессу.
 
@@ -16,7 +16,7 @@
 - Обновления из GitHub выполняются вручную по запросу; автоматического deploy-loop нет.
 - Production deploy и update выполняются пользователем вручную через versioned entrypoint `deploy/scripts/deploy-production.ps1`:
   1. определить локальный expected commit и создать свежий PostgreSQL backup;
-  2. обновить `/opt/FlowStock` и подтвердить server `HEAD`;
+  2. обновить `<REMOTE_REPO_PATH>` и подтвердить server `HEAD`;
   3. выполнить Compose config/resolved gate и build/deploy одной invocation с неизменным `-p flowstock --env-file deploy/.env -f deploy/docker-compose.yml`; при включённом Telegram та же invocation дополнительно содержит `-f deploy/docker-compose.telegram.yml`;
   4. проверить containers, live/ready, TSD version, disk space и путь backup.
 
@@ -42,24 +42,34 @@ pwsh ./deploy/scripts/record-production-copy-validation.ps1 -ConfirmPassed
 
 ### Канонический ручной production deploy
 
-Запускайте entrypoint **на операторской машине из чистой локальной ветки `main`**, которая точно совпадает с `origin/main`. PowerShell сам выполняет `git fetch origin main`, вычисляет либо проверяет полный expected SHA и останавливается при несовпадении. Production-сервер должен быть доступен по SSH через `debian-server` (канонический production SSH host). `flowstock.local` используется отдельно как внешний HTTPS endpoint и должен разрешаться с доверенным TLS-сертификатом на операторской машине, где выполняются внешние HTTPS gates.
+Environment-specific значения не хранятся в Git. На операторской машине задайте их локально, например через PowerShell profile или отдельный неотслеживаемый bootstrap:
+
+```powershell
+$env:FLOWSTOCK_PUBLIC_URL='https://<PUBLIC_HOST>:<PORT>'
+$env:FLOWSTOCK_REMOTE_REPO_PATH='<REMOTE_REPO_PATH>'
+$env:FLOWSTOCK_REMOTE_BACKUP_DIR='<REMOTE_BACKUP_DIR>'
+```
+
+Для Telegram-enabled deploy конкретные `FLOWSTOCK_TELEGRAM_EGRESS_NETWORK`, `FLOWSTOCK_TELEGRAM_EGRESS_CONTAINER`, proxy и secret metadata задаются только в локальной/remote environment и не фиксируются в tracked документации.
+
+Запускайте entrypoint **на операторской машине из чистой локальной ветки `main`**, которая точно совпадает с `origin/main`. PowerShell сам выполняет `git fetch origin main`, вычисляет либо проверяет полный expected SHA и останавливается при несовпадении. Production-сервер должен быть доступен по SSH через `<SSH_HOST>` (канонический production SSH host). `<PUBLIC_HOST>` используется отдельно как внешний HTTPS endpoint и должен разрешаться с доверенным TLS-сертификатом на операторской машине, где выполняются внешние HTTPS gates.
 
 ```powershell
 git switch main
 git pull --ff-only origin main
-pwsh ./deploy/scripts/deploy-production.ps1 -Server debian-server -SshUser semion
+pwsh ./deploy/scripts/deploy-production.ps1 -Server <SSH_HOST> -SshUser <SSH_USER>
 ```
 
 Для дополнительного операторского подтверждения exact commit допустимо передать полный SHA; он всё равно обязан совпасть с актуальным `origin/main`:
 
 ```powershell
 pwsh ./deploy/scripts/deploy-production.ps1 `
-  -Server debian-server `
-  -SshUser semion `
+  -Server <SSH_HOST> `
+  -SshUser <SSH_USER> `
   -ExpectedCommit 0123456789abcdef0123456789abcdef01234567
 ```
 
-Entrypoint последовательно и fail-closed проверяет локальные `main`/worktree/`origin/main`, создаёт и проверяет свежий PostgreSQL custom-format backup в `/opt/flowstock-backups/manual` **до** обновления, fast-forward обновляет `/opt/FlowStock` до exact SHA и проверяет server `HEAD`. Затем он сверяет TSD source versions, экспортирует `FLOWSTOCK_SOURCE_COMMIT`, формирует один массив аргументов Compose, выполняет `config -q` и secret-safe resolved validation через pipe, build/deploy и проверку контейнеров. Server-side gates `live`/`ready`, строгая source identity `/api/version` и deployed TSD version выполняются через loopback backend `http://127.0.0.1:<FLOWSTOCK_PORT>`, где порт берётся из resolved Compose environment (`FLOWSTOCK_PORT`, default `8080`); в текущем production-контуре фактическое значение — `18080`. Затем выводятся disk space и путь backup. После успешного SSH/deploy отдельные внешние HTTPS gates выполняются с операторской машины через `https://flowstock.local:7154`.
+Entrypoint последовательно и fail-closed проверяет локальные `main`/worktree/`origin/main`, создаёт и проверяет свежий PostgreSQL custom-format backup в `<REMOTE_BACKUP_DIR>` **до** обновления, fast-forward обновляет `<REMOTE_REPO_PATH>` до exact SHA и проверяет server `HEAD`. Затем он сверяет TSD source versions, экспортирует `FLOWSTOCK_SOURCE_COMMIT`, формирует один массив аргументов Compose, выполняет `config -q` и secret-safe resolved validation через pipe, build/deploy и проверку контейнеров. Server-side gates `live`/`ready`, строгая source identity `/api/version` и deployed TSD version выполняются через loopback backend `http://127.0.0.1:<FLOWSTOCK_PORT>`, где порт берётся из resolved Compose environment (`FLOWSTOCK_PORT`, default `8080`); в текущем production-контуре фактическое значение — resolved `FLOWSTOCK_PORT`. Затем выводятся disk space и путь backup. После успешного SSH/deploy отдельные внешние HTTPS gates выполняются с операторской машины через `<PUBLIC_URL>`.
 
 Entrypoint никогда не печатает `deploy/.env`, connection strings или resolved Compose JSON. При `FLOWSTOCK_TELEGRAM_ENABLED=1` он добавляет `deploy/docker-compose.telegram.yml` в единый массив Compose и fail-closed проверяет absolute secret path, regular/readable/non-empty secret-файл с mode `600`, непустой chat id, непустой `socks5://` proxy, external network и подключение существующего egress-контейнера; после deploy сохраняются Telegram runtime gates. При любом другом значении используется только base `deploy/docker-compose.yml`, а Telegram-файлы, secret, network и runtime не проверяются.
 
@@ -137,7 +147,7 @@ Mismatch делает deploy неуспешным и не разрешает с�
 
 Старый WPF не может установить subsystem, которого в нём ещё нет. Один раз вручную доставьте в repository root `D:\Projects\FlowStock` bootstrap commit с `FlowStock.DesktopUpdate`, `FlowStock.Updater`, обновлённым `FLOWSTOCK.cmd` и launcher. Запустите его обычной MAIN-командой. Production server к этому моменту должен быть развёрнут с deterministic identity contract; до этого AdminWindow показывает, что desktop update не поддерживается.
 
-На WPF-машине имя `flowstock.local` должно резолвиться в production server, а HTTPS certificate на `https://flowstock.local:7154` должен быть доверен Windows и содержать соответствующее имя. Operational подключение WPF может использовать другой `server.base_url` и `server.allow_invalid_tls`, но эти параметры не ослабляют desktop update TLS. Для отдельного доверенного стенда допускается process-level `FLOWSTOCK_UPDATE_SERVER_BASE_URL`; production/non-loopback override обязан быть HTTPS root URL.
+На WPF-машине имя `<PUBLIC_HOST>` должно резолвиться в production server, а HTTPS certificate на `<PUBLIC_URL>` должен быть доверен Windows и содержать соответствующее имя. Operational подключение WPF может использовать другой `server.base_url` и `server.allow_invalid_tls`, но эти параметры не ослабляют desktop update TLS. Для отдельного доверенного стенда допускается process-level `FLOWSTOCK_UPDATE_SERVER_BASE_URL`; production/non-loopback override обязан быть HTTPS root URL.
 
 Пока `%LOCALAPPDATA%\FlowStock\Desktop\state\active-runtime.json` отсутствует, launcher запускает `dotnet run` из repository root. Первая WPF версия с updater subsystem собирает recovery updater из clean detached worktree своего embedded commit, затем устанавливает первый side-by-side target и создаёт active manifest. Installed identity в этом режиме берётся из assembly, а не из repository `HEAD`.
 
@@ -183,8 +193,8 @@ Compose подхватит override из `deploy/.env`. Существующие
 Необязательный второй bind задаётся через `FLOWSTOCK_PG_SECOND_BIND_HOST`. Пустое или отсутствующее значение означает single-bind: вторая декларация `ports` интерполируется в тот же адрес, что и основная. Эта схема поддерживается только если фактическая версия Docker Compose нормализует resolved-конфигурацию до одного mapping. Для production dual-bind задайте конкретные адреса интерфейсов:
 
 ```bash
-FLOWSTOCK_PG_BIND_HOST=192.168.1.3
-FLOWSTOCK_PG_SECOND_BIND_HOST=100.66.142.112
+FLOWSTOCK_PG_BIND_HOST=<LAN_BIND_IP>
+FLOWSTOCK_PG_SECOND_BIND_HOST=<SECOND_BIND_IP>
 ```
 
 Не используйте для этих переменных пустой host в resolved mapping, `0.0.0.0`, `::` или `[::]`: PostgreSQL должен публиковаться только на явно выбранных интерфейсах.
@@ -207,7 +217,7 @@ $DC config --format json |
   python3 deploy/scripts/validate_resolved_compose.py "${VALIDATOR_ARGS[@]}"
 ```
 
-Полный resolved JSON передаётся validator только через pipe — JSON не печатается и не сохраняется. Validator выводит лишь нормализованный `services.postgres.ports` и итог gate. Для single-bind fragment должен содержать ровно один mapping с `host_ip: 127.0.0.1`. Для production dual-bind должны присутствовать ровно два различных mapping с `host_ip: 192.168.1.3` и `host_ip: 100.66.142.112`; пустые и wildcard HostIp запрещены. При enabled Telegram тот же explicit overlay проверяется флагом `--telegram-enabled`. `python3` уже является fail-closed зависимостью deploy scripts. Если фактическая production-версия Compose возвращает другой результат, deploy блокируется до отдельного архитектурного решения.
+Полный resolved JSON передаётся validator только через pipe — JSON не печатается и не сохраняется. Validator выводит лишь нормализованный `services.postgres.ports` и итог gate. Для single-bind fragment должен содержать ровно один mapping с `host_ip: 127.0.0.1`. Для production dual-bind должны присутствовать ровно два различных mapping с `host_ip: <LAN_BIND_IP>` и `host_ip: <SECOND_BIND_IP>`; пустые и wildcard HostIp запрещены. При enabled Telegram тот же explicit overlay проверяется флагом `--telegram-enabled`. `python3` уже является fail-closed зависимостью deploy scripts. Если фактическая production-версия Compose возвращает другой результат, deploy блокируется до отдельного архитектурного решения.
 
 Конфигурация, прошедшая gate, применяется без изменения invocation:
 
@@ -232,10 +242,10 @@ Telegram default-off: только точное `FLOWSTOCK_TELEGRAM_ENABLED=1` �
    FLOWSTOCK_TELEGRAM_BOT_TOKEN_SECRET_FILE=/opt/flowstock-secrets/telegram/bot-token
    FLOWSTOCK_TELEGRAM_CHAT_ID=<existing-chat-id>
    FLOWSTOCK_TELEGRAM_PROXY_URL=socks5://tailscale-egress:1055
-   FLOWSTOCK_TELEGRAM_EGRESS_NETWORK=reg-ru-imap-telegram_default
+   FLOWSTOCK_TELEGRAM_EGRESS_NETWORK=<TELEGRAM_EGRESS_NETWORK>
    ```
 
-3. После обязательного свежего PostgreSQL backup, но до controlled recreate, выполните `ensure_telegram_deploy_prerequisites` в shell, где уже был подключён `deploy/scripts/common.sh`. Проверка подтверждает только metadata: source file является обычным читаемым непустым файлом; external network существует; контейнер `reg-ru-imap-telegram-tailscale-egress` подключён к ней. Функция не читает и не печатает secret. Затем production deploy использует explicit `compose_with_telegram`/`$DC` с overlay для `config`, validator, `up`, `ps` и `exec`.
+3. После обязательного свежего PostgreSQL backup, но до controlled recreate, выполните `ensure_telegram_deploy_prerequisites` в shell, где уже был подключён `deploy/scripts/common.sh`. Проверка подтверждает только metadata: source file является обычным читаемым непустым файлом; external network существует; контейнер `<TELEGRAM_EGRESS_CONTAINER>` подключён к ней. Функция не читает и не печатает secret. Затем production deploy использует explicit `compose_with_telegram`/`$DC` с overlay для `config`, validator, `up`, `ps` и `exec`.
 4. Overlay монтирует token read-only как `/run/secrets/flowstock_telegram_bot_token`; container environment содержит только `FLOWSTOCK_TELEGRAM_BOT_TOKEN_FILE` с этим путём. Chat id и proxy URL остаются configuration values. Новый bot, egress container или Tailscale instance FlowStock не создаёт.
 
 Общие operational helpers намеренно остаются base-only: `compose()`, `ensure_docker()` и `ensure_compose_config()` не подключают Telegram overlay и не проверяют Telegram secret/network. Поэтому `backup_now.sh`, `restore_dump.sh`, `migrate.sh`, backfill и rollback не зависят от Telegram даже при `FLOWSTOCK_TELEGRAM_ENABLED=1` в `deploy/.env`. Только Telegram-enabled ветка deploy после свежего backup и preflight явно переключает последующие deploy-команды на `compose_with_telegram()`.
@@ -248,28 +258,28 @@ Telegram default-off: только точное `FLOWSTOCK_TELEGRAM_ENABLED=1` �
 
 После появления canonical commit, но до запуска канонического PowerShell deploy-процесса:
 
-1. Сохраните `deploy/.env`, `git diff -- deploy/docker-compose.yml`, `deploy/.env.backup-*` и `deploy/docker-compose.yml.before-*` в закрытом каталоге вне `/opt/FlowStock`; для каталога используйте права `700`, для файлов — `600`.
+1. Сохраните `deploy/.env`, `git diff -- deploy/docker-compose.yml`, `deploy/.env.backup-*` и `deploy/docker-compose.yml.before-*` в закрытом каталоге вне `<REMOTE_REPO_PATH>`; для каталога используйте права `700`, для файлов — `600`.
 2. Переместите `deploy/.env.backup-*` и `deploy/docker-compose.yml.before-*` из clone в этот каталог. Не добавляйте их в Git и не используйте `git clean`.
-3. Добавьте в существующий `/opt/FlowStock/deploy/.env` оба production-адреса, не удаляя основной bind:
+3. Добавьте в существующий `<REMOTE_REPO_PATH>/deploy/.env` оба production-адреса, не удаляя основной bind:
 
    ```bash
-   FLOWSTOCK_PG_BIND_HOST=192.168.1.3
-   FLOWSTOCK_PG_SECOND_BIND_HOST=100.66.142.112
+   FLOWSTOCK_PG_BIND_HOST=<LAN_BIND_IP>
+   FLOWSTOCK_PG_SECOND_BIND_HOST=<SECOND_BIND_IP>
    ```
 
-4. Повторно проверьте `git diff -- deploy/docker-compose.yml`. Единственным tracked изменением должна быть известная ручная строка `- "100.66.142.112:5432:5432"`; при любом другом diff остановитесь.
+4. Повторно проверьте `git diff -- deploy/docker-compose.yml`. Единственным tracked изменением должна быть известная ручная строка `- "<SECOND_BIND_IP>:5432:5432"`; при любом другом diff остановитесь.
 5. Уберите только подтверждённый drift командой `git restore --source=HEAD -- deploy/docker-compose.yml` и подтвердите чистый `git status --short`. Ignored `deploy/.env` остаётся на месте.
 
 На подготовительном этапе не выполняйте `git fetch`, `git pull`, merge, fast-forward или Compose-команды. Восстановление файла в working tree не меняет уже запущенный контейнер PostgreSQL: действующий dual-bind сохраняется до controlled recreate.
 
-Дальнейшее обновление выполняется только существующим каноническим FlowStock PowerShell deploy-процессом в порядке: локальный expected commit, свежий PostgreSQL backup, update `/opt/FlowStock`, проверка server `HEAD`, `config -q` и resolved HostIp gate, `up`, containers, `/health/live`, `/health/ready`, TSD version, disk space и путь backup. Для этого rollout не используйте `deploy_from_git.sh`, `deploy_update.sh`, короткую SSH deploy-команду или отдельный server-side deploy. После recreate проверьте фактические Docker `PortBindings` и доступ к PostgreSQL отдельно через LAN и Tailscale.
+Дальнейшее обновление выполняется только существующим каноническим FlowStock PowerShell deploy-процессом в порядке: локальный expected commit, свежий PostgreSQL backup, update `<REMOTE_REPO_PATH>`, проверка server `HEAD`, `config -q` и resolved HostIp gate, `up`, containers, `/health/live`, `/health/ready`, TSD version, disk space и путь backup. Для этого rollout не используйте `deploy_from_git.sh`, `deploy_update.sh`, короткую SSH deploy-команду или отдельный server-side deploy. После recreate проверьте фактические Docker `PortBindings` и доступ к PostgreSQL отдельно через LAN и Tailscale.
 
 ## Canonical HTTPS endpoint и discovery
 
 Для native Android TSD задайте в `deploy/.env`:
 
 ```bash
-FLOWSTOCK_PUBLIC_BASE_URL=https://flowstock.local:7154
+FLOWSTOCK_PUBLIC_BASE_URL=<PUBLIC_URL>
 FLOWSTOCK_INSTANCE_NAME=FlowStock
 ```
 
@@ -293,8 +303,8 @@ FLOWSTOCK_DISCOVERY_RELAY_MAX_IN_FLIGHT=64
 
 Быстрая проверка после deploy:
 
-1. DNS `flowstock.local` указывает на сервер, `FLOWSTOCK_PUBLIC_BASE_URL` совпадает с SAN сертификата;
-2. `curl -fsS https://flowstock.local:7154/api/discovery` отрабатывает без ошибок.
+1. DNS `<PUBLIC_HOST>` указывает на сервер, `FLOWSTOCK_PUBLIC_BASE_URL` совпадает с SAN сертификата;
+2. `curl -fsS <PUBLIC_URL>/api/discovery` отрабатывает без ошибок.
 
 Полная проверка UDP discovery (directed broadcast, nonce, relay path, source port ответа) описана в `deploy/docs/operations/discovery-smoke.md`.
 
@@ -312,7 +322,7 @@ FLOWSTOCK_DISCOVERY_RELAY_MAX_IN_FLIGHT=64
 Выполняется один раз на сервере:
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 mkdir -p /opt/flowstock-secrets/ca
 bash deploy/scripts/bootstrap_local_ca.sh
 ```
@@ -345,7 +355,7 @@ bash deploy/scripts/bootstrap_local_ca.sh
 1. Подготовьте env:
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 cp deploy/.env.example deploy/.env
 ```
 
@@ -353,13 +363,13 @@ cp deploy/.env.example deploy/.env
    Тот же secret задайте каждому доверенному WPF-клиенту через environment `FLOWSTOCK_WPF_ADMIN_API_KEY` либо локальное поле `server.wpf_admin_api_key` в `settings.json`. Secret не добавляется в Git и не идентифицирует конкретного Windows-пользователя.
    Для прямого доступа WPF к PostgreSQL задайте bind-переменные:
    - безопасный default: `127.0.0.1` (доступ только с хоста сервера);
-   - пример для production LAN: `FLOWSTOCK_PG_BIND_HOST=192.168.1.3`;
-   - optional Tailscale bind: `FLOWSTOCK_PG_SECOND_BIND_HOST=100.66.142.112`;
+   - пример для production LAN: `FLOWSTOCK_PG_BIND_HOST=<LAN_BIND_IP>`;
+   - optional Tailscale bind: `FLOWSTOCK_PG_SECOND_BIND_HOST=<SECOND_BIND_IP>`;
    - пустой `FLOWSTOCK_PG_SECOND_BIND_HOST` не добавляет второй resolved mapping после обязательной проверки Compose;
    - `docker-compose.override.yml` не требуется.
 3. Один раз выполните bootstrap локального CA (см. раздел выше).
 4. Установите сгенерированный root CA cert на клиентские устройства, включая Android TSD user trust store для release APK.
-5. Выполните первый deploy существующим каноническим FlowStock PowerShell-процессом: expected commit, свежий PostgreSQL backup, update `/opt/FlowStock`, проверка `HEAD`, Compose config/resolved gate, build/deploy и post-deploy проверки.
+5. Выполните первый deploy существующим каноническим FlowStock PowerShell-процессом: expected commit, свежий PostgreSQL backup, update `<REMOTE_REPO_PATH>`, проверка `HEAD`, Compose config/resolved gate, build/deploy и post-deploy проверки.
 
 6. Проверьте health:
 
@@ -398,7 +408,7 @@ Server и WPF разворачиваются согласованно с зар�
 До production migration выполните read-only проверку case-insensitive дублей SKU/штрихкода и GTIN:
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 bash deploy/scripts/preflight_catalog_identifiers.sh
 ```
 
@@ -502,10 +512,10 @@ $DC down -v
 Production update выполняет пользователь вручную каноническим versioned entrypoint из чистой локальной `main`:
 
 ```powershell
-pwsh ./deploy/scripts/deploy-production.ps1 -Server debian-server -SshUser semion
+pwsh ./deploy/scripts/deploy-production.ps1 -Server <SSH_HOST> -SshUser <SSH_USER>
 ```
 
-Процесс определяет expected commit локально, требует его точного равенства `origin/main`, создаёт и проверяет свежий PostgreSQL backup, обновляет `/opt/FlowStock`, проверяет server `HEAD`, выполняет `config -q` и resolved gate, затем build/deploy и проверки containers, live/ready, строгой source identity, TSD version, disk space и пути backup.
+Процесс определяет expected commit локально, требует его точного равенства `origin/main`, создаёт и проверяет свежий PostgreSQL backup, обновляет `<REMOTE_REPO_PATH>`, проверяет server `HEAD`, выполняет `config -q` и resolved gate, затем build/deploy и проверки containers, live/ready, строгой source identity, TSD version, disk space и пути backup.
 
 Все Compose-команды этого процесса используют одну invocation:
 
@@ -526,7 +536,7 @@ docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml 
 Быстрая post-deploy проверка:
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 bash deploy/scripts/release_status.sh
 $DC ps
 curl -fsS http://127.0.0.1:${FLOWSTOCK_PORT:-8080}/health/ready
@@ -537,14 +547,14 @@ $DC run --rm --no-deps --entrypoint dotnet discovery-relay FlowStock.DiscoveryRe
 ## Ручной backup
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 bash deploy/scripts/backup_now.sh
 ```
 
 Dump по конкретному пути:
 
 ```bash
-bash deploy/scripts/backup_now.sh /opt/flowstock-backups/pre_release.dump
+bash deploy/scripts/backup_now.sh <REMOTE_BACKUP_DIR>/pre_release.dump
 ```
 
 ## Ручной запуск миграций
@@ -552,7 +562,7 @@ bash deploy/scripts/backup_now.sh /opt/flowstock-backups/pre_release.dump
 Применить pending migrations без пересоздания контейнеров приложения:
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 bash deploy/scripts/migrate.sh
 ```
 
@@ -566,8 +576,8 @@ $DC exec -T postgres \
 ## Восстановление из dump
 
 ```bash
-cd /opt/FlowStock
-bash deploy/scripts/restore_dump.sh /opt/flowstock-backups/pre_release.dump
+cd <REMOTE_REPO_PATH>
+bash deploy/scripts/restore_dump.sh <REMOTE_BACKUP_DIR>/pre_release.dump
 ```
 
 Что делает restore-скрипт:
@@ -584,7 +594,7 @@ bash deploy/scripts/restore_dump.sh /opt/flowstock-backups/pre_release.dump
 ## Статус релиза
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 bash deploy/scripts/release_status.sh
 ```
 
@@ -630,7 +640,7 @@ $DC up -d --build flowstock discovery-relay nginx pgbackup
 Для типового сценария есть rollback helper:
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 bash deploy/scripts/rollback_release.sh
 ```
 
@@ -655,7 +665,7 @@ bash deploy/scripts/rollback_release.sh --no-restore
 Откатиться на конкретную ревизию и конкретный dump:
 
 ```bash
-bash deploy/scripts/rollback_release.sh <git-ref> /opt/flowstock-backups/pre_release.dump
+bash deploy/scripts/rollback_release.sh <git-ref> <REMOTE_BACKUP_DIR>/pre_release.dump
 ```
 
 ## Health checks
@@ -679,7 +689,7 @@ Readiness возвращает успех только если приложен
 Принудительно перевыпустить серверный сертификат от локального CA:
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 bash deploy/scripts/renew_server_cert.sh --force
 $DC restart nginx
 ```
@@ -687,7 +697,7 @@ $DC restart nginx
 Немедленно выпустить текущий серверный сертификат:
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 bash deploy/scripts/issue_server_cert.sh
 $DC restart nginx
 ```
