@@ -66,6 +66,9 @@ jobs:
       - name: Validate production deploy raw-byte transport
         shell: pwsh
         run: ./deploy/scripts/deploy-transport.test.ps1
+      - name: Validate production-copy deploy gate
+        shell: pwsh
+        run: ./deploy/scripts/production-copy-validation.test.ps1
       - name: Verify PostgreSQL test naming convention
         shell: pwsh
         run: |

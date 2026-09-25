@@ -22,6 +22,9 @@ checks = {
     "local main": require(r"\$branch -ne 'main'", "local main gate is missing"),
     "clean local tree": require(r"git @\('status', '--porcelain'\)", "local clean-tree gate is missing"),
     "origin/main identity": require(r"\$ExpectedCommit -ne \$originMain", "origin/main identity gate is missing"),
+    "production-copy helper": require(r"production-copy-validation\.ps1", "production-copy validation helper is missing"),
+    "production-copy tree": require(r"rev-parse', '--verify', \"\$ExpectedCommit\^\{tree\}\"", "production-copy tree identity is missing"),
+    "production-copy gate": require(r"Assert-ProductionCopyValidationRecord .*?-ExpectedTree \$expectedTree", "production-copy validation gate is missing"),
     "backup verification": require(r"pg_restore --list", "backup verification is missing"),
     "backup path": require(r'backup_dir="/opt/flowstock-backups/manual"', "canonical backup path is missing"),
     "exact server update": require(r"git merge --ff-only --quiet \"\$expected_commit\"", "exact server update is missing"),
@@ -112,8 +115,8 @@ if remote_match is None:
 if "https://flowstock.local:7154" in remote_match.group("body"):
     raise AssertionError("server-side post-deploy gates must not depend on external HTTPS")
 
-if not checks["transport preflight script file"] < checks["backup verification"] < checks["exact server update"] < checks["deploy"]:
-    raise AssertionError("transport preflight, backup, exact update and deploy order is unsafe")
+if not checks["production-copy gate"] < checks["transport preflight script file"] < checks["backup verification"] < checks["exact server update"] < checks["deploy"]:
+    raise AssertionError("production-copy gate, transport preflight, backup, exact update and deploy order is unsafe")
 
 pre_backup = source[: checks["backup verification"]]
 if re.search(r'"\$\{compose\[@\]\}" (?:up|build|pull|restart|create)', pre_backup):
