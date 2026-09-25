@@ -4,7 +4,7 @@ services:
       FLOWSTOCK_TELEGRAM_ENABLED: ${FLOWSTOCK_TELEGRAM_ENABLED:-0}
       FLOWSTOCK_TELEGRAM_BOT_TOKEN_FILE: /run/secrets/flowstock_telegram_bot_token
       FLOWSTOCK_TELEGRAM_CHAT_ID: ${FLOWSTOCK_TELEGRAM_CHAT_ID:-}
-      FLOWSTOCK_TELEGRAM_PROXY_URL: ${FLOWSTOCK_TELEGRAM_PROXY_URL:-socks5://tailscale-egress:1055}
+      FLOWSTOCK_TELEGRAM_PROXY_URL: ${FLOWSTOCK_TELEGRAM_PROXY_URL:?FLOWSTOCK_TELEGRAM_PROXY_URL is required}
     secrets:
       - source: flowstock_telegram_bot_token
         target: flowstock_telegram_bot_token
@@ -20,4 +20,9 @@ networks:
   default:
   telegram-egress:
     external: true
-    name: ${FLOWSTOCK_TELEGRAM_EGRESS_NETWORK:-reg-ru-imap-telegram_default}
+    name: ${FLOWSTOCK_TELEGRAM_EGRESS_NETWORK:?FLOWSTOCK_TELEGRAM_EGRESS_NETWORK is required}
+
+# Operator-only egress metadata is interpolated so deployment validation can read it
+# through docker compose config --environment without hard-coding host topology here.
+x-flowstock-telegram-operator:
+  egress-container: ${FLOWSTOCK_TELEGRAM_EGRESS_CONTAINER:?FLOWSTOCK_TELEGRAM_EGRESS_CONTAINER is required}
