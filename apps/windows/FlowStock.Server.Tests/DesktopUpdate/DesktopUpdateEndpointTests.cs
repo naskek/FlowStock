@@ -15,13 +15,13 @@ public sealed class DesktopUpdateEndpointTests
     {
         var operational = new ServerSettings
         {
-            ServerBaseUrl = "https://100.66.142.112:7154",
+            ServerBaseUrl = "https://203.0.113.42:7154",
             AllowInvalidTls = true
         }.Normalize();
 
         var updateEndpoint = DesktopUpdateEndpointResolver.Resolve(_ => null);
 
-        Assert.Equal("https://100.66.142.112:7154", operational.GetServerBaseUrlOrDefault());
+        Assert.Equal("https://203.0.113.42:7154", operational.GetServerBaseUrlOrDefault());
         Assert.True(operational.AllowInvalidTls);
         Assert.Equal("https://flowstock.local:7154/", updateEndpoint.AbsoluteUri);
     }
@@ -53,7 +53,7 @@ public sealed class DesktopUpdateEndpointTests
         {
             requestedKeys.Add(name);
             return name == "FLOWSTOCK_SERVER_BASE_URL"
-                ? "https://100.66.142.112:7154"
+                ? "https://203.0.113.42:7154"
                 : null;
         });
 
