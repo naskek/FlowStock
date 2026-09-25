@@ -16,7 +16,7 @@
 - Свежий PostgreSQL backup обязателен перед любым переходом к enforcement (сверх автоматического pre-deploy dump):
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 bash deploy/scripts/backup_now.sh
 ```
 
