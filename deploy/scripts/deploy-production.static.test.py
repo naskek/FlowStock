@@ -26,7 +26,7 @@ checks = {
     "production-copy tree": require(r"rev-parse', '--verify', \"\$ExpectedCommit\^\{tree\}\"", "production-copy tree identity is missing"),
     "production-copy gate": require(r"Assert-ProductionCopyValidationRecord .*?-ExpectedTree \$expectedTree", "production-copy validation gate is missing"),
     "backup verification": require(r"pg_restore --list", "backup verification is missing"),
-    "backup path": require(r'backup_dir="/opt/flowstock-backups/manual"', "canonical backup path is missing"),
+    "backup path argument": require(r'backup_dir="\$4"', "remote backup path argument is missing"),
     "exact server update": require(r"git merge --ff-only --quiet \"\$expected_commit\"", "exact server update is missing"),
     "source commit": require(r"export FLOWSTOCK_SOURCE_COMMIT=\"\$expected_commit\"", "source commit export is missing"),
     "dotenv parser": require(r'compose_environment="\$\("\$\{compose\[@\]\}" config --environment\)" \|\| fail', "Compose/dotenv parser must fail closed"),
@@ -47,7 +47,7 @@ checks = {
     "identity": require(r"desktop\.get\(\"target_commit\"\)==expected", "strict source identity gate is missing"),
     "TSD": require(r"deployed TSD version", "deployed TSD check is missing"),
     "disk": require(r'df -h \"\$repo\" \"\$backup_path\"', "disk-space report is missing"),
-    "external HTTPS": require(r"https://flowstock\.local:7154", "canonical external HTTPS URL is missing"),
+    "external HTTPS": require(r"FLOWSTOCK_PUBLIC_URL must be an absolute HTTPS root URL", "external HTTPS URL validation is missing"),
     "external live/ready": require(r'Invoke-WebRequest -UseBasicParsing -Uri "\$PublicUrl\$endpoint"', "external operator health gate is missing"),
     "external identity": require(r'Invoke-RestMethod -Uri "\$PublicUrl/api/version"', "external operator identity gate is missing"),
     "external TSD": require(r'\$PublicUrl/tsd/app-version\.js', "external operator TSD gate is missing"),
@@ -76,7 +76,7 @@ checks = {
         "normalized remote script must be encoded once as raw UTF-8 bytes",
     ),
     "remote script file": require(
-        r"Invoke-RemoteBashScriptViaSsh -SshTarget \$sshTarget -ScriptBytes \$remoteBytes -RemoteArgumentList @\(\$ExpectedCommit, \$expectedTsdVersion\)",
+        r"Invoke-RemoteBashScriptViaSsh -SshTarget \$sshTarget -ScriptBytes \$remoteBytes -RemoteArgumentList @\(\$ExpectedCommit, \$expectedTsdVersion, \$RemoteRepoPath, \$RemoteBackupDir\)",
         "production deploy must use the remote script-file helper",
     ),
     "remote completion marker": require(
@@ -104,7 +104,7 @@ for marker, message in {
     'FLOWSTOCK_TELEGRAM_CHAT_ID': "Telegram chat id gate is missing",
     'socks5://?*) ;;': "Telegram socks5 proxy gate is missing",
     'docker network inspect "$telegram_network"': "Telegram external network gate is missing",
-    'reg-ru-imap-telegram-tailscale-egress': "Telegram egress attachment gate is missing",
+    'docker inspect "$telegram_egress_container"': "Telegram egress attachment gate is missing",
 }.items():
     if marker not in telegram_block:
         raise AssertionError(message)
@@ -112,8 +112,8 @@ for marker, message in {
 remote_match = re.search(r"\$remoteScript = @\'\n(?P<body>.*?)\n\'@", source, re.MULTILINE | re.DOTALL)
 if remote_match is None:
     raise AssertionError("remote deploy script block is missing")
-if "https://flowstock.local:7154" in remote_match.group("body"):
-    raise AssertionError("server-side post-deploy gates must not depend on external HTTPS")
+if "$PublicUrl" in remote_match.group("body"):
+    raise AssertionError("server-side post-deploy gates must not depend on operator external HTTPS")
 
 if not checks["production-copy gate"] < checks["transport preflight script file"] < checks["backup verification"] < checks["exact server update"] < checks["deploy"]:
     raise AssertionError("production-copy gate, transport preflight, backup, exact update and deploy order is unsafe")

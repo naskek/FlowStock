@@ -267,6 +267,9 @@ jobs:
       - name: Validate review-ready automation contract
         shell: bash
         run: python3 tools/ci/review-ready-workflow.static.test.py
+      - name: Validate public repository hygiene
+        shell: bash
+        run: python3 tools/ci/public-repo-hygiene.static.test.py
 
   android-native:
     name: android-native
@@ -384,13 +387,17 @@ jobs:
           FLOWSTOCK_TELEGRAM_ENABLED=1 \
           FLOWSTOCK_TELEGRAM_BOT_TOKEN_SECRET_FILE="$RUNNER_TEMP/flowstock-telegram-token" \
           FLOWSTOCK_TELEGRAM_CHAT_ID=ci-chat \
-          FLOWSTOCK_TELEGRAM_PROXY_URL=socks5://tailscale-egress:1055 \
+          FLOWSTOCK_TELEGRAM_PROXY_URL=socks5://telegram-egress.invalid:1055 \
+          FLOWSTOCK_TELEGRAM_EGRESS_NETWORK=flowstock-ci-egress \
+          FLOWSTOCK_TELEGRAM_EGRESS_CONTAINER=flowstock-ci-egress-container \
             "${telegram_compose[@]}" config -q
           FLOWSTOCK_SOURCE_COMMIT="$GITHUB_SHA" \
           FLOWSTOCK_TELEGRAM_ENABLED=1 \
           FLOWSTOCK_TELEGRAM_BOT_TOKEN_SECRET_FILE="$RUNNER_TEMP/flowstock-telegram-token" \
           FLOWSTOCK_TELEGRAM_CHAT_ID=ci-chat \
-          FLOWSTOCK_TELEGRAM_PROXY_URL=socks5://tailscale-egress:1055 \
+          FLOWSTOCK_TELEGRAM_PROXY_URL=socks5://telegram-egress.invalid:1055 \
+          FLOWSTOCK_TELEGRAM_EGRESS_NETWORK=flowstock-ci-egress \
+          FLOWSTOCK_TELEGRAM_EGRESS_CONTAINER=flowstock-ci-egress-container \
             "${telegram_compose[@]}" config --format json |
             python3 deploy/scripts/validate_resolved_compose.py \
               --postgres-host 127.0.0.1 \

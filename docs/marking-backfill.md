@@ -9,21 +9,21 @@
 Свежий backup БД обязателен:
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 bash deploy/scripts/backup_now.sh
 ```
 
 ## Dry-run (без изменения данных)
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 bash deploy/scripts/backfill_marking_status.sh --created-before 2026-04-30 --dry-run
 ```
 
 ## Apply (только с явным подтверждением)
 
 ```bash
-cd /opt/FlowStock
+cd <REMOTE_REPO_PATH>
 bash deploy/scripts/backfill_marking_status.sh --created-before 2026-04-30 --apply --confirm APPLY
 ```
 

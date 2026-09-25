@@ -309,12 +309,15 @@ ensure_telegram_deploy_prerequisites() {
 
     require_command python3
     local secret_file="${FLOWSTOCK_TELEGRAM_BOT_TOKEN_SECRET_FILE:-}"
-    local network="${FLOWSTOCK_TELEGRAM_EGRESS_NETWORK:-reg-ru-imap-telegram_default}"
+    local network="${FLOWSTOCK_TELEGRAM_EGRESS_NETWORK:-}"
+    local egress_container="${FLOWSTOCK_TELEGRAM_EGRESS_CONTAINER:-}"
     [[ -n "$secret_file" && -f "$secret_file" && -r "$secret_file" && -s "$secret_file" ]] \
         || fail "Telegram token secret file is missing, unreadable, or empty"
+    [[ -n "$network" ]] || fail "Telegram egress Docker network is not configured"
+    [[ -n "$egress_container" ]] || fail "Telegram egress container is not configured"
     docker network inspect "$network" >/dev/null 2>&1 \
         || fail "Telegram egress Docker network is unavailable"
-    docker inspect reg-ru-imap-telegram-tailscale-egress --format '{{json .NetworkSettings.Networks}}' |
+    docker inspect "$egress_container" --format '{{json .NetworkSettings.Networks}}' |
         python3 -c '
 import json, sys
 network = sys.argv[1]

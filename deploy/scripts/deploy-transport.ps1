@@ -88,7 +88,7 @@ function Invoke-RemoteBashScriptViaSsh {
 
     $remoteScriptPath = "/tmp/flowstock-deploy-$([Guid]::NewGuid().ToString('N')).sh"
     foreach ($argument in $RemoteArgumentList) {
-        if ($argument -notmatch '^[A-Za-z0-9._:+-]+$') {
+        if ($argument -notmatch '^[A-Za-z0-9._:+/-]+$') {
             throw "Unsafe remote bash argument: $argument"
         }
     }

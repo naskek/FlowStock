@@ -10,8 +10,11 @@ param(
 
     [string]$ProductionCopyValidationRecord = '.local/production-copy-validation.json',
 
-    [ValidatePattern('^https://flowstock\.local:7154$')]
-    [string]$PublicUrl = 'https://flowstock.local:7154'
+    [string]$PublicUrl = $env:FLOWSTOCK_PUBLIC_URL,
+
+    [string]$RemoteRepoPath = $env:FLOWSTOCK_REMOTE_REPO_PATH,
+
+    [string]$RemoteBackupDir = $env:FLOWSTOCK_REMOTE_BACKUP_DIR
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,6 +82,34 @@ try {
     Assert-ProductionCopyValidationRecord -RecordPath $validationRecordPath -ExpectedTree $expectedTree | Out-Null
     Write-Host "Production-copy validation gate passed: tree=$expectedTree"
 
+    foreach ($requiredValue in @{
+        FLOWSTOCK_PUBLIC_URL = $PublicUrl
+        FLOWSTOCK_REMOTE_REPO_PATH = $RemoteRepoPath
+        FLOWSTOCK_REMOTE_BACKUP_DIR = $RemoteBackupDir
+    }.GetEnumerator()) {
+        if ([string]::IsNullOrWhiteSpace([string]$requiredValue.Value)) {
+            throw "$($requiredValue.Key) must be configured on the operator machine"
+        }
+    }
+
+    $publicUri = $null
+    if (-not [Uri]::TryCreate($PublicUrl.Trim(), [UriKind]::Absolute, [ref]$publicUri) -or
+        $publicUri.Scheme -ne 'https' -or
+        [string]::IsNullOrWhiteSpace($publicUri.Host) -or
+        $publicUri.UserInfo -ne '' -or
+        $publicUri.AbsolutePath -ne '/' -or
+        $publicUri.Query -ne '' -or
+        $publicUri.Fragment -ne '') {
+        throw 'FLOWSTOCK_PUBLIC_URL must be an absolute HTTPS root URL without userinfo, path, query, or fragment'
+    }
+    $PublicUrl = $publicUri.GetLeftPart([UriPartial]::Authority)
+
+    foreach ($remotePath in @($RemoteRepoPath, $RemoteBackupDir)) {
+        if ($remotePath -notmatch '^/[A-Za-z0-9._/+:-]+$') {
+            throw 'Remote repository and backup paths must be absolute POSIX paths without spaces or shell metacharacters'
+        }
+    }
+
     $appVersion = Get-Content -Raw 'apps/android/tsd/app-version.js'
     $serviceWorker = Get-Content -Raw 'apps/android/tsd/service-worker.js'
     $appMatch = [regex]::Match($appVersion, 'var version = "([0-9]+)";')
@@ -122,7 +153,8 @@ printf 'FLOWSTOCK_TRANSPORT_OK\n'
 set -Eeuo pipefail
 expected_commit="$1"
 expected_tsd_version="$2"
-repo=/opt/FlowStock
+repo="$3"
+backup_dir="$4"
 cd "$repo"
 
 fail() { printf '[deploy] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -169,9 +201,12 @@ if test "$telegram_enabled_value" = 1; then
         socks5://?*) ;;
         *) fail 'Telegram proxy must be a non-empty socks5:// URL' ;;
     esac
-    telegram_network="${compose_env[FLOWSTOCK_TELEGRAM_EGRESS_NETWORK]:-reg-ru-imap-telegram_default}"
+    telegram_network="${compose_env[FLOWSTOCK_TELEGRAM_EGRESS_NETWORK]:-}"
+    telegram_egress_container="${compose_env[FLOWSTOCK_TELEGRAM_EGRESS_CONTAINER]:-}"
+    test -n "$telegram_network" || fail 'Telegram egress network is missing'
+    test -n "$telegram_egress_container" || fail 'Telegram egress container is missing'
     docker network inspect "$telegram_network" >/dev/null 2>&1 || fail 'Telegram egress network is unavailable'
-    docker inspect reg-ru-imap-telegram-tailscale-egress --format '{{json .NetworkSettings.Networks}}' |
+    docker inspect "$telegram_egress_container" --format '{{json .NetworkSettings.Networks}}' |
         python3 -c 'import json,sys; raise SystemExit(0 if sys.argv[1] in json.load(sys.stdin) else 1)' "$telegram_network" ||
         fail 'Telegram egress container is not attached to its network'
     compose+=(-f deploy/docker-compose.telegram.yml)
@@ -182,7 +217,6 @@ postgres_id="$("${compose[@]}" ps -q postgres)"
 test -n "$postgres_id" || fail 'running production postgres container is missing; refusing to mutate the stack before backup'
 status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$postgres_id")"
 test "$status" = healthy || fail 'production postgres is not healthy; refusing to mutate the stack before backup'
-backup_dir="/opt/flowstock-backups/manual"
 mkdir -p "$backup_dir"
 backup_path="$backup_dir/flowstock-before-${expected_commit:0:12}-$(date -u +%Y%m%dT%H%M%SZ).dump"
 "${compose[@]}" exec -T postgres sh -eu -c 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"$backup_path"
@@ -264,7 +298,7 @@ printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
     # and send the resulting UTF-8 bytes directly to ssh stdin.
     $remoteScript = $remoteScript.Replace("`r`n", "`n").Replace("`r", "`n")
     $remoteBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($remoteScript)
-    $remoteResult = Invoke-RemoteBashScriptViaSsh -SshTarget $sshTarget -ScriptBytes $remoteBytes -RemoteArgumentList @($ExpectedCommit, $expectedTsdVersion)
+    $remoteResult = Invoke-RemoteBashScriptViaSsh -SshTarget $sshTarget -ScriptBytes $remoteBytes -RemoteArgumentList @($ExpectedCommit, $expectedTsdVersion, $RemoteRepoPath, $RemoteBackupDir)
     if ($remoteResult.StdOut) {
         Write-Host -NoNewline $remoteResult.StdOut
     }
