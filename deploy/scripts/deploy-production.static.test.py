@@ -26,7 +26,7 @@ checks = {
     "production-copy tree": require(r"rev-parse', '--verify', \"\$ExpectedCommit\^\{tree\}\"", "production-copy tree identity is missing"),
     "production-copy gate": require(r"Assert-ProductionCopyValidationRecord .*?-ExpectedTree \$expectedTree", "production-copy validation gate is missing"),
     "backup verification": require(r"pg_restore --list", "backup verification is missing"),
-    "backup path argument": require(r'backup_dir="\\$4"', "remote backup path argument is missing"),
+    "backup path argument": require(r'backup_dir="\$4"', "remote backup path argument is missing"),
     "exact server update": require(r"git merge --ff-only --quiet \"\$expected_commit\"", "exact server update is missing"),
     "source commit": require(r"export FLOWSTOCK_SOURCE_COMMIT=\"\$expected_commit\"", "source commit export is missing"),
     "dotenv parser": require(r'compose_environment="\$\("\$\{compose\[@\]\}" config --environment\)" \|\| fail', "Compose/dotenv parser must fail closed"),
