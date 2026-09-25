@@ -15,7 +15,7 @@ public sealed class ProductionPalletAdoptionProvenancePostgresTests
             "deploy",
             "postgres",
             "migrations",
-            "V0036__order_coverage_transfer_provenance.sql"));
+            "V0041__order_coverage_transfer_provenance.sql"));
 
         Assert.Contains("CREATE TABLE order_coverage_transfers", sql, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE order_coverage_transfer_lines", sql, StringComparison.Ordinal);
