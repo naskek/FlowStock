@@ -88,21 +88,7 @@ function Invoke-RemoteBashScriptViaSsh {
 
     $remoteScriptPath = "/tmp/flowstock-deploy-$([Guid]::NewGuid().ToString('N')).sh"
     foreach ($argument in $RemoteArgumentList) {
-        if ($argument -notmatch '^[A-Za-z0-9._:+/-]+) {
-            throw "Unsafe remote bash argument: $argument"
-        }
-    }
-
-    $quotedArguments = @($RemoteArgumentList | ForEach-Object { "'$_'" })
-    $argumentSuffix = if ($quotedArguments.Count -eq 0) { '' } else { ' ' + ($quotedArguments -join ' ') }
-
-    # stdin is consumed completely by cat before bash starts reading the file.
-    # Therefore nested commands in the deploy script cannot drain the script source.
-    $remoteCommand = "umask 077; trap 'rm -f $remoteScriptPath' EXIT; cat > '$remoteScriptPath' || exit; bash '$remoteScriptPath'$argumentSuffix"
-
-    return Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @($SshTarget, $remoteCommand) -StdinBytes $ScriptBytes
-}
-) {
+        if ($argument -notmatch '^[A-Za-z0-9._:+/-]+$') {
             throw "Unsafe remote bash argument: $argument"
         }
     }
