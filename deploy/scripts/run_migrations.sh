@@ -21,14 +21,22 @@ SQL
 
 find "$migrations_dir" -maxdepth 1 -type f -name 'V*.sql' | sort | while IFS= read -r migration_path; do
     filename="$(basename "$migration_path")"
-    version="${filename%%__*}"
-    if [ "$version" = "$filename" ]; then
-        echo "[migrator] invalid migration filename: $filename" >&2
-        exit 1
-    fi
+    case "$filename" in
+        V[0-9][0-9][0-9][0-9]__*.sql) ;;
+        *)
+            echo "[migrator] invalid migration filename: $filename" >&2
+            exit 1
+            ;;
+    esac
 
-    already_applied="$(psql -At -v ON_ERROR_STOP=1 -c "SELECT 1 FROM schema_migrations WHERE version = '$version' LIMIT 1;")"
-    if [ "$already_applied" = "1" ]; then
+    version="${filename%%__*}"
+    applied_filename="$(psql -At -v ON_ERROR_STOP=1 -c "SELECT filename FROM schema_migrations WHERE version = '$version' LIMIT 1;")"
+    if [ -n "$applied_filename" ]; then
+        if [ "$applied_filename" != "$filename" ]; then
+            echo "[migrator] migration version collision: $version is recorded as $applied_filename but tracked migration is $filename" >&2
+            exit 1
+        fi
+
         echo "[migrator] skip $filename"
         continue
     fi
