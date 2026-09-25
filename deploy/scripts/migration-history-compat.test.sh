@@ -24,8 +24,8 @@ if [ -e "$migrations_dir/V0036__order_coverage_transfer_provenance.sql" ]; then
     exit 1
 fi
 
-if [ ! -f "$migrations_dir/V0041__order_coverage_transfer_provenance.sql" ]; then
-    echo "[migration-compat] V0041 provenance migration is missing" >&2
+if [ ! -f "$migrations_dir/V0043__order_coverage_transfer_provenance.sql" ]; then
+    echo "[migration-compat] V0043 provenance migration is missing" >&2
     exit 1
 fi
 
@@ -47,15 +47,15 @@ PGDATABASE="$legacy_db" sh "$script_dir/run_migrations.sh"
 legacy_history="$(PGDATABASE="$legacy_db" psql -At -v ON_ERROR_STOP=1 -c "
 SELECT version || '|' || filename
 FROM schema_migrations
-WHERE version IN ('V0036', 'V0041')
+WHERE version IN ('V0036', 'V0043')
 ORDER BY version;
 ")"
 expected_history="$(printf '%s\n%s' \
     'V0036|V0036__aggregate_marking_subjects_and_ready_hu.sql' \
-    'V0041|V0041__order_coverage_transfer_provenance.sql')"
+    'V0041|V0043__order_coverage_transfer_provenance.sql')"
 
 if [ "$legacy_history" != "$expected_history" ]; then
-    echo "[migration-compat] historical V0036 / current V0041 history mismatch" >&2
+    echo "[migration-compat] historical V0036 / current V0043 history mismatch" >&2
     printf 'expected:\n%s\nactual:\n%s\n' "$expected_history" "$legacy_history" >&2
     exit 1
 fi
@@ -67,7 +67,7 @@ SELECT
 ")"
 
 if [ "$coverage_tables" != "order_coverage_transfers|order_coverage_transfer_lines" ]; then
-    echo "[migration-compat] V0041 provenance tables were not created" >&2
+    echo "[migration-compat] V0043 provenance tables were not created" >&2
     exit 1
 fi
 
