@@ -333,6 +333,8 @@ jobs:
             -c "SELECT filename FROM schema_migrations ORDER BY filename" \
             > "$RUNNER_TEMP/applied-migrations-second.txt"
           diff -u "$RUNNER_TEMP/applied-migrations-first.txt" "$RUNNER_TEMP/applied-migrations-second.txt"
+
+          "${compose[@]}" run --rm migrator-test sh /scripts/migration-history-compat.test.sh
       - name: Validate production Compose and build images
         shell: bash
         run: |

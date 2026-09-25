@@ -27,8 +27,15 @@ find "$migrations_dir" -maxdepth 1 -type f -name 'V*.sql' | sort | while IFS= re
         exit 1
     fi
 
-    already_applied="$(psql -At -v ON_ERROR_STOP=1 -c "SELECT 1 FROM schema_migrations WHERE version = '$version' LIMIT 1;")"
-    if [ "$already_applied" = "1" ]; then
+    applied_filename="$(psql -At -v ON_ERROR_STOP=1 \
+        -v migration_version="$version" \
+        -c "SELECT filename FROM schema_migrations WHERE version = :'migration_version' LIMIT 1;")"
+    if [ -n "$applied_filename" ]; then
+        if [ "$applied_filename" != "$filename" ]; then
+            echo "[migrator] migration version collision: $version is recorded as $applied_filename but tracked migration is $filename" >&2
+            exit 1
+        fi
+
         echo "[migrator] skip $filename"
         continue
     fi
