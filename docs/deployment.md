@@ -20,6 +20,26 @@
   3. выполнить Compose config/resolved gate и build/deploy одной invocation с неизменным `-p flowstock --env-file deploy/.env -f deploy/docker-compose.yml`; при включённом Telegram та же invocation дополнительно содержит `-f deploy/docker-compose.telegram.yml`;
   4. проверить containers, live/ready, TSD version, disk space и путь backup.
 
+### Обязательный production-copy gate
+
+CI и code review не являются достаточным основанием для production deploy. Перед merge production-impacting изменения в `main` кандидат должен быть вручную проверен на **изолированной локальной копии свежей production PostgreSQL**, а успешная проверка должна быть привязана к точному Git tree.
+
+Канонический порядок:
+
+1. получить свежий production backup штатным безопасным способом и восстановить его в отдельную локальную/test PostgreSQL; production при smoke не используется и не изменяется;
+2. запустить exact candidate tree против этой копии, применить его миграции и выполнить релевантный ручной smoke бизнес-сценариев;
+3. только после успешного smoke, из чистого worktree проверенного candidate выполнить:
+
+```powershell
+pwsh ./deploy/scripts/record-production-copy-validation.ps1 -ConfirmPassed
+```
+
+Команда пишет только безопасную локальную attestation в `.local/production-copy-validation.json`: schema version, тип проверки, result, commit SHA, Git tree SHA и UTC-время. Файл игнорируется Git и не должен содержать connection string, hostname production БД, имя backup, строки данных или другие production details.
+
+После merge в `main` канонический `deploy-production.ps1` вычисляет tree SHA exact `origin/main` commit и **fail closed** требует совпадающую успешную attestation. Commit SHA после merge может отличаться от проверенного candidate, но содержимое обязано иметь тот же Git tree. Любое изменение tree после smoke инвалидирует запись и требует повторной проверки.
+
+Для нестандартного локального расположения записи допустимо передать `-ProductionCopyValidationRecord <path>`; требования к содержимому и совпадению tree не меняются.
+
 ### Канонический ручной production deploy
 
 Запускайте entrypoint **на операторской машине из чистой локальной ветки `main`**, которая точно совпадает с `origin/main`. PowerShell сам выполняет `git fetch origin main`, вычисляет либо проверяет полный expected SHA и останавливается при несовпадении. Production-сервер должен быть доступен по SSH через `debian-server` (канонический production SSH host). `flowstock.local` используется отдельно как внешний HTTPS endpoint и должен разрешаться с доверенным TLS-сертификатом на операторской машине, где выполняются внешние HTTPS gates.

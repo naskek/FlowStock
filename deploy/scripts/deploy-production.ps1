@@ -8,6 +8,8 @@ param(
 
     [string]$ExpectedCommit,
 
+    [string]$ProductionCopyValidationRecord = '.local/production-copy-validation.json',
+
     [ValidatePattern('^https://flowstock\.local:7154$')]
     [string]$PublicUrl = 'https://flowstock.local:7154'
 )
@@ -16,6 +18,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot 'deploy-transport.ps1')
+. (Join-Path $PSScriptRoot 'production-copy-validation.ps1')
 
 function Invoke-CheckedNative {
     param(
@@ -61,6 +64,20 @@ try {
     if ($ExpectedCommit -notmatch '^[0-9a-f]{40}$' -or $ExpectedCommit -ne $originMain) {
         throw 'ExpectedCommit must be the full lowercase SHA of origin/main'
     }
+
+    $expectedTree = (Invoke-CheckedNative git @('rev-parse', '--verify', "$ExpectedCommit^{tree}")).Trim().ToLowerInvariant()
+    if ($expectedTree -notmatch '^[0-9a-f]{40}$') {
+        throw 'Unable to resolve expected production Git tree'
+    }
+
+    $validationRecordPath = if ([IO.Path]::IsPathRooted($ProductionCopyValidationRecord)) {
+        $ProductionCopyValidationRecord
+    }
+    else {
+        Join-Path $repoRoot $ProductionCopyValidationRecord
+    }
+    Assert-ProductionCopyValidationRecord -RecordPath $validationRecordPath -ExpectedTree $expectedTree | Out-Null
+    Write-Host "Production-copy validation gate passed: tree=$expectedTree"
 
     $appVersion = Get-Content -Raw 'apps/android/tsd/app-version.js'
     $serviceWorker = Get-Content -Raw 'apps/android/tsd/service-worker.js'

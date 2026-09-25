@@ -47,6 +47,10 @@
 
 ## Production
 
+- `main` — единственная stable/production-ветка; недотестированные runtime/schema/business изменения в неё не мержить.
+- Обязательный путь production-impacting изменения: `Issue → branch → implementation → tests → PR → CI → review → ручной smoke на изолированной копии production PostgreSQL → merge → deploy`.
+- Любой production deploy требует локальную attestation-запись успешного production-copy smoke для **точного Git tree**, который разворачивается. CI не заменяет этот gate.
+- Если после smoke изменился Git tree (rebase, merge conflict, новые файлы/коммиты), smoke и attestation нужно повторить.
 - Не предлагать ручные правки БД без **свежего backup**.
 - Сначала API, логи, диагностические endpoints (`/api/diagnostics/*`, maintenance dry-run).
 - Не трогать production без backup.

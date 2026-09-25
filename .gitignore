@@ -39,6 +39,7 @@ obj/
 
 # Temporary build outputs
 .tmp/
+.local/
 
 # Local helper scripts
 run_flowstock.cmd
