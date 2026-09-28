@@ -1,5 +1,6 @@
 using System.Net;
 using FlowStock.Server.Telegram;
+using Microsoft.Extensions.Logging;
 
 namespace FlowStock.Server.Tests.Telegram;
 
@@ -12,7 +13,8 @@ public sealed class TelegramNotificationWorkerTests
         var handler = new SequenceHandler(secondAttempt);
         using var client = new TelegramBotClient("test-token", "test-chat", handler);
         var queue = OrderRequestTelegramQueue.CreateEnabled();
-        using var worker = new TelegramNotificationWorker(queue, client);
+        var logger = new RecordingLogger<TelegramNotificationWorker>();
+        using var worker = new TelegramNotificationWorker(queue, client, logger);
 
         await worker.StartAsync(CancellationToken.None);
         queue.TryEnqueue();
@@ -21,6 +23,31 @@ public sealed class TelegramNotificationWorkerTests
         await worker.StopAsync(CancellationToken.None);
 
         Assert.Equal(2, handler.Attempts);
+        var warning = Assert.Single(logger.Messages);
+        Assert.Equal(LogLevel.Warning, warning.Level);
+        Assert.Contains("transport was unavailable", warning.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("first attempt fails", warning.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("test-token", warning.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("test-chat", warning.Message, StringComparison.Ordinal);
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        internal List<(LogLevel Level, string Message)> Messages { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Messages.Add((logLevel, formatter(state, exception)));
+        }
     }
 
     private sealed class SequenceHandler : HttpMessageHandler
