@@ -32,11 +32,20 @@ internal sealed class TelegramNotificationConfiguration
 
     internal Uri? ProxyUri { get; }
 
-    internal void LogStartupWarning(ILogger logger)
+    internal void LogStartupState(ILogger logger)
     {
-        if (State == TelegramNotificationState.Misconfigured)
+        switch (State)
         {
-            logger.LogWarning("Telegram notifications are disabled because configuration is incomplete.");
+            case TelegramNotificationState.Enabled:
+                logger.LogInformation("Telegram order notifications are enabled.");
+                break;
+            case TelegramNotificationState.Disabled:
+                logger.LogInformation("Telegram order notifications are disabled.");
+                break;
+            case TelegramNotificationState.Misconfigured:
+                logger.LogWarning(
+                    "Telegram order notifications are disabled because configuration is incomplete.");
+                break;
         }
     }
 
