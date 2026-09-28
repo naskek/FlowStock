@@ -243,6 +243,7 @@ Telegram default-off: только точное `FLOWSTOCK_TELEGRAM_ENABLED=1` �
    FLOWSTOCK_TELEGRAM_CHAT_ID=<existing-chat-id>
    FLOWSTOCK_TELEGRAM_PROXY_URL=socks5://tailscale-egress:1055
    FLOWSTOCK_TELEGRAM_EGRESS_NETWORK=<TELEGRAM_EGRESS_NETWORK>
+   FLOWSTOCK_TELEGRAM_EGRESS_CONTAINER=<TELEGRAM_EGRESS_CONTAINER>
    ```
 
 3. После обязательного свежего PostgreSQL backup, но до controlled recreate, выполните `ensure_telegram_deploy_prerequisites` в shell, где уже был подключён `deploy/scripts/common.sh`. Проверка подтверждает только metadata: source file является обычным читаемым непустым файлом; external network существует; контейнер `<TELEGRAM_EGRESS_CONTAINER>` подключён к ней. Функция не читает и не печатает secret. Затем production deploy использует explicit `compose_with_telegram`/`$DC` с overlay для `config`, validator, `up`, `ps` и `exec`.
