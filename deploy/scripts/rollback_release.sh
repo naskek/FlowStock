@@ -137,6 +137,19 @@ git_in_repo checkout --detach "$target_commit"
 export_source_commit_from_checkout
 ensure_compose_config
 
+rollback_telegram_enabled="false"
+if telegram_enabled && [[ -f "$FLOWSTOCK_TELEGRAM_COMPOSE_FILE" ]]; then
+    ensure_telegram_deploy_prerequisites
+    compose_with_telegram config -q
+    compose() {
+        compose_with_telegram "$@"
+    }
+    rollback_telegram_enabled="true"
+    log "Telegram overlay enabled for rollback target"
+elif telegram_enabled; then
+    log "WARNING: rollback target does not contain Telegram overlay; continuing base-only"
+fi
+
 target_compose_config="$(compose config)"
 target_has_relay="false"
 if service_exists discovery-relay; then
