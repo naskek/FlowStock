@@ -65,6 +65,16 @@ run_check() {
         || fail "rollback_release.sh must branch target revisions with discovery-relay"
     grep -q 'target compose does not publish UDP 7155 for flowstock' "$ROLLBACK" \
         || fail "rollback_release.sh must validate old target UDP 7155 publish"
+    grep -Fq 'if telegram_enabled && [[ -f "$FLOWSTOCK_TELEGRAM_COMPOSE_FILE" ]]; then' "$ROLLBACK" \
+        || fail "rollback_release.sh must preserve enabled Telegram for capable targets"
+    grep -q '^    ensure_telegram_deploy_prerequisites$' "$ROLLBACK" \
+        || fail "rollback_release.sh must validate Telegram prerequisites before overlay recreation"
+    grep -q '^    compose_with_telegram config -q$' "$ROLLBACK" \
+        || fail "rollback_release.sh must validate Telegram overlay config"
+    grep -q '^        compose_with_telegram "\$@"$' "$ROLLBACK" \
+        || fail "rollback_release.sh must route rollback recreation through Telegram overlay"
+    grep -q 'rollback target does not contain Telegram overlay; continuing base-only' "$ROLLBACK" \
+        || fail "rollback_release.sh must retain base-only fallback for pre-Telegram targets"
     grep -q 'docker stop -t 5 "\$container_id" >/dev/null' "$COMMON" \
         || fail "remove_discovery_relay_containers must gracefully stop relay with docker stop -t 5"
     grep -q 'discovery-relay was killed during graceful stop' "$COMMON" \
