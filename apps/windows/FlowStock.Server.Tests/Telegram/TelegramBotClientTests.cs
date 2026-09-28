@@ -13,8 +13,9 @@ public sealed class TelegramBotClientTests
         var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
         using var client = new TelegramBotClient("test-token", "test-chat", handler);
 
-        await client.SendNewOrderRequestAsync(CancellationToken.None);
+        var result = await client.SendNewOrderRequestAsync(CancellationToken.None);
 
+        Assert.Equal(TelegramDeliveryResult.Sent, result);
         var request = Assert.Single(handler.Requests);
         Assert.Equal(HttpMethod.Post, request.Method);
         Assert.Equal("https://api.telegram.org/bottest-token/sendMessage", request.Uri);
@@ -29,28 +30,30 @@ public sealed class TelegramBotClientTests
     [Theory]
     [InlineData(HttpStatusCode.BadRequest)]
     [InlineData(HttpStatusCode.InternalServerError)]
-    public async Task HttpErrorsEndAfterOneAttemptWithoutThrowing(HttpStatusCode statusCode)
+    public async Task HttpErrorsReturnFailedOutcomeAfterOneAttempt(HttpStatusCode statusCode)
     {
         var handler = new RecordingHandler(_ => new HttpResponseMessage(statusCode));
         using var client = new TelegramBotClient("test-token", "test-chat", handler);
 
-        await client.SendNewOrderRequestAsync(CancellationToken.None);
+        var result = await client.SendNewOrderRequestAsync(CancellationToken.None);
 
+        Assert.Equal(TelegramDeliveryResult.HttpError, result);
         Assert.Single(handler.Requests);
     }
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task TimeoutAndTransportFailureEndAfterOneAttemptWithoutThrowing(bool timeout)
+    public async Task TimeoutAndTransportFailureReturnFailedOutcomeAfterOneAttempt(bool timeout)
     {
         var handler = new RecordingHandler(_ => throw (timeout
             ? new TaskCanceledException("private-timeout")
             : new HttpRequestException("private-transport-error")));
         using var client = new TelegramBotClient("test-token", "test-chat", handler);
 
-        await client.SendNewOrderRequestAsync(CancellationToken.None);
+        var result = await client.SendNewOrderRequestAsync(CancellationToken.None);
 
+        Assert.Equal(TelegramDeliveryResult.TransportError, result);
         Assert.Single(handler.Requests);
     }
 

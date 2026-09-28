@@ -73,13 +73,14 @@ public sealed class TelegramNotificationConfigurationTests
         var result = TelegramNotificationConfiguration.Load(
             configuration,
             _ => throw new IOException(exceptionMessage));
-        result.LogStartupWarning(logger);
+        result.LogStartupState(logger);
 
         var warning = Assert.Single(logger.Messages);
-        Assert.DoesNotContain(tokenPath, warning, StringComparison.Ordinal);
-        Assert.DoesNotContain(chatId, warning, StringComparison.Ordinal);
-        Assert.DoesNotContain(proxy, warning, StringComparison.Ordinal);
-        Assert.DoesNotContain(exceptionMessage, warning, StringComparison.Ordinal);
+        Assert.Equal(LogLevel.Warning, warning.Level);
+        Assert.DoesNotContain(tokenPath, warning.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(chatId, warning.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(proxy, warning.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(exceptionMessage, warning.Message, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -128,7 +129,7 @@ public sealed class TelegramNotificationConfigurationTests
     }
 
     [Fact]
-    public void EnabledConfigurationDoesNotLogSecretValues()
+    public void EnabledConfigurationLogsOnlySanitizedStartupState()
     {
         const string token = "private-token-value";
         var configuration = CreateConfiguration(
@@ -139,10 +140,28 @@ public sealed class TelegramNotificationConfigurationTests
         var logger = new RecordingLogger();
 
         var result = TelegramNotificationConfiguration.Load(configuration, _ => token);
-        result.LogStartupWarning(logger);
+        result.LogStartupState(logger);
 
         Assert.Equal(TelegramNotificationState.Enabled, result.State);
-        Assert.Empty(logger.Messages);
+        var message = Assert.Single(logger.Messages);
+        Assert.Equal(LogLevel.Information, message.Level);
+        Assert.Contains("enabled", message.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(token, message.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-chat", message.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-proxy", message.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DisabledConfigurationLogsSanitizedStartupState()
+    {
+        var logger = new RecordingLogger();
+        var result = TelegramNotificationConfiguration.Load(CreateConfiguration());
+
+        result.LogStartupState(logger);
+
+        var message = Assert.Single(logger.Messages);
+        Assert.Equal(LogLevel.Information, message.Level);
+        Assert.Contains("disabled", message.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     private static IConfiguration CreateConfiguration(params (string Key, string? Value)[] values)
@@ -154,7 +173,7 @@ public sealed class TelegramNotificationConfigurationTests
 
     private sealed class RecordingLogger : ILogger
     {
-        internal List<string> Messages { get; } = new();
+        internal List<(LogLevel Level, string Message)> Messages { get; } = new();
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -167,10 +186,7 @@ public sealed class TelegramNotificationConfigurationTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            if (logLevel == LogLevel.Warning)
-            {
-                Messages.Add(formatter(state, exception));
-            }
+            Messages.Add((logLevel, formatter(state, exception)));
         }
     }
 }

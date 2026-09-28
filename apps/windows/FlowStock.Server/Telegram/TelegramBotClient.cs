@@ -3,6 +3,13 @@ using System.Net.Http.Json;
 
 namespace FlowStock.Server.Telegram;
 
+internal enum TelegramDeliveryResult
+{
+    Sent,
+    HttpError,
+    TransportError
+}
+
 internal sealed class TelegramBotClient : IDisposable
 {
     internal const string MessageText = "Новый заказ. Требуется подтверждение в FlowStock.";
@@ -50,7 +57,7 @@ internal sealed class TelegramBotClient : IDisposable
         };
     }
 
-    internal async Task SendNewOrderRequestAsync(CancellationToken cancellationToken)
+    internal async Task<TelegramDeliveryResult> SendNewOrderRequestAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -68,6 +75,10 @@ internal sealed class TelegramBotClient : IDisposable
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
+
+            return response.IsSuccessStatusCode
+                ? TelegramDeliveryResult.Sent
+                : TelegramDeliveryResult.HttpError;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -75,7 +86,8 @@ internal sealed class TelegramBotClient : IDisposable
         }
         catch (Exception)
         {
-            // Best effort: one failed transport attempt is the end of this notification.
+            // Best effort: report only a sanitized outcome; do not leak transport details.
+            return TelegramDeliveryResult.TransportError;
         }
     }
 

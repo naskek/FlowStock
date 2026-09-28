@@ -153,12 +153,13 @@ if (telegramConfiguration.State == TelegramNotificationState.Enabled)
     builder.Services.AddSingleton(_ => TelegramBotClient.Create(telegramConfiguration));
     builder.Services.AddHostedService<TelegramNotificationWorker>(sp => new TelegramNotificationWorker(
         sp.GetRequiredService<OrderRequestTelegramQueue>(),
-        sp.GetRequiredService<TelegramBotClient>()));
+        sp.GetRequiredService<TelegramBotClient>(),
+        sp.GetRequiredService<ILogger<TelegramNotificationWorker>>()));
 }
 builder.Services.AddHostedService<FlowStockDiscoveryUdpService>();
 
 var app = builder.Build();
-telegramConfiguration.LogStartupWarning(app.Logger);
+telegramConfiguration.LogStartupState(app.Logger);
 var serverVersionPayload = ServerBuildIdentity.CreateVersionPayload(
     appVersion,
     pcWebBundle.Version,
