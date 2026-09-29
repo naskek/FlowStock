@@ -16,16 +16,25 @@ public sealed class AdminWindowPasswordSourceTests
     {
         var xaml = File.ReadAllText(GetRepoFile("apps", "windows", "FlowStock.App", "AdminWindow.xaml"));
         var code = ReadAdminWindowCode();
-        var mainWindowCode = File.ReadAllText(GetRepoFile("apps", "windows", "FlowStock.App", "MainWindow.xaml.cs"));
+        var appDirectory = Path.GetDirectoryName(
+            GetRepoFile("apps", "windows", "FlowStock.App", "AdminWindow.xaml.cs"))!;
+        var guiSourceFiles = Directory
+            .EnumerateFiles(appDirectory, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !path.EndsWith(
+                Path.Combine("Services", "AdminService.cs"),
+                StringComparison.OrdinalIgnoreCase));
 
         Assert.DoesNotContain("Очистка перед стартом", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Очистить операции", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ClearOperations_Click", code, StringComparison.Ordinal);
-        Assert.DoesNotContain("ResetMovements", code, StringComparison.Ordinal);
-        Assert.DoesNotContain("FullReset", code, StringComparison.Ordinal);
         Assert.DoesNotContain("onOperationsCleared", code, StringComparison.Ordinal);
-        Assert.DoesNotContain("ResetMovements", mainWindowCode, StringComparison.Ordinal);
-        Assert.DoesNotContain("FullReset", mainWindowCode, StringComparison.Ordinal);
+
+        foreach (var sourceFile in guiSourceFiles)
+        {
+            var source = File.ReadAllText(sourceFile);
+            Assert.DoesNotContain(".ResetMovements(", source, StringComparison.Ordinal);
+            Assert.DoesNotContain(".FullReset(", source, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
