@@ -40,7 +40,7 @@ public sealed class CommercialStatisticsExportTests
     [Fact]
     public async Task Loader_FailsIfPagedSnapshotChangesDuringExport()
     {
-        var selection = CreateSelection(totalCount: 0);
+        var selection = CreateSelection();
         var call = 0;
 
         async Task<WpfCommercialStatisticsResult> Fetch(
@@ -89,7 +89,7 @@ public sealed class CommercialStatisticsExportTests
         var bytes = CommercialStatisticsPdfExporter.Create(report);
 
         Assert.True(bytes.Length > 1_000);
-        Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(bytes, 0, 5), StringComparison.Ordinal);
+        Assert.Equal("%PDF-", Encoding.ASCII.GetString(bytes, 0, 5));
     }
 
     [Fact]
@@ -100,6 +100,33 @@ public sealed class CommercialStatisticsExportTests
         Assert.False(report.DataQuality.IsFinanciallyComplete);
         Assert.Contains("Без цены", report.DataQualityText, StringComparison.Ordinal);
         Assert.Contains("непривязанные продажи", report.DataQualityText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WpfStatisticsTab_ExportsThroughFullReportLoader_NotVisibleGridPage()
+    {
+        var xaml = File.ReadAllText(GetRepoFile("apps", "windows", "FlowStock.App", "MainWindow.xaml"));
+        var code = File.ReadAllText(GetRepoFile("apps", "windows", "FlowStock.App", "MainWindow.xaml.cs"));
+
+        Assert.Contains("x:Name=\"StatisticsExportPdfButton\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"StatisticsExportPdf_Click\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"StatisticsExportExcelButton\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"StatisticsExportExcel_Click\"", xaml, StringComparison.Ordinal);
+
+        var exportStart = code.IndexOf(
+            "private async Task ExportCommercialStatisticsAsync",
+            StringComparison.Ordinal);
+        Assert.True(exportStart >= 0, "Statistics export handler is missing.");
+
+        var nextMethod = code.IndexOf(
+            "    private CommercialStatisticsExportSelection",
+            exportStart,
+            StringComparison.Ordinal);
+        Assert.True(nextMethod > exportStart, "Statistics export handler boundary is missing.");
+
+        var handler = code.Substring(exportStart, nextMethod - exportStart);
+        Assert.Contains("CommercialStatisticsExportLoader.LoadAsync", handler, StringComparison.Ordinal);
+        Assert.DoesNotContain("StatisticsGroupsGrid.ItemsSource", handler, StringComparison.Ordinal);
     }
 
     private static CommercialStatisticsExportSelection CreateSelection() =>
@@ -209,6 +236,24 @@ public sealed class CommercialStatisticsExportTests
             Net = 102.02m,
             Vat = 21.43m
         };
+
+    private static string GetRepoFile(params string[] parts)
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            var candidate = Path.Combine(new[] { dir.FullName }.Concat(parts).ToArray());
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            dir = dir.Parent;
+        }
+
+        throw new FileNotFoundException(
+            $"File not found: {string.Join(Path.DirectorySeparatorChar, parts)}");
+    }
 
     private static string ReadEntry(ZipArchive archive, string name)
     {
