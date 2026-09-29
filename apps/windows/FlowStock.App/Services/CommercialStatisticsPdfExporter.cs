@@ -19,7 +19,7 @@ internal static class CommercialStatisticsPdfExporter
         renderer.RenderDocument();
 
         using var stream = new MemoryStream();
-        renderer.PdfDocument.Save(stream, closeStream: false);
+        renderer.PdfDocument.Save(stream, false);
         return stream.ToArray();
     }
 
@@ -77,12 +77,12 @@ internal static class CommercialStatisticsPdfExporter
         foreach (var (name, value) in selection.Criteria)
         {
             var row = table.AddRow();
-            row.Cells[0].AddParagraph(name);
-            row.Cells[0].Format.Font.Bold = true;
+            var label = row.Cells[0].AddParagraph(name);
+            label.Format.Font.Bold = true;
             row.Cells[1].AddParagraph(value);
         }
 
-        table.Format.SpaceAfter = Unit.FromCentimeter(0.35);
+        section.AddParagraph().Format.SpaceAfter = Unit.FromCentimeter(0.2);
     }
 
     private static void AddSummaryTable(Section section, WpfCommercialStatisticsAmounts amounts)
@@ -121,7 +121,6 @@ internal static class CommercialStatisticsPdfExporter
 
         var header = table.AddRow();
         header.HeadingFormat = true;
-        header.Format.Font.Bold = true;
         var headers = new[]
         {
             firstHeader,
@@ -136,7 +135,8 @@ internal static class CommercialStatisticsPdfExporter
         };
         for (var index = 0; index < headers.Length; index++)
         {
-            header.Cells[index].AddParagraph(headers[index]);
+            var paragraph = header.Cells[index].AddParagraph(headers[index]);
+            paragraph.Format.Font.Bold = true;
         }
 
         foreach (var (label, amounts) in rows)
