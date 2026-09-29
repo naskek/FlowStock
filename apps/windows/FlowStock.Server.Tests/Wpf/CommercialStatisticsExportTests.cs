@@ -63,6 +63,37 @@ public sealed class CommercialStatisticsExportTests
     }
 
     [Fact]
+    public async Task Loader_FailsIfSummaryChangesBetweenPages()
+    {
+        var selection = CreateSelection();
+        var call = 0;
+
+        async Task<WpfCommercialStatisticsResult> Fetch(
+            WpfCommercialStatisticsRequest request,
+            CancellationToken cancellationToken)
+        {
+            await Task.Yield();
+            call++;
+            var result = CreateResult(
+                [CreateGroup($"Страница {call}")],
+                totalCount: 2,
+                offset: request.Offset,
+                limit: request.Limit);
+            if (call == 2)
+            {
+                result.Summary.Gross += 1m;
+            }
+
+            return result;
+        }
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => CommercialStatisticsExportLoader.LoadAsync(selection, Fetch));
+
+        Assert.Contains("изменилась", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void ExcelExporter_CreatesSummaryMonthlyAndDetailSheetsWithNativeNumbers()
     {
         var report = CreateReport();
