@@ -101,16 +101,11 @@ internal static class CommercialStatisticsExportLoader
             }
             else
             {
-                if (page.Groups.TotalCount != expectedTotal)
+                if (page.Groups.TotalCount != expectedTotal
+                    || !SameSnapshot(firstPage, page))
                 {
                     throw new InvalidOperationException(
                         "Статистика изменилась во время формирования отчёта. Повторите экспорт.");
-                }
-                if (!string.Equals(page.Mode, firstPage.Mode, StringComparison.OrdinalIgnoreCase)
-                    || !string.Equals(page.GroupBy, firstPage.GroupBy, StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidOperationException(
-                        "Сервер изменил критерии статистики во время формирования отчёта.");
                 }
             }
 
@@ -142,6 +137,66 @@ internal static class CommercialStatisticsExportLoader
             groups,
             firstPage.DataQuality);
     }
+
+    private static bool SameSnapshot(
+        WpfCommercialStatisticsResult expected,
+        WpfCommercialStatisticsResult actual) =>
+        string.Equals(expected.Mode, actual.Mode, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(expected.GroupBy, actual.GroupBy, StringComparison.OrdinalIgnoreCase)
+        && SameAmounts(expected.Summary, actual.Summary)
+        && SameDataQuality(expected.DataQuality, actual.DataQuality)
+        && SameMonthly(expected.Monthly, actual.Monthly);
+
+    private static bool SameMonthly(
+        IReadOnlyList<WpfCommercialStatisticsMonth> expected,
+        IReadOnlyList<WpfCommercialStatisticsMonth> actual)
+    {
+        if (expected.Count != actual.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < expected.Count; index++)
+        {
+            if (!string.Equals(
+                    expected[index].Month,
+                    actual[index].Month,
+                    StringComparison.Ordinal)
+                || !SameAmounts(expected[index].Amounts, actual[index].Amounts))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool SameAmounts(
+        WpfCommercialStatisticsAmounts expected,
+        WpfCommercialStatisticsAmounts actual) =>
+        expected.OrderCount == actual.OrderCount
+        && expected.DocumentCount == actual.DocumentCount
+        && expected.FactCount == actual.FactCount
+        && expected.Quantity == actual.Quantity
+        && expected.KnownFinancialQuantity == actual.KnownFinancialQuantity
+        && expected.Gross == actual.Gross
+        && expected.Net == actual.Net
+        && expected.Vat == actual.Vat;
+
+    private static bool SameDataQuality(
+        WpfCommercialStatisticsDataQuality expected,
+        WpfCommercialStatisticsDataQuality actual) =>
+        expected.MissingPriceFactCount == actual.MissingPriceFactCount
+        && expected.MissingPriceQuantity == actual.MissingPriceQuantity
+        && expected.MissingVatFactCount == actual.MissingVatFactCount
+        && expected.MissingVatQuantity == actual.MissingVatQuantity
+        && expected.FinanciallyIncompleteFactCount == actual.FinanciallyIncompleteFactCount
+        && expected.FinanciallyIncompleteQuantity == actual.FinanciallyIncompleteQuantity
+        && expected.UnlinkedSalesFactCount == actual.UnlinkedSalesFactCount
+        && expected.UnlinkedSalesQuantity == actual.UnlinkedSalesQuantity
+        && expected.ItemMismatchSalesFactCount == actual.ItemMismatchSalesFactCount
+        && expected.ItemMismatchSalesQuantity == actual.ItemMismatchSalesQuantity
+        && expected.IsFinanciallyComplete == actual.IsFinanciallyComplete;
 }
 
 internal static class CommercialStatisticsExportFileWriter
