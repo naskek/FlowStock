@@ -99,7 +99,7 @@ internal static class CommercialStatisticsPdfExporter
             row.Cells[1].AddParagraph(value);
         }
 
-        table.Format.SpaceAfter = Unit.FromCentimeter(0.35);
+        section.AddParagraph().Format.SpaceAfter = Unit.FromCentimeter(0.2);
     }
 
     private static void AddAmountsTable(
@@ -160,7 +160,7 @@ internal static class CommercialStatisticsPdfExporter
             }
         }
 
-        table.Format.SpaceAfter = Unit.FromCentimeter(0.35);
+        section.AddParagraph().Format.SpaceAfter = Unit.FromCentimeter(0.2);
     }
 
     private static IEnumerable<(string Label, string Value)> AmountRows(
