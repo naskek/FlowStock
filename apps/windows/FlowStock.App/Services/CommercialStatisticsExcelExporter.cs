@@ -1,4 +1,5 @@
 using System.Globalization;
+using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Spreadsheet;
 
@@ -12,7 +13,7 @@ internal static class CommercialStatisticsExcelExporter
         using (var document = SpreadsheetDocument.Create(
                    stream,
                    SpreadsheetDocumentType.Workbook,
-                   autoSave: true))
+                   true))
         {
             var workbookPart = document.AddWorkbookPart();
             workbookPart.Workbook = new Workbook();
