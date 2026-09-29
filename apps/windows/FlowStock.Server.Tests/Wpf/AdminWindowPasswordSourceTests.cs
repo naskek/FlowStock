@@ -12,23 +12,20 @@ public sealed class AdminWindowPasswordSourceTests
     }
 
     [Fact]
-    public void ClearOperations_RequiresAdminPasswordBeforeResetMovements()
+    public void AdminWindow_DoesNotExposeDestructiveDatabaseReset()
     {
-        var handler = ExtractMethodBody(
-            ReadAdminWindowCode(),
-            "private void ClearOperations_Click");
+        var xaml = File.ReadAllText(GetRepoFile("apps", "windows", "FlowStock.App", "AdminWindow.xaml"));
+        var code = ReadAdminWindowCode();
+        var mainWindowCode = File.ReadAllText(GetRepoFile("apps", "windows", "FlowStock.App", "MainWindow.xaml.cs"));
 
-        Assert.Contains("_services.AdminAuth.EnsureAdminPasswordExists()", handler, StringComparison.Ordinal);
-        Assert.Contains("SetAdminPasswordWindow", handler, StringComparison.Ordinal);
-
-        var promptIndex = handler.IndexOf("PasswordPromptWindow", StringComparison.Ordinal);
-        var resetIndex = handler.IndexOf("_services.Admin.ResetMovements()", StringComparison.Ordinal);
-
-        Assert.True(promptIndex >= 0, "ClearOperations_Click must show PasswordPromptWindow.");
-        Assert.True(resetIndex >= 0, "ClearOperations_Click must call ResetMovements.");
-        Assert.True(
-            promptIndex < resetIndex,
-            "Password prompt must be invoked before _services.Admin.ResetMovements().");
+        Assert.DoesNotContain("Очистка перед стартом", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Очистить операции", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ClearOperations_Click", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResetMovements", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("FullReset", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("onOperationsCleared", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResetMovements", mainWindowCode, StringComparison.Ordinal);
+        Assert.DoesNotContain("FullReset", mainWindowCode, StringComparison.Ordinal);
     }
 
     [Fact]

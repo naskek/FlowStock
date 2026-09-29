@@ -3269,17 +3269,7 @@ public partial class MainWindow : Window
 
     private void OpenAdmin_Click(object sender, RoutedEventArgs e)
     {
-        var window = new AdminWindow(
-            _services,
-            () =>
-            {
-                LoadDocs();
-                LoadOrders();
-                LoadStock(StatusSearchBox.Text);
-                LoadKmBatches();
-                ScheduleItemRequestsBadgeUpdate();
-                RefreshHuCorrectionAvailability();
-            });
+        var window = new AdminWindow(_services);
         window.Owner = this;
         window.ShowDialog();
     }
