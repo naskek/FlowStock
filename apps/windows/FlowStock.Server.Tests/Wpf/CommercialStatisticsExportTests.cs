@@ -1,3 +1,4 @@
+using FlowStock.App;
 using System.IO.Compression;
 using System.Text;
 
@@ -9,7 +10,7 @@ public sealed class CommercialStatisticsExportTests
     public async Task Loader_RequestsAllGroupsInServerSizedPages()
     {
         var requests = new List<WpfCommercialStatisticsRequest>();
-        var selection = CreateSelection(totalCount: 0);
+        var selection = CreateSelection();
         var groups = Enumerable.Range(1, 1_101)
             .Select(index => CreateGroup($"Группа {index}"))
             .ToArray();
@@ -30,7 +31,7 @@ public sealed class CommercialStatisticsExportTests
         var report = await CommercialStatisticsExportLoader.LoadAsync(selection, Fetch);
 
         Assert.Equal(1_101, report.Groups.Count);
-        Assert.Equal([0, 500, 1000], requests.Select(request => request.Offset).ToArray());
+        Assert.Equal(new[] { 0, 500, 1000 }, requests.Select(request => request.Offset).ToArray());
         Assert.All(requests, request => Assert.Equal(500, request.Limit));
         Assert.All(requests, request => Assert.Equal(selection.Request.DetailMonth, request.DetailMonth));
         Assert.All(requests, request => Assert.Equal(selection.Request.PartnerId, request.PartnerId));
@@ -101,7 +102,7 @@ public sealed class CommercialStatisticsExportTests
         Assert.Contains("непривязанные продажи", report.DataQualityText, StringComparison.Ordinal);
     }
 
-    private static CommercialStatisticsExportSelection CreateSelection(int totalCount) =>
+    private static CommercialStatisticsExportSelection CreateSelection() =>
         new(
             new WpfCommercialStatisticsRequest(
                 "orders",
@@ -158,7 +159,7 @@ public sealed class CommercialStatisticsExportTests
         };
 
         return new CommercialStatisticsExportReport(
-            CreateSelection(totalCount: 1),
+            CreateSelection(),
             result.Summary,
             result.Monthly,
             result.Groups.Items,
