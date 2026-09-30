@@ -8,6 +8,7 @@ public static class OrderCoverageTransferType
 public static class OrderCoverageCompensationKind
 {
     public const string ReturnPlan = "RETURN_PLAN";
+    public const string ReturnProduced = "RETURN_PRODUCED";
 }
 
 public sealed class OrderCoverageTransfer
@@ -47,6 +48,33 @@ public sealed class OrderCoverageTransferLine
     public double SourceQtyOrderedBefore { get; init; }
     public double TransferredQty { get; init; }
     public string SourceProductionPurpose { get; init; } = string.Empty;
+    public string? SourceProductionPalletGroup { get; init; }
+    public long? CompensatedSourceOrderLineId { get; init; }
+}
+
+public sealed class OrderCoverageProducedCompensation
+{
+    public long TransferId { get; init; }
+    public long SourceOrderId { get; init; }
+    public long TargetOrderId { get; init; }
+    public long TargetPrdDocId { get; init; }
+    public long ProductionPalletId { get; init; }
+    public string HuCode { get; init; } = string.Empty;
+    public IReadOnlyList<OrderCoverageProducedCompensationLine> Lines { get; init; } =
+        Array.Empty<OrderCoverageProducedCompensationLine>();
+}
+
+public sealed class OrderCoverageProducedCompensationLine
+{
+    public long TransferLineId { get; init; }
+    public long HistoricalSourceOrderLineId { get; init; }
+    public long TargetOrderLineId { get; init; }
+    public long SourceDocLineId { get; init; }
+    public long? SourceProductionPalletLineId { get; init; }
+    public long RestoredSourceOrderLineId { get; init; }
+    public long ItemId { get; init; }
+    public double TransferredQty { get; init; }
+    public ProductionLinePurpose SourceProductionPurpose { get; init; } = ProductionLinePurpose.InternalStock;
     public string? SourceProductionPalletGroup { get; init; }
 }
 

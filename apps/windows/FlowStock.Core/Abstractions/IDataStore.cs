@@ -152,6 +152,10 @@ public interface IDataStore
         long targetOrderId,
         IReadOnlyList<ProductionPalletSelectedAdoption> selectedPallets);
     IReadOnlyList<OrderCoverageTransfer> GetOrderCoverageTransfersByTargetOrder(long targetOrderId);
+    IReadOnlyDictionary<long, double> GetCompensatedProducedCoverageBySourceOrderLine(long sourceOrderId);
+    bool CompensateProducedOrderCoverageTransfer(
+        OrderCoverageProducedCompensation compensation,
+        DateTime compensatedAt);
     bool CompensatePlannedOrderCoverageTransfer(
         OrderCoveragePlanCompensation compensation,
         DateTime compensatedAt);
