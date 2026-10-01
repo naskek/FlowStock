@@ -116,6 +116,7 @@ public partial class MainWindow : Window
     private string? _statisticsBrand;
     private string? _statisticsVolume;
     private DispatcherTimer? _commercialStatisticsRefreshTimer;
+    private bool _commercialStatisticsExportInProgress;
     private bool _commercialStatisticsInitialLoadStarted;
     private bool _commercialStatisticsSearchHandlersAttached;
     private bool _suppressCommercialStatisticsFilterEvents;
@@ -3901,38 +3902,197 @@ public partial class MainWindow : Window
         await LoadCommercialStatisticsAsync().ConfigureAwait(true);
     }
 
-    private async Task LoadCommercialStatisticsAsync()
+    private WpfCommercialStatisticsFilters? BuildCurrentCommercialStatisticsFilters(
+        out string validationError)
     {
+        validationError = string.Empty;
         if (StatisticsFromDate.SelectedDate is not DateTime from
             || StatisticsToDate.SelectedDate is not DateTime to)
         {
-            StatisticsKpiText.Text = "Укажите корректный период статистики.";
-            StatisticsQualityText.Text = string.Empty;
-            return;
+            validationError = "Укажите корректный период статистики.";
+            return null;
         }
         if (to < from)
         {
-            StatisticsKpiText.Text = "Дата окончания должна быть не раньше даты начала.";
+            validationError = "Дата окончания должна быть не раньше даты начала.";
+            return null;
+        }
+
+        var mode = (StatisticsModeCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "orders";
+        var groupBy = (StatisticsGroupCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "partner";
+        return new WpfCommercialStatisticsFilters(
+            mode,
+            groupBy,
+            from,
+            to,
+            _statisticsPartnerId,
+            _statisticsItemId,
+            _statisticsGtin,
+            _statisticsBrand,
+            _statisticsVolume,
+            CommercialStatisticsFilterOptions.BuildStatusesCsv(
+                mode,
+                _statisticsStatusOptions),
+            Sort: "gross_desc");
+    }
+
+    private async void StatisticsExportPdf_Click(object sender, RoutedEventArgs e)
+    {
+        await ExportCommercialStatisticsAsync(pdf: true).ConfigureAwait(true);
+    }
+
+    private async void StatisticsExportExcel_Click(object sender, RoutedEventArgs e)
+    {
+        await ExportCommercialStatisticsAsync(pdf: false).ConfigureAwait(true);
+    }
+
+    private async Task ExportCommercialStatisticsAsync(bool pdf)
+    {
+        if (_commercialStatisticsExportInProgress)
+        {
+            return;
+        }
+
+        var filters = BuildCurrentCommercialStatisticsFilters(out var validationError);
+        if (filters is null)
+        {
+            StatisticsExportStatusText.Text = validationError;
+            return;
+        }
+
+        var selection = BuildCommercialStatisticsExportSelection(filters);
+        var extension = pdf ? ".pdf" : ".xlsx";
+        var dialog = new SaveFileDialog
+        {
+            Title = pdf ? "Сохранить отчёт статистики PDF" : "Сохранить отчёт статистики Excel",
+            Filter = pdf ? "PDF (*.pdf)|*.pdf" : "Excel (*.xlsx)|*.xlsx",
+            DefaultExt = extension,
+            AddExtension = true,
+            OverwritePrompt = true,
+            FileName = BuildCommercialStatisticsExportFileName(filters, extension)
+        };
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        _commercialStatisticsExportInProgress = true;
+        UpdateCommercialStatisticsExportButtons();
+        StatisticsExportStatusText.Text = "Загрузка полного отчёта...";
+        try
+        {
+            var report = await CommercialStatisticsExportLoader.LoadAsync(
+                selection,
+                _services.WpfCommercialStatisticsApi.GetAsync).ConfigureAwait(true);
+
+            StatisticsExportStatusText.Text = pdf
+                ? "Формирование PDF..."
+                : "Формирование Excel...";
+            var content = pdf
+                ? CommercialStatisticsPdfExporter.Create(report)
+                : CommercialStatisticsExcelExporter.Create(report);
+            CommercialStatisticsExportFileWriter.WriteAtomically(dialog.FileName, content);
+            StatisticsExportStatusText.Text =
+                $"Сохранено: {Path.GetFileName(dialog.FileName)}";
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("commercial statistics export failed", ex);
+            StatisticsExportStatusText.Text = "Не удалось сформировать отчёт.";
+            MessageBox.Show(
+                ex.Message,
+                "Экспорт статистики",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            _commercialStatisticsExportInProgress = false;
+            UpdateCommercialStatisticsExportButtons();
+        }
+    }
+
+    private CommercialStatisticsExportSelection BuildCommercialStatisticsExportSelection(
+        WpfCommercialStatisticsFilters filters)
+    {
+        var request = new WpfCommercialStatisticsRequest(
+            filters.Mode,
+            filters.GroupBy,
+            filters.From,
+            filters.To,
+            DetailMonth: _commercialStatisticsState.DetailMonth,
+            PartnerId: filters.PartnerId,
+            ItemId: filters.ItemId,
+            Gtin: filters.Gtin,
+            Brand: filters.Brand,
+            Volume: filters.Volume,
+            Statuses: filters.Statuses,
+            Limit: CommercialStatisticsExportLoader.PageSize,
+            Offset: 0,
+            Sort: filters.Sort);
+
+        return new CommercialStatisticsExportSelection(
+            request,
+            ComboBoxItemLabel(StatisticsModeCombo, "Заказы"),
+            ComboBoxItemLabel(StatisticsGroupCombo, "Контрагент"),
+            EntityFilterLabel(_statisticsPartnerOptions, filters.PartnerId, "Все контрагенты"),
+            EntityFilterLabel(_statisticsItemOptions, filters.ItemId, "Все товары"),
+            TextFilterLabel(_statisticsGtinOptions, filters.Gtin, "Все GTIN"),
+            TextFilterLabel(_statisticsBrandOptions, filters.Brand, "Все бренды"),
+            TextFilterLabel(_statisticsVolumeOptions, filters.Volume, "Все фасовки"),
+            string.Equals(filters.Mode, "orders", StringComparison.OrdinalIgnoreCase)
+                ? CommercialStatisticsFilterOptions.BuildStatusesLabel(_statisticsStatusOptions)
+                : "Не применяется");
+    }
+
+    private static string ComboBoxItemLabel(
+        System.Windows.Controls.ComboBox comboBox,
+        string fallback) =>
+        (comboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? fallback;
+
+    private static string EntityFilterLabel(
+        IEnumerable<CommercialStatisticsEntityFilterOption> options,
+        long? id,
+        string fallback) =>
+        options.FirstOrDefault(option => option.Id == id)?.Label ?? fallback;
+
+    private static string TextFilterLabel(
+        IEnumerable<CommercialStatisticsTextFilterOption> options,
+        string? value,
+        string fallback) =>
+        options.FirstOrDefault(option =>
+            string.Equals(option.Value, value, StringComparison.OrdinalIgnoreCase))?.Label
+        ?? fallback;
+
+    private static string BuildCommercialStatisticsExportFileName(
+        WpfCommercialStatisticsFilters filters,
+        string extension)
+    {
+        return $"FlowStock_statistics_{filters.Mode}_{filters.From:yyyy-MM-dd}_{filters.To:yyyy-MM-dd}{extension}";
+    }
+
+    private void UpdateCommercialStatisticsExportButtons()
+    {
+        if (StatisticsExportPdfButton == null)
+        {
+            return;
+        }
+
+        StatisticsExportPdfButton.IsEnabled = !_commercialStatisticsExportInProgress;
+        StatisticsExportExcelButton.IsEnabled = !_commercialStatisticsExportInProgress;
+    }
+
+    private async Task LoadCommercialStatisticsAsync()
+    {
+        var filters = BuildCurrentCommercialStatisticsFilters(out var validationError);
+        if (filters is null)
+        {
+            StatisticsKpiText.Text = validationError;
             StatisticsQualityText.Text = string.Empty;
             return;
         }
-        var mode = (StatisticsModeCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "orders";
-        var groupBy = (StatisticsGroupCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "partner";
-        var load = _commercialStatisticsState.StartLoad(
-            new WpfCommercialStatisticsFilters(
-                mode,
-                groupBy,
-                from,
-                to,
-                _statisticsPartnerId,
-                _statisticsItemId,
-                _statisticsGtin,
-                _statisticsBrand,
-                _statisticsVolume,
-                CommercialStatisticsFilterOptions.BuildStatusesCsv(
-                    mode,
-                    _statisticsStatusOptions),
-                Sort: "gross_desc"));
+
+        var load = _commercialStatisticsState.StartLoad(filters);
         UpdateCommercialStatisticsNavigation();
         StatisticsKpiText.Text = "Загрузка...";
         try

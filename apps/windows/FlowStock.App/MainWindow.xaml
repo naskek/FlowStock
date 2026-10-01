@@ -823,6 +823,21 @@
                                 </ComboBox.ItemTemplate>
                             </ComboBox>
                         </WrapPanel>
+                        <WrapPanel Margin="0,8,0,0">
+                            <Button x:Name="StatisticsExportPdfButton"
+                                    Content="Экспорт PDF"
+                                    Click="StatisticsExportPdf_Click"
+                                    Padding="10,4" />
+                            <Button x:Name="StatisticsExportExcelButton"
+                                    Content="Экспорт Excel"
+                                    Click="StatisticsExportExcel_Click"
+                                    Margin="8,0,0,0"
+                                    Padding="10,4" />
+                            <TextBlock x:Name="StatisticsExportStatusText"
+                                       Margin="12,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Foreground="#475467" />
+                        </WrapPanel>
                     </StackPanel>
                     <Border Grid.Row="1" Margin="0,10,0,10" Padding="10"
                             Background="#F8F9FA" BorderBrush="#D0D5DD" BorderThickness="1" CornerRadius="4">
