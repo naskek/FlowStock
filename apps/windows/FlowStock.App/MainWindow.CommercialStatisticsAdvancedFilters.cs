@@ -5,6 +5,8 @@ namespace FlowStock.App;
 
 public partial class MainWindow
 {
+    private bool _applyingCommercialStatisticsMonth;
+
     private void StatisticsAdvancedFilter_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (_suppressCommercialStatisticsFilterEvents || !IsLoaded)
@@ -49,7 +51,15 @@ public partial class MainWindow
             return;
         }
 
-        StatisticsFromDate.SelectedDate = period.From;
-        StatisticsToDate.SelectedDate = period.To;
+        _applyingCommercialStatisticsMonth = true;
+        try
+        {
+            StatisticsFromDate.SelectedDate = period.From;
+            StatisticsToDate.SelectedDate = period.To;
+        }
+        finally
+        {
+            _applyingCommercialStatisticsMonth = false;
+        }
     }
 }
