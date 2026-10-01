@@ -38,6 +38,8 @@ public sealed class WpfCommercialStatisticsApiService
         Add(query, "partner_id", request.PartnerId?.ToString(CultureInfo.InvariantCulture));
         Add(query, "item_id", request.ItemId?.ToString(CultureInfo.InvariantCulture));
         Add(query, "gtin", request.Gtin);
+        Add(query, "gtins", request.Gtins);
+        Add(query, "item_name_contains", request.ItemNameContains);
         Add(query, "brand", request.Brand);
         Add(query, "volume", request.Volume);
         Add(query, "statuses", request.Statuses);
@@ -129,7 +131,9 @@ public sealed record WpfCommercialStatisticsRequest(
     string? Statuses = null,
     int Limit = 100,
     int Offset = 0,
-    string Sort = "gross_desc");
+    string Sort = "gross_desc",
+    string? Gtins = null,
+    string? ItemNameContains = null);
 
 public sealed class WpfCommercialStatisticsResult
 {
