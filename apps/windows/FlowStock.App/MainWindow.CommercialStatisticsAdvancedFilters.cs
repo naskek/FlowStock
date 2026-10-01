@@ -6,6 +6,9 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using Orientation = System.Windows.Controls.Orientation;
+using WpfBinding = System.Windows.Data.Binding;
+using WpfButtonBase = System.Windows.Controls.Primitives.ButtonBase;
+using WpfTextBoxBase = System.Windows.Controls.Primitives.TextBoxBase;
 
 namespace FlowStock.App;
 
@@ -57,11 +60,11 @@ public partial class MainWindow
         StatisticsItemCombo.SelectionChanged += StatisticsAdvancedSelector_SelectionChanged;
         StatisticsGtinCombo.SelectionChanged += StatisticsAdvancedSelector_SelectionChanged;
         StatisticsItemCombo.AddHandler(
-            TextBoxBase.TextChangedEvent,
+            WpfTextBoxBase.TextChangedEvent,
             new TextChangedEventHandler(StatisticsAdvancedSelector_TextChanged),
             handledEventsToo: true);
         StatisticsGtinCombo.AddHandler(
-            TextBoxBase.TextChangedEvent,
+            WpfTextBoxBase.TextChangedEvent,
             new TextChangedEventHandler(StatisticsAdvancedSelector_TextChanged),
             handledEventsToo: true);
 
@@ -69,7 +72,7 @@ public partial class MainWindow
         StatisticsVolumeCombo.LostKeyboardFocus -= StatisticsSearchCombo_LostKeyboardFocus;
         StatisticsVolumeCombo.SelectionChanged -= StatisticsCriteria_Changed;
         StatisticsVolumeCombo.RemoveHandler(
-            TextBoxBase.TextChangedEvent,
+            WpfTextBoxBase.TextChangedEvent,
             new TextChangedEventHandler(StatisticsSearchCombo_TextChanged));
     }
 
@@ -296,16 +299,16 @@ public partial class MainWindow
         var checkBoxFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.CheckBox));
         checkBoxFactory.SetBinding(
             ContentControl.ContentProperty,
-            new Binding(nameof(CommercialStatisticsVolumeFilterOption.Label)));
+            new WpfBinding(nameof(CommercialStatisticsVolumeFilterOption.Label)));
         checkBoxFactory.SetBinding(
             ToggleButton.IsCheckedProperty,
-            new Binding(nameof(CommercialStatisticsVolumeFilterOption.IsChecked))
+            new WpfBinding(nameof(CommercialStatisticsVolumeFilterOption.IsChecked))
             {
                 Mode = BindingMode.TwoWay,
                 UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
             });
         checkBoxFactory.AddHandler(
-            ButtonBase.ClickEvent,
+            WpfButtonBase.ClickEvent,
             new RoutedEventHandler(StatisticsVolumeOption_Click));
         StatisticsVolumeCombo.ItemTemplate = new DataTemplate
         {
