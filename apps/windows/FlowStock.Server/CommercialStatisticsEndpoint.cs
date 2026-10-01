@@ -6,6 +6,8 @@ namespace FlowStock.Server;
 
 public static class CommercialStatisticsEndpoint
 {
+    private const int MaxGtinFilterCount = 500;
+
     private static readonly OrderStatus[] DefaultOrderStatuses =
     [
         OrderStatus.Draft,
@@ -74,6 +76,13 @@ public static class CommercialStatisticsEndpoint
             return Invalid("INVALID_STATISTICS_FILTER", "Некорректный идентификатор фильтра.");
         }
 
+        if (!TryParseGtins(request.Query["gtins"], out var gtins))
+        {
+            return Invalid(
+                "INVALID_STATISTICS_GTINS",
+                $"Можно выбрать не более {MaxGtinFilterCount} GTIN.");
+        }
+
         var limit = int.TryParse(request.Query["limit"], out var parsedLimit)
             ? Math.Clamp(parsedLimit, 1, 500)
             : 100;
@@ -104,7 +113,9 @@ public static class CommercialStatisticsEndpoint
             mode == CommercialStatisticsMode.Orders ? statuses : Array.Empty<OrderStatus>(),
             limit,
             offset,
-            sort);
+            sort,
+            Gtins: gtins,
+            ItemNameContains: NullIfBlank(request.Query["item_name_contains"]));
         var result = service.Get(query);
         return Results.Ok(new
         {
@@ -212,6 +223,29 @@ public static class CommercialStatisticsEndpoint
         return statuses.Count > 0;
     }
 
+    private static bool TryParseGtins(string? raw, out IReadOnlyList<string> gtins)
+    {
+        gtins = Array.Empty<string>();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return true;
+        }
+
+        var parsed = raw
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(RemoveWhitespace)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (parsed.Length > MaxGtinFilterCount)
+        {
+            return false;
+        }
+
+        gtins = parsed;
+        return true;
+    }
+
     private static bool TryParseDate(string? raw, out DateTime value) =>
         DateTime.TryParseExact(
             raw?.Trim(),
@@ -237,6 +271,9 @@ public static class CommercialStatisticsEndpoint
 
     private static string? NullIfBlank(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string RemoveWhitespace(string value) =>
+        string.Concat(value.Where(character => !char.IsWhiteSpace(character));
 
     private static string GroupByToApi(CommercialStatisticsGroupBy groupBy) =>
         groupBy.ToString().ToLowerInvariant();
