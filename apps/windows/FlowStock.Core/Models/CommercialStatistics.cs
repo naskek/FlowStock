@@ -29,7 +29,9 @@ public sealed record CommercialStatisticsQuery(
     IReadOnlyList<OrderStatus> Statuses,
     int Limit,
     int Offset,
-    string Sort);
+    string Sort,
+    IReadOnlyList<string>? Gtins = null,
+    string? ItemNameContains = null);
 
 public sealed record CommercialStatisticsAmounts(
     int OrderCount,
