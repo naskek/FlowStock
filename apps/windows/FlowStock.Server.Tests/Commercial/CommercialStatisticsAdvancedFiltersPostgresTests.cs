@@ -8,7 +8,7 @@ namespace FlowStock.Server.Tests.Commercial;
 public sealed class CommercialStatisticsAdvancedFiltersPostgresTests
 {
     [Fact]
-    public async Task Sales_filters_name_volume_and_multi_gtin_in_one_authoritative_scope()
+    public async Task Sales_filters_name_volume_multi_volume_and_multi_gtin_in_one_authoritative_scope()
     {
         await using var fixture = new Fixture(ResolveRequiredPostgresTestConnectionString());
         var partner = fixture.AddPartner();
@@ -42,6 +42,15 @@ public sealed class CommercialStatisticsAdvancedFiltersPostgresTests
             volume: "190 мл"));
         Assert.Equal(2m, adzhika190Only.Summary.Quantity);
         Assert.Equal(adzhika190.ToString(), Assert.Single(adzhika190Only.Groups).Key);
+
+        var twoVolumesWithinName = fixture.Reader.Get(Query(
+            groupBy: CommercialStatisticsGroupBy.Volume,
+            itemNameContains: "аджика",
+            volumes: ["190 МЛ", "500 мл"]));
+        Assert.Equal(5m, twoVolumesWithinName.Summary.Quantity);
+        Assert.Equal(2, twoVolumesWithinName.Groups.Count);
+        Assert.True(twoVolumesWithinName.Groups.Select(row => row.Key!).ToHashSet().SetEquals(
+            ["190 мл", "500 мл"]));
 
         var multiGtin = fixture.Reader.Get(Query(
             groupBy: CommercialStatisticsGroupBy.Gtin,
@@ -102,7 +111,8 @@ public sealed class CommercialStatisticsAdvancedFiltersPostgresTests
         string? gtin = null,
         IReadOnlyList<string>? gtins = null,
         string? itemNameContains = null,
-        string? volume = null) =>
+        string? volume = null,
+        IReadOnlyList<string>? volumes = null) =>
         new(
             CommercialStatisticsMode.Sales,
             groupBy,
@@ -119,7 +129,8 @@ public sealed class CommercialStatisticsAdvancedFiltersPostgresTests
             Offset: 0,
             Sort: "name_asc",
             Gtins: gtins,
-            ItemNameContains: itemNameContains);
+            ItemNameContains: itemNameContains,
+            Volumes: volumes);
 
     private static string ResolveRequiredPostgresTestConnectionString()
     {

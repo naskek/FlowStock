@@ -70,10 +70,13 @@ public sealed class CommercialStatisticsAdvancedFiltersTests
     }
 
     [Fact]
-    public void View_state_retains_advanced_ui_filters_when_legacy_filter_snapshot_is_built()
+    public void View_state_retains_name_and_multi_volume_filters_when_legacy_snapshot_is_built()
     {
         var state = new CommercialStatisticsViewState(pageSize: 100);
-        state.SetAdvancedFilters("0460111,0460222", "аджика");
+        state.SetAdvancedFilters(
+            gtins: null,
+            itemNameContains: "аджика",
+            volumes: "190 мл,500 мл");
 
         var load = state.StartLoad(new WpfCommercialStatisticsFilters(
             Mode: "sales",
@@ -88,7 +91,29 @@ public sealed class CommercialStatisticsAdvancedFiltersTests
             Statuses: null,
             Sort: "gross_desc"));
 
-        Assert.Equal("0460111,0460222", load.Request.Gtins);
+        Assert.Null(load.Request.Gtins);
         Assert.Equal("аджика", load.Request.ItemNameContains);
+        Assert.Equal("190 мл,500 мл", load.Request.Volumes);
+        Assert.Null(load.Request.Volume);
+    }
+
+    [Fact]
+    public void Volume_checklist_uses_null_for_all_and_csv_for_subset()
+    {
+        var options = CommercialStatisticsVolumeFilterOptions.Build(
+            new[]
+            {
+                new CommercialStatisticsTextFilterOption(null, "Все фасовки"),
+                new CommercialStatisticsTextFilterOption("190 мл", "190 мл"),
+                new CommercialStatisticsTextFilterOption("500 мл", "500 мл"),
+                new CommercialStatisticsTextFilterOption("1000 мл", "1000 мл")
+            });
+
+        Assert.Null(CommercialStatisticsVolumeFilterOptions.BuildCsv(options));
+        Assert.Equal("Все фасовки", CommercialStatisticsVolumeFilterOptions.BuildLabel(options));
+
+        options[1].IsChecked = false;
+        Assert.Equal("190 мл,1000 мл", CommercialStatisticsVolumeFilterOptions.BuildCsv(options));
+        Assert.Equal("190 мл, 1000 мл", CommercialStatisticsVolumeFilterOptions.BuildLabel(options));
     }
 }

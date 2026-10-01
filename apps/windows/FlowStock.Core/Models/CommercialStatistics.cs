@@ -31,7 +31,8 @@ public sealed record CommercialStatisticsQuery(
     int Offset,
     string Sort,
     IReadOnlyList<string>? Gtins = null,
-    string? ItemNameContains = null);
+    string? ItemNameContains = null,
+    IReadOnlyList<string>? Volumes = null);
 
 public sealed record CommercialStatisticsAmounts(
     int OrderCount,

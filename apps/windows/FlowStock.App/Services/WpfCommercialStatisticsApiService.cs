@@ -42,6 +42,7 @@ public sealed class WpfCommercialStatisticsApiService
         Add(query, "item_name_contains", request.ItemNameContains);
         Add(query, "brand", request.Brand);
         Add(query, "volume", request.Volume);
+        Add(query, "volumes", request.Volumes);
         Add(query, "statuses", request.Statuses);
 
         using var client = CreateClient();
@@ -133,7 +134,8 @@ public sealed record WpfCommercialStatisticsRequest(
     int Offset = 0,
     string Sort = "gross_desc",
     string? Gtins = null,
-    string? ItemNameContains = null);
+    string? ItemNameContains = null,
+    string? Volumes = null);
 
 public sealed class WpfCommercialStatisticsResult
 {

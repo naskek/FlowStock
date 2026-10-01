@@ -18,7 +18,8 @@ public sealed class CommercialStatisticsAdvancedReader
 
     public static bool IsRequired(CommercialStatisticsQuery query) =>
         !string.IsNullOrWhiteSpace(query.ItemNameContains)
-        || NormalizeGtins(query.Gtins).Length > 0;
+        || NormalizeGtins(query.Gtins).Length > 0
+        || NormalizeTextValues(query.Volumes).Length > 0;
 
     public CommercialStatisticsResult Get(CommercialStatisticsQuery query)
     {
@@ -118,6 +119,7 @@ public sealed class CommercialStatisticsAdvancedReader
     {
         var filters = new List<string>();
         var gtins = NormalizeGtins(query.Gtins);
+        var volumes = NormalizeTextValues(query.Volumes);
 
         if (query.PartnerId.HasValue)
         {
@@ -151,9 +153,17 @@ public sealed class CommercialStatisticsAdvancedReader
         {
             filters.Add("COALESCE(i.brand, '') ILIKE @brand");
         }
-        if (!string.IsNullOrWhiteSpace(query.Volume))
+        if (!string.IsNullOrWhiteSpace(query.Volume) && volumes.Length > 0)
+        {
+            filters.Add("(COALESCE(i.volume, '') ILIKE @volume OR LOWER(BTRIM(COALESCE(i.volume, ''))) = ANY(@volumes))");
+        }
+        else if (!string.IsNullOrWhiteSpace(query.Volume))
         {
             filters.Add("COALESCE(i.volume, '') ILIKE @volume");
+        }
+        else if (volumes.Length > 0)
+        {
+            filters.Add("LOWER(BTRIM(COALESCE(i.volume, ''))) = ANY(@volumes)");
         }
 
         var extraFilters = filters.Count == 0
@@ -313,6 +323,12 @@ FROM financial;";
         {
             command.Parameters.AddWithValue("@volume", query.Volume.Trim());
         }
+
+        var volumes = NormalizeTextValues(query.Volumes);
+        if (volumes.Length > 0)
+        {
+            command.Parameters.Add("@volumes", NpgsqlDbType.Array | NpgsqlDbType.Text).Value = volumes;
+        }
     }
 
     private static CommercialStatisticsAmounts AggregateAmounts(IEnumerable<Fact> source)
@@ -400,6 +416,13 @@ FROM financial;";
             .Select(value => string.Concat((value ?? string.Empty).Where(character => !char.IsWhiteSpace(character))))
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private static string[] NormalizeTextValues(IReadOnlyList<string>? values) =>
+        (values ?? Array.Empty<string>())
+            .Select(value => (value ?? string.Empty).Trim().ToLowerInvariant())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal)
             .ToArray();
 
     private sealed record Fact(

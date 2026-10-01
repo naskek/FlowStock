@@ -1,6 +1,10 @@
+using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using Orientation = System.Windows.Controls.Orientation;
 
 namespace FlowStock.App;
@@ -9,8 +13,8 @@ public partial class MainWindow
 {
     private bool _commercialStatisticsAdvancedUiInitialized;
     private bool _applyingCommercialStatisticsMonth;
-    private System.Windows.Controls.TextBox? _statisticsItemNameContainsText;
-    private System.Windows.Controls.TextBox? _statisticsGtinsText;
+    private bool _restoringCommercialStatisticsMonthSelection;
+    private readonly ObservableCollection<CommercialStatisticsVolumeFilterOption> _statisticsVolumeMultiOptions = [];
     private DatePicker? _statisticsMonthDate;
 
     protected override void OnContentRendered(EventArgs e)
@@ -28,9 +32,7 @@ public partial class MainWindow
 
         _commercialStatisticsAdvancedUiInitialized = true;
         RebuildCommercialStatisticsToolbar();
-
-        StatisticsFromDate.SelectedDateChanged += StatisticsManualPeriodDate_Changed;
-        StatisticsToDate.SelectedDateChanged += StatisticsManualPeriodDate_Changed;
+        RewireCommercialStatisticsAdvancedInteractions();
 
         StatisticsExportPdfButton.Click -= StatisticsExportPdf_Click;
         StatisticsExportExcelButton.Click -= StatisticsExportExcel_Click;
@@ -38,6 +40,37 @@ public partial class MainWindow
         StatisticsExportExcelButton.Click += StatisticsAdvancedExportExcel_Click;
 
         ApplyCommercialStatisticsAdvancedFilters();
+    }
+
+    private void RewireCommercialStatisticsAdvancedInteractions()
+    {
+        StatisticsFromDate.SelectedDateChanged -= StatisticsPeriod_Changed;
+        StatisticsToDate.SelectedDateChanged -= StatisticsPeriod_Changed;
+        StatisticsFromDate.SelectedDateChanged += StatisticsAdvancedPeriod_Changed;
+        StatisticsToDate.SelectedDateChanged += StatisticsAdvancedPeriod_Changed;
+
+        StatisticsMonthlyGrid.SelectionChanged -= StatisticsMonthlyGrid_SelectionChanged;
+        StatisticsMonthlyGrid.SelectionChanged += StatisticsAdvancedMonthlyGrid_SelectionChanged;
+
+        StatisticsItemCombo.LostKeyboardFocus -= StatisticsSearchCombo_LostKeyboardFocus;
+        StatisticsGtinCombo.LostKeyboardFocus -= StatisticsSearchCombo_LostKeyboardFocus;
+        StatisticsItemCombo.SelectionChanged += StatisticsAdvancedSelector_SelectionChanged;
+        StatisticsGtinCombo.SelectionChanged += StatisticsAdvancedSelector_SelectionChanged;
+        StatisticsItemCombo.AddHandler(
+            TextBoxBase.TextChangedEvent,
+            new TextChangedEventHandler(StatisticsAdvancedSelector_TextChanged),
+            handledEventsToo: true);
+        StatisticsGtinCombo.AddHandler(
+            TextBoxBase.TextChangedEvent,
+            new TextChangedEventHandler(StatisticsAdvancedSelector_TextChanged),
+            handledEventsToo: true);
+
+        StatisticsVolumeCombo.PreviewKeyDown -= StatisticsSearchCombo_PreviewKeyDown;
+        StatisticsVolumeCombo.LostKeyboardFocus -= StatisticsSearchCombo_LostKeyboardFocus;
+        StatisticsVolumeCombo.SelectionChanged -= StatisticsCriteria_Changed;
+        StatisticsVolumeCombo.RemoveHandler(
+            TextBoxBase.TextChangedEvent,
+            new TextChangedEventHandler(StatisticsSearchCombo_TextChanged));
     }
 
     private void RebuildCommercialStatisticsToolbar()
@@ -58,17 +91,7 @@ public partial class MainWindow
         };
         _statisticsMonthDate.SelectedDateChanged += StatisticsMonthDate_Changed;
 
-        _statisticsItemNameContainsText = new System.Windows.Controls.TextBox
-        {
-            ToolTip = "Подстрока текущего названия товара, без учёта регистра"
-        };
-        _statisticsItemNameContainsText.TextChanged += StatisticsAdvancedFilter_TextChanged;
-
-        _statisticsGtinsText = new System.Windows.Controls.TextBox
-        {
-            ToolTip = "Несколько GTIN через запятую, точку с запятой или с новой строки"
-        };
-        _statisticsGtinsText.TextChanged += StatisticsAdvancedFilter_TextChanged;
+        ConfigureStatisticsVolumeMultiSelect();
 
         var existingControls = new FrameworkElement[]
         {
@@ -186,7 +209,7 @@ public partial class MainWindow
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        for (var index = 0; index < 4; index++)
+        for (var index = 0; index < 3; index++)
         {
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         }
@@ -195,9 +218,7 @@ public partial class MainWindow
                  {
                      StatisticsPartnerCombo,
                      StatisticsItemCombo,
-                     _statisticsItemNameContainsText!,
                      StatisticsGtinCombo,
-                     _statisticsGtinsText!,
                      StatisticsBrandCombo,
                      StatisticsVolumeCombo,
                      StatisticsStatusesCombo
@@ -207,13 +228,11 @@ public partial class MainWindow
         }
 
         AddLabeledToolbarControl(grid, 0, "Контрагент", StatisticsPartnerCombo, 0, 1);
-        AddLabeledToolbarControl(grid, 0, "Товар", StatisticsItemCombo, 2, 3);
-        AddLabeledToolbarControl(grid, 1, "Название содержит", _statisticsItemNameContainsText!, 0, 1);
-        AddLabeledToolbarControl(grid, 1, "GTIN", StatisticsGtinCombo, 2, 3);
-        AddLabeledToolbarControl(grid, 2, "GTIN набор", _statisticsGtinsText!, 0, 1);
-        AddLabeledToolbarControl(grid, 2, "Бренд", StatisticsBrandCombo, 2, 3);
-        AddLabeledToolbarControl(grid, 3, "Фасовка", StatisticsVolumeCombo, 0, 1);
-        AddLabeledToolbarControl(grid, 3, "Статусы", StatisticsStatusesCombo, 2, 3);
+        AddLabeledToolbarControl(grid, 0, "Товар / название", StatisticsItemCombo, 2, 3);
+        AddLabeledToolbarControl(grid, 1, "GTIN", StatisticsGtinCombo, 0, 1);
+        AddLabeledToolbarControl(grid, 1, "Бренд", StatisticsBrandCombo, 2, 3);
+        AddLabeledToolbarControl(grid, 2, "Фасовка", StatisticsVolumeCombo, 0, 1);
+        AddLabeledToolbarControl(grid, 2, "Статусы", StatisticsStatusesCombo, 2, 3);
         return grid;
     }
 
@@ -258,6 +277,64 @@ public partial class MainWindow
         return grid;
     }
 
+    private void ConfigureStatisticsVolumeMultiSelect()
+    {
+        _statisticsVolumeMultiOptions.Clear();
+        foreach (var option in CommercialStatisticsVolumeFilterOptions.Build(_statisticsVolumeOptions))
+        {
+            _statisticsVolumeMultiOptions.Add(option);
+        }
+
+        _statisticsVolume = null;
+        StatisticsVolumeCombo.ItemsSource = _statisticsVolumeMultiOptions;
+        StatisticsVolumeCombo.SelectedIndex = -1;
+        StatisticsVolumeCombo.IsEditable = true;
+        StatisticsVolumeCombo.IsReadOnly = true;
+        StatisticsVolumeCombo.IsTextSearchEnabled = false;
+        StatisticsVolumeCombo.StaysOpenOnEdit = true;
+
+        var checkBoxFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.CheckBox));
+        checkBoxFactory.SetBinding(
+            ContentControl.ContentProperty,
+            new Binding(nameof(CommercialStatisticsVolumeFilterOption.Label)));
+        checkBoxFactory.SetBinding(
+            ToggleButton.IsCheckedProperty,
+            new Binding(nameof(CommercialStatisticsVolumeFilterOption.IsChecked))
+            {
+                Mode = BindingMode.TwoWay,
+                UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
+            });
+        checkBoxFactory.AddHandler(
+            ButtonBase.ClickEvent,
+            new RoutedEventHandler(StatisticsVolumeOption_Click));
+        StatisticsVolumeCombo.ItemTemplate = new DataTemplate
+        {
+            VisualTree = checkBoxFactory
+        };
+        UpdateStatisticsVolumeFilterText();
+    }
+
+    private void StatisticsVolumeOption_Click(object sender, RoutedEventArgs e)
+    {
+        if (_suppressCommercialStatisticsFilterEvents)
+        {
+            return;
+        }
+
+        UpdateStatisticsVolumeFilterText();
+        ApplyCommercialStatisticsAdvancedFilters();
+        _commercialStatisticsState.CriteriaChanged(periodChanged: false);
+        UpdateCommercialStatisticsNavigation();
+        ScheduleCommercialStatisticsRefresh();
+        Dispatcher.BeginInvoke(() => StatisticsVolumeCombo.IsDropDownOpen = true);
+    }
+
+    private void UpdateStatisticsVolumeFilterText()
+    {
+        StatisticsVolumeCombo.Text =
+            CommercialStatisticsVolumeFilterOptions.BuildLabel(_statisticsVolumeMultiOptions);
+    }
+
     private static void AddLabeledToolbarControl(
         Grid grid,
         int row,
@@ -298,7 +375,20 @@ public partial class MainWindow
         }
     }
 
-    private void StatisticsAdvancedFilter_TextChanged(object sender, TextChangedEventArgs e)
+    private void StatisticsAdvancedSelector_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressCommercialStatisticsFilterEvents || !IsLoaded)
+        {
+            return;
+        }
+
+        ApplyCommercialStatisticsAdvancedFilters();
+        _commercialStatisticsState.CriteriaChanged(periodChanged: false);
+        UpdateCommercialStatisticsNavigation();
+        ScheduleCommercialStatisticsRefresh();
+    }
+
+    private void StatisticsAdvancedSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_suppressCommercialStatisticsFilterEvents || !IsLoaded)
         {
@@ -313,15 +403,131 @@ public partial class MainWindow
 
     private void ApplyCommercialStatisticsAdvancedFilters()
     {
+        var itemNameContains = ResolveCommercialStatisticsItemFilter();
+        ResolveCommercialStatisticsGtinFilter();
+        var volumes = CommercialStatisticsVolumeFilterOptions.BuildCsv(_statisticsVolumeMultiOptions);
         _commercialStatisticsState.SetAdvancedFilters(
-            CommercialStatisticsAdvancedFilters.NormalizeGtinsCsv(_statisticsGtinsText?.Text),
-            CommercialStatisticsAdvancedFilters.NormalizeItemNameContains(
-                _statisticsItemNameContainsText?.Text));
+            gtins: null,
+            itemNameContains,
+            volumes);
+    }
+
+    private string? ResolveCommercialStatisticsItemFilter()
+    {
+        var entered = StatisticsItemCombo.Text?.Trim();
+        var exact = _statisticsItemOptions.FirstOrDefault(option =>
+            option.Id.HasValue
+            && string.Equals(option.Label.Trim(), entered, StringComparison.OrdinalIgnoreCase));
+        _statisticsItemId = exact?.Id;
+        if (exact is not null || string.IsNullOrWhiteSpace(entered))
+        {
+            return null;
+        }
+
+        var allOption = _statisticsItemOptions.FirstOrDefault(option => !option.Id.HasValue);
+        if (allOption is not null
+            && string.Equals(allOption.Label.Trim(), entered, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return CommercialStatisticsAdvancedFilters.NormalizeItemNameContains(entered);
+    }
+
+    private void ResolveCommercialStatisticsGtinFilter()
+    {
+        var entered = RemoveCommercialStatisticsWhitespace(StatisticsGtinCombo.Text);
+        _statisticsGtin = _statisticsGtinOptions
+            .FirstOrDefault(option =>
+                option.Value is not null
+                && string.Equals(
+                    RemoveCommercialStatisticsWhitespace(option.Value),
+                    entered,
+                    StringComparison.OrdinalIgnoreCase))
+            ?.Value;
+    }
+
+    private static string RemoveCommercialStatisticsWhitespace(string? value) =>
+        string.Concat((value ?? string.Empty).Where(character => !char.IsWhiteSpace(character)));
+
+    private async void StatisticsAdvancedMonthlyGrid_SelectionChanged(
+        object sender,
+        SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded
+            || _restoringCommercialStatisticsMonthSelection
+            || StatisticsMonthlyGrid.SelectedItem is not WpfCommercialStatisticsMonth month
+            || !DateTime.TryParseExact(
+                month.Month,
+                "yyyy-MM",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var selectedMonth))
+        {
+            return;
+        }
+
+        SetCommercialStatisticsPeriodControls(selectedMonth);
+        _commercialStatisticsState.CriteriaChanged(periodChanged: true);
+        _commercialStatisticsState.SelectDetailMonth(month.Month);
+        UpdateCommercialStatisticsNavigation();
+        await LoadCommercialStatisticsImmediatelyAsync().ConfigureAwait(true);
+        RestoreCommercialStatisticsMonthlySelection(month.Month);
+    }
+
+    private void RestoreCommercialStatisticsMonthlySelection(string month)
+    {
+        var row = StatisticsMonthlyGrid.Items
+            .OfType<WpfCommercialStatisticsMonth>()
+            .FirstOrDefault(item => string.Equals(item.Month, month, StringComparison.Ordinal));
+        if (row is null)
+        {
+            return;
+        }
+
+        _restoringCommercialStatisticsMonthSelection = true;
+        try
+        {
+            StatisticsMonthlyGrid.SelectedItem = row;
+            StatisticsMonthlyGrid.ScrollIntoView(row);
+        }
+        finally
+        {
+            _restoringCommercialStatisticsMonthSelection = false;
+        }
+    }
+
+    private void StatisticsAdvancedPeriod_Changed(object sender, EventArgs e)
+    {
+        if (!IsLoaded || _applyingCommercialStatisticsMonth)
+        {
+            return;
+        }
+
+        _applyingCommercialStatisticsMonth = true;
+        try
+        {
+            if (_statisticsMonthDate != null)
+            {
+                _statisticsMonthDate.SelectedDate = null;
+            }
+        }
+        finally
+        {
+            _applyingCommercialStatisticsMonth = false;
+        }
+
+        StatisticsMonthlyGrid.SelectedItem = null;
+        _commercialStatisticsState.CriteriaChanged(periodChanged: true);
+        UpdateCommercialStatisticsNavigation();
+        ScheduleCommercialStatisticsRefresh();
     }
 
     private void StatisticsMonthDate_Changed(object? sender, SelectionChangedEventArgs e)
     {
-        if (!IsLoaded || _statisticsMonthDate?.SelectedDate is not DateTime selected)
+        if (!IsLoaded
+            || _applyingCommercialStatisticsMonth
+            || _statisticsMonthDate?.SelectedDate is not DateTime selected)
         {
             return;
         }
@@ -331,35 +537,33 @@ public partial class MainWindow
 
     private void StatisticsCurrentMonth_Click(object sender, RoutedEventArgs e)
     {
-        SetCommercialStatisticsMonth(DateTime.Today);
+        ApplyCommercialStatisticsMonth(DateTime.Today);
     }
 
     private void StatisticsPreviousMonth_Click(object sender, RoutedEventArgs e)
     {
-        SetCommercialStatisticsMonth(DateTime.Today.AddMonths(-1));
-    }
-
-    private void SetCommercialStatisticsMonth(DateTime value)
-    {
-        if (_statisticsMonthDate != null)
-        {
-            _statisticsMonthDate.SelectedDate = value;
-        }
-        ApplyCommercialStatisticsMonth(value);
+        ApplyCommercialStatisticsMonth(DateTime.Today.AddMonths(-1));
     }
 
     private void ApplyCommercialStatisticsMonth(DateTime value)
     {
-        var period = CommercialStatisticsAdvancedFilters.MonthPeriod(value);
-        if (StatisticsFromDate.SelectedDate == period.From
-            && StatisticsToDate.SelectedDate == period.To)
-        {
-            return;
-        }
+        SetCommercialStatisticsPeriodControls(value);
+        StatisticsMonthlyGrid.SelectedItem = null;
+        _commercialStatisticsState.CriteriaChanged(periodChanged: true);
+        UpdateCommercialStatisticsNavigation();
+        ScheduleCommercialStatisticsRefresh();
+    }
 
+    private void SetCommercialStatisticsPeriodControls(DateTime value)
+    {
+        var period = CommercialStatisticsAdvancedFilters.MonthPeriod(value);
         _applyingCommercialStatisticsMonth = true;
         try
         {
+            if (_statisticsMonthDate != null)
+            {
+                _statisticsMonthDate.SelectedDate = new DateTime(value.Year, value.Month, 1);
+            }
             StatisticsFromDate.SelectedDate = period.From;
             StatisticsToDate.SelectedDate = period.To;
         }
@@ -367,16 +571,6 @@ public partial class MainWindow
         {
             _applyingCommercialStatisticsMonth = false;
         }
-    }
-
-    private void StatisticsManualPeriodDate_Changed(object? sender, SelectionChangedEventArgs e)
-    {
-        if (_applyingCommercialStatisticsMonth || _statisticsMonthDate == null)
-        {
-            return;
-        }
-
-        _statisticsMonthDate.SelectedDate = null;
     }
 
     private async void StatisticsAdvancedExportPdf_Click(object sender, RoutedEventArgs e)
@@ -406,7 +600,8 @@ public partial class MainWindow
 
         filters = filters with
         {
-            Gtins = _commercialStatisticsState.Gtins,
+            Volume = null,
+            Gtins = null,
             ItemNameContains = _commercialStatisticsState.ItemNameContains
         };
 
@@ -415,11 +610,14 @@ public partial class MainWindow
         {
             Request = baseSelection.Request with
             {
-                Gtins = filters.Gtins,
-                ItemNameContains = filters.ItemNameContains
+                Gtins = null,
+                ItemNameContains = _commercialStatisticsState.ItemNameContains,
+                Volume = null,
+                Volumes = _commercialStatisticsState.Volumes
             },
-            GtinsLabel = filters.Gtins,
-            ItemNameContainsLabel = filters.ItemNameContains
+            GtinsLabel = null,
+            ItemNameContainsLabel = _commercialStatisticsState.ItemNameContains,
+            VolumeLabel = CommercialStatisticsVolumeFilterOptions.BuildLabel(_statisticsVolumeMultiOptions)
         };
 
         var extension = pdf ? ".pdf" : ".xlsx";

@@ -14,6 +14,7 @@ internal sealed class CommercialStatisticsViewState
     private int _currentItemCount;
     private string? _gtins;
     private string? _itemNameContains;
+    private string? _volumes;
 
     public CommercialStatisticsViewState(int pageSize)
     {
@@ -24,6 +25,7 @@ internal sealed class CommercialStatisticsViewState
     public string? DetailMonth { get; private set; }
     public string? Gtins => _gtins;
     public string? ItemNameContains => _itemNameContains;
+    public string? Volumes => _volumes;
     public bool CanReturnToWholePeriod =>
         !IsLoading && !string.IsNullOrWhiteSpace(DetailMonth);
     public bool CanMovePrevious => !IsLoading && _offset > 0;
@@ -52,12 +54,16 @@ internal sealed class CommercialStatisticsViewState
         }
     }
 
-    public void SetAdvancedFilters(string? gtins, string? itemNameContains)
+    public void SetAdvancedFilters(
+        string? gtins,
+        string? itemNameContains,
+        string? volumes = null)
     {
         _gtins = string.IsNullOrWhiteSpace(gtins) ? null : gtins.Trim();
         _itemNameContains = string.IsNullOrWhiteSpace(itemNameContains)
             ? null
             : itemNameContains.Trim();
+        _volumes = string.IsNullOrWhiteSpace(volumes) ? null : volumes.Trim();
     }
 
     public CommercialStatisticsLoad StartLoad(WpfCommercialStatisticsFilters filters)
@@ -82,8 +88,9 @@ internal sealed class CommercialStatisticsViewState
                 _pageSize,
                 _offset,
                 filters.Sort,
-                filters.Gtins ?? _gtins,
-                filters.ItemNameContains ?? _itemNameContains));
+                Gtins: filters.Gtins ?? _gtins,
+                ItemNameContains: filters.ItemNameContains ?? _itemNameContains,
+                Volumes: _volumes));
     }
 
     public bool TryComplete(long requestId, WpfCommercialStatisticsResult result)

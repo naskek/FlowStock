@@ -7,6 +7,7 @@ namespace FlowStock.Server;
 public static class CommercialStatisticsEndpoint
 {
     private const int MaxGtinFilterCount = 500;
+    private const int MaxVolumeFilterCount = 100;
 
     private static readonly OrderStatus[] DefaultOrderStatuses =
     [
@@ -86,6 +87,13 @@ public static class CommercialStatisticsEndpoint
                 $"Можно выбрать не более {MaxGtinFilterCount} GTIN.");
         }
 
+        if (!TryParseVolumes(request.Query["volumes"], out var volumes))
+        {
+            return Invalid(
+                "INVALID_STATISTICS_VOLUMES",
+                $"Можно выбрать не более {MaxVolumeFilterCount} фасовок.");
+        }
+
         var limit = int.TryParse(request.Query["limit"], out var parsedLimit)
             ? Math.Clamp(parsedLimit, 1, 500)
             : 100;
@@ -118,7 +126,8 @@ public static class CommercialStatisticsEndpoint
             offset,
             sort,
             Gtins: gtins,
-            ItemNameContains: NullIfBlank(request.Query["item_name_contains"]));
+            ItemNameContains: NullIfBlank(request.Query["item_name_contains"]),
+            Volumes: volumes);
 
         var result = CommercialStatisticsAdvancedReader.IsRequired(query)
             ? new CommercialStatisticsAdvancedReader(
@@ -251,6 +260,29 @@ public static class CommercialStatisticsEndpoint
         }
 
         gtins = parsed;
+        return true;
+    }
+
+    private static bool TryParseVolumes(string? raw, out IReadOnlyList<string> volumes)
+    {
+        volumes = Array.Empty<string>();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return true;
+        }
+
+        var parsed = raw
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(value => value.Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (parsed.Length > MaxVolumeFilterCount)
+        {
+            return false;
+        }
+
+        volumes = parsed;
         return true;
     }
 
