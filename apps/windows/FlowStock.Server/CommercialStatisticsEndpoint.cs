@@ -273,7 +273,7 @@ public static class CommercialStatisticsEndpoint
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private static string RemoveWhitespace(string value) =>
-        string.Concat(value.Where(character => !char.IsWhiteSpace(character));
+        string.Concat(value.Where(character => !char.IsWhiteSpace(character)));
 
     private static string GroupByToApi(CommercialStatisticsGroupBy groupBy) =>
         groupBy.ToString().ToLowerInvariant();
