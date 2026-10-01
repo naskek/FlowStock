@@ -37,5 +37,5 @@ internal static class CommercialStatisticsAdvancedFilters
     }
 
     private static string RemoveWhitespace(string value) =>
-        string.Concat(value.Where(character => !char.IsWhiteSpace(character));
+        string.Concat(value.Where(character => !char.IsWhiteSpace(character)));
 }
