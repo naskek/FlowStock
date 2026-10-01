@@ -1,7 +1,6 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
-using Microsoft.Win32;
 
 namespace FlowStock.App;
 
@@ -9,8 +8,8 @@ public partial class MainWindow
 {
     private bool _commercialStatisticsAdvancedUiInitialized;
     private bool _applyingCommercialStatisticsMonth;
-    private System.Windows.Controls.TextBox? _statisticsItemNameContainsText;
-    private System.Windows.Controls.TextBox? _statisticsGtinsText;
+    private TextBox? _statisticsItemNameContainsText;
+    private TextBox? _statisticsGtinsText;
     private DatePicker? _statisticsMonthDate;
 
     protected override void OnContentRendered(EventArgs e)
@@ -27,8 +26,7 @@ public partial class MainWindow
         }
 
         _commercialStatisticsAdvancedUiInitialized = true;
-        AddCommercialStatisticsMonthControls();
-        AddCommercialStatisticsProductFilterControls();
+        RebuildCommercialStatisticsToolbar();
 
         StatisticsFromDate.SelectedDateChanged += StatisticsManualPeriodDate_Changed;
         StatisticsToDate.SelectedDateChanged += StatisticsManualPeriodDate_Changed;
@@ -41,84 +39,262 @@ public partial class MainWindow
         ApplyCommercialStatisticsAdvancedFilters();
     }
 
-    private void AddCommercialStatisticsMonthControls()
+    private void RebuildCommercialStatisticsToolbar()
     {
-        if (StatisticsToDate.Parent is not WrapPanel panel)
+        if (StatisticsFromDate.Parent is not WrapPanel periodSource
+            || StatisticsPartnerCombo.Parent is not WrapPanel filtersSource
+            || StatisticsExportPdfButton.Parent is not WrapPanel actionsSource
+            || periodSource.Parent is not StackPanel toolbarHost
+            || filtersSource.Parent != toolbarHost
+            || actionsSource.Parent != toolbarHost)
         {
             return;
         }
-
-        var insertAt = panel.Children.IndexOf(StatisticsToDate) + 1;
-        panel.Children.Insert(insertAt++, new TextBlock
-        {
-            Text = "Месяц",
-            VerticalAlignment = VerticalAlignment.Center
-        });
 
         _statisticsMonthDate = new DatePicker
         {
-            Width = 125,
-            Margin = new Thickness(6, 0, 6, 0),
             ToolTip = "Выберите любую дату нужного месяца"
         };
         _statisticsMonthDate.SelectedDateChanged += StatisticsMonthDate_Changed;
-        panel.Children.Insert(insertAt++, _statisticsMonthDate);
 
-        var currentButton = new System.Windows.Controls.Button
+        _statisticsItemNameContainsText = new TextBox
         {
-            Content = "Текущий",
-            Margin = new Thickness(0, 0, 6, 0),
-            Padding = new Thickness(7, 2, 7, 2)
-        };
-        currentButton.Click += StatisticsCurrentMonth_Click;
-        panel.Children.Insert(insertAt++, currentButton);
-
-        var previousButton = new System.Windows.Controls.Button
-        {
-            Content = "Предыдущий",
-            Margin = new Thickness(0, 0, 12, 0),
-            Padding = new Thickness(7, 2, 7, 2)
-        };
-        previousButton.Click += StatisticsPreviousMonth_Click;
-        panel.Children.Insert(insertAt, previousButton);
-    }
-
-    private void AddCommercialStatisticsProductFilterControls()
-    {
-        if (StatisticsItemCombo.Parent is not WrapPanel panel)
-        {
-            return;
-        }
-
-        var itemInsertAt = panel.Children.IndexOf(StatisticsItemCombo) + 1;
-        panel.Children.Insert(itemInsertAt++, new TextBlock
-        {
-            Text = "Название содержит",
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        _statisticsItemNameContainsText = new System.Windows.Controls.TextBox
-        {
-            Width = 170,
-            Margin = new Thickness(6, 0, 12, 0),
             ToolTip = "Подстрока текущего названия товара, без учёта регистра"
         };
         _statisticsItemNameContainsText.TextChanged += StatisticsAdvancedFilter_TextChanged;
-        panel.Children.Insert(itemInsertAt, _statisticsItemNameContainsText);
 
-        var gtinInsertAt = panel.Children.IndexOf(StatisticsGtinCombo) + 1;
-        panel.Children.Insert(gtinInsertAt++, new TextBlock
+        _statisticsGtinsText = new TextBox
         {
-            Text = "GTIN набор",
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        _statisticsGtinsText = new System.Windows.Controls.TextBox
-        {
-            Width = 210,
-            Margin = new Thickness(6, 0, 12, 0),
             ToolTip = "Несколько GTIN через запятую, точку с запятой или с новой строки"
         };
         _statisticsGtinsText.TextChanged += StatisticsAdvancedFilter_TextChanged;
-        panel.Children.Insert(gtinInsertAt, _statisticsGtinsText);
+
+        var existingControls = new FrameworkElement[]
+        {
+            StatisticsFromDate,
+            StatisticsToDate,
+            StatisticsModeCombo,
+            StatisticsGroupCombo,
+            StatisticsPartnerCombo,
+            StatisticsItemCombo,
+            StatisticsGtinCombo,
+            StatisticsBrandCombo,
+            StatisticsVolumeCombo,
+            StatisticsStatusesCombo,
+            StatisticsExportPdfButton,
+            StatisticsExportExcelButton,
+            StatisticsExportStatusText
+        };
+        foreach (var control in existingControls)
+        {
+            DetachFromParent(control);
+        }
+
+        toolbarHost.Children.Clear();
+
+        var layout = new Grid
+        {
+            Margin = new Thickness(0, 0, 0, 4)
+        };
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(300) });
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(270) });
+
+        var periodGroup = new GroupBox
+        {
+            Header = "Период",
+            Margin = new Thickness(0, 0, 6, 0),
+            Padding = new Thickness(8),
+            Content = BuildCommercialStatisticsPeriodPanel()
+        };
+        Grid.SetColumn(periodGroup, 0);
+        layout.Children.Add(periodGroup);
+
+        var filtersGroup = new GroupBox
+        {
+            Header = "Фильтры",
+            Margin = new Thickness(0, 0, 6, 0),
+            Padding = new Thickness(8),
+            Content = BuildCommercialStatisticsFiltersPanel()
+        };
+        Grid.SetColumn(filtersGroup, 1);
+        layout.Children.Add(filtersGroup);
+
+        var actionsGroup = new GroupBox
+        {
+            Header = "Отображение и действия",
+            Padding = new Thickness(8),
+            Content = BuildCommercialStatisticsActionsPanel()
+        };
+        Grid.SetColumn(actionsGroup, 2);
+        layout.Children.Add(actionsGroup);
+
+        toolbarHost.Children.Add(layout);
+    }
+
+    private UIElement BuildCommercialStatisticsPeriodPanel()
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        for (var index = 0; index < 4; index++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        }
+
+        PrepareToolbarControl(StatisticsFromDate, minWidth: 150);
+        PrepareToolbarControl(StatisticsToDate, minWidth: 150);
+        PrepareToolbarControl(_statisticsMonthDate!, minWidth: 150);
+
+        AddLabeledToolbarControl(grid, 0, "С", StatisticsFromDate);
+        AddLabeledToolbarControl(grid, 1, "По", StatisticsToDate);
+        AddLabeledToolbarControl(grid, 2, "Месяц", _statisticsMonthDate!);
+
+        var quickButtons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(0, 6, 0, 0)
+        };
+        var currentButton = new Button
+        {
+            Content = "Текущий",
+            Padding = new Thickness(10, 3, 10, 3)
+        };
+        currentButton.Click += StatisticsCurrentMonth_Click;
+        quickButtons.Children.Add(currentButton);
+
+        var previousButton = new Button
+        {
+            Content = "Предыдущий",
+            Margin = new Thickness(6, 0, 0, 0),
+            Padding = new Thickness(10, 3, 10, 3)
+        };
+        previousButton.Click += StatisticsPreviousMonth_Click;
+        quickButtons.Children.Add(previousButton);
+
+        Grid.SetRow(quickButtons, 3);
+        Grid.SetColumn(quickButtons, 1);
+        grid.Children.Add(quickButtons);
+        return grid;
+    }
+
+    private UIElement BuildCommercialStatisticsFiltersPanel()
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        for (var index = 0; index < 4; index++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        }
+
+        foreach (var control in new FrameworkElement[]
+                 {
+                     StatisticsPartnerCombo,
+                     StatisticsItemCombo,
+                     _statisticsItemNameContainsText!,
+                     StatisticsGtinCombo,
+                     _statisticsGtinsText!,
+                     StatisticsBrandCombo,
+                     StatisticsVolumeCombo,
+                     StatisticsStatusesCombo
+                 })
+        {
+            PrepareToolbarControl(control, minWidth: 120);
+        }
+
+        AddLabeledToolbarControl(grid, 0, "Контрагент", StatisticsPartnerCombo, 0, 1);
+        AddLabeledToolbarControl(grid, 0, "Товар", StatisticsItemCombo, 2, 3);
+        AddLabeledToolbarControl(grid, 1, "Название содержит", _statisticsItemNameContainsText!, 0, 1);
+        AddLabeledToolbarControl(grid, 1, "GTIN", StatisticsGtinCombo, 2, 3);
+        AddLabeledToolbarControl(grid, 2, "GTIN набор", _statisticsGtinsText!, 0, 1);
+        AddLabeledToolbarControl(grid, 2, "Бренд", StatisticsBrandCombo, 2, 3);
+        AddLabeledToolbarControl(grid, 3, "Фасовка", StatisticsVolumeCombo, 0, 1);
+        AddLabeledToolbarControl(grid, 3, "Статусы", StatisticsStatusesCombo, 2, 3);
+        return grid;
+    }
+
+    private UIElement BuildCommercialStatisticsActionsPanel()
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        PrepareToolbarControl(StatisticsModeCombo, minWidth: 135);
+        PrepareToolbarControl(StatisticsGroupCombo, minWidth: 135);
+        AddLabeledToolbarControl(grid, 0, "Режим", StatisticsModeCombo);
+        AddLabeledToolbarControl(grid, 1, "Группировка", StatisticsGroupCombo);
+
+        var exportButtons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 8, 0, 0)
+        };
+        StatisticsExportPdfButton.Margin = new Thickness(0);
+        StatisticsExportPdfButton.Padding = new Thickness(10, 4, 10, 4);
+        exportButtons.Children.Add(StatisticsExportPdfButton);
+
+        StatisticsExportExcelButton.Margin = new Thickness(6, 0, 0, 0);
+        StatisticsExportExcelButton.Padding = new Thickness(10, 4, 10, 4);
+        exportButtons.Children.Add(StatisticsExportExcelButton);
+
+        Grid.SetRow(exportButtons, 2);
+        Grid.SetColumnSpan(exportButtons, 2);
+        grid.Children.Add(exportButtons);
+
+        StatisticsExportStatusText.Margin = new Thickness(0, 6, 0, 0);
+        StatisticsExportStatusText.TextWrapping = TextWrapping.Wrap;
+        Grid.SetRow(StatisticsExportStatusText, 3);
+        Grid.SetColumnSpan(StatisticsExportStatusText, 2);
+        grid.Children.Add(StatisticsExportStatusText);
+        return grid;
+    }
+
+    private static void AddLabeledToolbarControl(
+        Grid grid,
+        int row,
+        string label,
+        FrameworkElement control,
+        int labelColumn = 0,
+        int controlColumn = 1)
+    {
+        var text = new TextBlock
+        {
+            Text = label,
+            Margin = new Thickness(0, 4, 8, 4),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetRow(text, row);
+        Grid.SetColumn(text, labelColumn);
+        grid.Children.Add(text);
+
+        Grid.SetRow(control, row);
+        Grid.SetColumn(control, controlColumn);
+        grid.Children.Add(control);
+    }
+
+    private static void PrepareToolbarControl(FrameworkElement control, double minWidth)
+    {
+        control.Width = double.NaN;
+        control.MinWidth = minWidth;
+        control.Margin = new Thickness(0, 2, 12, 2);
+        control.HorizontalAlignment = HorizontalAlignment.Stretch;
+        control.VerticalAlignment = VerticalAlignment.Center;
+    }
+
+    private static void DetachFromParent(UIElement element)
+    {
+        if (element is FrameworkElement { Parent: Panel panel })
+        {
+            panel.Children.Remove(element);
+        }
     }
 
     private void StatisticsAdvancedFilter_TextChanged(object sender, TextChangedEventArgs e)
