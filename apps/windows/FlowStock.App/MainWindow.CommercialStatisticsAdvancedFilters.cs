@@ -8,8 +8,8 @@ public partial class MainWindow
 {
     private bool _commercialStatisticsAdvancedUiInitialized;
     private bool _applyingCommercialStatisticsMonth;
-    private TextBox? _statisticsItemNameContainsText;
-    private TextBox? _statisticsGtinsText;
+    private System.Windows.Controls.TextBox? _statisticsItemNameContainsText;
+    private System.Windows.Controls.TextBox? _statisticsGtinsText;
     private DatePicker? _statisticsMonthDate;
 
     protected override void OnContentRendered(EventArgs e)
@@ -57,13 +57,13 @@ public partial class MainWindow
         };
         _statisticsMonthDate.SelectedDateChanged += StatisticsMonthDate_Changed;
 
-        _statisticsItemNameContainsText = new TextBox
+        _statisticsItemNameContainsText = new System.Windows.Controls.TextBox
         {
             ToolTip = "Подстрока текущего названия товара, без учёта регистра"
         };
         _statisticsItemNameContainsText.TextChanged += StatisticsAdvancedFilter_TextChanged;
 
-        _statisticsGtinsText = new TextBox
+        _statisticsGtinsText = new System.Windows.Controls.TextBox
         {
             ToolTip = "Несколько GTIN через запятую, точку с запятой или с новой строки"
         };
@@ -100,7 +100,7 @@ public partial class MainWindow
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(270) });
 
-        var periodGroup = new GroupBox
+        var periodGroup = new System.Windows.Controls.GroupBox
         {
             Header = "Период",
             Margin = new Thickness(0, 0, 6, 0),
@@ -110,7 +110,7 @@ public partial class MainWindow
         Grid.SetColumn(periodGroup, 0);
         layout.Children.Add(periodGroup);
 
-        var filtersGroup = new GroupBox
+        var filtersGroup = new System.Windows.Controls.GroupBox
         {
             Header = "Фильтры",
             Margin = new Thickness(0, 0, 6, 0),
@@ -120,7 +120,7 @@ public partial class MainWindow
         Grid.SetColumn(filtersGroup, 1);
         layout.Children.Add(filtersGroup);
 
-        var actionsGroup = new GroupBox
+        var actionsGroup = new System.Windows.Controls.GroupBox
         {
             Header = "Отображение и действия",
             Padding = new Thickness(8),
@@ -155,7 +155,7 @@ public partial class MainWindow
             Orientation = Orientation.Horizontal,
             Margin = new Thickness(0, 6, 0, 0)
         };
-        var currentButton = new Button
+        var currentButton = new System.Windows.Controls.Button
         {
             Content = "Текущий",
             Padding = new Thickness(10, 3, 10, 3)
@@ -163,7 +163,7 @@ public partial class MainWindow
         currentButton.Click += StatisticsCurrentMonth_Click;
         quickButtons.Children.Add(currentButton);
 
-        var previousButton = new Button
+        var previousButton = new System.Windows.Controls.Button
         {
             Content = "Предыдущий",
             Margin = new Thickness(6, 0, 0, 0),
@@ -234,7 +234,7 @@ public partial class MainWindow
         var exportButtons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
             Margin = new Thickness(0, 8, 0, 0)
         };
         StatisticsExportPdfButton.Margin = new Thickness(0);
@@ -285,13 +285,13 @@ public partial class MainWindow
         control.Width = double.NaN;
         control.MinWidth = minWidth;
         control.Margin = new Thickness(0, 2, 12, 2);
-        control.HorizontalAlignment = HorizontalAlignment.Stretch;
+        control.HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch;
         control.VerticalAlignment = VerticalAlignment.Center;
     }
 
     private static void DetachFromParent(UIElement element)
     {
-        if (element is FrameworkElement { Parent: Panel panel })
+        if (element is FrameworkElement { Parent: System.Windows.Controls.Panel panel })
         {
             panel.Children.Remove(element);
         }
