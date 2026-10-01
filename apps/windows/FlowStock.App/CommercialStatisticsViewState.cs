@@ -69,7 +69,9 @@ internal sealed class CommercialStatisticsViewState
                 filters.Statuses,
                 _pageSize,
                 _offset,
-                filters.Sort));
+                filters.Sort,
+                filters.Gtins,
+                filters.ItemNameContains));
     }
 
     public bool TryComplete(long requestId, WpfCommercialStatisticsResult result)
@@ -201,7 +203,9 @@ internal sealed record WpfCommercialStatisticsFilters(
     string? Brand,
     string? Volume,
     string? Statuses,
-    string Sort);
+    string Sort,
+    string? Gtins = null,
+    string? ItemNameContains = null);
 
 internal sealed record CommercialStatisticsLoad(
     long RequestId,
