@@ -116,4 +116,25 @@ public sealed class CommercialStatisticsAdvancedFiltersTests
         Assert.Equal("190 мл,1000 мл", CommercialStatisticsVolumeFilterOptions.BuildCsv(options));
         Assert.Equal("190 мл, 1000 мл", CommercialStatisticsVolumeFilterOptions.BuildLabel(options));
     }
+
+    [Fact]
+    public void Volume_checklist_restores_all_when_last_checkbox_is_cleared()
+    {
+        var options = CommercialStatisticsVolumeFilterOptions.Build(
+            new[]
+            {
+                new CommercialStatisticsTextFilterOption(null, "Все фасовки"),
+                new CommercialStatisticsTextFilterOption("190 мл", "190 мл"),
+                new CommercialStatisticsTextFilterOption("500 мл", "500 мл")
+            });
+
+        foreach (var option in options)
+        {
+            option.IsChecked = false;
+        }
+
+        Assert.Equal("Все фасовки", CommercialStatisticsVolumeFilterOptions.BuildLabel(options));
+        Assert.All(options, option => Assert.True(option.IsChecked));
+        Assert.Null(CommercialStatisticsVolumeFilterOptions.BuildCsv(options));
+    }
 }
