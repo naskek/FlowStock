@@ -12,23 +12,29 @@ public sealed class AdminWindowPasswordSourceTests
     }
 
     [Fact]
-    public void ClearOperations_RequiresAdminPasswordBeforeResetMovements()
+    public void AdminWindow_DoesNotExposeDestructiveDatabaseReset()
     {
-        var handler = ExtractMethodBody(
-            ReadAdminWindowCode(),
-            "private void ClearOperations_Click");
+        var xaml = File.ReadAllText(GetRepoFile("apps", "windows", "FlowStock.App", "AdminWindow.xaml"));
+        var code = ReadAdminWindowCode();
+        var appDirectory = Path.GetDirectoryName(
+            GetRepoFile("apps", "windows", "FlowStock.App", "AdminWindow.xaml.cs"))!;
+        var guiSourceFiles = Directory
+            .EnumerateFiles(appDirectory, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !path.EndsWith(
+                Path.Combine("Services", "AdminService.cs"),
+                StringComparison.OrdinalIgnoreCase));
 
-        Assert.Contains("_services.AdminAuth.EnsureAdminPasswordExists()", handler, StringComparison.Ordinal);
-        Assert.Contains("SetAdminPasswordWindow", handler, StringComparison.Ordinal);
+        Assert.DoesNotContain("Очистка перед стартом", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Очистить операции", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ClearOperations_Click", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("onOperationsCleared", code, StringComparison.Ordinal);
 
-        var promptIndex = handler.IndexOf("PasswordPromptWindow", StringComparison.Ordinal);
-        var resetIndex = handler.IndexOf("_services.Admin.ResetMovements()", StringComparison.Ordinal);
-
-        Assert.True(promptIndex >= 0, "ClearOperations_Click must show PasswordPromptWindow.");
-        Assert.True(resetIndex >= 0, "ClearOperations_Click must call ResetMovements.");
-        Assert.True(
-            promptIndex < resetIndex,
-            "Password prompt must be invoked before _services.Admin.ResetMovements().");
+        foreach (var sourceFile in guiSourceFiles)
+        {
+            var source = File.ReadAllText(sourceFile);
+            Assert.DoesNotContain(".ResetMovements(", source, StringComparison.Ordinal);
+            Assert.DoesNotContain(".FullReset(", source, StringComparison.Ordinal);
+        }
     }
 
     [Fact]

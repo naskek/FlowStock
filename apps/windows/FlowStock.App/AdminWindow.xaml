@@ -17,7 +17,7 @@
             </Grid.RowDefinitions>
 
             <TextBlock Grid.Row="0"
-                       Text="Админка управляет системными настройками, глобальным доступом к веб-блокам и очисткой тестовых операций."
+                       Text="Админка управляет системными настройками и глобальным доступом к веб-блокам."
                        TextWrapping="Wrap"
                        Margin="0,0,0,8" />
 
@@ -160,17 +160,6 @@
                             HorizontalAlignment="Left"
                             Click="SavePalletLabelPrinter_Click" />
                 </Grid>
-            </GroupBox>
-
-            <GroupBox Header="Очистка перед стартом" Grid.Row="5" Margin="0,12,0,0">
-                <StackPanel Margin="8">
-                    <TextBlock Text="Удаляет тестовые операции: документы, строки, ledger, заказы, imported events/errors."
-                               TextWrapping="Wrap" />
-                    <TextBlock Text="Справочники остаются без изменений."
-                               Margin="0,4,0,10"
-                               TextWrapping="Wrap" />
-                    <Button Content="Очистить операции" Width="220" HorizontalAlignment="Left" Click="ClearOperations_Click" />
-                </StackPanel>
             </GroupBox>
 
             <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">

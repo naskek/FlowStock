@@ -12,17 +12,15 @@ namespace FlowStock.App;
 public partial class AdminWindow : Window
 {
     private readonly AppServices _services;
-    private readonly Action? _onOperationsCleared;
     private readonly Dictionary<string, WpfCheckBox> _clientBlockBoxes = new(StringComparer.OrdinalIgnoreCase);
     private string? _palletLabelPrinterEnvironmentOverride;
     private CancellationTokenSource? _updateCheckCancellation;
     private int _updateCheckGeneration;
     private DesktopUpdateCheckResult? _updateCheckResult;
 
-    public AdminWindow(AppServices services, Action? onOperationsCleared = null)
+    public AdminWindow(AppServices services)
     {
         _services = services;
-        _onOperationsCleared = onOperationsCleared;
 
         InitializeComponent();
         LoadClientBlocksUi();
@@ -211,51 +209,6 @@ public partial class AdminWindow : Window
 
         _services.AdminLogger.Info("admin_password changed from ui");
         MessageBox.Show("Пароль администратора изменён.", "Администрирование", MessageBoxButton.OK, MessageBoxImage.Information);
-    }
-
-    private void ClearOperations_Click(object sender, RoutedEventArgs e)
-    {
-        // Опасное действие: требуем пароль администратора, чтобы исключить случайное/ошибочное нажатие.
-        if (!_services.AdminAuth.EnsureAdminPasswordExists())
-        {
-            var setPassword = new SetAdminPasswordWindow(_services.AdminAuth) { Owner = this };
-            if (setPassword.ShowDialog() != true)
-            {
-                _services.AdminLogger.Info("admin_reset_movements aborted: admin password not set");
-                return;
-            }
-        }
-
-        var prompt = new PasswordPromptWindow(_services.AdminAuth) { Owner = this };
-        if (prompt.ShowDialog() != true)
-        {
-            _services.AdminLogger.Info("admin_reset_movements aborted: password prompt cancelled");
-            return;
-        }
-
-        var confirm = MessageBox.Show(
-            "Очистить все операции и заказы? Это действие удалит тестовые движения.",
-            "Администрирование",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            MessageBoxResult.No);
-        if (confirm != MessageBoxResult.Yes)
-        {
-            return;
-        }
-
-        try
-        {
-            _services.Admin.ResetMovements();
-            _services.AdminLogger.Info("admin_reset_movements from ui");
-            _onOperationsCleared?.Invoke();
-            MessageBox.Show("Операции очищены.", "Администрирование", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        catch (Exception ex)
-        {
-            _services.AdminLogger.Error("admin_reset_movements failed", ex);
-            MessageBox.Show(ex.Message, "Администрирование", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
     }
 
     private async void SaveClientBlocks_Click(object sender, RoutedEventArgs e)
