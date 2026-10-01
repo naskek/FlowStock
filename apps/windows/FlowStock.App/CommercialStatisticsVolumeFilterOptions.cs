@@ -32,7 +32,17 @@ internal static class CommercialStatisticsVolumeFilterOptions
     {
         var all = options.ToArray();
         var selected = all.Where(option => option.IsChecked).ToArray();
-        return selected.Length is 0 || selected.Length == all.Length
+        if (selected.Length == 0)
+        {
+            foreach (var option in all)
+            {
+                option.IsChecked = true;
+            }
+
+            return "Все фасовки";
+        }
+
+        return selected.Length == all.Length
             ? "Все фасовки"
             : string.Join(", ", selected.Select(option => option.Label));
     }
