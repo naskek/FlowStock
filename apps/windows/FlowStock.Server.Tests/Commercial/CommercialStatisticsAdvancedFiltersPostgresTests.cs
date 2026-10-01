@@ -47,9 +47,8 @@ public sealed class CommercialStatisticsAdvancedFiltersPostgresTests
             gtins: [fixture.Gtin("A190"), fixture.Gtin("H190")]));
         Assert.Equal(7m, multiGtin.Summary.Quantity);
         Assert.Equal(2, multiGtin.Groups.Count);
-        Assert.Equal(
-            new HashSet<string>([fixture.Gtin("A190"), fixture.Gtin("H190")]),
-            multiGtin.Groups.Select(row => row.Key!).ToHashSet());
+        var multiGtinKeys = multiGtin.Groups.Select(row => row.Key!).ToHashSet();
+        Assert.True(multiGtinKeys.SetEquals([fixture.Gtin("A190"), fixture.Gtin("H190")]));
 
         var singleAndSetAreOneOrGroup = fixture.Store.GetCommercialStatistics(Query(
             groupBy: CommercialStatisticsGroupBy.Gtin,
