@@ -9,8 +9,8 @@ public partial class MainWindow
 {
     private bool _commercialStatisticsAdvancedUiInitialized;
     private bool _applyingCommercialStatisticsMonth;
-    private TextBox? _statisticsItemNameContainsText;
-    private TextBox? _statisticsGtinsText;
+    private System.Windows.Controls.TextBox? _statisticsItemNameContainsText;
+    private System.Windows.Controls.TextBox? _statisticsGtinsText;
     private DatePicker? _statisticsMonthDate;
 
     protected override void OnContentRendered(EventArgs e)
@@ -96,7 +96,7 @@ public partial class MainWindow
             Text = "Название содержит",
             VerticalAlignment = VerticalAlignment.Center
         });
-        _statisticsItemNameContainsText = new TextBox
+        _statisticsItemNameContainsText = new System.Windows.Controls.TextBox
         {
             Width = 170,
             Margin = new Thickness(6, 0, 12, 0),
@@ -111,7 +111,7 @@ public partial class MainWindow
             Text = "GTIN набор",
             VerticalAlignment = VerticalAlignment.Center
         });
-        _statisticsGtinsText = new TextBox
+        _statisticsGtinsText = new System.Windows.Controls.TextBox
         {
             Width = 210,
             Margin = new Thickness(6, 0, 12, 0),
