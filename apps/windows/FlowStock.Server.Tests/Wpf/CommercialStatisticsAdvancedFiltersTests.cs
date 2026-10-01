@@ -68,4 +68,27 @@ public sealed class CommercialStatisticsAdvancedFiltersTests
         Assert.Equal(0, load.Request.Offset);
         Assert.Equal(100, load.Request.Limit);
     }
+
+    [Fact]
+    public void View_state_retains_advanced_ui_filters_when_legacy_filter_snapshot_is_built()
+    {
+        var state = new CommercialStatisticsViewState(pageSize: 100);
+        state.SetAdvancedFilters("0460111,0460222", "аджика");
+
+        var load = state.StartLoad(new WpfCommercialStatisticsFilters(
+            Mode: "sales",
+            GroupBy: "item",
+            From: new DateTime(2026, 9, 1),
+            To: new DateTime(2026, 9, 30),
+            PartnerId: null,
+            ItemId: null,
+            Gtin: null,
+            Brand: null,
+            Volume: null,
+            Statuses: null,
+            Sort: "gross_desc"));
+
+        Assert.Equal("0460111,0460222", load.Request.Gtins);
+        Assert.Equal("аджика", load.Request.ItemNameContains);
+    }
 }
