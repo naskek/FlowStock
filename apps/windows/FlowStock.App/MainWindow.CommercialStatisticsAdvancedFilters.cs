@@ -64,7 +64,7 @@ public partial class MainWindow
         _statisticsMonthDate.SelectedDateChanged += StatisticsMonthDate_Changed;
         panel.Children.Insert(insertAt++, _statisticsMonthDate);
 
-        var currentButton = new Button
+        var currentButton = new System.Windows.Controls.Button
         {
             Content = "Текущий",
             Margin = new Thickness(0, 0, 6, 0),
@@ -73,7 +73,7 @@ public partial class MainWindow
         currentButton.Click += StatisticsCurrentMonth_Click;
         panel.Children.Insert(insertAt++, currentButton);
 
-        var previousButton = new Button
+        var previousButton = new System.Windows.Controls.Button
         {
             Content = "Предыдущий",
             Margin = new Thickness(0, 0, 12, 0),
@@ -246,7 +246,7 @@ public partial class MainWindow
         };
 
         var extension = pdf ? ".pdf" : ".xlsx";
-        var dialog = new SaveFileDialog
+        var dialog = new Microsoft.Win32.SaveFileDialog
         {
             Title = pdf ? "Сохранить отчёт статистики PDF" : "Сохранить отчёт статистики Excel",
             Filter = pdf ? "PDF (*.pdf)|*.pdf" : "Excel (*.xlsx)|*.xlsx",
@@ -282,7 +282,7 @@ public partial class MainWindow
         {
             _services.AppLogger.Error("commercial statistics advanced export failed", ex);
             StatisticsExportStatusText.Text = "Не удалось сформировать отчёт.";
-            MessageBox.Show(
+            System.Windows.MessageBox.Show(
                 ex.Message,
                 "Экспорт статистики",
                 MessageBoxButton.OK,
