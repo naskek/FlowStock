@@ -21,7 +21,10 @@ public static class CommercialStatisticsEndpoint
         app.MapGet("/api/commercial-statistics", Handle);
     }
 
-    private static IResult Handle(HttpRequest request, CommercialStatisticsService service)
+    private static IResult Handle(
+        HttpRequest request,
+        CommercialStatisticsService service,
+        IConfiguration configuration)
     {
         if (!TryParseMode(request.Query["mode"], out var mode)
             || !TryParseGroupBy(request.Query["group_by"], out var groupBy))
@@ -116,7 +119,12 @@ public static class CommercialStatisticsEndpoint
             sort,
             Gtins: gtins,
             ItemNameContains: NullIfBlank(request.Query["item_name_contains"]));
-        var result = service.Get(query);
+
+        var result = CommercialStatisticsAdvancedReader.IsRequired(query)
+            ? new CommercialStatisticsAdvancedReader(
+                CommercialStatisticsAdvancedReader.BuildConnectionString(configuration)).Get(query)
+            : service.Get(query);
+
         return Results.Ok(new
         {
             mode = mode.ToString().ToLowerInvariant(),
