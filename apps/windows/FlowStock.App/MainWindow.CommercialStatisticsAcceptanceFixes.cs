@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
 using WpfButton = System.Windows.Controls.Button;
+using WpfPanel = System.Windows.Controls.Panel;
 using WpfTextBoxBase = System.Windows.Controls.Primitives.TextBoxBase;
 
 namespace FlowStock.App;
@@ -88,7 +89,7 @@ public partial class MainWindow
     private void ConfigureCommercialStatisticsResetFiltersButton()
     {
         if (_commercialStatisticsResetFiltersButton is not null
-            || StatisticsVolumeCombo.Parent is not Panel filterPanel)
+            || StatisticsVolumeCombo.Parent is not WpfPanel filterPanel)
         {
             return;
         }
