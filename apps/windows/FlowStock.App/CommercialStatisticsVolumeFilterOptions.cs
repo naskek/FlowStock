@@ -7,22 +7,78 @@ internal static class CommercialStatisticsVolumeFilterOptions
     public static IReadOnlyList<CommercialStatisticsVolumeFilterOption> Build(
         IEnumerable<CommercialStatisticsTextFilterOption> options)
     {
-        var specificOptions = options
-            .Where(option => !string.IsNullOrWhiteSpace(option.Value))
-            .Select(option => new CommercialStatisticsVolumeFilterOption(
+        var result = new List<CommercialStatisticsVolumeFilterOption>();
+        var synchronizing = false;
+        CommercialStatisticsVolumeFilterOption? allOption = null;
+
+        void Synchronize(CommercialStatisticsVolumeFilterOption changed)
+        {
+            if (synchronizing)
+            {
+                return;
+            }
+
+            synchronizing = true;
+            try
+            {
+                var specific = result.Where(option => !option.IsAll).ToArray();
+                if (changed.IsAll)
+                {
+                    if (changed.IsChecked)
+                    {
+                        foreach (var option in specific)
+                        {
+                            option.IsChecked = true;
+                        }
+                    }
+                    else
+                    {
+                        // Empty volume selection has historically meant "all".
+                        // Keep that contract and do not allow the master checkbox
+                        // to create a visually empty-but-semantically-all state.
+                        changed.IsChecked = true;
+                    }
+                    return;
+                }
+
+                var selectedCount = specific.Count(option => option.IsChecked);
+                if (selectedCount == 0)
+                {
+                    foreach (var option in specific)
+                    {
+                        option.IsChecked = true;
+                    }
+                    selectedCount = specific.Length;
+                }
+
+                if (allOption is not null)
+                {
+                    allOption.IsChecked = selectedCount == specific.Length;
+                }
+            }
+            finally
+            {
+                synchronizing = false;
+            }
+        }
+
+        allOption = new CommercialStatisticsVolumeFilterOption(
+            value: null,
+            label: "Все фасовки",
+            isChecked: true,
+            Synchronize);
+        result.Add(allOption);
+
+        foreach (var option in options.Where(option => !string.IsNullOrWhiteSpace(option.Value)))
+        {
+            result.Add(new CommercialStatisticsVolumeFilterOption(
                 option.Value!.Trim(),
                 option.Label,
-                isChecked: true))
-            .ToArray();
+                isChecked: true,
+                Synchronize));
+        }
 
-        return
-        [
-            new CommercialStatisticsVolumeFilterOption(
-                value: null,
-                label: "Все фасовки",
-                isChecked: true),
-            .. specificOptions
-        ];
+        return result;
     }
 
     public static string? BuildCsv(
@@ -41,26 +97,10 @@ internal static class CommercialStatisticsVolumeFilterOptions
     public static string BuildLabel(
         IEnumerable<CommercialStatisticsVolumeFilterOption> options)
     {
-        var all = options.ToArray();
-        var specific = all.Where(option => !option.IsAll).ToArray();
+        var specific = options.Where(option => !option.IsAll).ToArray();
         var selected = specific.Where(option => option.IsChecked).ToArray();
 
-        if (selected.Length == 0)
-        {
-            foreach (var option in specific)
-            {
-                option.IsChecked = true;
-            }
-            selected = specific;
-        }
-
-        var allOption = all.FirstOrDefault(option => option.IsAll);
-        if (allOption is not null)
-        {
-            allOption.IsChecked = selected.Length == specific.Length;
-        }
-
-        return selected.Length == specific.Length
+        return selected.Length is 0 || selected.Length == specific.Length
             ? "Все фасовки"
             : string.Join(", ", selected.Select(option => option.Label));
     }
@@ -68,16 +108,19 @@ internal static class CommercialStatisticsVolumeFilterOptions
 
 internal sealed class CommercialStatisticsVolumeFilterOption : INotifyPropertyChanged
 {
+    private readonly Action<CommercialStatisticsVolumeFilterOption>? _onChanged;
     private bool _isChecked;
 
     public CommercialStatisticsVolumeFilterOption(
         string? value,
         string label,
-        bool isChecked)
+        bool isChecked,
+        Action<CommercialStatisticsVolumeFilterOption>? onChanged = null)
     {
         Value = value;
         Label = label;
         _isChecked = isChecked;
+        _onChanged = onChanged;
     }
 
     public string? Value { get; }
@@ -96,6 +139,7 @@ internal sealed class CommercialStatisticsVolumeFilterOption : INotifyPropertyCh
 
             _isChecked = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsChecked)));
+            _onChanged?.Invoke(this);
         }
     }
 
