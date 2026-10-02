@@ -98,7 +98,7 @@ public sealed class CommercialStatisticsAdvancedFiltersTests
     }
 
     [Fact]
-    public void Volume_checklist_uses_null_for_all_and_csv_for_subset()
+    public void Volume_checklist_has_select_all_and_uses_null_for_all()
     {
         var options = CommercialStatisticsVolumeFilterOptions.Build(
             new[]
@@ -109,16 +109,34 @@ public sealed class CommercialStatisticsAdvancedFiltersTests
                 new CommercialStatisticsTextFilterOption("1000 мл", "1000 мл")
             });
 
+        Assert.True(options[0].IsAll);
+        Assert.Equal("Все фасовки", options[0].Label);
+        Assert.All(options, option => Assert.True(option.IsChecked));
         Assert.Null(CommercialStatisticsVolumeFilterOptions.BuildCsv(options));
         Assert.Equal("Все фасовки", CommercialStatisticsVolumeFilterOptions.BuildLabel(options));
-
-        options[1].IsChecked = false;
-        Assert.Equal("190 мл,1000 мл", CommercialStatisticsVolumeFilterOptions.BuildCsv(options));
-        Assert.Equal("190 мл, 1000 мл", CommercialStatisticsVolumeFilterOptions.BuildLabel(options));
     }
 
     [Fact]
-    public void Volume_checklist_restores_all_when_last_checkbox_is_cleared()
+    public void Volume_checklist_builds_csv_for_selected_subset_and_clears_master()
+    {
+        var options = CommercialStatisticsVolumeFilterOptions.Build(
+            new[]
+            {
+                new CommercialStatisticsTextFilterOption(null, "Все фасовки"),
+                new CommercialStatisticsTextFilterOption("190 мл", "190 мл"),
+                new CommercialStatisticsTextFilterOption("500 мл", "500 мл"),
+                new CommercialStatisticsTextFilterOption("1000 мл", "1000 мл")
+            });
+
+        options[2].IsChecked = false;
+
+        Assert.Equal("190 мл,1000 мл", CommercialStatisticsVolumeFilterOptions.BuildCsv(options));
+        Assert.Equal("190 мл, 1000 мл", CommercialStatisticsVolumeFilterOptions.BuildLabel(options));
+        Assert.False(options[0].IsChecked);
+    }
+
+    [Fact]
+    public void Volume_checklist_restores_all_when_last_specific_checkbox_is_cleared()
     {
         var options = CommercialStatisticsVolumeFilterOptions.Build(
             new[]
@@ -128,7 +146,7 @@ public sealed class CommercialStatisticsAdvancedFiltersTests
                 new CommercialStatisticsTextFilterOption("500 мл", "500 мл")
             });
 
-        foreach (var option in options)
+        foreach (var option in options.Where(option => !option.IsAll))
         {
             option.IsChecked = false;
         }
