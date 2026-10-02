@@ -12,7 +12,9 @@ internal sealed record CommercialStatisticsExportSelection(
     string GtinLabel,
     string BrandLabel,
     string VolumeLabel,
-    string StatusesLabel)
+    string StatusesLabel,
+    string? GtinsLabel = null,
+    string? ItemNameContainsLabel = null)
 {
     private static readonly CultureInfo RussianCulture = CultureInfo.GetCultureInfo("ru-RU");
 
@@ -44,7 +46,9 @@ internal sealed record CommercialStatisticsExportSelection(
         ("Детализация", DetailLabel),
         ("Контрагент", PartnerLabel),
         ("Товар", ItemLabel),
+        ("Название содержит", string.IsNullOrWhiteSpace(ItemNameContainsLabel) ? "Не задано" : ItemNameContainsLabel),
         ("GTIN", GtinLabel),
+        ("GTIN (набор)", string.IsNullOrWhiteSpace(GtinsLabel) ? "Не задан" : GtinsLabel),
         ("Бренд", BrandLabel),
         ("Фасовка", VolumeLabel),
         ("Статусы", StatusesLabel)

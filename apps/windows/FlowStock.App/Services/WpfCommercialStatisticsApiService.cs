@@ -38,8 +38,11 @@ public sealed class WpfCommercialStatisticsApiService
         Add(query, "partner_id", request.PartnerId?.ToString(CultureInfo.InvariantCulture));
         Add(query, "item_id", request.ItemId?.ToString(CultureInfo.InvariantCulture));
         Add(query, "gtin", request.Gtin);
+        Add(query, "gtins", request.Gtins);
+        Add(query, "item_name_contains", request.ItemNameContains);
         Add(query, "brand", request.Brand);
         Add(query, "volume", request.Volume);
+        Add(query, "volumes", request.Volumes);
         Add(query, "statuses", request.Statuses);
 
         using var client = CreateClient();
@@ -47,21 +50,53 @@ public sealed class WpfCommercialStatisticsApiService
             $"/api/commercial-statistics?{string.Join("&", query)}",
             cancellationToken).ConfigureAwait(false);
         var raw = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-        {
-            try
-            {
-                var error = JsonSerializer.Deserialize<ApiErrorDto>(raw, JsonOptions);
-                throw new InvalidOperationException(error?.Message ?? error?.Error ?? "Сервер отклонил запрос статистики.");
-            }
-            catch (JsonException)
-            {
-                throw new InvalidOperationException($"Сервер вернул ошибку {(int)response.StatusCode}.");
-            }
-        }
+        EnsureSuccess(response, raw);
 
         return JsonSerializer.Deserialize<WpfCommercialStatisticsResult>(raw, JsonOptions)
                ?? new WpfCommercialStatisticsResult();
+    }
+
+    public async Task<WpfCommercialStatisticsFilterOptionsResult> GetFilterOptionsAsync(
+        WpfCommercialStatisticsFilterOptionsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var query = new List<string>
+        {
+            $"mode={Uri.EscapeDataString(request.Mode)}",
+            $"from={request.From:yyyy-MM-dd}",
+            $"to={request.To:yyyy-MM-dd}",
+            $"partner_id={request.PartnerId.ToString(CultureInfo.InvariantCulture)}"
+        };
+        Add(query, "statuses", request.Statuses);
+
+        using var client = CreateClient();
+        using var response = await client.GetAsync(
+            $"/api/commercial-statistics/filter-options?{string.Join("&", query)}",
+            cancellationToken).ConfigureAwait(false);
+        var raw = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        EnsureSuccess(response, raw);
+
+        return JsonSerializer.Deserialize<WpfCommercialStatisticsFilterOptionsResult>(raw, JsonOptions)
+               ?? new WpfCommercialStatisticsFilterOptionsResult();
+    }
+
+    private static void EnsureSuccess(HttpResponseMessage response, string raw)
+    {
+        if (response.IsSuccessStatusCode)
+        {
+            return;
+        }
+
+        try
+        {
+            var error = JsonSerializer.Deserialize<ApiErrorDto>(raw, JsonOptions);
+            throw new InvalidOperationException(
+                error?.Message ?? error?.Error ?? "Сервер отклонил запрос статистики.");
+        }
+        catch (JsonException)
+        {
+            throw new InvalidOperationException($"Сервер вернул ошибку {(int)response.StatusCode}.");
+        }
     }
 
     private HttpClient CreateClient()
@@ -129,7 +164,23 @@ public sealed record WpfCommercialStatisticsRequest(
     string? Statuses = null,
     int Limit = 100,
     int Offset = 0,
-    string Sort = "gross_desc");
+    string Sort = "gross_desc",
+    string? Gtins = null,
+    string? ItemNameContains = null,
+    string? Volumes = null);
+
+public sealed record WpfCommercialStatisticsFilterOptionsRequest(
+    string Mode,
+    DateTime From,
+    DateTime To,
+    long PartnerId,
+    string? Statuses = null);
+
+public sealed class WpfCommercialStatisticsFilterOptionsResult
+{
+    [JsonPropertyName("item_ids")]
+    public List<long> ItemIds { get; set; } = [];
+}
 
 public sealed class WpfCommercialStatisticsResult
 {

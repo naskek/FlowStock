@@ -6,7 +6,7 @@ namespace FlowStock.Server.Tests.Wpf;
 public sealed class CommercialStatisticsFilterOptionsTests
 {
     [Fact]
-    public void Partner_search_matches_start_of_name_word()
+    public void Partner_search_matches_substring_inside_name()
     {
         var options = CommercialStatisticsFilterOptions.BuildPartners(
         [
@@ -14,16 +14,16 @@ public sealed class CommercialStatisticsFilterOptionsTests
             new Partner { Id = 2, Code = "CL-02", Name = "Мария Соколова" }
         ]);
 
-        var matches = CommercialStatisticsFilterOptions.SearchEntities(options, "  ПЕ  ");
+        var matches = CommercialStatisticsFilterOptions.SearchEntities(options, "  чаг  ");
 
         var match = Assert.Single(matches);
         Assert.Equal(1, match.Id);
     }
 
     [Theory]
-    [InlineData("CL-02", 2)]
-    [InlineData("иван", 1)]
-    public void Partner_search_matches_code_and_name_prefix(string query, long expectedId)
+    [InlineData("L-0", 1)]
+    [InlineData("рия сок", 2)]
+    public void Partner_search_matches_code_and_name_substring(string query, long expectedId)
     {
         var options = CommercialStatisticsFilterOptions.BuildPartners(
         [
@@ -31,18 +31,17 @@ public sealed class CommercialStatisticsFilterOptionsTests
             new Partner { Id = 2, Code = "CL-02", Name = "Мария Соколова" }
         ]);
 
-        var match = Assert.Single(
-            CommercialStatisticsFilterOptions.SearchEntities(options, query));
+        var matches = CommercialStatisticsFilterOptions.SearchEntities(options, query);
 
-        Assert.Equal(expectedId, match.Id);
+        Assert.Contains(matches, option => option.Id == expectedId);
     }
 
     [Theory]
     [InlineData("ябл", 10)]
-    [InlineData("  сок   яб  ", 10)]
-    [InlineData("0460123", 10)]
-    [InlineData("sku-20", 20)]
-    public void Item_search_matches_name_gtin_and_barcode(string query, long expectedId)
+    [InlineData("  ок   блоч  ", 10)]
+    [InlineData("4567890", 10)]
+    [InlineData("ku-2", 20)]
+    public void Item_search_matches_substrings_in_name_gtin_and_barcode(string query, long expectedId)
     {
         var options = CommercialStatisticsFilterOptions.BuildItems(
         [
@@ -54,6 +53,24 @@ public sealed class CommercialStatisticsFilterOptionsTests
             CommercialStatisticsFilterOptions.SearchEntities(options, query));
 
         Assert.Equal(expectedId, match.Id);
+    }
+
+    [Fact]
+    public void Gtin_search_matches_suffix_and_ignores_separators_in_query()
+    {
+        var options = new[]
+        {
+            new CommercialStatisticsTextFilterOption(null, "Все GTIN"),
+            new CommercialStatisticsTextFilterOption("046012340018", "046012340018"),
+            new CommercialStatisticsTextFilterOption("046099999999", "046099999999")
+        };
+
+        Assert.Equal(
+            "046012340018",
+            Assert.Single(CommercialStatisticsFilterOptions.SearchText(options, "0018")).Value);
+        Assert.Equal(
+            "046012340018",
+            Assert.Single(CommercialStatisticsFilterOptions.SearchText(options, "00-18")).Value);
     }
 
     [Fact]
@@ -71,9 +88,9 @@ public sealed class CommercialStatisticsFilterOptionsTests
     }
 
     [Theory]
-    [InlineData("бе", "Белый бренд")]
-    [InlineData("КО", "Короб 12 шт")]
-    public void Text_search_matches_value_word_prefix_without_case(
+    [InlineData("лый бр", "Белый бренд")]
+    [InlineData("12 ш", "Короб 12 шт")]
+    public void Text_search_matches_value_substring_without_case(
         string query,
         string expectedValue)
     {
