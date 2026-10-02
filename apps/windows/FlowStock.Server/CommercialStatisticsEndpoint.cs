@@ -20,6 +20,57 @@ public static class CommercialStatisticsEndpoint
     public static void Map(WebApplication app)
     {
         app.MapGet("/api/commercial-statistics", Handle);
+        app.MapGet("/api/commercial-statistics/filter-options", HandleFilterOptions);
+    }
+
+    private static IResult HandleFilterOptions(
+        HttpRequest request,
+        IConfiguration configuration)
+    {
+        if (!TryParseMode(request.Query["mode"], out var mode))
+        {
+            return Invalid("INVALID_STATISTICS_MODE", "Некорректный режим статистики.");
+        }
+
+        if (!TryParseDate(request.Query["from"], out var from)
+            || !TryParseDate(request.Query["to"], out var to)
+            || to < from)
+        {
+            return Invalid("INVALID_STATISTICS_PERIOD", "Укажите корректный период статистики.");
+        }
+
+        var statusesRaw = request.Query["statuses"].ToString();
+        if (mode == CommercialStatisticsMode.Sales && !string.IsNullOrWhiteSpace(statusesRaw))
+        {
+            return Invalid(
+                "STATUSES_NOT_SUPPORTED_FOR_SALES",
+                "Фильтр статусов применяется только в режиме «Заказы».");
+        }
+
+        if (!TryParseStatuses(statusesRaw, out var statuses))
+        {
+            return Invalid("INVALID_ORDER_STATUSES", "Указан неподдерживаемый статус заказа.");
+        }
+
+        if (!TryOptionalLong(request.Query["partner_id"], out var partnerId)
+            || !partnerId.HasValue)
+        {
+            return Invalid("INVALID_STATISTICS_PARTNER", "Для зависимых фильтров требуется контрагент.");
+        }
+
+        var reader = new CommercialStatisticsFilterOptionsReader(
+            CommercialStatisticsAdvancedReader.BuildConnectionString(configuration));
+        var itemIds = reader.GetAvailableItemIds(
+            mode,
+            from,
+            to.AddDays(1),
+            partnerId.Value,
+            mode == CommercialStatisticsMode.Orders ? statuses : Array.Empty<OrderStatus>());
+
+        return Results.Ok(new
+        {
+            item_ids = itemIds
+        });
     }
 
     private static IResult Handle(
@@ -45,11 +96,11 @@ public static class CommercialStatisticsEndpoint
         if (!string.IsNullOrWhiteSpace(detailMonthRaw))
         {
             if (!DateTime.TryParseExact(
-                    detailMonthRaw,
-                    "yyyy-MM",
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.None,
-                    out var parsedMonth))
+                detailMonthRaw,
+                "yyyy-MM",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsedMonth))
             {
                 return Invalid("INVALID_DETAIL_MONTH", "Месяц детализации должен иметь формат YYYY-MM.");
             }
