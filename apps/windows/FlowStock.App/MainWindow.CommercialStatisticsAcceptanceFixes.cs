@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
+using WpfButton = System.Windows.Controls.Button;
 using WpfTextBoxBase = System.Windows.Controls.Primitives.TextBoxBase;
 
 namespace FlowStock.App;
@@ -15,7 +16,7 @@ public partial class MainWindow
     private DependencyPropertyDescriptor? _commercialStatisticsMonthlyItemsSourceDescriptor;
     private long _commercialStatisticsPartnerFilterRequestId;
     private long? _commercialStatisticsScopedPartnerId;
-    private Button? _commercialStatisticsResetFiltersButton;
+    private WpfButton? _commercialStatisticsResetFiltersButton;
 
     private void ApplyCommercialStatisticsAcceptanceFixes()
     {
@@ -92,7 +93,7 @@ public partial class MainWindow
             return;
         }
 
-        var button = new Button
+        var button = new WpfButton
         {
             Content = "Сбросить фильтры",
             Margin = new Thickness(8, 0, 0, 0),
