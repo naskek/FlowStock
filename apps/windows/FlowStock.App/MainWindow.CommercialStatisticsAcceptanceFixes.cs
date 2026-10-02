@@ -5,6 +5,8 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Threading;
+using WpfButtonBase = System.Windows.Controls.Primitives.ButtonBase;
+using WpfTextBoxBase = System.Windows.Controls.Primitives.TextBoxBase;
 
 namespace FlowStock.App;
 
@@ -37,7 +39,7 @@ public partial class MainWindow
         ConfigureCommercialStatisticsCompletedOnly();
 
         StatisticsVolumeCombo.AddHandler(
-            ButtonBase.ClickEvent,
+            WpfButtonBase.ClickEvent,
             new RoutedEventHandler(StatisticsAcceptanceVolumeOption_Click),
             handledEventsToo: true);
     }
@@ -47,10 +49,10 @@ public partial class MainWindow
         foreach (var comboBox in new[] { StatisticsItemCombo, StatisticsGtinCombo })
         {
             comboBox.RemoveHandler(
-                TextBoxBase.TextChangedEvent,
+                WpfTextBoxBase.TextChangedEvent,
                 new TextChangedEventHandler(StatisticsSearchCombo_TextChanged));
             comboBox.RemoveHandler(
-                TextBoxBase.TextChangedEvent,
+                WpfTextBoxBase.TextChangedEvent,
                 new TextChangedEventHandler(StatisticsAdvancedSelector_TextChanged));
             comboBox.DropDownClosed -= StatisticsSearchCombo_DropDownClosed;
             comboBox.PreviewKeyDown -= StatisticsSearchCombo_PreviewKeyDown;
@@ -61,7 +63,7 @@ public partial class MainWindow
             comboBox.GotKeyboardFocus += StatisticsAcceptanceSelector_GotKeyboardFocus;
             comboBox.SelectionChanged += StatisticsAcceptanceSelector_SelectionChanged;
             comboBox.AddHandler(
-                TextBoxBase.TextChangedEvent,
+                WpfTextBoxBase.TextChangedEvent,
                 new TextChangedEventHandler(StatisticsAcceptanceSelector_TextChanged),
                 handledEventsToo: true);
         }
