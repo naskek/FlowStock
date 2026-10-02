@@ -5,8 +5,9 @@ namespace FlowStock.App;
 internal static class CommercialStatisticsVolumeFilterOptions
 {
     public static IReadOnlyList<CommercialStatisticsVolumeFilterOption> Build(
-        IEnumerable<CommercialStatisticsTextFilterOption> options) =>
-        options
+        IEnumerable<CommercialStatisticsTextFilterOption> options)
+    {
+        var specificOptions = options
             .Where(option => !string.IsNullOrWhiteSpace(option.Value))
             .Select(option => new CommercialStatisticsVolumeFilterOption(
                 option.Value!.Trim(),
@@ -14,12 +15,22 @@ internal static class CommercialStatisticsVolumeFilterOptions
                 isChecked: true))
             .ToArray();
 
+        return
+        [
+            new CommercialStatisticsVolumeFilterOption(
+                value: null,
+                label: "Все фасовки",
+                isChecked: true),
+            .. specificOptions
+        ];
+    }
+
     public static string? BuildCsv(
         IEnumerable<CommercialStatisticsVolumeFilterOption> options)
     {
-        var all = options.ToArray();
-        var selected = all.Where(option => option.IsChecked).ToArray();
-        if (selected.Length is 0 || selected.Length == all.Length)
+        var specific = options.Where(option => !option.IsAll).ToArray();
+        var selected = specific.Where(option => option.IsChecked).ToArray();
+        if (selected.Length is 0 || selected.Length == specific.Length)
         {
             return null;
         }
@@ -31,18 +42,25 @@ internal static class CommercialStatisticsVolumeFilterOptions
         IEnumerable<CommercialStatisticsVolumeFilterOption> options)
     {
         var all = options.ToArray();
-        var selected = all.Where(option => option.IsChecked).ToArray();
+        var specific = all.Where(option => !option.IsAll).ToArray();
+        var selected = specific.Where(option => option.IsChecked).ToArray();
+
         if (selected.Length == 0)
         {
-            foreach (var option in all)
+            foreach (var option in specific)
             {
                 option.IsChecked = true;
             }
-
-            return "Все фасовки";
+            selected = specific;
         }
 
-        return selected.Length == all.Length
+        var allOption = all.FirstOrDefault(option => option.IsAll);
+        if (allOption is not null)
+        {
+            allOption.IsChecked = selected.Length == specific.Length;
+        }
+
+        return selected.Length == specific.Length
             ? "Все фасовки"
             : string.Join(", ", selected.Select(option => option.Label));
     }
@@ -53,7 +71,7 @@ internal sealed class CommercialStatisticsVolumeFilterOption : INotifyPropertyCh
     private bool _isChecked;
 
     public CommercialStatisticsVolumeFilterOption(
-        string value,
+        string? value,
         string label,
         bool isChecked)
     {
@@ -62,8 +80,9 @@ internal sealed class CommercialStatisticsVolumeFilterOption : INotifyPropertyCh
         _isChecked = isChecked;
     }
 
-    public string Value { get; }
+    public string? Value { get; }
     public string Label { get; }
+    public bool IsAll => Value is null;
 
     public bool IsChecked
     {
