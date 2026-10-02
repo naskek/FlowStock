@@ -15,6 +15,8 @@ internal sealed class CommercialStatisticsViewState
     private string? _gtins;
     private string? _itemNameContains;
     private string? _volumes;
+    private DateTime? _detailPeriodFrom;
+    private DateTime? _detailPeriodTo;
 
     public CommercialStatisticsViewState(int pageSize)
     {
@@ -23,6 +25,8 @@ internal sealed class CommercialStatisticsViewState
 
     public bool IsLoading { get; private set; }
     public string? DetailMonth { get; private set; }
+    public DateTime? DetailPeriodFrom => _detailPeriodFrom;
+    public DateTime? DetailPeriodTo => _detailPeriodTo;
     public string? Gtins => _gtins;
     public string? ItemNameContains => _itemNameContains;
     public string? Volumes => _volumes;
@@ -68,7 +72,20 @@ internal sealed class CommercialStatisticsViewState
 
     public CommercialStatisticsLoad StartLoad(WpfCommercialStatisticsFilters filters)
     {
-        DropDetailMonthOutsidePeriod(filters.From, filters.To);
+        var requestFrom = DetailMonth is not null && _detailPeriodFrom.HasValue
+            ? _detailPeriodFrom.Value
+            : filters.From;
+        var requestTo = DetailMonth is not null && _detailPeriodTo.HasValue
+            ? _detailPeriodTo.Value
+            : filters.To;
+
+        DropDetailMonthOutsidePeriod(requestFrom, requestTo);
+        if (DetailMonth is null)
+        {
+            requestFrom = filters.From;
+            requestTo = filters.To;
+        }
+
         _activeRequestId = ++_nextRequestId;
         IsLoading = true;
         return new CommercialStatisticsLoad(
@@ -76,8 +93,8 @@ internal sealed class CommercialStatisticsViewState
             new WpfCommercialStatisticsRequest(
                 filters.Mode,
                 filters.GroupBy,
-                filters.From,
-                filters.To,
+                requestFrom,
+                requestTo,
                 DetailMonth,
                 filters.PartnerId,
                 filters.ItemId,
@@ -155,21 +172,48 @@ internal sealed class CommercialStatisticsViewState
         _totalCount = 0;
         if (periodChanged)
         {
-            DetailMonth = null;
+            ClearDetailSelection();
         }
     }
 
-    public void SelectDetailMonth(string? month)
+    public void SelectDetailMonth(
+        string? month,
+        DateTime? periodFrom = null,
+        DateTime? periodTo = null)
     {
         var normalized = string.IsNullOrWhiteSpace(month) ? null : month.Trim();
+        var hadDetailSelection = !string.IsNullOrWhiteSpace(DetailMonth);
+
         if (string.Equals(DetailMonth, normalized, StringComparison.Ordinal))
         {
+            if (!hadDetailSelection
+                && periodFrom.HasValue
+                && periodTo.HasValue)
+            {
+                _detailPeriodFrom = periodFrom.Value.Date;
+                _detailPeriodTo = periodTo.Value.Date;
+            }
             return;
         }
 
         InvalidateActiveRequest();
         DetailMonth = normalized;
         ResetOffset();
+
+        if (normalized is null)
+        {
+            _detailPeriodFrom = null;
+            _detailPeriodTo = null;
+            return;
+        }
+
+        if (!hadDetailSelection
+            && periodFrom.HasValue
+            && periodTo.HasValue)
+        {
+            _detailPeriodFrom = periodFrom.Value.Date;
+            _detailPeriodTo = periodTo.Value.Date;
+        }
     }
 
     public bool ReturnToWholePeriod()
@@ -205,9 +249,16 @@ internal sealed class CommercialStatisticsViewState
             || detail.Date < new DateTime(from.Year, from.Month, 1)
             || detail.Date > new DateTime(to.Year, to.Month, 1))
         {
-            DetailMonth = null;
+            ClearDetailSelection();
             ResetOffset();
         }
+    }
+
+    private void ClearDetailSelection()
+    {
+        DetailMonth = null;
+        _detailPeriodFrom = null;
+        _detailPeriodTo = null;
     }
 }
 
