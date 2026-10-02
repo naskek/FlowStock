@@ -2,10 +2,8 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Threading;
-using WpfButtonBase = System.Windows.Controls.Primitives.ButtonBase;
 using WpfTextBoxBase = System.Windows.Controls.Primitives.TextBoxBase;
 
 namespace FlowStock.App;
@@ -13,9 +11,7 @@ namespace FlowStock.App;
 public partial class MainWindow
 {
     private bool _commercialStatisticsAcceptanceFixesApplied;
-    private bool _preserveCommercialStatisticsMonthlyNavigation;
     private string? _commercialStatisticsNavigationSelectedMonth;
-    private IReadOnlyList<WpfCommercialStatisticsMonth>? _commercialStatisticsNavigationMonths;
     private DependencyPropertyDescriptor? _commercialStatisticsMonthlyItemsSourceDescriptor;
 
     private void ApplyCommercialStatisticsAcceptanceFixes()
@@ -36,12 +32,8 @@ public partial class MainWindow
         _commercialStatisticsAcceptanceFixesApplied = true;
         RewireCommercialStatisticsAcceptanceSelectors();
         RewireCommercialStatisticsMonthlyNavigation();
+        RewireCommercialStatisticsWholePeriodAction();
         ConfigureCommercialStatisticsCompletedOnly();
-
-        StatisticsVolumeCombo.AddHandler(
-            WpfButtonBase.ClickEvent,
-            new RoutedEventHandler(StatisticsAcceptanceVolumeOption_Click),
-            handledEventsToo: true);
     }
 
     private void RewireCommercialStatisticsAcceptanceSelectors()
@@ -212,62 +204,51 @@ public partial class MainWindow
         _commercialStatisticsMonthlyItemsSourceDescriptor?.AddValueChanged(
             StatisticsMonthlyGrid,
             StatisticsAcceptanceMonthlyItemsSource_Changed);
+    }
 
-        CaptureCommercialStatisticsNavigationMonths();
+    private void RewireCommercialStatisticsWholePeriodAction()
+    {
+        StatisticsAllPeriodButton.Click -= StatisticsAllPeriod_Click;
+        StatisticsAllPeriodButton.Click += StatisticsAcceptanceAllPeriod_Click;
     }
 
     private void StatisticsAcceptanceMonthlyItemsSource_Changed(object? sender, EventArgs e)
     {
-        if (_restoringCommercialStatisticsMonthSelection)
+        if (_restoringCommercialStatisticsMonthSelection
+            || string.IsNullOrWhiteSpace(_commercialStatisticsNavigationSelectedMonth)
+            || !string.Equals(
+                _commercialStatisticsState.DetailMonth,
+                _commercialStatisticsNavigationSelectedMonth,
+                StringComparison.Ordinal))
         {
             return;
         }
 
-        var current = StatisticsMonthlyGrid.Items
-            .OfType<WpfCommercialStatisticsMonth>()
-            .ToArray();
-        if (!_preserveCommercialStatisticsMonthlyNavigation)
-        {
-            if (current.Length > 1)
-            {
-                _commercialStatisticsNavigationMonths = current;
-            }
-            return;
-        }
-
-        if (current.Length > 1)
-        {
-            _commercialStatisticsNavigationMonths = current;
-            return;
-        }
-
-        if (_commercialStatisticsNavigationMonths is { Count: > 1 })
-        {
-            Dispatcher.BeginInvoke(
-                DispatcherPriority.Background,
-                new Action(RestoreCommercialStatisticsNavigationMonths));
-        }
-    }
-
-    private void CaptureCommercialStatisticsNavigationMonths()
-    {
-        var current = StatisticsMonthlyGrid.Items
-            .OfType<WpfCommercialStatisticsMonth>()
-            .ToArray();
-        if (current.Length > 1)
-        {
-            _commercialStatisticsNavigationMonths = current;
-        }
+        var selectedMonth = _commercialStatisticsNavigationSelectedMonth;
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.Background,
+            new Action(() => RestoreCommercialStatisticsMonthlySelection(selectedMonth)));
     }
 
     private async void StatisticsAcceptanceMonthlyGrid_SelectionChanged(
         object sender,
         SelectionChangedEventArgs e)
     {
-        if (!IsLoaded
-            || _restoringCommercialStatisticsMonthSelection
-            || StatisticsMonthlyGrid.SelectedItem is not WpfCommercialStatisticsMonth month
-            || !DateTime.TryParseExact(
+        if (!IsLoaded || _restoringCommercialStatisticsMonthSelection)
+        {
+            return;
+        }
+
+        if (StatisticsMonthlyGrid.SelectedItem is not WpfCommercialStatisticsMonth month)
+        {
+            if (string.IsNullOrWhiteSpace(_commercialStatisticsState.DetailMonth))
+            {
+                _commercialStatisticsNavigationSelectedMonth = null;
+            }
+            return;
+        }
+
+        if (!DateTime.TryParseExact(
                 month.Month,
                 "yyyy-MM",
                 CultureInfo.InvariantCulture,
@@ -277,43 +258,61 @@ public partial class MainWindow
             return;
         }
 
-        CaptureCommercialStatisticsNavigationMonths();
-        _preserveCommercialStatisticsMonthlyNavigation = true;
-        _commercialStatisticsNavigationSelectedMonth = month.Month;
-
-        SetCommercialStatisticsPeriodControls(selectedMonth);
-        _commercialStatisticsState.CriteriaChanged(periodChanged: true);
-        _commercialStatisticsState.SelectDetailMonth(month.Month);
-        UpdateCommercialStatisticsNavigation();
-        await LoadCommercialStatisticsImmediatelyAsync().ConfigureAwait(true);
-        RestoreCommercialStatisticsNavigationMonths();
-    }
-
-    private void RestoreCommercialStatisticsNavigationMonths()
-    {
-        if (_commercialStatisticsNavigationMonths is not { Count: > 1 } months)
+        var navigationFrom = _commercialStatisticsState.DetailPeriodFrom
+            ?? StatisticsFromDate.SelectedDate;
+        var navigationTo = _commercialStatisticsState.DetailPeriodTo
+            ?? StatisticsToDate.SelectedDate;
+        if (!navigationFrom.HasValue || !navigationTo.HasValue)
         {
             return;
         }
 
-        _restoringCommercialStatisticsMonthSelection = true;
+        _commercialStatisticsNavigationSelectedMonth = month.Month;
+        SetCommercialStatisticsPeriodControls(selectedMonth);
+        _commercialStatisticsState.CriteriaChanged(periodChanged: false);
+        _commercialStatisticsState.SelectDetailMonth(
+            month.Month,
+            navigationFrom.Value,
+            navigationTo.Value);
+        UpdateCommercialStatisticsNavigation();
+        await LoadCommercialStatisticsImmediatelyAsync().ConfigureAwait(true);
+        RestoreCommercialStatisticsMonthlySelection(month.Month);
+    }
+
+    private async void StatisticsAcceptanceAllPeriod_Click(object sender, RoutedEventArgs e)
+    {
+        var navigationFrom = _commercialStatisticsState.DetailPeriodFrom;
+        var navigationTo = _commercialStatisticsState.DetailPeriodTo;
+        if (!_commercialStatisticsState.ReturnToWholePeriod())
+        {
+            return;
+        }
+
+        _commercialStatisticsNavigationSelectedMonth = null;
+        _applyingCommercialStatisticsMonth = true;
         try
         {
-            StatisticsMonthlyGrid.ItemsSource = months;
-            var selected = months.FirstOrDefault(item => string.Equals(
-                item.Month,
-                _commercialStatisticsNavigationSelectedMonth,
-                StringComparison.Ordinal));
-            StatisticsMonthlyGrid.SelectedItem = selected;
-            if (selected is not null)
+            if (_statisticsMonthDate is not null)
             {
-                StatisticsMonthlyGrid.ScrollIntoView(selected);
+                _statisticsMonthDate.SelectedDate = null;
             }
+            if (navigationFrom.HasValue)
+            {
+                StatisticsFromDate.SelectedDate = navigationFrom.Value;
+            }
+            if (navigationTo.HasValue)
+            {
+                StatisticsToDate.SelectedDate = navigationTo.Value;
+            }
+            StatisticsMonthlyGrid.SelectedItem = null;
         }
         finally
         {
-            _restoringCommercialStatisticsMonthSelection = false;
+            _applyingCommercialStatisticsMonth = false;
         }
+
+        UpdateCommercialStatisticsNavigation();
+        await LoadCommercialStatisticsImmediatelyAsync().ConfigureAwait(true);
     }
 
     private void ConfigureCommercialStatisticsCompletedOnly()
@@ -342,52 +341,5 @@ public partial class MainWindow
         }
 
         grid.Children.Remove(StatisticsStatusesCombo);
-    }
-
-    private void StatisticsAcceptanceVolumeOption_Click(object sender, RoutedEventArgs e)
-    {
-        if (_suppressCommercialStatisticsFilterEvents
-            || e.OriginalSource is not System.Windows.Controls.CheckBox checkBox
-            || checkBox.DataContext is not CommercialStatisticsVolumeFilterOption option)
-        {
-            return;
-        }
-
-        var previousSuppression = _suppressCommercialStatisticsFilterEvents;
-        _suppressCommercialStatisticsFilterEvents = true;
-        try
-        {
-            var specificOptions = _statisticsVolumeMultiOptions
-                .Where(candidate => !candidate.IsAll)
-                .ToArray();
-            var allOption = _statisticsVolumeMultiOptions.FirstOrDefault(candidate => candidate.IsAll);
-
-            if (option.IsAll)
-            {
-                foreach (var candidate in specificOptions)
-                {
-                    candidate.IsChecked = true;
-                }
-                if (allOption is not null)
-                {
-                    allOption.IsChecked = true;
-                }
-            }
-            else if (allOption is not null)
-            {
-                allOption.IsChecked = specificOptions.All(candidate => candidate.IsChecked);
-            }
-        }
-        finally
-        {
-            _suppressCommercialStatisticsFilterEvents = previousSuppression;
-        }
-
-        UpdateStatisticsVolumeFilterText();
-        ApplyCommercialStatisticsAdvancedFilters();
-        _commercialStatisticsState.CriteriaChanged(periodChanged: false);
-        UpdateCommercialStatisticsNavigation();
-        ScheduleCommercialStatisticsRefresh();
-        Dispatcher.BeginInvoke(() => StatisticsVolumeCombo.IsDropDownOpen = true);
     }
 }
