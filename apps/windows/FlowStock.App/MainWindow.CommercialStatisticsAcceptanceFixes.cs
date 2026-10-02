@@ -31,6 +31,7 @@ public partial class MainWindow
 
         _commercialStatisticsAcceptanceFixesApplied = true;
         RewireCommercialStatisticsAcceptanceSelectors();
+        RewireCommercialStatisticsVolumeChecklist();
         RewireCommercialStatisticsMonthlyNavigation();
         RewireCommercialStatisticsWholePeriodAction();
         ConfigureCommercialStatisticsCompletedOnly();
@@ -59,6 +60,17 @@ public partial class MainWindow
                 new TextChangedEventHandler(StatisticsAcceptanceSelector_TextChanged),
                 handledEventsToo: true);
         }
+    }
+
+    private void RewireCommercialStatisticsVolumeChecklist()
+    {
+        StatisticsVolumeCombo.RemoveHandler(
+            WpfTextBoxBase.TextChangedEvent,
+            new TextChangedEventHandler(StatisticsSearchCombo_TextChanged));
+        StatisticsVolumeCombo.DropDownClosed -= StatisticsSearchCombo_DropDownClosed;
+        StatisticsVolumeCombo.PreviewKeyDown -= StatisticsSearchCombo_PreviewKeyDown;
+        StatisticsVolumeCombo.LostKeyboardFocus -= StatisticsSearchCombo_LostKeyboardFocus;
+        StatisticsVolumeCombo.SelectionChanged -= StatisticsCriteria_Changed;
     }
 
     private void StatisticsAcceptanceSelector_GotKeyboardFocus(
