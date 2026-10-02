@@ -34,6 +34,7 @@ public partial class MainWindow
         RewireCommercialStatisticsVolumeChecklist();
         RewireCommercialStatisticsMonthlyNavigation();
         RewireCommercialStatisticsWholePeriodAction();
+        RewireCommercialStatisticsExportActions();
         ConfigureCommercialStatisticsCompletedOnly();
     }
 
@@ -224,6 +225,14 @@ public partial class MainWindow
         StatisticsAllPeriodButton.Click += StatisticsAcceptanceAllPeriod_Click;
     }
 
+    private void RewireCommercialStatisticsExportActions()
+    {
+        StatisticsExportPdfButton.Click -= StatisticsAdvancedExportPdf_Click;
+        StatisticsExportExcelButton.Click -= StatisticsAdvancedExportExcel_Click;
+        StatisticsExportPdfButton.Click += StatisticsAcceptanceExportPdf_Click;
+        StatisticsExportExcelButton.Click += StatisticsAcceptanceExportExcel_Click;
+    }
+
     private void StatisticsAcceptanceMonthlyItemsSource_Changed(object? sender, EventArgs e)
     {
         if (_restoringCommercialStatisticsMonthSelection
@@ -325,6 +334,49 @@ public partial class MainWindow
 
         UpdateCommercialStatisticsNavigation();
         await LoadCommercialStatisticsImmediatelyAsync().ConfigureAwait(true);
+    }
+
+    private async void StatisticsAcceptanceExportPdf_Click(object sender, RoutedEventArgs e)
+    {
+        await ExportCommercialStatisticsWithAcceptancePeriodAsync(pdf: true).ConfigureAwait(true);
+    }
+
+    private async void StatisticsAcceptanceExportExcel_Click(object sender, RoutedEventArgs e)
+    {
+        await ExportCommercialStatisticsWithAcceptancePeriodAsync(pdf: false).ConfigureAwait(true);
+    }
+
+    private async Task ExportCommercialStatisticsWithAcceptancePeriodAsync(bool pdf)
+    {
+        var navigationFrom = _commercialStatisticsState.DetailPeriodFrom;
+        var navigationTo = _commercialStatisticsState.DetailPeriodTo;
+        if (string.IsNullOrWhiteSpace(_commercialStatisticsState.DetailMonth)
+            || !navigationFrom.HasValue
+            || !navigationTo.HasValue)
+        {
+            await ExportCommercialStatisticsWithAdvancedFiltersAsync(pdf).ConfigureAwait(true);
+            return;
+        }
+
+        var visibleFrom = StatisticsFromDate.SelectedDate;
+        var visibleTo = StatisticsToDate.SelectedDate;
+        Task exportTask;
+
+        _applyingCommercialStatisticsMonth = true;
+        try
+        {
+            StatisticsFromDate.SelectedDate = navigationFrom.Value;
+            StatisticsToDate.SelectedDate = navigationTo.Value;
+            exportTask = ExportCommercialStatisticsWithAdvancedFiltersAsync(pdf);
+        }
+        finally
+        {
+            StatisticsFromDate.SelectedDate = visibleFrom;
+            StatisticsToDate.SelectedDate = visibleTo;
+            _applyingCommercialStatisticsMonth = false;
+        }
+
+        await exportTask.ConfigureAwait(true);
     }
 
     private void ConfigureCommercialStatisticsCompletedOnly()
