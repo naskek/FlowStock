@@ -15,7 +15,7 @@ public partial class MainWindow
     private DependencyPropertyDescriptor? _commercialStatisticsMonthlyItemsSourceDescriptor;
     private long _commercialStatisticsPartnerFilterRequestId;
     private long? _commercialStatisticsScopedPartnerId;
-    private bool _commercialStatisticsFocusMonthAfterReload;
+    private Button? _commercialStatisticsResetFiltersButton;
 
     private void ApplyCommercialStatisticsAcceptanceFixes()
     {
@@ -36,6 +36,7 @@ public partial class MainWindow
         RewireCommercialStatisticsAcceptanceSelectors();
         RewireCommercialStatisticsPartnerScope();
         RewireCommercialStatisticsVolumeChecklist();
+        ConfigureCommercialStatisticsResetFiltersButton();
         RewireCommercialStatisticsMonthlyNavigation();
         RewireCommercialStatisticsWholePeriodAction();
         RewireCommercialStatisticsExportActions();
@@ -83,6 +84,58 @@ public partial class MainWindow
         StatisticsVolumeCombo.SelectionChanged -= StatisticsCriteria_Changed;
     }
 
+    private void ConfigureCommercialStatisticsResetFiltersButton()
+    {
+        if (_commercialStatisticsResetFiltersButton is not null
+            || StatisticsVolumeCombo.Parent is not Panel filterPanel)
+        {
+            return;
+        }
+
+        var button = new Button
+        {
+            Content = "Сбросить фильтры",
+            Margin = new Thickness(8, 0, 0, 0),
+            Padding = new Thickness(10, 3, 10, 3),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        button.Click += StatisticsAcceptanceResetFilters_Click;
+        filterPanel.Children.Add(button);
+        _commercialStatisticsResetFiltersButton = button;
+    }
+
+    private void StatisticsAcceptanceResetFilters_Click(object sender, RoutedEventArgs e)
+    {
+        ++_commercialStatisticsPartnerFilterRequestId;
+        _commercialStatisticsScopedPartnerId = null;
+        _statisticsPartnerId = null;
+
+        var previousSuppression = _suppressCommercialStatisticsFilterEvents;
+        _suppressCommercialStatisticsFilterEvents = true;
+        try
+        {
+            StatisticsPartnerCombo.ItemsSource = _statisticsPartnerOptions;
+            StatisticsPartnerCombo.SelectedItem =
+                CommercialStatisticsFilterOptions.RestoreEntitySelection(
+                    _statisticsPartnerOptions,
+                    previousId: null);
+            StatisticsPartnerCombo.Text =
+                GetCommercialStatisticsOptionLabel(StatisticsPartnerCombo.SelectedItem)
+                ?? "Все контрагенты";
+
+            ResetCommercialStatisticsDependentFiltersToAll();
+        }
+        finally
+        {
+            _suppressCommercialStatisticsFilterEvents = previousSuppression;
+        }
+
+        ApplyCommercialStatisticsAdvancedFilters();
+        _commercialStatisticsState.CriteriaChanged(periodChanged: false);
+        UpdateCommercialStatisticsNavigation();
+        ScheduleCommercialStatisticsRefresh();
+    }
+
     private async void StatisticsAcceptancePartner_SelectionChanged(
         object sender,
         SelectionChangedEventArgs e)
@@ -110,10 +163,8 @@ public partial class MainWindow
             return;
         }
 
-        var from = _commercialStatisticsState.DetailPeriodFrom
-            ?? StatisticsFromDate.SelectedDate;
-        var to = _commercialStatisticsState.DetailPeriodTo
-            ?? StatisticsToDate.SelectedDate;
+        var from = StatisticsFromDate.SelectedDate;
+        var to = StatisticsToDate.SelectedDate;
         if (!from.HasValue || !to.HasValue)
         {
             return;
@@ -382,32 +433,34 @@ public partial class MainWindow
         var selectedMonth = _commercialStatisticsNavigationSelectedMonth;
         Dispatcher.BeginInvoke(
             DispatcherPriority.Background,
-            new Action(() => RestoreCommercialStatisticsAcceptanceMonthSelection(selectedMonth)));
+            new Action(() => RestoreCommercialStatisticsMonthlySelection(selectedMonth)));
     }
 
-    private void RestoreCommercialStatisticsAcceptanceMonthSelection(string month)
+    private void FocusCommercialStatisticsMonthSelection(string month)
     {
-        RestoreCommercialStatisticsMonthlySelection(month);
-        if (!_commercialStatisticsFocusMonthAfterReload)
-        {
-            return;
-        }
-
-        _commercialStatisticsFocusMonthAfterReload = false;
         Dispatcher.BeginInvoke(
-            DispatcherPriority.Loaded,
+            DispatcherPriority.ContextIdle,
             new Action(() =>
             {
+                RestoreCommercialStatisticsMonthlySelection(month);
                 StatisticsMonthlyGrid.UpdateLayout();
-                if (StatisticsMonthlyGrid.SelectedItem is not null
-                    && StatisticsMonthlyGrid.ItemContainerGenerator.ContainerFromItem(
-                        StatisticsMonthlyGrid.SelectedItem) is DataGridRow row)
+
+                var selectedItem = StatisticsMonthlyGrid.SelectedItem;
+                if (selectedItem is null)
                 {
-                    Keyboard.Focus(row);
                     return;
                 }
 
+                StatisticsMonthlyGrid.ScrollIntoView(selectedItem);
+                StatisticsMonthlyGrid.Focus();
                 Keyboard.Focus(StatisticsMonthlyGrid);
+
+                if (StatisticsMonthlyGrid.Columns.Count > 0)
+                {
+                    StatisticsMonthlyGrid.CurrentCell = new DataGridCellInfo(
+                        selectedItem,
+                        StatisticsMonthlyGrid.Columns[0]);
+                }
             }));
     }
 
@@ -449,7 +502,6 @@ public partial class MainWindow
         }
 
         _commercialStatisticsNavigationSelectedMonth = month.Month;
-        _commercialStatisticsFocusMonthAfterReload = true;
         SetCommercialStatisticsPeriodControls(selectedMonth);
         _commercialStatisticsState.CriteriaChanged(periodChanged: false);
         _commercialStatisticsState.SelectDetailMonth(
@@ -458,7 +510,7 @@ public partial class MainWindow
             navigationTo.Value);
         UpdateCommercialStatisticsNavigation();
         await LoadCommercialStatisticsImmediatelyAsync().ConfigureAwait(true);
-        RestoreCommercialStatisticsAcceptanceMonthSelection(month.Month);
+        FocusCommercialStatisticsMonthSelection(month.Month);
     }
 
     private async void StatisticsAcceptanceAllPeriod_Click(object sender, RoutedEventArgs e)
@@ -471,7 +523,6 @@ public partial class MainWindow
         }
 
         _commercialStatisticsNavigationSelectedMonth = null;
-        _commercialStatisticsFocusMonthAfterReload = false;
         _applyingCommercialStatisticsMonth = true;
         try
         {
