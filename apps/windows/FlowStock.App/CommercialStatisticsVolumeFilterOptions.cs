@@ -66,7 +66,7 @@ internal static class CommercialStatisticsVolumeFilterOptions
             value: null,
             label: "Все фасовки",
             isChecked: true,
-            Synchronize);
+            onChanged: Synchronize);
         result.Add(allOption);
 
         foreach (var option in options.Where(option => !string.IsNullOrWhiteSpace(option.Value)))
@@ -75,7 +75,7 @@ internal static class CommercialStatisticsVolumeFilterOptions
                 option.Value!.Trim(),
                 option.Label,
                 isChecked: true,
-                Synchronize));
+                onChanged: Synchronize));
         }
 
         return result;
