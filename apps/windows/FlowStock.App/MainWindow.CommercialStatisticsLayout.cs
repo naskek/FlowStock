@@ -97,7 +97,7 @@ public partial class MainWindow
         StatisticsAllPeriodButton.Margin = new Thickness(0, 8, 0, 0);
         StatisticsAllPeriodButton.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
 
-        if (StatisticsPreviousPageButton.Parent is Panel pagerButtons
+        if (StatisticsPreviousPageButton.Parent is System.Windows.Controls.Panel pagerButtons
             && pagerButtons.Parent is DockPanel pagerPanel)
         {
             _commercialStatisticsPagerPanel = pagerPanel;
@@ -107,12 +107,12 @@ public partial class MainWindow
         StatisticsNextPageButton.IsEnabledChanged += StatisticsPaginationButton_IsEnabledChanged;
         StatisticsAllPeriodButton.IsEnabledChanged += StatisticsAllPeriodButton_IsEnabledChanged;
 
-        if (StatisticsAllPeriodButton.Parent is Panel oldParent)
+        if (StatisticsAllPeriodButton.Parent is System.Windows.Controls.Panel oldParent)
         {
             oldParent.Children.Remove(StatisticsAllPeriodButton);
         }
 
-        var monthlyBox = FindVisualAncestor<GroupBox>(StatisticsMonthlyGrid);
+        var monthlyBox = FindVisualAncestor<System.Windows.Controls.GroupBox>(StatisticsMonthlyGrid);
         if (monthlyBox is not null && ReferenceEquals(monthlyBox.Content, StatisticsMonthlyGrid))
         {
             monthlyBox.Content = null;
