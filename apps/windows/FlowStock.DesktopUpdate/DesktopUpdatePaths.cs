@@ -7,6 +7,7 @@ public sealed class DesktopUpdatePaths
         localAppData ??= Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         roamingAppData ??= Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         Root = Path.Combine(localAppData, "FlowStock", "Desktop");
+        Repository = Path.Combine(Root, "repository");
         Versions = Path.Combine(Root, "versions");
         Bootstrap = Path.Combine(Root, "bootstrap");
         Transactions = Path.Combine(Root, "transactions");
@@ -19,6 +20,7 @@ public sealed class DesktopUpdatePaths
     }
 
     public string Root { get; }
+    public string Repository { get; }
     public string Versions { get; }
     public string Bootstrap { get; }
     public string Transactions { get; }
@@ -46,6 +48,7 @@ public sealed class DesktopUpdatePaths
 
     public void EnsureBaseDirectories()
     {
+        Directory.CreateDirectory(Root);
         Directory.CreateDirectory(Versions);
         Directory.CreateDirectory(Bootstrap);
         Directory.CreateDirectory(Transactions);
