@@ -11,10 +11,18 @@ public static class DesktopUpdateConstants
     public const string RepositoryUrl = "https://github.com/naskek/FlowStock.git";
     public const string DefaultUpdateServerBaseUrl = "https://flowstock.local:7154";
     public const string UpdateServerBaseUrlEnvironmentVariable = "FLOWSTOCK_UPDATE_SERVER_BASE_URL";
-    public const string DefaultRepositoryRoot = @"D:\Projects\FlowStock";
+    public const string LegacySourceRepositoryRoot = @"D:\Projects\FlowStock";
     public const string DevelopmentRepositoryRoot = @"D:\FlowStock-dev";
     public const string AppMutexName = @"Local\FlowStock.Desktop";
     public const string UpdaterMutexName = @"Local\FlowStock.Updater";
+
+    public static string DefaultRepositoryRoot => ResolveRepositoryRoot(new DesktopUpdatePaths());
+
+    public static string ResolveRepositoryRoot(DesktopUpdatePaths paths)
+    {
+        var active = JsonStateStore.Read<RuntimeManifest>(paths.ActiveManifest);
+        return active is null ? LegacySourceRepositoryRoot : paths.Repository;
+    }
 }
 
 public sealed record ServerVersionResponse

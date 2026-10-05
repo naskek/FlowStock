@@ -47,7 +47,7 @@ public sealed class DesktopUpdateChecker
                     validatedUpdateServerBaseUri);
             }
 
-            await _git.ValidateRepositoryAndRemoteAsync(repositoryRoot, cancellationToken).ConfigureAwait(false);
+            await _git.EnsureManagedRepositoryAsync(repositoryRoot, cancellationToken).ConfigureAwait(false);
             await _git.FetchExpectedBranchAsync(repositoryRoot, cancellationToken).ConfigureAwait(false);
             await _git.ValidateTargetAsync(repositoryRoot, installed, target, cancellationToken).ConfigureAwait(false);
             var diagnostics = await _git.ReadDiagnosticsAsync(repositoryRoot, cancellationToken).ConfigureAwait(false);

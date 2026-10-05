@@ -9,6 +9,62 @@ public sealed class GitRepositoryClient
         _runner = runner;
     }
 
+    public async Task EnsureManagedRepositoryAsync(string repositoryRoot, CancellationToken cancellationToken)
+    {
+        var resolved = Path.GetFullPath(repositoryRoot).TrimEnd(Path.DirectorySeparatorChar);
+        if (File.Exists(resolved))
+        {
+            throw new InvalidOperationException("Managed repository path занят файлом.");
+        }
+
+        if (Directory.Exists(resolved) && Directory.EnumerateFileSystemEntries(resolved).Any())
+        {
+            await ValidateRepositoryAndRemoteAsync(resolved, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (Directory.Exists(resolved))
+        {
+            Directory.Delete(resolved);
+        }
+
+        var parent = Directory.GetParent(resolved)?.FullName
+            ?? throw new InvalidOperationException("Не удалось определить parent managed repository.");
+        Directory.CreateDirectory(parent);
+        var bootstrap = resolved + ".bootstrap-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            var clone = await _runner.RunAsync(
+                "git",
+                ["clone", "--no-checkout", "--origin", DesktopUpdateConstants.RemoteName,
+                    DesktopUpdateConstants.RepositoryUrl, bootstrap],
+                parent,
+                TimeSpan.FromMinutes(5),
+                cancellationToken).ConfigureAwait(false);
+            if (!clone.Success)
+            {
+                throw new InvalidOperationException($"Не удалось создать managed FlowStock repository: {clone.StandardError.Trim()}");
+            }
+
+            await ValidateRepositoryAndRemoteAsync(bootstrap, cancellationToken).ConfigureAwait(false);
+            if (Directory.Exists(resolved) || File.Exists(resolved))
+            {
+                throw new InvalidOperationException("Managed repository path появился во время bootstrap.");
+            }
+
+            Directory.Move(bootstrap, resolved);
+        }
+        finally
+        {
+            if (Directory.Exists(bootstrap))
+            {
+                Directory.Delete(bootstrap, recursive: true);
+            }
+        }
+
+        await ValidateRepositoryAndRemoteAsync(resolved, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task ValidateRepositoryAndRemoteAsync(string repositoryRoot, CancellationToken cancellationToken)
     {
         var resolved = Path.GetFullPath(repositoryRoot).TrimEnd(Path.DirectorySeparatorChar);
