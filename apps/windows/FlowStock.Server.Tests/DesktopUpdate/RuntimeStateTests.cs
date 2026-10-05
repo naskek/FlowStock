@@ -5,6 +5,19 @@ namespace FlowStock.Server.Tests.DesktopUpdate;
 public sealed class RuntimeStateTests
 {
     [Fact]
+    public void Paths_UseManagedRepositoryUnderDesktopRoot()
+    {
+        var local = Path.Combine(Path.GetTempPath(), $"flowstock-path-test-{Guid.NewGuid():N}");
+        var paths = new DesktopUpdatePaths(local, local);
+
+        Assert.Equal(Path.Combine(local, "FlowStock", "Desktop", "repository"), paths.Repository);
+        Assert.Equal(paths.Repository, DesktopUpdateConstants.DefaultRepositoryRoot.Replace(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            local,
+            StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void Paths_RejectCommitAndSessionTraversal()
     {
         var paths = new DesktopUpdatePaths(Path.GetTempPath(), Path.GetTempPath());
