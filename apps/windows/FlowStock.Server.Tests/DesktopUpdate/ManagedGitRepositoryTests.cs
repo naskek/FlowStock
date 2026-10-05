@@ -89,7 +89,7 @@ public sealed class ManagedGitRepositoryTests
                 return Task.FromResult(new ProcessResult(0, args[1] + Environment.NewLine, string.Empty));
             }
 
-            if (args.Length >= 6 && args[0] == "-C" && args[2] == "remote" && args[3] == "get-url")
+            if (args.Length >= 5 && args[0] == "-C" && args[2] == "remote" && args[3] == "get-url")
             {
                 return Task.FromResult(new ProcessResult(
                     0,
