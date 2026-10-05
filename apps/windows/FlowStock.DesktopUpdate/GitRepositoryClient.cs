@@ -3,15 +3,49 @@ namespace FlowStock.DesktopUpdate;
 public sealed class GitRepositoryClient
 {
     private readonly IProcessRunner _runner;
+    private readonly string _managedRepositoryRoot;
 
-    public GitRepositoryClient(IProcessRunner runner)
+    public GitRepositoryClient(IProcessRunner runner, string? managedRepositoryRoot = null)
     {
         _runner = runner;
+        _managedRepositoryRoot = NormalizePath(managedRepositoryRoot ?? new DesktopUpdatePaths().Repository);
     }
 
-    public async Task EnsureManagedRepositoryAsync(string repositoryRoot, CancellationToken cancellationToken)
+    public Task EnsureManagedRepositoryAsync(string repositoryRoot, CancellationToken cancellationToken) =>
+        EnsureManagedRepositoryCoreAsync(NormalizePath(repositoryRoot), cancellationToken);
+
+    public async Task<string> PrepareTargetAsync(
+        string repositoryRoot,
+        BuildIdentity installed,
+        BuildIdentity target,
+        CancellationToken cancellationToken)
     {
-        var resolved = Path.GetFullPath(repositoryRoot).TrimEnd(Path.DirectorySeparatorChar);
+        var resolved = NormalizePath(repositoryRoot);
+        try
+        {
+            return await PrepareTargetCoreAsync(resolved, installed, target, cancellationToken).ConfigureAwait(false);
+        }
+        catch (UnauthorizedAccessException) when (IsManagedRepository(resolved))
+        {
+            await RecreateManagedRepositoryAsync(resolved, cancellationToken).ConfigureAwait(false);
+            return await PrepareTargetCoreAsync(resolved, installed, target, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<string> PrepareTargetCoreAsync(
+        string repositoryRoot,
+        BuildIdentity installed,
+        BuildIdentity target,
+        CancellationToken cancellationToken)
+    {
+        await EnsureManagedRepositoryCoreAsync(repositoryRoot, cancellationToken).ConfigureAwait(false);
+        await FetchExpectedBranchAsync(repositoryRoot, cancellationToken).ConfigureAwait(false);
+        await ValidateTargetAsync(repositoryRoot, installed, target, cancellationToken).ConfigureAwait(false);
+        return await ReadDiagnosticsAsync(repositoryRoot, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task EnsureManagedRepositoryCoreAsync(string resolved, CancellationToken cancellationToken)
+    {
         if (File.Exists(resolved))
         {
             throw new InvalidOperationException("Managed repository path занят файлом.");
@@ -58,17 +92,59 @@ public sealed class GitRepositoryClient
         {
             if (Directory.Exists(bootstrap))
             {
-                Directory.Delete(bootstrap, recursive: true);
+                try
+                {
+                    Directory.Delete(bootstrap, recursive: true);
+                }
+                catch (IOException)
+                {
+                    // Failed bootstrap cleanup must not hide the original update error.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Git pack artifacts can be temporarily unreadable/locked on Windows.
+                }
             }
         }
 
         await ValidateRepositoryAndRemoteAsync(resolved, cancellationToken).ConfigureAwait(false);
     }
 
+    private async Task RecreateManagedRepositoryAsync(string resolved, CancellationToken cancellationToken)
+    {
+        if (!IsManagedRepository(resolved))
+        {
+            throw new InvalidOperationException("Automatic repository recovery is allowed only for the managed updater cache.");
+        }
+
+        string? quarantine = null;
+        if (Directory.Exists(resolved))
+        {
+            quarantine = resolved + ".quarantine-" + Guid.NewGuid().ToString("N");
+            Directory.Move(resolved, quarantine);
+        }
+
+        try
+        {
+            await EnsureManagedRepositoryCoreAsync(resolved, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (!Directory.Exists(resolved)
+                && quarantine is not null
+                && Directory.Exists(quarantine))
+            {
+                Directory.Move(quarantine, resolved);
+            }
+
+            throw;
+        }
+    }
+
     public async Task ValidateRepositoryAndRemoteAsync(string repositoryRoot, CancellationToken cancellationToken)
     {
-        var resolved = Path.GetFullPath(repositoryRoot).TrimEnd(Path.DirectorySeparatorChar);
-        var dev = Path.GetFullPath(DesktopUpdateConstants.DevelopmentRepositoryRoot).TrimEnd(Path.DirectorySeparatorChar);
+        var resolved = NormalizePath(repositoryRoot);
+        var dev = NormalizePath(DesktopUpdateConstants.DevelopmentRepositoryRoot);
         if (string.Equals(resolved, dev, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("Self-update из development repository запрещён.");
@@ -76,7 +152,7 @@ public sealed class GitRepositoryClient
 
         var root = await GitAsync(repositoryRoot, ["rev-parse", "--show-toplevel"], cancellationToken);
         if (!string.Equals(
-                Path.GetFullPath(root.StandardOutput.Trim()).TrimEnd(Path.DirectorySeparatorChar),
+                NormalizePath(root.StandardOutput.Trim()),
                 resolved,
                 StringComparison.OrdinalIgnoreCase))
         {
@@ -159,6 +235,12 @@ public sealed class GitRepositoryClient
         var branch = await GitRawAsync(repositoryRoot, ["status", "--short", "--branch"], cancellationToken);
         return branch.Success ? branch.StandardOutput.Trim() : branch.StandardError.Trim();
     }
+
+    private bool IsManagedRepository(string repositoryRoot) =>
+        string.Equals(NormalizePath(repositoryRoot), _managedRepositoryRoot, StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizePath(string path) =>
+        Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar);
 
     private async Task<ProcessResult> GitAsync(
         string repositoryRoot,
