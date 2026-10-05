@@ -7,10 +7,23 @@ public sealed class HistoricalFinancialSnapshotAuditPostgresTests
     [Fact]
     public async Task Dry_run_executes_against_current_postgres_schema()
     {
+        await ExecuteSqlFileAsync(
+            "historical-financial-snapshot-backfill-dry-run.sql");
+    }
+
+    [Fact]
+    public async Task Production_preflight_executes_against_current_postgres_schema()
+    {
+        await ExecuteSqlFileAsync(
+            "historical-financial-snapshot-backfill-production-preflight.sql");
+    }
+
+    private static async Task ExecuteSqlFileAsync(string fileName)
+    {
         var sql = File.ReadAllText(FindRepoFile(
             "tools",
             "audit",
-            "historical-financial-snapshot-backfill-dry-run.sql"));
+            fileName));
 
         await using var connection = new NpgsqlConnection(ResolveRequiredPostgresTestConnectionString());
         await connection.OpenAsync();
