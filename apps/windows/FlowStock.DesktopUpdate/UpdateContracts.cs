@@ -16,14 +16,12 @@ public static class DesktopUpdateConstants
     public const string AppMutexName = @"Local\FlowStock.Desktop";
     public const string UpdaterMutexName = @"Local\FlowStock.Updater";
 
-    public static string DefaultRepositoryRoot
+    public static string DefaultRepositoryRoot => ResolveRepositoryRoot(new DesktopUpdatePaths());
+
+    public static string ResolveRepositoryRoot(DesktopUpdatePaths paths)
     {
-        get
-        {
-            var paths = new DesktopUpdatePaths();
-            var active = JsonStateStore.Read<RuntimeManifest>(paths.ActiveManifest);
-            return active is null ? LegacySourceRepositoryRoot : paths.Repository;
-        }
+        var active = JsonStateStore.Read<RuntimeManifest>(paths.ActiveManifest);
+        return active is null ? LegacySourceRepositoryRoot : paths.Repository;
     }
 }
 
