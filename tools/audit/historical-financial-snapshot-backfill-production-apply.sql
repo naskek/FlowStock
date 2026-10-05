@@ -21,58 +21,58 @@
 \if :{?CONFIRM_PRODUCTION_APPLY}
 \else
 \echo 'ERROR: pass -v CONFIRM_PRODUCTION_APPLY=APPLY_HISTORICAL_SNAPSHOT_BACKFILL'
-\quit 3
+SELECT 1 / 0 AS fail_closed;
 \endif
 
 SELECT :'CONFIRM_PRODUCTION_APPLY' = 'APPLY_HISTORICAL_SNAPSHOT_BACKFILL' AS production_confirmed \gset
 \if :production_confirmed
 \else
 \echo 'ERROR: CONFIRM_PRODUCTION_APPLY must be exactly APPLY_HISTORICAL_SNAPSHOT_BACKFILL'
-\quit 3
+SELECT 1 / 0 AS fail_closed;
 \endif
 
 \if :{?CONFIRM_FRESH_BACKUP}
 \else
 \echo 'ERROR: pass -v CONFIRM_FRESH_BACKUP=YES'
-\quit 3
+SELECT 1 / 0 AS fail_closed;
 \endif
 
 SELECT :'CONFIRM_FRESH_BACKUP' = 'YES' AS backup_confirmed \gset
 \if :backup_confirmed
 \else
 \echo 'ERROR: CONFIRM_FRESH_BACKUP must be exactly YES'
-\quit 3
+SELECT 1 / 0 AS fail_closed;
 \endif
 
 \if :{?EXPECTED_CANDIDATE_COUNT}
 \else
 \echo 'ERROR: pass -v EXPECTED_CANDIDATE_COUNT=<preflight value>'
-\quit 3
+SELECT 1 / 0 AS fail_closed;
 \endif
 \if :{?EXPECTED_CANDIDATE_QUANTITY}
 \else
 \echo 'ERROR: pass -v EXPECTED_CANDIDATE_QUANTITY=<preflight value>'
-\quit 3
+SELECT 1 / 0 AS fail_closed;
 \endif
 \if :{?EXPECTED_RECONSTRUCTED_GROSS}
 \else
 \echo 'ERROR: pass -v EXPECTED_RECONSTRUCTED_GROSS=<preflight value>'
-\quit 3
+SELECT 1 / 0 AS fail_closed;
 \endif
 \if :{?EXPECTED_CANDIDATE_FINGERPRINT}
 \else
 \echo 'ERROR: pass -v EXPECTED_CANDIDATE_FINGERPRINT=<preflight value>'
-\quit 3
+SELECT 1 / 0 AS fail_closed;
 \endif
 \if :{?EXPECTED_BLOCKED_COUNT}
 \else
 \echo 'ERROR: pass -v EXPECTED_BLOCKED_COUNT=<preflight value>'
-\quit 3
+SELECT 1 / 0 AS fail_closed;
 \endif
 \if :{?EXPECTED_BLOCKED_QUANTITY}
 \else
 \echo 'ERROR: pass -v EXPECTED_BLOCKED_QUANTITY=<preflight value>'
-\quit 3
+SELECT 1 / 0 AS fail_closed;
 \endif
 
 BEGIN;
@@ -238,7 +238,7 @@ SELECT
 \else
 \echo 'ERROR: production candidate set differs from reviewed preflight; rolling back without UPDATE'
 ROLLBACK;
-\quit 4
+SELECT 1 / 0 AS fail_closed;
 \endif
 
 CREATE TEMP TABLE historical_snapshot_backfill_updated ON COMMIT DROP AS
@@ -304,7 +304,7 @@ SELECT
 \else
 \echo 'ERROR: post-update invariants failed; rolling back transaction'
 ROLLBACK;
-\quit 5
+SELECT 1 / 0 AS fail_closed;
 \endif
 
 COMMIT;
