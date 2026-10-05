@@ -1,5 +1,3 @@
-\set ON_ERROR_STOP on
-
 -- Issue #66 production preflight.
 -- READ ONLY. Run this immediately before production apply.
 -- Copy the guard values exactly into the production apply command.
