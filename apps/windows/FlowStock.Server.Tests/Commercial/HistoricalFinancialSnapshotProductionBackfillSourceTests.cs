@@ -58,6 +58,14 @@ public sealed class HistoricalFinancialSnapshotProductionBackfillSourceTests
     }
 
     [Fact]
+    public void Production_apply_guard_failures_return_nonzero_via_on_error_stop()
+    {
+        Assert.Contains("\\set ON_ERROR_STOP on", ApplySource, StringComparison.Ordinal);
+        Assert.Contains("SELECT 1 / 0 AS fail_closed;", ApplySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("\\quit ", ApplySource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Production_apply_freezes_reconstruction_sources_during_transaction()
     {
         Assert.Contains("LOCK TABLE orders IN SHARE MODE", ApplySource, StringComparison.Ordinal);
