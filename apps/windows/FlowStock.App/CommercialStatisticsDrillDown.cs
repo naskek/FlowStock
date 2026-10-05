@@ -251,40 +251,47 @@ internal sealed class CommercialStatisticsDrillDownItemsGrid : DataGrid
         IsReadOnly = true;
         CanUserAddRows = false;
         CanUserDeleteRows = false;
+        CanUserResizeColumns = true;
         HeadersVisibility = DataGridHeadersVisibility.Column;
-        GridLinesVisibility = DataGridGridLinesVisibility.Horizontal;
+        GridLinesVisibility = DataGridGridLinesVisibility.All;
         Margin = new Thickness(0);
         MaxHeight = 320;
+        ScrollViewer.SetHorizontalScrollBarVisibility(this, ScrollBarVisibility.Auto);
 
         Columns.Add(new DataGridTextColumn
         {
             Header = "Товар / GTIN",
             Binding = new WpfBinding(nameof(CommercialStatisticsDrillDownItem.Label)),
-            Width = new DataGridLength(1, DataGridLengthUnitType.Star)
+            Width = DataGridLength.Auto,
+            MinWidth = 360
         });
         Columns.Add(new DataGridTextColumn
         {
             Header = "Количество",
             Binding = new WpfBinding("Amounts.Quantity") { StringFormat = "{0:0.######}" },
-            Width = new DataGridLength(95)
+            Width = DataGridLength.Auto,
+            MinWidth = 90
         });
         Columns.Add(new DataGridTextColumn
         {
             Header = "С НДС",
             Binding = new WpfBinding("Amounts.Gross") { StringFormat = "{0:N2}" },
-            Width = new DataGridLength(105)
+            Width = DataGridLength.Auto,
+            MinWidth = 105
         });
         Columns.Add(new DataGridTextColumn
         {
             Header = "Без НДС",
             Binding = new WpfBinding("Amounts.Net") { StringFormat = "{0:N2}" },
-            Width = new DataGridLength(105)
+            Width = DataGridLength.Auto,
+            MinWidth = 105
         });
         Columns.Add(new DataGridTextColumn
         {
             Header = "НДС",
             Binding = new WpfBinding("Amounts.Vat") { StringFormat = "{0:N2}" },
-            Width = new DataGridLength(90)
+            Width = DataGridLength.Auto,
+            MinWidth = 90
         });
     }
 }
