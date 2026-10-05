@@ -111,6 +111,16 @@ public sealed class HistoricalFinancialSnapshotAuditSourceTests
         Assert.Contains("FIRST_SUBSEQUENT_SNAPSHOT_PRICE", RehearsalApplySource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Rehearsal_apply_aggregates_reconstructed_gross_as_numeric_before_rounding()
+    {
+        Assert.Contains(
+            "SUM(qty_ordered::numeric * proposed_unit_price_gross::numeric)",
+            RehearsalApplySource,
+            StringComparison.Ordinal);
+        Assert.Contains("0::numeric", RehearsalApplySource, StringComparison.Ordinal);
+    }
+
     private static string FindRepoFile(params string[] parts)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
