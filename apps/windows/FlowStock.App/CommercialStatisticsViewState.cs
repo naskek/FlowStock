@@ -176,6 +176,16 @@ internal sealed class CommercialStatisticsViewState
         }
     }
 
+    public CommercialStatisticsModeChange ModeChanged()
+    {
+        var transition = new CommercialStatisticsModeChange(
+            HadDetailMonth: !string.IsNullOrWhiteSpace(DetailMonth),
+            RestoreFrom: _detailPeriodFrom,
+            RestoreTo: _detailPeriodTo);
+        CriteriaChanged(periodChanged: true);
+        return transition;
+    }
+
     public void SelectDetailMonth(
         string? month,
         DateTime? periodFrom = null,
@@ -280,3 +290,8 @@ internal sealed record WpfCommercialStatisticsFilters(
 internal sealed record CommercialStatisticsLoad(
     long RequestId,
     WpfCommercialStatisticsRequest Request);
+
+internal sealed record CommercialStatisticsModeChange(
+    bool HadDetailMonth,
+    DateTime? RestoreFrom,
+    DateTime? RestoreTo);
