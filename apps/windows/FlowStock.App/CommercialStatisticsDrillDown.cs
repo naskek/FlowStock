@@ -20,7 +20,7 @@ internal static class CommercialStatisticsDrillDown
         var to = state.DetailPeriodTo ?? filters.To;
         return new WpfCommercialStatisticsRequest(
             filters.Mode,
-            GroupBy: "item",
+            "item",
             from,
             to,
             DetailMonth: state.DetailMonth,
