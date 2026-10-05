@@ -5,7 +5,6 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
 using WpfButton = System.Windows.Controls.Button;
-using WpfPanel = System.Windows.Controls.Panel;
 using WpfTextBoxBase = System.Windows.Controls.Primitives.TextBoxBase;
 
 namespace FlowStock.App;
@@ -89,7 +88,7 @@ public partial class MainWindow
     private void ConfigureCommercialStatisticsResetFiltersButton()
     {
         if (_commercialStatisticsResetFiltersButton is not null
-            || StatisticsVolumeCombo.Parent is not WpfPanel filterPanel)
+            || StatisticsVolumeCombo.Parent is not Grid filterGrid)
         {
             return;
         }
@@ -99,10 +98,14 @@ public partial class MainWindow
             Content = "Сбросить фильтры",
             Margin = new Thickness(8, 0, 0, 0),
             Padding = new Thickness(10, 3, 10, 3),
+            HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Center
         };
+        Grid.SetRow(button, 2);
+        Grid.SetColumn(button, 2);
+        Grid.SetColumnSpan(button, 2);
         button.Click += StatisticsAcceptanceResetFilters_Click;
-        filterPanel.Children.Add(button);
+        filterGrid.Children.Add(button);
         _commercialStatisticsResetFiltersButton = button;
     }
 
