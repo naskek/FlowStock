@@ -1,8 +1,9 @@
 BEGIN READ ONLY;
 
 -- Issue #66: read-only inventory for legacy SHIPPED CUSTOMER lines whose
--- financial snapshots are incomplete. Proposed values intentionally use
--- CURRENT commercial terms only as a statistical approximation.
+-- financial snapshots are incomplete. Price reconstruction prefers the first
+-- later persisted price snapshot for the same partner + item. When no later
+-- snapshot exists, CURRENT commercial terms are used as a statistical fallback.
 -- This script never mutates order_lines.
 
 WITH candidates AS (
@@ -21,16 +22,25 @@ WITH candidates AS (
         ol.qty_ordered,
         ol.unit_price_gross AS existing_unit_price_gross,
         ol.vat_rate AS existing_vat_rate,
+        later_price.order_id AS subsequent_snapshot_order_id,
+        later_price.order_ref AS subsequent_snapshot_order_ref,
+        later_price.order_created_at AS subsequent_snapshot_order_created_at,
+        later_price.order_line_id AS subsequent_snapshot_order_line_id,
+        later_price.unit_price_gross AS subsequent_snapshot_unit_price_gross,
         pip.unit_price_gross AS current_partner_unit_price_gross,
         i.default_sale_price_gross AS current_item_default_unit_price_gross,
-        COALESCE(pip.unit_price_gross, i.default_sale_price_gross) AS proposed_unit_price_gross,
+        COALESCE(
+            later_price.unit_price_gross,
+            pip.unit_price_gross,
+            i.default_sale_price_gross) AS proposed_unit_price_gross,
         i.default_sale_vat_rate_id AS current_vat_rate_id,
         vr.rate AS current_vat_rate,
         vr.is_active AS current_vat_rate_is_active,
         CASE
+            WHEN later_price.order_line_id IS NOT NULL THEN 'FIRST_SUBSEQUENT_SNAPSHOT_PRICE'
             WHEN pip.id IS NOT NULL THEN 'CURRENT_ACTIVE_PARTNER_PRICE'
             WHEN i.default_sale_price_gross IS NOT NULL THEN 'CURRENT_ITEM_DEFAULT_PRICE'
-            ELSE 'CURRENT_PRICE_MISSING'
+            ELSE 'PRICE_SOURCE_MISSING'
         END AS proposed_price_source,
         CASE
             WHEN i.default_sale_vat_rate_id IS NULL THEN 'CURRENT_ITEM_VAT_REQUIRED'
@@ -44,8 +54,11 @@ WITH candidates AS (
             WHEN i.id IS NULL THEN 'BLOCKED_ITEM_REFERENCE_MISSING'
             WHEN ol.qty_ordered <= 0 THEN 'BLOCKED_NON_POSITIVE_QTY'
             WHEN ol.unit_price_gross IS NULL
-                 AND COALESCE(pip.unit_price_gross, i.default_sale_price_gross) IS NULL
-                THEN 'BLOCKED_CURRENT_PRICE_MISSING'
+                 AND COALESCE(
+                     later_price.unit_price_gross,
+                     pip.unit_price_gross,
+                     i.default_sale_price_gross) IS NULL
+                THEN 'BLOCKED_PRICE_SOURCE_MISSING'
             WHEN ol.vat_rate IS NULL
                  AND i.default_sale_vat_rate_id IS NULL
                 THEN 'BLOCKED_CURRENT_VAT_REQUIRED'
@@ -55,12 +68,31 @@ WITH candidates AS (
             WHEN ol.vat_rate IS NULL
                  AND NOT vr.is_active
                 THEN 'BLOCKED_CURRENT_VAT_INACTIVE'
-            ELSE 'CANDIDATE_CURRENT_APPROXIMATION'
+            ELSE 'CANDIDATE_STATISTICAL_APPROXIMATION'
         END AS decision
     FROM orders o
     INNER JOIN order_lines ol ON ol.order_id = o.id
     LEFT JOIN partners p ON p.id = o.partner_id
     LEFT JOIN items i ON i.id = ol.item_id
+    LEFT JOIN LATERAL (
+        SELECT
+            o2.id AS order_id,
+            o2.order_ref,
+            o2.created_at AS order_created_at,
+            ol2.id AS order_line_id,
+            ol2.unit_price_gross
+        FROM orders o2
+        INNER JOIN order_lines ol2 ON ol2.order_id = o2.id
+        WHERE UPPER(o2.order_type) = 'CUSTOMER'
+          AND UPPER(o2.status) = 'SHIPPED'
+          AND o2.partner_id = o.partner_id
+          AND ol2.item_id = ol.item_id
+          AND ol2.cancelled_at IS NULL
+          AND ol2.unit_price_gross IS NOT NULL
+          AND (o2.created_at, o2.id, ol2.id) > (o.created_at, o.id, ol.id)
+        ORDER BY o2.created_at, o2.id, ol2.id
+        LIMIT 1
+    ) later_price ON TRUE
     LEFT JOIN partner_item_sale_prices pip
            ON pip.partner_id = o.partner_id
           AND pip.item_id = ol.item_id
@@ -100,16 +132,25 @@ WITH candidates AS (
         ol.qty_ordered,
         ol.unit_price_gross AS existing_unit_price_gross,
         ol.vat_rate AS existing_vat_rate,
+        later_price.order_id AS subsequent_snapshot_order_id,
+        later_price.order_ref AS subsequent_snapshot_order_ref,
+        later_price.order_created_at AS subsequent_snapshot_order_created_at,
+        later_price.order_line_id AS subsequent_snapshot_order_line_id,
+        later_price.unit_price_gross AS subsequent_snapshot_unit_price_gross,
         pip.unit_price_gross AS current_partner_unit_price_gross,
         i.default_sale_price_gross AS current_item_default_unit_price_gross,
-        COALESCE(pip.unit_price_gross, i.default_sale_price_gross) AS proposed_unit_price_gross,
+        COALESCE(
+            later_price.unit_price_gross,
+            pip.unit_price_gross,
+            i.default_sale_price_gross) AS proposed_unit_price_gross,
         i.default_sale_vat_rate_id AS current_vat_rate_id,
         vr.rate AS current_vat_rate,
         vr.is_active AS current_vat_rate_is_active,
         CASE
+            WHEN later_price.order_line_id IS NOT NULL THEN 'FIRST_SUBSEQUENT_SNAPSHOT_PRICE'
             WHEN pip.id IS NOT NULL THEN 'CURRENT_ACTIVE_PARTNER_PRICE'
             WHEN i.default_sale_price_gross IS NOT NULL THEN 'CURRENT_ITEM_DEFAULT_PRICE'
-            ELSE 'CURRENT_PRICE_MISSING'
+            ELSE 'PRICE_SOURCE_MISSING'
         END AS proposed_price_source,
         CASE
             WHEN i.default_sale_vat_rate_id IS NULL THEN 'CURRENT_ITEM_VAT_REQUIRED'
@@ -123,8 +164,11 @@ WITH candidates AS (
             WHEN i.id IS NULL THEN 'BLOCKED_ITEM_REFERENCE_MISSING'
             WHEN ol.qty_ordered <= 0 THEN 'BLOCKED_NON_POSITIVE_QTY'
             WHEN ol.unit_price_gross IS NULL
-                 AND COALESCE(pip.unit_price_gross, i.default_sale_price_gross) IS NULL
-                THEN 'BLOCKED_CURRENT_PRICE_MISSING'
+                 AND COALESCE(
+                     later_price.unit_price_gross,
+                     pip.unit_price_gross,
+                     i.default_sale_price_gross) IS NULL
+                THEN 'BLOCKED_PRICE_SOURCE_MISSING'
             WHEN ol.vat_rate IS NULL
                  AND i.default_sale_vat_rate_id IS NULL
                 THEN 'BLOCKED_CURRENT_VAT_REQUIRED'
@@ -134,12 +178,31 @@ WITH candidates AS (
             WHEN ol.vat_rate IS NULL
                  AND NOT vr.is_active
                 THEN 'BLOCKED_CURRENT_VAT_INACTIVE'
-            ELSE 'CANDIDATE_CURRENT_APPROXIMATION'
+            ELSE 'CANDIDATE_STATISTICAL_APPROXIMATION'
         END AS decision
     FROM orders o
     INNER JOIN order_lines ol ON ol.order_id = o.id
     LEFT JOIN partners p ON p.id = o.partner_id
     LEFT JOIN items i ON i.id = ol.item_id
+    LEFT JOIN LATERAL (
+        SELECT
+            o2.id AS order_id,
+            o2.order_ref,
+            o2.created_at AS order_created_at,
+            ol2.id AS order_line_id,
+            ol2.unit_price_gross
+        FROM orders o2
+        INNER JOIN order_lines ol2 ON ol2.order_id = o2.id
+        WHERE UPPER(o2.order_type) = 'CUSTOMER'
+          AND UPPER(o2.status) = 'SHIPPED'
+          AND o2.partner_id = o.partner_id
+          AND ol2.item_id = ol.item_id
+          AND ol2.cancelled_at IS NULL
+          AND ol2.unit_price_gross IS NOT NULL
+          AND (o2.created_at, o2.id, ol2.id) > (o.created_at, o.id, ol.id)
+        ORDER BY o2.created_at, o2.id, ol2.id
+        LIMIT 1
+    ) later_price ON TRUE
     LEFT JOIN partner_item_sale_prices pip
            ON pip.partner_id = o.partner_id
           AND pip.item_id = ol.item_id
@@ -172,6 +235,11 @@ SELECT
         WHEN existing_unit_price_gross IS NOT NULL THEN 'EXISTING_SNAPSHOT'
         ELSE proposed_price_source
     END AS effective_price_source,
+    subsequent_snapshot_order_id,
+    subsequent_snapshot_order_ref,
+    subsequent_snapshot_order_created_at,
+    subsequent_snapshot_order_line_id,
+    subsequent_snapshot_unit_price_gross,
     CASE
         WHEN existing_vat_rate IS NOT NULL THEN existing_vat_rate
         WHEN current_vat_rate_is_active THEN current_vat_rate
@@ -188,7 +256,7 @@ SELECT
     current_vat_rate_is_active
 FROM candidates
 ORDER BY
-    CASE decision WHEN 'CANDIDATE_CURRENT_APPROXIMATION' THEN 0 ELSE 1 END,
+    CASE decision WHEN 'CANDIDATE_STATISTICAL_APPROXIMATION' THEN 0 ELSE 1 END,
     order_created_at,
     order_id,
     order_line_id;
