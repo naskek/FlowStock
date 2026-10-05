@@ -2,7 +2,7 @@ param(
     [string]$Container = "flowstock-v2-rehearsal-postgres",
     [string]$Database = "flowstock",
     [string]$User = "flowstock",
-    [string]$OutputPath = "D:\FlowStock-rehearsal\historical-financial-blocked-manual.xlsx"
+    [string]$OutputDirectory = "D:\FlowStock-rehearsal"
 )
 
 $ErrorActionPreference = "Stop"
@@ -121,157 +121,30 @@ FROM blocked
 ORDER BY partner_name NULLS LAST, item_name NULLS LAST, order_created_at, order_id, order_line_id
 "@
 
-$manualRows = @(Invoke-PsqlCsv -Query $manualQuery | ConvertFrom-Csv)
-$detailRows = @(Invoke-PsqlCsv -Query $detailQuery | ConvertFrom-Csv)
+if (-not (Test-Path $OutputDirectory)) {
+    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+}
+
+$manualCsv = Invoke-PsqlCsv -Query $manualQuery
+$detailCsv = Invoke-PsqlCsv -Query $detailQuery
+
+$manualRows = @($manualCsv | ConvertFrom-Csv)
+$detailRows = @($detailCsv | ConvertFrom-Csv)
 
 if ($detailRows.Count -eq 0) {
     throw "No blocked historical financial snapshot rows were found. Nothing to export."
 }
 
-$outputDirectory = Split-Path -Parent $OutputPath
-if ($outputDirectory -and -not (Test-Path $outputDirectory)) {
-    New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
-}
+$manualPath = Join-Path $OutputDirectory "historical-financial-blocked-manual.csv"
+$detailPath = Join-Path $OutputDirectory "historical-financial-blocked-detail.csv"
 
-function Write-Worksheet {
-    param(
-        [Parameter(Mandatory = $true)]$Worksheet,
-        [Parameter(Mandatory = $true)][object[]]$Rows,
-        [Parameter(Mandatory = $true)][string[]]$Headers,
-        [string[]]$TextColumns = @(),
-        [string[]]$EditableColumns = @()
-    )
+Set-Content -LiteralPath $manualPath -Value $manualCsv -Encoding utf8BOM
+Set-Content -LiteralPath $detailPath -Value $detailCsv -Encoding utf8BOM
 
-    $headerIndex = @{}
-    for ($c = 0; $c -lt $Headers.Count; $c++) {
-        $headerIndex[$Headers[$c]] = $c + 1
-        $Worksheet.Cells.Item(1, $c + 1).Value2 = $Headers[$c]
-    }
-
-    foreach ($columnName in $TextColumns) {
-        if ($headerIndex.ContainsKey($columnName)) {
-            $Worksheet.Columns.Item($headerIndex[$columnName]).NumberFormat = "@"
-        }
-    }
-
-    for ($r = 0; $r -lt $Rows.Count; $r++) {
-        for ($c = 0; $c -lt $Headers.Count; $c++) {
-            $value = $Rows[$r].PSObject.Properties[$Headers[$c]].Value
-            $Worksheet.Cells.Item($r + 2, $c + 1).Value2 = $value
-        }
-    }
-
-    $usedRange = $Worksheet.UsedRange
-    $usedRange.AutoFilter() | Out-Null
-    $Worksheet.Rows.Item(1).Font.Bold = $true
-    $Worksheet.Rows.Item(1).Interior.Color = 14277081
-    $Worksheet.Application.ActiveWindow.SplitRow = 1
-    $Worksheet.Application.ActiveWindow.FreezePanes = $true
-
-    foreach ($columnName in $EditableColumns) {
-        if ($headerIndex.ContainsKey($columnName)) {
-            $column = $Worksheet.Columns.Item($headerIndex[$columnName])
-            $column.Interior.Color = 13434879
-            if ($columnName -in @("manual_unit_price_gross", "manual_vat_rate")) {
-                $column.NumberFormat = "0.0000"
-            }
-        }
-    }
-
-    $usedRange.Columns.AutoFit() | Out-Null
-    for ($c = 1; $c -le $Headers.Count; $c++) {
-        if ($Worksheet.Columns.Item($c).ColumnWidth -gt 45) {
-            $Worksheet.Columns.Item($c).ColumnWidth = 45
-        }
-    }
-}
-
-$excel = $null
-$workbook = $null
-$manualSheet = $null
-$detailSheet = $null
-
-try {
-    $excel = New-Object -ComObject Excel.Application
-    $excel.Visible = $false
-    $excel.DisplayAlerts = $false
-
-    $workbook = $excel.Workbooks.Add()
-    while ($workbook.Worksheets.Count -lt 2) {
-        $workbook.Worksheets.Add() | Out-Null
-    }
-    while ($workbook.Worksheets.Count -gt 2) {
-        $workbook.Worksheets.Item($workbook.Worksheets.Count).Delete()
-    }
-
-    $manualSheet = $workbook.Worksheets.Item(1)
-    $manualSheet.Name = "Для заполнения"
-    $detailSheet = $workbook.Worksheets.Item(2)
-    $detailSheet.Name = "Исходные строки"
-
-    $manualHeaders = @(
-        "manual_key",
-        "partner_id",
-        "partner_code",
-        "partner_name",
-        "item_id",
-        "gtin",
-        "item_name",
-        "order_count",
-        "order_line_count",
-        "total_quantity",
-        "first_order_date",
-        "last_order_date",
-        "order_refs",
-        "suggested_vat_rate",
-        "manual_unit_price_gross",
-        "manual_vat_rate",
-        "comment"
-    )
-
-    $detailHeaders = @(
-        "manual_key",
-        "order_id",
-        "order_ref",
-        "order_created_at",
-        "due_date",
-        "partner_id",
-        "partner_code",
-        "partner_name",
-        "order_line_id",
-        "item_id",
-        "gtin",
-        "item_name",
-        "qty_ordered",
-        "existing_unit_price_gross",
-        "existing_vat_rate",
-        "suggested_vat_rate"
-    )
-
-    Write-Worksheet -Worksheet $manualSheet -Rows $manualRows -Headers $manualHeaders `
-        -TextColumns @("manual_key", "partner_code", "gtin", "order_refs") `
-        -EditableColumns @("manual_unit_price_gross", "manual_vat_rate", "comment")
-
-    Write-Worksheet -Worksheet $detailSheet -Rows $detailRows -Headers $detailHeaders `
-        -TextColumns @("manual_key", "order_ref", "partner_code", "gtin")
-
-    $manualSheet.Activate() | Out-Null
-    $workbook.SaveAs($OutputPath, 51)
-}
-finally {
-    if ($workbook) { $workbook.Close($false) }
-    if ($excel) { $excel.Quit() }
-
-    foreach ($comObject in @($detailSheet, $manualSheet, $workbook, $excel)) {
-        if ($comObject) {
-            [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($comObject)
-        }
-    }
-    [GC]::Collect()
-    [GC]::WaitForPendingFinalizers()
-}
-
-Write-Host "Export complete: $OutputPath"
+Write-Host "Export complete."
+Write-Host "Manual input CSV: $manualPath"
+Write-Host "Detail CSV:       $detailPath"
 Write-Host "Unique partner+item rows for manual input: $($manualRows.Count)"
-Write-Host "Blocked order lines in detail sheet: $($detailRows.Count)"
+Write-Host "Blocked order lines in detail export:      $($detailRows.Count)"
 Write-Host "Fill manual_unit_price_gross. manual_vat_rate is prefilled from the current item VAT when available."
+Write-Host "Upload both CSV files to ChatGPT; they can then be combined into one Google Sheet with two tabs."
