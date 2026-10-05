@@ -26,10 +26,10 @@ public partial class MainWindow
 
         if (StatisticsMonthlyGrid.Parent is FrameworkElement monthlyContainer)
         {
-            monthlyContainer.HorizontalAlignment = HorizontalAlignment.Left;
+            monthlyContainer.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
         }
 
-        StatisticsMonthlyGrid.HorizontalAlignment = HorizontalAlignment.Left;
+        StatisticsMonthlyGrid.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
         ConfigureCommercialStatisticsGridColumns(StatisticsMonthlyGrid);
         ConfigureCommercialStatisticsGridColumns(StatisticsGroupsGrid);
 
