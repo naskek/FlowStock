@@ -98,8 +98,8 @@ public partial class MainWindow
             Content = "Сбросить фильтры",
             Margin = new Thickness(8, 0, 0, 0),
             Padding = new Thickness(10, 3, 10, 3),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Center
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+            VerticalAlignment = System.Windows.VerticalAlignment.Center
         };
         Grid.SetRow(button, 2);
         Grid.SetColumn(button, 2);
