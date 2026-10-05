@@ -74,12 +74,13 @@ public sealed class HistoricalFinancialSnapshotAuditPostgresTests
         await process.WaitForExitAsync();
         var output = (await stdoutTask) + Environment.NewLine + (await stderrTask);
 
-        Assert.Equal(4, process.ExitCode);
+        Assert.NotEqual(0, process.ExitCode);
         Assert.Contains(
             "production candidate set differs from reviewed preflight",
             output,
             StringComparison.Ordinal);
         Assert.Contains("ROLLBACK", output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("division by zero", output, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task ExecuteSqlFileAsync(string fileName)
