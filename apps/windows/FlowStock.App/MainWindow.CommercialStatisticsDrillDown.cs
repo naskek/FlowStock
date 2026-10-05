@@ -92,7 +92,7 @@ public partial class MainWindow
     {
         var converter = new CommercialStatisticsGroupDisplayLabelConverter(this);
         var panelFactory = new FrameworkElementFactory(typeof(StackPanel));
-        panelFactory.SetValue(StackPanel.OrientationProperty, Orientation.Horizontal);
+        panelFactory.SetValue(StackPanel.OrientationProperty, System.Windows.Controls.Orientation.Horizontal);
         panelFactory.SetValue(StackPanel.VerticalAlignmentProperty, System.Windows.VerticalAlignment.Center);
 
         if (showExpandIndicator)
