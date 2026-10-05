@@ -167,7 +167,7 @@ ROLLBACK;
 SELECT
     COUNT(*) AS candidate_count,
     COALESCE(SUM(qty_ordered), 0) AS candidate_quantity,
-    ROUND(COALESCE(SUM(qty_ordered * proposed_unit_price_gross), 0), 2) AS reconstructed_gross,
+    ROUND(COALESCE(SUM(qty_ordered::numeric * proposed_unit_price_gross::numeric), 0::numeric), 2) AS reconstructed_gross,
     md5(string_agg(
         order_line_id::text || '|' ||
         COALESCE(proposed_unit_price_gross::text, '') || '|' ||
@@ -181,7 +181,7 @@ SELECT
     proposed_price_source,
     COUNT(*) AS line_count,
     COALESCE(SUM(qty_ordered), 0) AS quantity,
-    ROUND(COALESCE(SUM(qty_ordered * proposed_unit_price_gross), 0), 2) AS reconstructed_gross
+    ROUND(COALESCE(SUM(qty_ordered::numeric * proposed_unit_price_gross::numeric), 0::numeric), 2) AS reconstructed_gross
 FROM historical_snapshot_backfill_plan
 WHERE decision = 'CANDIDATE_STATISTICAL_APPROXIMATION'
 GROUP BY proposed_price_source
