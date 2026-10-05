@@ -30,16 +30,32 @@ public sealed class HistoricalFinancialSnapshotAuditSourceTests
     }
 
     [Fact]
-    public void Audit_matches_current_commercial_terms_resolution_and_marks_approximation()
+    public void Audit_prefers_first_subsequent_price_snapshot_before_current_terms()
     {
-        Assert.Contains("pip.is_active = TRUE", AuditSource, StringComparison.Ordinal);
+        Assert.Contains("LEFT JOIN LATERAL", AuditSource, StringComparison.Ordinal);
+        Assert.Contains("o2.partner_id = o.partner_id", AuditSource, StringComparison.Ordinal);
+        Assert.Contains("ol2.item_id = ol.item_id", AuditSource, StringComparison.Ordinal);
+        Assert.Contains("ol2.unit_price_gross IS NOT NULL", AuditSource, StringComparison.Ordinal);
         Assert.Contains(
-            "COALESCE(pip.unit_price_gross, i.default_sale_price_gross)",
+            "(o2.created_at, o2.id, ol2.id) > (o.created_at, o.id, ol.id)",
             AuditSource,
             StringComparison.Ordinal);
+        Assert.Contains("ORDER BY o2.created_at, o2.id, ol2.id", AuditSource, StringComparison.Ordinal);
+        Assert.Contains("LIMIT 1", AuditSource, StringComparison.Ordinal);
+        Assert.Contains("FIRST_SUBSEQUENT_SNAPSHOT_PRICE", AuditSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "later_price.unit_price_gross,\n            pip.unit_price_gross,\n            i.default_sale_price_gross",
+            AuditSource,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Audit_uses_current_terms_only_as_fallback_and_marks_approximation()
+    {
+        Assert.Contains("pip.is_active = TRUE", AuditSource, StringComparison.Ordinal);
         Assert.Contains("vr.is_active", AuditSource, StringComparison.Ordinal);
-        Assert.Contains("CANDIDATE_CURRENT_APPROXIMATION", AuditSource, StringComparison.Ordinal);
-        Assert.Contains("BLOCKED_CURRENT_PRICE_MISSING", AuditSource, StringComparison.Ordinal);
+        Assert.Contains("CANDIDATE_STATISTICAL_APPROXIMATION", AuditSource, StringComparison.Ordinal);
+        Assert.Contains("BLOCKED_PRICE_SOURCE_MISSING", AuditSource, StringComparison.Ordinal);
         Assert.Contains("BLOCKED_CURRENT_VAT_REQUIRED", AuditSource, StringComparison.Ordinal);
         Assert.Contains("BLOCKED_CURRENT_VAT_INACTIVE", AuditSource, StringComparison.Ordinal);
     }
