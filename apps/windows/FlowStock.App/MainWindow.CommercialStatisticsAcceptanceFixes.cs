@@ -37,6 +37,7 @@ public partial class MainWindow
         RewireCommercialStatisticsAcceptanceSelectors();
         RewireCommercialStatisticsPartnerScope();
         RewireCommercialStatisticsVolumeChecklist();
+        RewireCommercialStatisticsModeSwitch();
         ConfigureCommercialStatisticsResetFiltersButton();
         RewireCommercialStatisticsMonthlyNavigation();
         RewireCommercialStatisticsWholePeriodAction();
@@ -83,6 +84,55 @@ public partial class MainWindow
         StatisticsVolumeCombo.PreviewKeyDown -= StatisticsSearchCombo_PreviewKeyDown;
         StatisticsVolumeCombo.LostKeyboardFocus -= StatisticsSearchCombo_LostKeyboardFocus;
         StatisticsVolumeCombo.SelectionChanged -= StatisticsCriteria_Changed;
+    }
+
+    private void RewireCommercialStatisticsModeSwitch()
+    {
+        StatisticsModeCombo.SelectionChanged -= StatisticsCriteria_Changed;
+        StatisticsModeCombo.SelectionChanged += StatisticsAcceptanceMode_SelectionChanged;
+    }
+
+    private void StatisticsAcceptanceMode_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressCommercialStatisticsFilterEvents || !IsLoaded)
+        {
+            return;
+        }
+
+        var transition = _commercialStatisticsState.ModeChanged();
+        _commercialStatisticsNavigationSelectedMonth = null;
+
+        if (transition.HadDetailMonth)
+        {
+            var previousSuppression = _suppressCommercialStatisticsFilterEvents;
+            _suppressCommercialStatisticsFilterEvents = true;
+            _applyingCommercialStatisticsMonth = true;
+            try
+            {
+                if (_statisticsMonthDate is not null)
+                {
+                    _statisticsMonthDate.SelectedDate = null;
+                }
+                if (transition.RestoreFrom.HasValue)
+                {
+                    StatisticsFromDate.SelectedDate = transition.RestoreFrom.Value;
+                }
+                if (transition.RestoreTo.HasValue)
+                {
+                    StatisticsToDate.SelectedDate = transition.RestoreTo.Value;
+                }
+                StatisticsMonthlyGrid.SelectedItem = null;
+            }
+            finally
+            {
+                _applyingCommercialStatisticsMonth = false;
+                _suppressCommercialStatisticsFilterEvents = previousSuppression;
+            }
+        }
+
+        UpdateCommercialStatisticsStatusFilter();
+        UpdateCommercialStatisticsNavigation();
+        ScheduleCommercialStatisticsRefresh();
     }
 
     private void ConfigureCommercialStatisticsResetFiltersButton()
