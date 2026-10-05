@@ -69,6 +69,16 @@ public sealed class CommercialStatisticsAcceptanceBehaviorTests
         Assert.Null(CommercialStatisticsFilterOptions.BuildStatusesCsv("sales", statuses));
     }
 
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("", true)]
+    [InlineData("   ", true)]
+    [InlineData("горчица", false)]
+    public void Empty_selector_text_is_restored_to_all_on_blur(string? text, bool expected)
+    {
+        Assert.Equal(expected, CommercialStatisticsSelectorBlurPolicy.ShouldRestoreAll(text));
+    }
+
     private static WpfCommercialStatisticsFilters CreateFilters(DateTime from, DateTime to) =>
         new(
             Mode: "orders",
