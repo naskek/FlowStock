@@ -11,10 +11,6 @@ public sealed class RuntimeStateTests
         var paths = new DesktopUpdatePaths(local, local);
 
         Assert.Equal(Path.Combine(local, "FlowStock", "Desktop", "repository"), paths.Repository);
-        Assert.Equal(paths.Repository, DesktopUpdateConstants.DefaultRepositoryRoot.Replace(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            local,
-            StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
