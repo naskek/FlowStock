@@ -221,23 +221,30 @@ internal static class CommercialStatisticsFilterOptions
                 .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
             .ToLowerInvariant();
 
+    private static string CompactSearch(string value) =>
+        new(value
+            .ToLowerInvariant()
+            .Where(char.IsLetterOrDigit)
+            .ToArray());
+
     private static bool MatchesSearch(string value, string normalizedQuery)
     {
         var normalizedValue = NormalizeSearch(value);
-        var words = normalizedValue
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            .Concat(new string(
-                value
-                    .ToLowerInvariant()
-                    .Select(character => char.IsLetterOrDigit(character) ? character : ' ')
-                    .ToArray())
-                .Split(' ', StringSplitOptions.RemoveEmptyEntries))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
+        var compactValue = CompactSearch(value);
+
         return normalizedQuery
             .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            .All(queryPart => words.Any(word =>
-                word.StartsWith(queryPart, StringComparison.Ordinal)));
+            .All(queryPart =>
+            {
+                if (normalizedValue.Contains(queryPart, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                var compactQueryPart = CompactSearch(queryPart);
+                return !string.IsNullOrEmpty(compactQueryPart)
+                       && compactValue.Contains(compactQueryPart, StringComparison.Ordinal);
+            });
     }
 }
 

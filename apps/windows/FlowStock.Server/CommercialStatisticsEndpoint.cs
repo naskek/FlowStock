@@ -6,6 +6,9 @@ namespace FlowStock.Server;
 
 public static class CommercialStatisticsEndpoint
 {
+    private const int MaxGtinFilterCount = 500;
+    private const int MaxVolumeFilterCount = 100;
+
     private static readonly OrderStatus[] DefaultOrderStatuses =
     [
         OrderStatus.Draft,
@@ -17,9 +20,63 @@ public static class CommercialStatisticsEndpoint
     public static void Map(WebApplication app)
     {
         app.MapGet("/api/commercial-statistics", Handle);
+        app.MapGet("/api/commercial-statistics/filter-options", HandleFilterOptions);
     }
 
-    private static IResult Handle(HttpRequest request, CommercialStatisticsService service)
+    private static IResult HandleFilterOptions(
+        HttpRequest request,
+        IConfiguration configuration)
+    {
+        if (!TryParseMode(request.Query["mode"], out var mode))
+        {
+            return Invalid("INVALID_STATISTICS_MODE", "Некорректный режим статистики.");
+        }
+
+        if (!TryParseDate(request.Query["from"], out var from)
+            || !TryParseDate(request.Query["to"], out var to)
+            || to < from)
+        {
+            return Invalid("INVALID_STATISTICS_PERIOD", "Укажите корректный период статистики.");
+        }
+
+        var statusesRaw = request.Query["statuses"].ToString();
+        if (mode == CommercialStatisticsMode.Sales && !string.IsNullOrWhiteSpace(statusesRaw))
+        {
+            return Invalid(
+                "STATUSES_NOT_SUPPORTED_FOR_SALES",
+                "Фильтр статусов применяется только в режиме «Заказы».");
+        }
+
+        if (!TryParseStatuses(statusesRaw, out var statuses))
+        {
+            return Invalid("INVALID_ORDER_STATUSES", "Указан неподдерживаемый статус заказа.");
+        }
+
+        if (!TryOptionalLong(request.Query["partner_id"], out var partnerId)
+            || !partnerId.HasValue)
+        {
+            return Invalid("INVALID_STATISTICS_PARTNER", "Для зависимых фильтров требуется контрагент.");
+        }
+
+        var reader = new CommercialStatisticsFilterOptionsReader(
+            CommercialStatisticsAdvancedReader.BuildConnectionString(configuration));
+        var itemIds = reader.GetAvailableItemIds(
+            mode,
+            from,
+            to.AddDays(1),
+            partnerId.Value,
+            mode == CommercialStatisticsMode.Orders ? statuses : Array.Empty<OrderStatus>());
+
+        return Results.Ok(new
+        {
+            item_ids = itemIds
+        });
+    }
+
+    private static IResult Handle(
+        HttpRequest request,
+        CommercialStatisticsService service,
+        IConfiguration configuration)
     {
         if (!TryParseMode(request.Query["mode"], out var mode)
             || !TryParseGroupBy(request.Query["group_by"], out var groupBy))
@@ -39,11 +96,11 @@ public static class CommercialStatisticsEndpoint
         if (!string.IsNullOrWhiteSpace(detailMonthRaw))
         {
             if (!DateTime.TryParseExact(
-                    detailMonthRaw,
-                    "yyyy-MM",
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.None,
-                    out var parsedMonth))
+                detailMonthRaw,
+                "yyyy-MM",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsedMonth))
             {
                 return Invalid("INVALID_DETAIL_MONTH", "Месяц детализации должен иметь формат YYYY-MM.");
             }
@@ -72,6 +129,20 @@ public static class CommercialStatisticsEndpoint
             || !TryOptionalLong(request.Query["item_id"], out var itemId))
         {
             return Invalid("INVALID_STATISTICS_FILTER", "Некорректный идентификатор фильтра.");
+        }
+
+        if (!TryParseGtins(request.Query["gtins"], out var gtins))
+        {
+            return Invalid(
+                "INVALID_STATISTICS_GTINS",
+                $"Можно выбрать не более {MaxGtinFilterCount} GTIN.");
+        }
+
+        if (!TryParseVolumes(request.Query["volumes"], out var volumes))
+        {
+            return Invalid(
+                "INVALID_STATISTICS_VOLUMES",
+                $"Можно выбрать не более {MaxVolumeFilterCount} фасовок.");
         }
 
         var limit = int.TryParse(request.Query["limit"], out var parsedLimit)
@@ -104,8 +175,16 @@ public static class CommercialStatisticsEndpoint
             mode == CommercialStatisticsMode.Orders ? statuses : Array.Empty<OrderStatus>(),
             limit,
             offset,
-            sort);
-        var result = service.Get(query);
+            sort,
+            Gtins: gtins,
+            ItemNameContains: NullIfBlank(request.Query["item_name_contains"]),
+            Volumes: volumes);
+
+        var result = CommercialStatisticsAdvancedReader.IsRequired(query)
+            ? new CommercialStatisticsAdvancedReader(
+                CommercialStatisticsAdvancedReader.BuildConnectionString(configuration)).Get(query)
+            : service.Get(query);
+
         return Results.Ok(new
         {
             mode = mode.ToString().ToLowerInvariant(),
@@ -212,6 +291,52 @@ public static class CommercialStatisticsEndpoint
         return statuses.Count > 0;
     }
 
+    private static bool TryParseGtins(string? raw, out IReadOnlyList<string> gtins)
+    {
+        gtins = Array.Empty<string>();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return true;
+        }
+
+        var parsed = raw
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(RemoveWhitespace)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (parsed.Length > MaxGtinFilterCount)
+        {
+            return false;
+        }
+
+        gtins = parsed;
+        return true;
+    }
+
+    private static bool TryParseVolumes(string? raw, out IReadOnlyList<string> volumes)
+    {
+        volumes = Array.Empty<string>();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return true;
+        }
+
+        var parsed = raw
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(value => value.Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (parsed.Length > MaxVolumeFilterCount)
+        {
+            return false;
+        }
+
+        volumes = parsed;
+        return true;
+    }
+
     private static bool TryParseDate(string? raw, out DateTime value) =>
         DateTime.TryParseExact(
             raw?.Trim(),
@@ -237,6 +362,9 @@ public static class CommercialStatisticsEndpoint
 
     private static string? NullIfBlank(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string RemoveWhitespace(string value) =>
+        string.Concat(value.Where(character => !char.IsWhiteSpace(character)));
 
     private static string GroupByToApi(CommercialStatisticsGroupBy groupBy) =>
         groupBy.ToString().ToLowerInvariant();
