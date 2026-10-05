@@ -11,7 +11,6 @@ public partial class MainWindow
     private bool _commercialStatisticsContentLayoutApplied;
     private static bool _commercialStatisticsNestedGridHandlerRegistered;
     private GridSplitter? _commercialStatisticsDetailsSplitter;
-    private DockPanel? _commercialStatisticsPagerPanel;
 
     private void ApplyCommercialStatisticsContentLayout()
     {
@@ -96,25 +95,22 @@ public partial class MainWindow
             "Снять выбор месяца и показать статистику за весь выбранный период";
         StatisticsAllPeriodButton.Margin = new Thickness(0, 8, 0, 0);
         StatisticsAllPeriodButton.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
-
-        if (StatisticsPreviousPageButton.Parent is System.Windows.Controls.Panel pagerButtons
-            && pagerButtons.Parent is DockPanel pagerPanel)
-        {
-            _commercialStatisticsPagerPanel = pagerPanel;
-        }
+        StatisticsAllPeriodButton.Visibility = Visibility.Visible;
 
         StatisticsPreviousPageButton.IsEnabledChanged += StatisticsPaginationButton_IsEnabledChanged;
         StatisticsNextPageButton.IsEnabledChanged += StatisticsPaginationButton_IsEnabledChanged;
-        StatisticsAllPeriodButton.IsEnabledChanged += StatisticsAllPeriodButton_IsEnabledChanged;
 
-        if (StatisticsAllPeriodButton.Parent is System.Windows.Controls.Panel oldParent)
-        {
-            oldParent.Children.Remove(StatisticsAllPeriodButton);
-        }
+        var monthlyBox = StatisticsMonthlyGrid.Parent as System.Windows.Controls.GroupBox
+            ?? FindVisualAncestor<System.Windows.Controls.GroupBox>(StatisticsMonthlyGrid);
 
-        var monthlyBox = FindVisualAncestor<System.Windows.Controls.GroupBox>(StatisticsMonthlyGrid);
-        if (monthlyBox is not null && ReferenceEquals(monthlyBox.Content, StatisticsMonthlyGrid))
+        if (monthlyBox is not null
+            && ReferenceEquals(monthlyBox.Content, StatisticsMonthlyGrid))
         {
+            if (StatisticsAllPeriodButton.Parent is System.Windows.Controls.Panel oldParent)
+            {
+                oldParent.Children.Remove(StatisticsAllPeriodButton);
+            }
+
             monthlyBox.Content = null;
 
             var monthlyLayout = new Grid();
@@ -131,7 +127,6 @@ public partial class MainWindow
         }
 
         UpdateCommercialStatisticsPaginationVisibility();
-        UpdateCommercialStatisticsWholePeriodButtonVisibility();
     }
 
     private void StatisticsPaginationButton_IsEnabledChanged(
@@ -141,35 +136,15 @@ public partial class MainWindow
         UpdateCommercialStatisticsPaginationVisibility();
     }
 
-    private void StatisticsAllPeriodButton_IsEnabledChanged(
-        object sender,
-        DependencyPropertyChangedEventArgs e)
-    {
-        UpdateCommercialStatisticsWholePeriodButtonVisibility();
-    }
-
     private void UpdateCommercialStatisticsPaginationVisibility()
     {
         var visibility = StatisticsPreviousPageButton.IsEnabled || StatisticsNextPageButton.IsEnabled
             ? Visibility.Visible
             : Visibility.Collapsed;
 
-        if (_commercialStatisticsPagerPanel is not null)
-        {
-            _commercialStatisticsPagerPanel.Visibility = visibility;
-            return;
-        }
-
         StatisticsPreviousPageButton.Visibility = visibility;
         StatisticsNextPageButton.Visibility = visibility;
         StatisticsPageText.Visibility = visibility;
-    }
-
-    private void UpdateCommercialStatisticsWholePeriodButtonVisibility()
-    {
-        StatisticsAllPeriodButton.Visibility = StatisticsAllPeriodButton.IsEnabled
-            ? Visibility.Visible
-            : Visibility.Collapsed;
     }
 
     private void ConfigureCommercialStatisticsMonthlyColumns()
