@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
+using WpfBinding = System.Windows.Data.Binding;
 
 namespace FlowStock.App;
 
@@ -81,10 +82,10 @@ public partial class MainWindow
         textFactory.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
         textFactory.SetBinding(
             TextBlock.TextProperty,
-            new Binding(".") { Converter = converter });
+            new WpfBinding(".") { Converter = converter });
         textFactory.SetBinding(
             FrameworkElement.ToolTipProperty,
-            new Binding(".") { Converter = converter });
+            new WpfBinding(".") { Converter = converter });
 
         var column = new DataGridTemplateColumn
         {
@@ -102,7 +103,7 @@ public partial class MainWindow
         var viewFactory = new FrameworkElementFactory(typeof(CommercialStatisticsPartnerDrillDownView));
         viewFactory.SetBinding(
             FrameworkElement.DataContextProperty,
-            new Binding(nameof(DataGridRow.Tag))
+            new WpfBinding(nameof(DataGridRow.Tag))
             {
                 RelativeSource = new RelativeSource(
                     RelativeSourceMode.FindAncestor,
