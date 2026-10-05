@@ -265,25 +265,25 @@ internal sealed class CommercialStatisticsDrillDownItemsGrid : DataGrid
         {
             Header = "Количество",
             Binding = new Binding("Amounts.Quantity") { StringFormat = "{0:0.######}" },
-            Width = 95
+            Width = new DataGridLength(95)
         });
         Columns.Add(new DataGridTextColumn
         {
             Header = "С НДС",
             Binding = new Binding("Amounts.Gross") { StringFormat = "{0:N2}" },
-            Width = 105
+            Width = new DataGridLength(105)
         });
         Columns.Add(new DataGridTextColumn
         {
             Header = "Без НДС",
             Binding = new Binding("Amounts.Net") { StringFormat = "{0:N2}" },
-            Width = 105
+            Width = new DataGridLength(105)
         });
         Columns.Add(new DataGridTextColumn
         {
             Header = "НДС",
             Binding = new Binding("Amounts.Vat") { StringFormat = "{0:N2}" },
-            Width = 90
+            Width = new DataGridLength(90)
         });
     }
 }
