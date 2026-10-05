@@ -30,6 +30,7 @@ public partial class MainWindow
             {
                 window.ApplyCommercialStatisticsAcceptanceFixes();
                 window.ApplyCommercialStatisticsDrillDownEnhancements();
+                window.ApplyCommercialStatisticsContentLayout();
             }));
     }
 }
