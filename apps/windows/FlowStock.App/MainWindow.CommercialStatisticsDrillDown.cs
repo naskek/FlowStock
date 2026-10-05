@@ -76,26 +76,63 @@ public partial class MainWindow
             return;
         }
 
+        var column = new DataGridTemplateColumn
+        {
+            Header = "Контрагент",
+            CellTemplate = BuildCommercialStatisticsGroupCellTemplate(showExpandIndicator: true),
+            Width = DataGridLength.Auto,
+            MinWidth = 180
+        };
+        StatisticsGroupsGrid.Columns.RemoveAt(0);
+        StatisticsGroupsGrid.Columns.Insert(0, column);
+        _commercialStatisticsGroupDisplayColumn = column;
+    }
+
+    private DataTemplate BuildCommercialStatisticsGroupCellTemplate(bool showExpandIndicator)
+    {
         var converter = new CommercialStatisticsGroupDisplayLabelConverter(this);
+        var panelFactory = new FrameworkElementFactory(typeof(StackPanel));
+        panelFactory.SetValue(StackPanel.OrientationProperty, Orientation.Horizontal);
+        panelFactory.SetValue(StackPanel.VerticalAlignmentProperty, System.Windows.VerticalAlignment.Center);
+
+        if (showExpandIndicator)
+        {
+            panelFactory.SetValue(
+                FrameworkElement.ToolTipProperty,
+                "Двойной клик — показать или скрыть товары контрагента");
+
+            var arrowFactory = new FrameworkElementFactory(typeof(TextBlock));
+            arrowFactory.SetValue(TextBlock.WidthProperty, 18d);
+            arrowFactory.SetValue(TextBlock.MarginProperty, new Thickness(2, 0, 4, 0));
+            arrowFactory.SetValue(TextBlock.VerticalAlignmentProperty, System.Windows.VerticalAlignment.Center);
+            arrowFactory.SetBinding(
+                TextBlock.TextProperty,
+                new WpfBinding(nameof(DataGridRow.DetailsVisibility))
+                {
+                    RelativeSource = new RelativeSource(
+                        RelativeSourceMode.FindAncestor,
+                        typeof(DataGridRow),
+                        1),
+                    Converter = CommercialStatisticsRowDetailsArrowConverter.Instance
+                });
+            panelFactory.AppendChild(arrowFactory);
+        }
+
         var textFactory = new FrameworkElementFactory(typeof(TextBlock));
-        textFactory.SetValue(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
-        textFactory.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
+        textFactory.SetValue(TextBlock.VerticalAlignmentProperty, System.Windows.VerticalAlignment.Center);
+        textFactory.SetValue(TextBlock.TextWrappingProperty, TextWrapping.NoWrap);
         textFactory.SetBinding(
             TextBlock.TextProperty,
             new WpfBinding(".") { Converter = converter });
         textFactory.SetBinding(
             FrameworkElement.ToolTipProperty,
             new WpfBinding(".") { Converter = converter });
+        panelFactory.AppendChild(textFactory);
 
-        var column = new DataGridTemplateColumn
+        return new DataTemplate
         {
-            Header = "Контрагент",
-            CellTemplate = new DataTemplate { VisualTree = textFactory },
-            Width = new DataGridLength(1, DataGridLengthUnitType.Star)
+            VisualTree = panelFactory
         };
-        StatisticsGroupsGrid.Columns.RemoveAt(0);
-        StatisticsGroupsGrid.Columns.Insert(0, column);
-        _commercialStatisticsGroupDisplayColumn = column;
     }
 
     private void ConfigureCommercialStatisticsPartnerRowDetails()
@@ -146,6 +183,9 @@ public partial class MainWindow
             "volume" => "Фасовка",
             _ => "Группа"
         };
+        _commercialStatisticsGroupDisplayColumn.CellTemplate =
+            BuildCommercialStatisticsGroupCellTemplate(
+                showExpandIndicator: string.Equals(groupBy, "partner", StringComparison.OrdinalIgnoreCase));
     }
 
     private async void StatisticsGroupsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -314,6 +354,19 @@ public partial class MainWindow
             value is WpfCommercialStatisticsGroup group
                 ? owner.GetCommercialStatisticsGroupDisplayLabel(group)
                 : string.Empty;
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class CommercialStatisticsRowDetailsArrowConverter : IValueConverter
+    {
+        public static CommercialStatisticsRowDetailsArrowConverter Instance { get; } = new();
+
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture) =>
+            value is Visibility visibility && visibility == Visibility.Visible
+                ? "▼"
+                : "▶";
 
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
             throw new NotSupportedException();
