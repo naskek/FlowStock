@@ -14,6 +14,13 @@ public partial class MainWindow
         }
 
         _commercialStatisticsSelectorBlurFixApplied = true;
+
+        // Keep Item / GTIN interaction consistent with the other searchable selectors:
+        // focusing or opening the ComboBox must not clear the current "All" selection.
+        // Free-text filtering is still handled by the acceptance TextChanged handlers.
+        StatisticsItemCombo.GotKeyboardFocus -= StatisticsAcceptanceSelector_GotKeyboardFocus;
+        StatisticsGtinCombo.GotKeyboardFocus -= StatisticsAcceptanceSelector_GotKeyboardFocus;
+
         StatisticsItemCombo.LostKeyboardFocus += StatisticsAcceptanceSelector_LostKeyboardFocusFix;
         StatisticsGtinCombo.LostKeyboardFocus += StatisticsAcceptanceSelector_LostKeyboardFocusFix;
     }
