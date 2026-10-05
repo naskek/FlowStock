@@ -26,6 +26,10 @@ public partial class MainWindow
         window.StatisticsVolumeCombo.ClearValue(ItemsControl.DisplayMemberPathProperty);
         window.Dispatcher.BeginInvoke(
             DispatcherPriority.ApplicationIdle,
-            new Action(window.ApplyCommercialStatisticsAcceptanceFixes));
+            new Action(() =>
+            {
+                window.ApplyCommercialStatisticsAcceptanceFixes();
+                window.ApplyCommercialStatisticsDrillDownEnhancements();
+            }));
     }
 }
