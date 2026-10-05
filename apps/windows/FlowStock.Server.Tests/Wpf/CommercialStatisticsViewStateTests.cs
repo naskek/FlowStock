@@ -153,6 +153,45 @@ public sealed class CommercialStatisticsViewStateTests
     }
 
     [Fact]
+    public void Mode_change_clears_detail_and_returns_original_navigation_period()
+    {
+        var state = new CommercialStatisticsViewState(pageSize: 100);
+        var navigationFrom = new DateTime(2026, 1, 1);
+        var navigationTo = new DateTime(2026, 10, 31);
+        state.SelectDetailMonth(
+            "2026-09",
+            navigationFrom,
+            navigationTo);
+        var staleDetailLoad = state.StartLoad(CreateFilters() with
+        {
+            Mode = "sales",
+            From = new DateTime(2026, 9, 1),
+            To = new DateTime(2026, 9, 30),
+            Statuses = null
+        });
+
+        var transition = state.ModeChanged();
+        var ordersLoad = state.StartLoad(CreateFilters() with
+        {
+            Mode = "orders",
+            From = navigationFrom,
+            To = navigationTo
+        });
+
+        Assert.True(transition.HadDetailMonth);
+        Assert.Equal(navigationFrom, transition.RestoreFrom);
+        Assert.Equal(navigationTo, transition.RestoreTo);
+        Assert.Null(state.DetailMonth);
+        Assert.Null(ordersLoad.Request.DetailMonth);
+        Assert.Equal(navigationFrom, ordersLoad.Request.From);
+        Assert.Equal(navigationTo, ordersLoad.Request.To);
+        Assert.Equal(0, ordersLoad.Request.Offset);
+        Assert.False(state.TryComplete(
+            staleDetailLoad.RequestId,
+            Result(totalCount: 999, offset: 0, count: 100)));
+    }
+
+    [Fact]
     public void Start_load_drops_detail_month_outside_requested_period()
     {
         var state = new CommercialStatisticsViewState(pageSize: 100);
