@@ -55,6 +55,37 @@ public sealed class CommercialStatisticsAcceptanceBehaviorTests
     }
 
     [Fact]
+    public void Mode_switch_replaces_generic_handler_and_restores_whole_period_controls()
+    {
+        var source = File.ReadAllText(FindRepoFile(
+            "apps",
+            "windows",
+            "FlowStock.App",
+            "MainWindow.CommercialStatisticsAcceptanceFixes.cs"));
+
+        Assert.Contains(
+            "StatisticsModeCombo.SelectionChanged -= StatisticsCriteria_Changed;",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "StatisticsModeCombo.SelectionChanged += StatisticsAcceptanceMode_SelectionChanged;",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "var transition = _commercialStatisticsState.ModeChanged();",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "StatisticsFromDate.SelectedDate = transition.RestoreFrom.Value;",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "StatisticsToDate.SelectedDate = transition.RestoreTo.Value;",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Orders_status_scope_can_be_fixed_to_shipped_only()
     {
         var statuses = CommercialStatisticsFilterOptions.BuildStatuses();
@@ -92,4 +123,19 @@ public sealed class CommercialStatisticsAcceptanceBehaviorTests
             Volume: null,
             Statuses: "SHIPPED",
             Sort: "gross_desc");
+
+    private static string FindRepoFile(params string[] parts)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null)
+        {
+            var candidate = Path.Combine(new[] { directory.FullName }.Concat(parts).ToArray());
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+            directory = directory.Parent;
+        }
+        throw new FileNotFoundException(string.Join(Path.DirectorySeparatorChar, parts));
+    }
 }
