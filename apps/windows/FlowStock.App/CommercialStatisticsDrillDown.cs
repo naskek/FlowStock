@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using WpfBinding = System.Windows.Data.Binding;
 
 namespace FlowStock.App;
 
@@ -210,12 +211,12 @@ internal sealed class CommercialStatisticsPartnerDrillDownView : Border
             Foreground = System.Windows.Media.Brushes.DimGray,
             TextWrapping = TextWrapping.Wrap
         };
-        status.SetBinding(TextBlock.TextProperty, new Binding(nameof(CommercialStatisticsPartnerDrillDownState.StatusText)));
-        status.SetBinding(VisibilityProperty, new Binding(nameof(CommercialStatisticsPartnerDrillDownState.StatusVisibility)));
+        status.SetBinding(TextBlock.TextProperty, new WpfBinding(nameof(CommercialStatisticsPartnerDrillDownState.StatusText)));
+        status.SetBinding(VisibilityProperty, new WpfBinding(nameof(CommercialStatisticsPartnerDrillDownState.StatusVisibility)));
         panel.Children.Add(status);
 
         var sections = new ItemsControl();
-        sections.SetBinding(ItemsControl.ItemsSourceProperty, new Binding(nameof(CommercialStatisticsPartnerDrillDownState.Sections)));
+        sections.SetBinding(ItemsControl.ItemsSourceProperty, new WpfBinding(nameof(CommercialStatisticsPartnerDrillDownState.Sections)));
         sections.ItemTemplate = BuildSectionTemplate();
         panel.Children.Add(sections);
     }
@@ -226,13 +227,13 @@ internal sealed class CommercialStatisticsPartnerDrillDownView : Border
         root.SetValue(StackPanel.MarginProperty, new Thickness(0, 2, 0, 8));
 
         var title = new FrameworkElementFactory(typeof(TextBlock));
-        title.SetBinding(TextBlock.TextProperty, new Binding(nameof(CommercialStatisticsDrillDownSection.Volume)));
+        title.SetBinding(TextBlock.TextProperty, new WpfBinding(nameof(CommercialStatisticsDrillDownSection.Volume)));
         title.SetValue(TextBlock.FontWeightProperty, FontWeights.SemiBold);
         title.SetValue(TextBlock.MarginProperty, new Thickness(2, 0, 2, 4));
         root.AppendChild(title);
 
         var grid = new FrameworkElementFactory(typeof(CommercialStatisticsDrillDownItemsGrid));
-        grid.SetBinding(ItemsControl.ItemsSourceProperty, new Binding(nameof(CommercialStatisticsDrillDownSection.Items)));
+        grid.SetBinding(ItemsControl.ItemsSourceProperty, new WpfBinding(nameof(CommercialStatisticsDrillDownSection.Items)));
         root.AppendChild(grid);
 
         return new DataTemplate
@@ -258,31 +259,31 @@ internal sealed class CommercialStatisticsDrillDownItemsGrid : DataGrid
         Columns.Add(new DataGridTextColumn
         {
             Header = "Товар / GTIN",
-            Binding = new Binding(nameof(CommercialStatisticsDrillDownItem.Label)),
+            Binding = new WpfBinding(nameof(CommercialStatisticsDrillDownItem.Label)),
             Width = new DataGridLength(1, DataGridLengthUnitType.Star)
         });
         Columns.Add(new DataGridTextColumn
         {
             Header = "Количество",
-            Binding = new Binding("Amounts.Quantity") { StringFormat = "{0:0.######}" },
+            Binding = new WpfBinding("Amounts.Quantity") { StringFormat = "{0:0.######}" },
             Width = new DataGridLength(95)
         });
         Columns.Add(new DataGridTextColumn
         {
             Header = "С НДС",
-            Binding = new Binding("Amounts.Gross") { StringFormat = "{0:N2}" },
+            Binding = new WpfBinding("Amounts.Gross") { StringFormat = "{0:N2}" },
             Width = new DataGridLength(105)
         });
         Columns.Add(new DataGridTextColumn
         {
             Header = "Без НДС",
-            Binding = new Binding("Amounts.Net") { StringFormat = "{0:N2}" },
+            Binding = new WpfBinding("Amounts.Net") { StringFormat = "{0:N2}" },
             Width = new DataGridLength(105)
         });
         Columns.Add(new DataGridTextColumn
         {
             Header = "НДС",
-            Binding = new Binding("Amounts.Vat") { StringFormat = "{0:N2}" },
+            Binding = new WpfBinding("Amounts.Vat") { StringFormat = "{0:N2}" },
             Width = new DataGridLength(90)
         });
     }
