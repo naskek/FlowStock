@@ -11,6 +11,7 @@ public partial class MainWindow
     private bool _commercialStatisticsContentLayoutApplied;
     private static bool _commercialStatisticsNestedGridHandlerRegistered;
     private GridSplitter? _commercialStatisticsDetailsSplitter;
+    private DockPanel? _commercialStatisticsPagerPanel;
 
     private void ApplyCommercialStatisticsContentLayout()
     {
@@ -26,6 +27,8 @@ public partial class MainWindow
         {
             ConfigureCommercialStatisticsDetailsGrid(detailsGrid);
         }
+
+        ConfigureCommercialStatisticsNavigationLayout();
 
         if (StatisticsMonthlyGrid.Parent is FrameworkElement monthlyContainer)
         {
@@ -84,6 +87,89 @@ public partial class MainWindow
         {
             detailsGrid.ColumnDefinitions[^1].Width = new GridLength(1, GridUnitType.Star);
         }
+    }
+
+    private void ConfigureCommercialStatisticsNavigationLayout()
+    {
+        StatisticsAllPeriodButton.Content = "Показать весь период";
+        StatisticsAllPeriodButton.ToolTip =
+            "Снять выбор месяца и показать статистику за весь выбранный период";
+        StatisticsAllPeriodButton.Margin = new Thickness(0, 8, 0, 0);
+        StatisticsAllPeriodButton.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
+
+        if (StatisticsPreviousPageButton.Parent is Panel pagerButtons
+            && pagerButtons.Parent is DockPanel pagerPanel)
+        {
+            _commercialStatisticsPagerPanel = pagerPanel;
+        }
+
+        StatisticsPreviousPageButton.IsEnabledChanged += StatisticsPaginationButton_IsEnabledChanged;
+        StatisticsNextPageButton.IsEnabledChanged += StatisticsPaginationButton_IsEnabledChanged;
+        StatisticsAllPeriodButton.IsEnabledChanged += StatisticsAllPeriodButton_IsEnabledChanged;
+
+        if (StatisticsAllPeriodButton.Parent is Panel oldParent)
+        {
+            oldParent.Children.Remove(StatisticsAllPeriodButton);
+        }
+
+        var monthlyBox = FindVisualAncestor<GroupBox>(StatisticsMonthlyGrid);
+        if (monthlyBox is not null && ReferenceEquals(monthlyBox.Content, StatisticsMonthlyGrid))
+        {
+            monthlyBox.Content = null;
+
+            var monthlyLayout = new Grid();
+            monthlyLayout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            monthlyLayout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            Grid.SetRow(StatisticsMonthlyGrid, 0);
+            monthlyLayout.Children.Add(StatisticsMonthlyGrid);
+
+            Grid.SetRow(StatisticsAllPeriodButton, 1);
+            monthlyLayout.Children.Add(StatisticsAllPeriodButton);
+
+            monthlyBox.Content = monthlyLayout;
+        }
+
+        UpdateCommercialStatisticsPaginationVisibility();
+        UpdateCommercialStatisticsWholePeriodButtonVisibility();
+    }
+
+    private void StatisticsPaginationButton_IsEnabledChanged(
+        object sender,
+        DependencyPropertyChangedEventArgs e)
+    {
+        UpdateCommercialStatisticsPaginationVisibility();
+    }
+
+    private void StatisticsAllPeriodButton_IsEnabledChanged(
+        object sender,
+        DependencyPropertyChangedEventArgs e)
+    {
+        UpdateCommercialStatisticsWholePeriodButtonVisibility();
+    }
+
+    private void UpdateCommercialStatisticsPaginationVisibility()
+    {
+        var visibility = StatisticsPreviousPageButton.IsEnabled || StatisticsNextPageButton.IsEnabled
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        if (_commercialStatisticsPagerPanel is not null)
+        {
+            _commercialStatisticsPagerPanel.Visibility = visibility;
+            return;
+        }
+
+        StatisticsPreviousPageButton.Visibility = visibility;
+        StatisticsNextPageButton.Visibility = visibility;
+        StatisticsPageText.Visibility = visibility;
+    }
+
+    private void UpdateCommercialStatisticsWholePeriodButtonVisibility()
+    {
+        StatisticsAllPeriodButton.Visibility = StatisticsAllPeriodButton.IsEnabled
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     }
 
     private void ConfigureCommercialStatisticsMonthlyColumns()
