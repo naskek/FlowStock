@@ -55,7 +55,45 @@ public sealed class CommercialStatisticsAcceptanceBehaviorTests
     }
 
     [Fact]
-    public void Orders_status_scope_can_be_fixed_to_shipped_only()
+    public void Commercial_statistics_default_mode_is_sales()
+    {
+        Assert.Equal("sales", CommercialStatisticsModeDefaultsPolicy.DefaultMode);
+    }
+
+    [Fact]
+    public void Orders_default_scope_restores_active_and_shipped_statuses()
+    {
+        var statuses = CommercialStatisticsFilterOptions.BuildStatuses();
+        foreach (var option in statuses)
+        {
+            option.IsChecked = string.Equals(option.Code, "SHIPPED", StringComparison.OrdinalIgnoreCase);
+        }
+
+        CommercialStatisticsModeDefaultsPolicy.ApplyDefaultOrderStatuses(statuses);
+
+        Assert.Equal(
+            new[] { "DRAFT", "ACCEPTED", "IN_PROGRESS", "SHIPPED" },
+            statuses.Where(option => option.IsChecked).Select(option => option.Code).ToArray());
+        Assert.Null(CommercialStatisticsModeDefaultsPolicy.BuildStatusesCsv("orders", statuses));
+        Assert.Null(CommercialStatisticsModeDefaultsPolicy.BuildStatusesCsv("sales", statuses));
+        Assert.Equal("Все статусы", CommercialStatisticsFilterOptions.BuildStatusesLabel(statuses));
+    }
+
+    [Fact]
+    public void Partner_scope_uses_current_orders_status_selection()
+    {
+        var statuses = CommercialStatisticsFilterOptions.BuildStatuses();
+        statuses.Single(option => option.Code == "DRAFT").IsChecked = false;
+        statuses.Single(option => option.Code == "ACCEPTED").IsChecked = false;
+
+        Assert.Equal(
+            "IN_PROGRESS,SHIPPED",
+            CommercialStatisticsModeDefaultsPolicy.BuildStatusesCsv("orders", statuses));
+        Assert.Null(CommercialStatisticsModeDefaultsPolicy.BuildStatusesCsv("sales", statuses));
+    }
+
+    [Fact]
+    public void Orders_status_filter_can_still_be_narrowed_to_shipped_only()
     {
         var statuses = CommercialStatisticsFilterOptions.BuildStatuses();
         foreach (var option in statuses)

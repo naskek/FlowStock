@@ -29,6 +29,7 @@ public partial class MainWindow
             new Action(() =>
             {
                 window.ApplyCommercialStatisticsAcceptanceFixes();
+                window.ApplyCommercialStatisticsModeDefaults();
                 window.ApplyCommercialStatisticsSelectorBlurFix();
                 window.ApplyCommercialStatisticsDrillDownEnhancements();
                 window.ApplyCommercialStatisticsContentLayout();
