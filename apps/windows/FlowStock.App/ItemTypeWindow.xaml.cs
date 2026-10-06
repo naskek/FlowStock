@@ -10,6 +10,7 @@ namespace FlowStock.App;
 public partial class ItemTypeWindow : Window
 {
     private readonly AppServices _services;
+    private readonly SettingsPageLoading _loading;
     private readonly ObservableCollection<ItemType> _itemTypes = new();
     private readonly Action? _onChanged;
     private ItemType? _selectedItemType;
@@ -19,25 +20,25 @@ public partial class ItemTypeWindow : Window
         _services = services;
         _onChanged = onChanged;
         InitializeComponent();
+        _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
 
         ItemTypesGrid.ItemsSource = _itemTypes;
-        LoadItemTypes();
+        _loading.InitializeOnLoaded(LoadItemTypesAsync);
         ResetForm();
     }
 
-    private void LoadItemTypes()
+    private Task LoadItemTypesAsync() => _loading.RunAsync(async () =>
     {
+        var result = await _services.WpfCatalogApi.TryGetItemTypesAsync(includeInactive: true);
+        var itemTypes = result.Value;
         _itemTypes.Clear();
-        var itemTypes = _services.WpfCatalogApi.TryGetItemTypes(includeInactive: true, out var apiItemTypes)
-            ? apiItemTypes
-            : Array.Empty<ItemType>();
         foreach (var itemType in itemTypes)
         {
             _itemTypes.Add(itemType);
         }
 
         UpdateDeleteButton();
-    }
+    });
 
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
@@ -89,7 +90,7 @@ public partial class ItemTypeWindow : Window
                 }
             }
 
-            LoadItemTypes();
+            await LoadItemTypesAsync();
             ResetForm();
             _onChanged?.Invoke();
         }
@@ -130,7 +131,7 @@ public partial class ItemTypeWindow : Window
                 throw new InvalidOperationException(result.Error ?? "Не удалось удалить тип номенклатуры.");
             }
 
-            LoadItemTypes();
+            await LoadItemTypesAsync();
             ResetForm();
             _onChanged?.Invoke();
         }

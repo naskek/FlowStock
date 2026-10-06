@@ -8,6 +8,7 @@ namespace FlowStock.App;
 public partial class WriteOffReasonWindow : Window
 {
     private readonly AppServices _services;
+    private readonly SettingsPageLoading _loading;
     private readonly Action? _onChanged;
     private readonly ObservableCollection<WriteOffReason> _reasons = new();
     private WriteOffReason? _selectedReason;
@@ -17,26 +18,25 @@ public partial class WriteOffReasonWindow : Window
         _services = services;
         _onChanged = onChanged;
         InitializeComponent();
+        _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
 
         ReasonsGrid.ItemsSource = _reasons;
-        LoadReasons();
+        _loading.InitializeOnLoaded(LoadReasonsAsync);
         UpdateDeleteButton();
     }
 
-    private void LoadReasons()
+    private Task LoadReasonsAsync() => _loading.RunAsync(async () =>
     {
+        var result = await _services.WpfCatalogApi.TryGetWriteOffReasonsAsync();
+        var reasons = result.Value;
         _reasons.Clear();
-        var reasons = _services.WpfCatalogApi.TryGetWriteOffReasons(out var apiReasons)
-            ? apiReasons
-            : Array.Empty<WriteOffReason>();
-
         foreach (var reason in reasons.OrderBy(reason => reason.Name, StringComparer.OrdinalIgnoreCase))
         {
             _reasons.Add(reason);
         }
 
         UpdateDeleteButton();
-    }
+    });
 
     private async void AddReason_Click(object sender, RoutedEventArgs e)
     {
@@ -70,7 +70,7 @@ public partial class WriteOffReasonWindow : Window
 
             ReasonCodeBox.Text = string.Empty;
             ReasonNameBox.Text = string.Empty;
-            LoadReasons();
+            await LoadReasonsAsync();
             _onChanged?.Invoke();
         }
         catch (ArgumentException ex)
@@ -112,7 +112,7 @@ public partial class WriteOffReasonWindow : Window
 
             _selectedReason = null;
             ReasonsGrid.SelectedItem = null;
-            LoadReasons();
+            await LoadReasonsAsync();
             UpdateDeleteButton();
             _onChanged?.Invoke();
         }

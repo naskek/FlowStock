@@ -9,6 +9,7 @@ namespace FlowStock.App;
 public partial class TaraWindow : Window
 {
     private readonly AppServices _services;
+    private readonly SettingsPageLoading _loading;
     private readonly ObservableCollection<Tara> _taras = new();
     private readonly Action? _onChanged;
     private Tara? _selectedTara;
@@ -18,25 +19,25 @@ public partial class TaraWindow : Window
         _services = services;
         _onChanged = onChanged;
         InitializeComponent();
+        _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
 
         TarasGrid.ItemsSource = _taras;
-        LoadTaras();
+        _loading.InitializeOnLoaded(LoadTarasAsync);
         UpdateDeleteButton();
     }
 
-    private void LoadTaras()
+    private Task LoadTarasAsync() => _loading.RunAsync(async () =>
     {
+        var result = await _services.WpfCatalogApi.TryGetTarasAsync();
+        var taras = result.Value;
         _taras.Clear();
-        var taras = _services.WpfCatalogApi.TryGetTaras(out var apiTaras)
-            ? apiTaras
-            : Array.Empty<Tara>();
         foreach (var tara in taras)
         {
             _taras.Add(tara);
         }
 
         UpdateDeleteButton();
-    }
+    });
 
     private async void AddTara_Click(object sender, RoutedEventArgs e)
     {
@@ -55,7 +56,7 @@ public partial class TaraWindow : Window
             }
 
             TaraNameBox.Text = string.Empty;
-            LoadTaras();
+            await LoadTarasAsync();
             _onChanged?.Invoke();
         }
         catch (ArgumentException ex)
@@ -99,7 +100,7 @@ public partial class TaraWindow : Window
                 throw new InvalidOperationException(result.Error ?? "Не удалось удалить тару через сервер.");
             }
 
-            LoadTaras();
+            await LoadTarasAsync();
             _onChanged?.Invoke();
         }
         catch (ArgumentException ex)

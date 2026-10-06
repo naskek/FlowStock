@@ -72,8 +72,6 @@
                 <TreeViewItem Header="Обслуживание" IsExpanded="True">
                     <TreeViewItem Header="Резервные копии"
                                   Tag="backups" />
-                    <TreeViewItem Header="Папки данных и логов"
-                                  Tag="folders" />
                     <TreeViewItem Header="Обслуживание FlowStock"
                                   Tag="maintenance" />
                 </TreeViewItem>
@@ -282,36 +280,6 @@
                 </StackPanel>
             </ScrollViewer>
 
-            <ScrollViewer x:Name="FoldersCategoryPanel"
-                          Visibility="Collapsed"
-                          VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Disabled">
-                <StackPanel Margin="4,0,4,12">
-                    <TextBlock Text="Папки данных и логов"
-                               FontSize="20"
-                               FontWeight="SemiBold" />
-                    <TextBlock Text="Локальные данные, резервные копии и журналы текущей установки FlowStock."
-                               Margin="0,4,0,12"
-                               Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
-                               TextWrapping="Wrap" />
-                    <GroupBox Header="Локальные папки">
-                        <StackPanel Margin="8">
-                            <TextBlock x:Name="DataFolderPathText" TextWrapping="Wrap" />
-                            <Button Content="Открыть папку данных"
-                                    Width="180"
-                                    Margin="0,8,0,12"
-                                    HorizontalAlignment="Left"
-                                    Click="OpenDataFolder_Click" />
-                            <TextBlock x:Name="LogsFolderPathText" TextWrapping="Wrap" />
-                            <Button Content="Открыть папку логов"
-                                    Width="180"
-                                    Margin="0,8,0,0"
-                                    HorizontalAlignment="Left"
-                                    Click="OpenLogsFolder_Click" />
-                        </StackPanel>
-                    </GroupBox>
-                </StackPanel>
-            </ScrollViewer>
 
             <Grid x:Name="EmbeddedPagePanel"
                   Visibility="Collapsed">

@@ -28,7 +28,7 @@ public sealed class AdminWindowCategoryNavigationSourceTests
         Assert.Contains("Header=\"Обслуживание FlowStock\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Tag=\"maintenance\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Tag=\"backups\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Tag=\"folders\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Tag=\"folders\"", xaml, StringComparison.Ordinal);
 
         foreach (var panelName in new[]
                  {
@@ -36,14 +36,13 @@ public sealed class AdminWindowCategoryNavigationSourceTests
                      "UpdateCategoryPanel",
                      "ClientsCategoryPanel",
                      "PrintingCategoryPanel",
-                     "FoldersCategoryPanel",
                      "EmbeddedPagePanel"
                  })
         {
             Assert.Contains($"x:Name=\"{panelName}\"", xaml, StringComparison.Ordinal);
         }
 
-        Assert.Equal(5, CountOccurrences(xaml, "HorizontalScrollBarVisibility=\"Disabled\""));
+        Assert.Equal(4, CountOccurrences(xaml, "HorizontalScrollBarVisibility=\"Disabled\""));
         Assert.Contains("MinHeight=\"620\" MinWidth=\"900\"", xaml, StringComparison.Ordinal);
     }
 
@@ -70,7 +69,7 @@ public sealed class AdminWindowCategoryNavigationSourceTests
         Assert.Contains("UpdateCategoryPanel.Visibility", handler, StringComparison.Ordinal);
         Assert.Contains("ClientsCategoryPanel.Visibility", handler, StringComparison.Ordinal);
         Assert.Contains("PrintingCategoryPanel.Visibility", handler, StringComparison.Ordinal);
-        Assert.Contains("FoldersCategoryPanel.Visibility", handler, StringComparison.Ordinal);
+        Assert.DoesNotContain("FoldersCategoryPanel", code, StringComparison.Ordinal);
         Assert.Contains("EmbeddedPagePanel.Visibility", handler, StringComparison.Ordinal);
         Assert.DoesNotContain("_services", handler, StringComparison.Ordinal);
         Assert.DoesNotContain("Save", handler, StringComparison.Ordinal);
@@ -148,6 +147,69 @@ public sealed class AdminWindowCategoryNavigationSourceTests
         Assert.DoesNotContain("OpenDbConnection_Click", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("OpenTsdDevices_Click", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("OpenMaintenance_Click", xaml, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("UomWindow", "LoadUomsAsync")]
+    [InlineData("WriteOffReasonWindow", "LoadReasonsAsync")]
+    [InlineData("TaraWindow", "LoadTarasAsync")]
+    [InlineData("ItemTypeWindow", "LoadItemTypesAsync")]
+    [InlineData("VatRateWindow", "LoadVatRatesAsync")]
+    [InlineData("TsdDeviceWindow", "LoadDevicesAsync")]
+    [InlineData("LocationSettingsPage", "LoadLocationsAsync")]
+    [InlineData("PackagingManagerWindow", "LoadItemsAsync")]
+    [InlineData("PartnerItemSalePriceWindow", "LoadLookupsAsync")]
+    [InlineData("BackupManagerWindow", "LoadBackupsAsync")]
+    [InlineData("DocNumberingSettingsWindow", "LoadSettingsAsync")]
+    public void Embedded_page_constructors_defer_IO_until_content_is_loaded(string page, string load)
+    {
+        var code = ReadAppFile(page + ".xaml.cs");
+        var start = code.IndexOf("    public " + page + "(", StringComparison.Ordinal);
+        var end = code.IndexOf("    private ", start, StringComparison.Ordinal);
+        var constructor = code[start..end];
+        Assert.Contains("_loading.InitializeOnLoaded(", constructor, StringComparison.Ordinal);
+        Assert.Contains(load, constructor, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryGet", constructor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Settings.Load", constructor, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetAwaiter", code, StringComparison.Ordinal);
+        Assert.Contains("_loading.RunAsync(", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Slow_inline_settings_and_packaging_IO_are_off_dispatcher()
+    {
+        var admin = ReadAppFile("AdminWindow.xaml.cs");
+        Assert.Contains("_clientBlocksLoading.InitializeOnLoaded(LoadClientBlocksUiAsync)", admin, StringComparison.Ordinal);
+        Assert.Contains("_printersLoading.InitializeOnLoaded(LoadPalletLabelPrinterUiAsync)", admin, StringComparison.Ordinal);
+        Assert.Contains("await Task.Run(_services.WindowsPrinters.GetInstalledPrinterNames)", admin, StringComparison.Ordinal);
+        Assert.Contains("await Task.Run(() => _services.WpfAdminApi.TryGetClientBlocks", admin, StringComparison.Ordinal);
+        var packaging = ReadAppFile("PackagingManagerWindow.xaml.cs");
+        Assert.Contains("if (!_loadingItems)", packaging, StringComparison.Ordinal);
+        Assert.Contains("await Task.Run(() => items.SelectMany(ReadPackagingsForItem).ToArray())", packaging, StringComparison.Ordinal);
+        var loading = ReadAppFile("SettingsPageLoading.cs");
+        Assert.Contains("content.IsEnabled = false", loading, StringComparison.Ordinal);
+        Assert.Contains("content.IsEnabled = wasEnabled", loading, StringComparison.Ordinal);
+        Assert.DoesNotContain("DispatcherTimer", loading, StringComparison.Ordinal);
+        Assert.DoesNotContain("Task.Delay", loading, StringComparison.Ordinal);
+        var discovery = ReadAppFile(Path.Combine("Services", "PostgresDiscoveryService.cs"));
+        Assert.Contains("await Task.Run(BuildCandidateEndpoints, cancellationToken).ConfigureAwait(false)", discovery, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Folder_buttons_live_at_bottom_of_backups_and_keep_explorer_behavior()
+    {
+        var admin = ReadAppFile("AdminWindow.xaml");
+        Assert.DoesNotContain("FoldersCategoryPanel", admin, StringComparison.Ordinal);
+        Assert.DoesNotContain("Папки данных и логов", admin, StringComparison.Ordinal);
+        var backup = ReadAppFile("BackupManagerWindow.xaml");
+        Assert.Contains("<WrapPanel Grid.Row=\"2\"", backup, StringComparison.Ordinal);
+        Assert.Contains("Content=\"Открыть папку данных\" Click=\"OpenDataFolder_Click\"", backup, StringComparison.Ordinal);
+        Assert.Contains("Content=\"Открыть папку логов\" Click=\"OpenLogsFolder_Click\"", backup, StringComparison.Ordinal);
+        var code = ReadAppFile("BackupManagerWindow.xaml.cs");
+        Assert.Contains("OpenFolder(_services.BaseDir", code, StringComparison.Ordinal);
+        Assert.Contains("OpenFolder(_services.LogsDir", code, StringComparison.Ordinal);
+        Assert.Contains("Directory.Exists(path)", code, StringComparison.Ordinal);
+        Assert.Contains("UseShellExecute = true", code, StringComparison.Ordinal);
     }
 
     private static int CountOccurrences(string source, string value)

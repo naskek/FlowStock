@@ -18,8 +18,8 @@ public sealed class AdminWindowPalletLabelPrinterSourceTests
         Assert.Contains("Click=\"SavePalletLabelPrinter_Click\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"PalletLabelPrinterStatusText\"", xaml, StringComparison.Ordinal);
 
-        Assert.Contains("private void RefreshPalletLabelPrinters_Click", code, StringComparison.Ordinal);
-        Assert.Contains("private void SavePalletLabelPrinter_Click", code, StringComparison.Ordinal);
+        Assert.Contains("private async void RefreshPalletLabelPrinters_Click", code, StringComparison.Ordinal);
+        Assert.Contains("private async void SavePalletLabelPrinter_Click", code, StringComparison.Ordinal);
     }
 
     private static string ReadAppFile(string fileName)

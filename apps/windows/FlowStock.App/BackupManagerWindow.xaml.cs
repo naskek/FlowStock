@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Input;
 
@@ -8,6 +9,7 @@ namespace FlowStock.App;
 public partial class BackupManagerWindow : Window
 {
     private readonly AppServices _services;
+    private readonly SettingsPageLoading _loading;
     private readonly ObservableCollection<BackupInfo> _backups = new();
     private BackupInfo? _selectedBackup;
 
@@ -15,28 +17,33 @@ public partial class BackupManagerWindow : Window
     {
         _services = services;
         InitializeComponent();
+        _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
 
         BackupsGrid.ItemsSource = _backups;
         BackupFolderText.Text = $"Папка бэкапов: {_services.BackupsDir}";
 
-        LoadBackups();
-        LoadSettings();
+        _loading.InitializeOnLoaded(async () =>
+        {
+            await LoadBackupsAsync();
+            await LoadSettingsAsync();
+        });
     }
 
-    private void LoadBackups()
+    private Task LoadBackupsAsync() => _loading.RunAsync(async () =>
     {
+        var backups = await Task.Run(() => _services.Backups.ListBackups().ToArray());
         _backups.Clear();
-        foreach (var backup in _services.Backups.ListBackups())
+        foreach (var backup in backups)
         {
             _backups.Add(backup);
         }
 
         UpdateDeleteButton();
-    }
+    });
 
-    private void LoadSettings()
+    private Task LoadSettingsAsync() => _loading.RunAsync(async () =>
     {
-        var settings = _services.Settings.Load();
+        var settings = await Task.Run(_services.Settings.Load);
         BackupsEnabledCheck.IsChecked = settings.BackupsEnabled;
         ModeEveryStartRadio.IsChecked = settings.BackupMode == BackupMode.OnEveryStart;
         ModeIfOlderRadio.IsChecked = settings.BackupMode == BackupMode.OnStartIfOlderThanHours;
@@ -44,17 +51,20 @@ public partial class BackupManagerWindow : Window
         KeepLastBox.Text = settings.KeepLastNBackups.ToString();
 
         UpdateModeControls();
-    }
+    });
 
-    private void CreateBackup_Click(object sender, RoutedEventArgs e)
+    private async void CreateBackup_Click(object sender, RoutedEventArgs e)
     {
         try
         {
-            var path = _services.Backups.CreateBackup("manual");
-            var settings = _services.Settings.Load();
-            _services.Backups.ApplyRetention(settings.KeepLastNBackups);
-            _services.AppLogger.Info($"Manual backup created: {path}");
-            LoadBackups();
+            await _loading.RunAsync(() => Task.Run(() =>
+            {
+                var path = _services.Backups.CreateBackup("manual");
+                var settings = _services.Settings.Load();
+                _services.Backups.ApplyRetention(settings.KeepLastNBackups);
+                _services.AppLogger.Info($"Manual backup created: {path}");
+            }));
+            await LoadBackupsAsync();
         }
         catch (Exception ex)
         {
@@ -63,12 +73,33 @@ public partial class BackupManagerWindow : Window
         }
     }
 
+    private void OpenDataFolder_Click(object sender, RoutedEventArgs e) =>
+        OpenFolder(_services.BaseDir, "Папка данных не найдена.");
+
+    private void OpenLogsFolder_Click(object sender, RoutedEventArgs e) =>
+        OpenFolder(_services.LogsDir, "Папка логов не найдена.");
+
+    private static void OpenFolder(string? path, string notFoundMessage)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+        {
+            MessageBox.Show(notFoundMessage, "Настройки FlowStock", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = path,
+            UseShellExecute = true
+        });
+    }
+
     private void OpenFolder_Click(object sender, RoutedEventArgs e)
     {
         _services.Backups.OpenBackupsFolder();
     }
 
-    private void DeleteBackup_Click(object sender, RoutedEventArgs e)
+    private async void DeleteBackup_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedBackup == null)
         {
@@ -84,9 +115,10 @@ public partial class BackupManagerWindow : Window
 
         try
         {
-            File.Delete(_selectedBackup.FullPath);
-            _services.AppLogger.Info($"Backup deleted: {_selectedBackup.FullPath}");
-            LoadBackups();
+            var path = _selectedBackup.FullPath;
+            await _loading.RunAsync(() => Task.Run(() => File.Delete(path)));
+            _services.AppLogger.Info($"Backup deleted: {path}");
+            await LoadBackupsAsync();
         }
         catch (Exception ex)
         {

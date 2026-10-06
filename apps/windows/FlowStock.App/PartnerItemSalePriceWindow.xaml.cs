@@ -9,6 +9,7 @@ public partial class PartnerItemSalePriceWindow : Window
 {
     private const int PageSize = 100;
     private readonly AppServices _services;
+    private readonly SettingsPageLoading _loading;
     private readonly long? _initialItemId;
     private readonly ObservableCollection<PartnerItemSalePrice> _prices = new();
     private readonly List<Partner> _partners = new();
@@ -20,43 +21,41 @@ public partial class PartnerItemSalePriceWindow : Window
     private int _partnerAutocompleteTextGeneration;
     private int _offset;
     private int _totalCount;
-    private bool _initialPageLoaded;
 
     public PartnerItemSalePriceWindow(AppServices services, long? itemId = null)
     {
         _services = services;
         _initialItemId = itemId;
         InitializeComponent();
+        _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
         PricesGrid.ItemsSource = _prices;
         PartnerCombo.AddHandler(
             System.Windows.Controls.Primitives.TextBoxBase.TextChangedEvent,
             new System.Windows.Controls.TextChangedEventHandler(PartnerCombo_TextChanged));
-        LoadLookups();
         ResetForm();
-        if (Content is FrameworkElement content)
+        _loading.InitializeOnLoaded(async () =>
         {
-            content.Loaded += async (_, _) =>
-            {
-                if (_initialPageLoaded)
-                {
-                    return;
-                }
-
-                _initialPageLoaded = true;
-                await LoadPageAsync().ConfigureAwait(true);
-            };
-        }
+            await LoadLookupsAsync();
+            ResetForm();
+            await LoadPageAsync();
+        });
     }
 
-    private void LoadLookups()
+    private Task LoadLookupsAsync() => _loading.RunAsync(async () =>
     {
-        if (_services.WpfReadApi.TryGetPartners(out var partners))
+        var lookups = await Task.Run(() =>
         {
-            _partners.AddRange(partners.OrderBy(row => row.DisplayName, StringComparer.CurrentCultureIgnoreCase));
+            var partnersLoaded = _services.WpfReadApi.TryGetPartners(out var partners);
+            var itemsLoaded = _services.WpfReadApi.TryGetItems(null, out var items);
+            return (partnersLoaded, partners, itemsLoaded, items);
+        });
+        if (lookups.partnersLoaded)
+        {
+            _partners.AddRange(lookups.partners.OrderBy(row => row.DisplayName, StringComparer.CurrentCultureIgnoreCase));
         }
-        if (_services.WpfReadApi.TryGetItems(null, out var items))
+        if (lookups.itemsLoaded)
         {
-            _items.AddRange(items.OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase));
+            _items.AddRange(lookups.items.OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase));
         }
 
         PartnerCombo.ItemsSource = _partnerAutocompleteOptions;
@@ -69,9 +68,9 @@ public partial class PartnerItemSalePriceWindow : Window
             ItemCombo.SelectedItem = _items.FirstOrDefault(row => row.Id == _initialItemId.Value);
             FilterItemCombo.SelectedItem = _items.FirstOrDefault(row => row.Id == _initialItemId.Value);
         }
-    }
+    });
 
-    private async Task LoadPageAsync()
+    private Task LoadPageAsync() => _loading.RunAsync(async () =>
     {
         try
         {
@@ -96,7 +95,7 @@ public partial class PartnerItemSalePriceWindow : Window
         {
             MessageBox.Show(ex.Message, "Цены клиентов", MessageBoxButton.OK, MessageBoxImage.Error);
         }
-    }
+    });
 
     private async void Save_Click(object sender, RoutedEventArgs e)
     {

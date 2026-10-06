@@ -9,93 +9,98 @@ namespace FlowStock.App;
 public partial class PackagingManagerWindow : Window
 {
     private readonly AppServices _services;
+    private readonly SettingsPageLoading _loading;
     private readonly ObservableCollection<ItemOption> _items = new();
     private readonly ObservableCollection<ItemFilterOption> _filters = new();
     private readonly ObservableCollection<PackagingRow> _packagings = new();
     private PackagingRow? _selectedRow;
+    private bool _loadingItems;
 
     public PackagingManagerWindow(AppServices services)
     {
         _services = services;
         InitializeComponent();
+        _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
 
         ItemCombo.ItemsSource = _items;
         FilterItemCombo.ItemsSource = _filters;
         PackagingGrid.ItemsSource = _packagings;
 
-        LoadItems();
-        LoadPackagings();
+        _loading.InitializeOnLoaded(async () =>
+        {
+            await LoadItemsAsync();
+            await LoadPackagingsAsync();
+        });
         ClearForm();
     }
 
-    private void LoadItems()
+    private Task LoadItemsAsync() => _loading.RunAsync(async () =>
     {
-        _items.Clear();
-        _filters.Clear();
-        _filters.Add(new ItemFilterOption(null, "Все товары"));
-
-        var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+        var items = await Task.Run(() => _services.WpfReadApi.TryGetItems(null, out var apiItems)
             ? apiItems
-            : Array.Empty<Item>();
-        foreach (var item in items)
+            : Array.Empty<Item>());
+        _loadingItems = true;
+        try
         {
-            var option = new ItemOption(item.Id, item.Name, item.BaseUom);
-            _items.Add(option);
-            _filters.Add(new ItemFilterOption(option, option.DisplayName));
-        }
+            _items.Clear();
+            _filters.Clear();
+            _filters.Add(new ItemFilterOption(null, "Все товары"));
+            foreach (var item in items)
+            {
+                var option = new ItemOption(item.Id, item.Name, item.BaseUom);
+                _items.Add(option);
+                _filters.Add(new ItemFilterOption(option, option.DisplayName));
+            }
 
-        if (_filters.Count > 0)
-        {
             FilterItemCombo.SelectedIndex = 0;
         }
-    }
-
-    private void LoadPackagings()
-    {
-        _packagings.Clear();
-        var filterItem = (FilterItemCombo.SelectedItem as ItemFilterOption)?.Item;
-
-        if (filterItem != null)
+        finally
         {
-            AddPackagingsForItem(filterItem);
+            _loadingItems = false;
         }
-        else
+    });
+
+    private Task LoadPackagingsAsync() => _loading.RunAsync(async () =>
+    {
+        var filterItem = (FilterItemCombo.SelectedItem as ItemFilterOption)?.Item;
+        var items = filterItem is null ? _items.ToArray() : new[] { filterItem };
+        // Snapshot WPF state before background I/O; workers never touch controls/collections.
+        var rows = await Task.Run(() => items.SelectMany(ReadPackagingsForItem).ToArray());
+        _packagings.Clear();
+        foreach (var row in rows)
         {
-            foreach (var item in _items)
-            {
-                AddPackagingsForItem(item);
-            }
+            _packagings.Add(row);
         }
 
         _selectedRow = null;
         UpdateButtons();
-    }
+    });
 
-    private void AddPackagingsForItem(ItemOption item)
+    private IEnumerable<PackagingRow> ReadPackagingsForItem(ItemOption item)
     {
         var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: true, out var apiPackagings)
             ? apiPackagings
             : Array.Empty<ItemPackaging>();
-        foreach (var packaging in packagings)
+        return packagings.Select(packaging => new PackagingRow
         {
-            _packagings.Add(new PackagingRow
-            {
-                Id = packaging.Id,
-                ItemId = item.Id,
-                ItemDisplay = item.DisplayName,
-                ItemBaseUom = item.BaseUom,
-                Code = packaging.Code,
-                Name = packaging.Name,
-                FactorToBase = packaging.FactorToBase,
-                IsActive = packaging.IsActive,
-                SortOrder = packaging.SortOrder
-            });
-        }
+            Id = packaging.Id,
+            ItemId = item.Id,
+            ItemDisplay = item.DisplayName,
+            ItemBaseUom = item.BaseUom,
+            Code = packaging.Code,
+            Name = packaging.Name,
+            FactorToBase = packaging.FactorToBase,
+            IsActive = packaging.IsActive,
+            SortOrder = packaging.SortOrder
+        }).ToArray();
     }
 
-    private void FilterItemCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    private async void FilterItemCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        LoadPackagings();
+        if (!_loadingItems)
+        {
+            await LoadPackagingsAsync();
+        }
     }
 
     private void FilterReset_Click(object sender, RoutedEventArgs e)
@@ -162,7 +167,7 @@ public partial class PackagingManagerWindow : Window
             {
                 throw new InvalidOperationException(result.Error ?? "Не удалось создать упаковочную единицу / кратность через сервер.");
             }
-            LoadPackagings();
+            await LoadPackagingsAsync();
             SelectPackaging(item.Id, code);
         }
         catch (Exception ex)
@@ -194,7 +199,7 @@ public partial class PackagingManagerWindow : Window
             {
                 throw new InvalidOperationException(result.Error ?? "Не удалось обновить упаковочную единицу / кратность через сервер.");
             }
-            LoadPackagings();
+            await LoadPackagingsAsync();
             SelectPackaging(item.Id, code);
         }
         catch (Exception ex)
@@ -226,7 +231,7 @@ public partial class PackagingManagerWindow : Window
             {
                 throw new InvalidOperationException(result.Error ?? "Не удалось удалить упаковочную единицу / кратность через сервер.");
             }
-            LoadPackagings();
+            await LoadPackagingsAsync();
         }
         catch (Exception ex)
         {

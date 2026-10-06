@@ -10,6 +10,7 @@ namespace FlowStock.App;
 public partial class LocationSettingsPage : WpfUserControl
 {
     private readonly AppServices _services;
+    private readonly SettingsPageLoading _loading;
     private readonly Action? _onChanged;
     private readonly ObservableCollection<Location> _locations = new();
 
@@ -18,17 +19,18 @@ public partial class LocationSettingsPage : WpfUserControl
         _services = services;
         _onChanged = onChanged;
         InitializeComponent();
+        _loading = new SettingsPageLoading(this, _services.AppLogger);
         LocationsGrid.ItemsSource = _locations;
-        LoadLocations();
+        _loading.InitializeOnLoaded(() => LoadLocationsAsync());
     }
 
-    private void LoadLocations(long? selectedId = null)
+    private Task LoadLocationsAsync(long? selectedId = null) => _loading.RunAsync(async () =>
     {
         selectedId ??= (LocationsGrid.SelectedItem as Location)?.Id;
-        _locations.Clear();
-        var locations = _services.WpfReadApi.TryGetLocations(out var apiLocations)
+        var locations = await Task.Run(() => _services.WpfReadApi.TryGetLocations(out var apiLocations)
             ? apiLocations
-            : Array.Empty<Location>();
+            : Array.Empty<Location>());
+        _locations.Clear();
         foreach (var location in locations)
         {
             _locations.Add(location);
@@ -44,9 +46,9 @@ public partial class LocationSettingsPage : WpfUserControl
         }
 
         UpdateButtons();
-    }
+    });
 
-    private void Add_Click(object sender, RoutedEventArgs e)
+    private async void Add_Click(object sender, RoutedEventArgs e)
     {
         var window = new LocationEditWindow(_services);
         var owner = Window.GetWindow(this);
@@ -60,11 +62,11 @@ public partial class LocationSettingsPage : WpfUserControl
             return;
         }
 
-        LoadLocations(window.SavedLocationId);
+        await LoadLocationsAsync(window.SavedLocationId);
         _onChanged?.Invoke();
     }
 
-    private void Edit_Click(object sender, RoutedEventArgs e)
+    private async void Edit_Click(object sender, RoutedEventArgs e)
     {
         if (LocationsGrid.SelectedItem is not Location selected)
         {
@@ -72,10 +74,10 @@ public partial class LocationSettingsPage : WpfUserControl
             return;
         }
 
-        var current = (_services.WpfReadApi.TryGetLocations(out var apiLocations)
+        var current = await Task.Run(() => (_services.WpfReadApi.TryGetLocations(out var apiLocations)
                 ? apiLocations
                 : Array.Empty<Location>())
-            .FirstOrDefault(location => location.Id == selected.Id) ?? selected;
+            .FirstOrDefault(location => location.Id == selected.Id) ?? selected);
         var window = new LocationEditWindow(_services, current);
         var owner = Window.GetWindow(this);
         if (owner is not null)
@@ -88,7 +90,7 @@ public partial class LocationSettingsPage : WpfUserControl
             return;
         }
 
-        LoadLocations(window.SavedLocationId ?? selected.Id);
+        await LoadLocationsAsync(window.SavedLocationId ?? selected.Id);
         _onChanged?.Invoke();
     }
 
@@ -132,7 +134,7 @@ public partial class LocationSettingsPage : WpfUserControl
             }
         }
 
-        LoadLocations();
+        await LoadLocationsAsync();
         _onChanged?.Invoke();
         if (failed.Count > 0)
         {
@@ -144,7 +146,7 @@ public partial class LocationSettingsPage : WpfUserControl
         }
     }
 
-    private void Refresh_Click(object sender, RoutedEventArgs e) => LoadLocations();
+    private async void Refresh_Click(object sender, RoutedEventArgs e) => await LoadLocationsAsync();
 
     private void LocationsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateButtons();
 

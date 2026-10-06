@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Windows;
 using FlowStock.DesktopUpdate;
@@ -15,6 +13,8 @@ namespace FlowStock.App;
 public partial class AdminWindow : Window
 {
     private readonly AppServices _services;
+    private readonly SettingsPageLoading _clientBlocksLoading;
+    private readonly SettingsPageLoading _printersLoading;
     private readonly Action? _catalogsChanged;
     private readonly Dictionary<string, WpfCheckBox> _clientBlockBoxes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, HostedSettingsPage> _embeddedPages = new(StringComparer.OrdinalIgnoreCase);
@@ -30,10 +30,10 @@ public partial class AdminWindow : Window
 
         InitializeComponent();
         SystemSettingsNavigationItem.IsSelected = true;
-        DataFolderPathText.Text = _services.BaseDir;
-        LogsFolderPathText.Text = _services.LogsDir;
-        LoadClientBlocksUi();
-        LoadPalletLabelPrinterUi();
+        _clientBlocksLoading = new SettingsPageLoading(ClientsCategoryPanel, _services.AppLogger);
+        _printersLoading = new SettingsPageLoading(PrintingCategoryPanel, _services.AppLogger);
+        _clientBlocksLoading.InitializeOnLoaded(LoadClientBlocksUiAsync);
+        _printersLoading.InitializeOnLoaded(LoadPalletLabelPrinterUiAsync);
         InstalledBuildText.Text = $"Установлено: {AppRuntimeInfo.Current.ProductVersion}\n{AppRuntimeInfo.Current.SourceCommit}"
             + (AppRuntimeInfo.IsSourceRun ? "\nРежим: запуск из исходного checkout" : string.Empty);
         Loaded += async (_, _) => await CheckForUpdateAsync();
@@ -61,7 +61,6 @@ public partial class AdminWindow : Window
         UpdateCategoryPanel.Visibility = key == "update" ? Visibility.Visible : Visibility.Collapsed;
         ClientsCategoryPanel.Visibility = key == "clients" ? Visibility.Visible : Visibility.Collapsed;
         PrintingCategoryPanel.Visibility = key == "printing" ? Visibility.Visible : Visibility.Collapsed;
-        FoldersCategoryPanel.Visibility = key == "folders" ? Visibility.Visible : Visibility.Collapsed;
 
         if (!EmbeddedPageTitles.TryGetValue(key, out var title))
         {
@@ -258,27 +257,6 @@ public partial class AdminWindow : Window
         _updateCheckCancellation = null;
     }
 
-    private void OpenDataFolder_Click(object sender, RoutedEventArgs e) =>
-        OpenFolder(_services.BaseDir, "Папка данных не найдена.");
-
-    private void OpenLogsFolder_Click(object sender, RoutedEventArgs e) =>
-        OpenFolder(_services.LogsDir, "Папка логов не найдена.");
-
-    private static void OpenFolder(string? path, string notFoundMessage)
-    {
-        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
-        {
-            MessageBox.Show(notFoundMessage, "Настройки FlowStock", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = path,
-            UseShellExecute = true
-        });
-    }
-
     private void ChangeAdminPassword_Click(object sender, RoutedEventArgs e)
     {
         if (_services.AdminAuth.EnsureAdminPasswordExists())
@@ -327,13 +305,13 @@ public partial class AdminWindow : Window
         }
     }
 
-    private void LoadClientBlocksUi()
+    private Task LoadClientBlocksUiAsync() => _clientBlocksLoading.RunAsync(async () =>
     {
         try
         {
-            var settings = _services.WpfAdminApi.TryGetClientBlocks(out var apiSettings)
+            var settings = await Task.Run(() => _services.WpfAdminApi.TryGetClientBlocks(out var apiSettings)
                 ? apiSettings
-                : Array.Empty<ClientBlockSetting>();
+                : Array.Empty<ClientBlockSetting>());
             var states = ClientBlockCatalog.MergeWithDefaults(settings);
             _clientBlockBoxes.Clear();
             PopulateClientBlockPanel(
@@ -356,11 +334,11 @@ public partial class AdminWindow : Window
             ClientBlocksStatusText.Text = "Не удалось загрузить доступ к веб-блокам.";
             SaveClientBlocksButton.IsEnabled = false;
         }
-    }
+    });
 
-    private void LoadPalletLabelPrinterUi()
+    private Task LoadPalletLabelPrinterUiAsync() => _printersLoading.RunAsync(async () =>
     {
-        var settings = _services.Settings.Load();
+        var settings = await Task.Run(_services.Settings.Load);
         var savedPrinterName = PalletLabelPrinterNameResolver.NormalizePrinterName(
             settings.PalletLabels?.PrinterName);
         _palletLabelPrinterEnvironmentOverride = PalletLabelPrinterNameResolver.ResolveEnvironmentOverride(
@@ -369,15 +347,15 @@ public partial class AdminWindow : Window
         var localSettingEnabled = _palletLabelPrinterEnvironmentOverride == null;
         PalletLabelPrinterComboBox.IsEnabled = localSettingEnabled;
         SavePalletLabelPrinterButton.IsEnabled = localSettingEnabled;
-        RefreshPalletLabelPrinters(savedPrinterName, statusPrefix: null);
-    }
+        await RefreshPalletLabelPrintersCoreAsync(savedPrinterName, statusPrefix: null);
+    });
 
-    private void RefreshPalletLabelPrinters_Click(object sender, RoutedEventArgs e)
+    private async void RefreshPalletLabelPrinters_Click(object sender, RoutedEventArgs e)
     {
-        RefreshPalletLabelPrinters(PalletLabelPrinterComboBox.Text, statusPrefix: null);
+        await RefreshPalletLabelPrintersAsync(PalletLabelPrinterComboBox.Text, statusPrefix: null);
     }
 
-    private void SavePalletLabelPrinter_Click(object sender, RoutedEventArgs e)
+    private async void SavePalletLabelPrinter_Click(object sender, RoutedEventArgs e)
     {
         _palletLabelPrinterEnvironmentOverride = PalletLabelPrinterNameResolver.ResolveEnvironmentOverride(
             Environment.GetEnvironmentVariable(PalletLabelPrinterNameResolver.EnvironmentVariableName));
@@ -385,7 +363,7 @@ public partial class AdminWindow : Window
         {
             PalletLabelPrinterComboBox.IsEnabled = false;
             SavePalletLabelPrinterButton.IsEnabled = false;
-            RefreshPalletLabelPrinters(PalletLabelPrinterComboBox.Text, statusPrefix: null);
+            await RefreshPalletLabelPrintersAsync(PalletLabelPrinterComboBox.Text, statusPrefix: null);
             return;
         }
 
@@ -399,7 +377,7 @@ public partial class AdminWindow : Window
             _services.Settings.Save(settings);
 
             _services.AdminLogger.Info("admin_pallet_label_printer saved");
-            RefreshPalletLabelPrinters(
+            await RefreshPalletLabelPrintersAsync(
                 printerName,
                 "Настройка сохранена и будет использована при следующей печати.");
         }
@@ -411,14 +389,17 @@ public partial class AdminWindow : Window
         }
     }
 
-    private void RefreshPalletLabelPrinters(string? currentPrinterName, string? statusPrefix)
+    private Task RefreshPalletLabelPrintersAsync(string? currentPrinterName, string? statusPrefix) =>
+        _printersLoading.RunAsync(() => RefreshPalletLabelPrintersCoreAsync(currentPrinterName, statusPrefix));
+
+    private async Task RefreshPalletLabelPrintersCoreAsync(string? currentPrinterName, string? statusPrefix)
     {
         PalletLabelPrinterSelectionState state;
         string? enumerationError = null;
         try
         {
             state = PalletLabelPrinterSelectionState.Build(
-                _services.WindowsPrinters.GetInstalledPrinterNames(),
+                await Task.Run(_services.WindowsPrinters.GetInstalledPrinterNames),
                 currentPrinterName);
         }
         catch (Exception ex)
