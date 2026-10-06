@@ -5,9 +5,8 @@ using System.Windows;
 using FlowStock.DesktopUpdate;
 using FlowStock.Core.Models;
 using WpfCheckBox = System.Windows.Controls.CheckBox;
-using WpfListBoxItem = System.Windows.Controls.ListBoxItem;
 using WpfPanel = System.Windows.Controls.Panel;
-using WpfSelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventArgs;
+using WpfTreeViewItem = System.Windows.Controls.TreeViewItem;
 
 namespace FlowStock.App;
 
@@ -25,7 +24,7 @@ public partial class AdminWindow : Window
         _services = services;
 
         InitializeComponent();
-        AdminCategoryList.SelectedIndex = 0;
+        SystemSettingsNavigationItem.IsSelected = true;
         LoadClientBlocksUi();
         LoadPalletLabelPrinterUi();
         InstalledBuildText.Text = $"Установлено: {AppRuntimeInfo.Current.ProductVersion}\n{AppRuntimeInfo.Current.SourceCommit}"
@@ -34,14 +33,17 @@ public partial class AdminWindow : Window
         Closed += (_, _) => CancelUpdateCheck();
     }
 
-    private void AdminCategoryList_SelectionChanged(object sender, WpfSelectionChangedEventArgs e)
+    private void AdminNavigationTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
-        var key = AdminCategoryList.SelectedItem is WpfListBoxItem selectedItem
-            ? selectedItem.Tag?.ToString()
-            : null;
+        if (AdminNavigationTree.SelectedItem is not WpfTreeViewItem selectedItem)
+        {
+            return;
+        }
+
+        var key = selectedItem.Tag?.ToString();
         if (key is not ("system" or "update" or "clients" or "printing" or "maintenance"))
         {
-            key = "system";
+            return;
         }
 
         SystemCategoryPanel.Visibility = key == "system" ? Visibility.Visible : Visibility.Collapsed;
