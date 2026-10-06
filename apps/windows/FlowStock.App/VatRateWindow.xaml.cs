@@ -9,6 +9,7 @@ namespace FlowStock.App;
 public partial class VatRateWindow : Window
 {
     private readonly AppServices _services;
+    private readonly SettingsPageLoading _loading;
     private readonly ObservableCollection<VatRate> _vatRates = new();
     private VatRate? _selected;
 
@@ -16,22 +17,22 @@ public partial class VatRateWindow : Window
     {
         _services = services;
         InitializeComponent();
+        _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
         VatRatesGrid.ItemsSource = _vatRates;
-        LoadVatRates();
+        _loading.InitializeOnLoaded(LoadVatRatesAsync);
         ResetForm();
     }
 
-    private void LoadVatRates()
+    private Task LoadVatRatesAsync() => _loading.RunAsync(async () =>
     {
+        var result = await _services.WpfCatalogApi.TryGetVatRatesAsync(includeInactive: true);
+        var rates = result.Value;
         _vatRates.Clear();
-        var rates = _services.WpfCatalogApi.TryGetVatRates(includeInactive: true, out var apiRates)
-            ? apiRates
-            : Array.Empty<VatRate>();
         foreach (var rate in rates)
         {
             _vatRates.Add(rate);
         }
-    }
+    });
 
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
@@ -71,7 +72,7 @@ public partial class VatRateWindow : Window
             return;
         }
 
-        LoadVatRates();
+        await LoadVatRatesAsync();
         ResetForm();
     }
 
@@ -110,7 +111,7 @@ public partial class VatRateWindow : Window
             return;
         }
 
-        LoadVatRates();
+        await LoadVatRatesAsync();
         ResetForm();
     }
 

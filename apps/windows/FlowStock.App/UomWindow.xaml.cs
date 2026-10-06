@@ -8,6 +8,7 @@ namespace FlowStock.App;
 public partial class UomWindow : Window
 {
     private readonly AppServices _services;
+    private readonly SettingsPageLoading _loading;
     private readonly Action? _onChanged;
     private readonly ObservableCollection<Uom> _uoms = new();
     private Uom? _selectedUom;
@@ -17,25 +18,25 @@ public partial class UomWindow : Window
         _services = services;
         _onChanged = onChanged;
         InitializeComponent();
+        _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
 
         UomsGrid.ItemsSource = _uoms;
-        LoadUoms();
+        _loading.InitializeOnLoaded(LoadUomsAsync);
         UpdateSelectionButtons();
     }
 
-    private void LoadUoms()
+    private Task LoadUomsAsync() => _loading.RunAsync(async () =>
     {
+        var result = await _services.WpfCatalogApi.TryGetUomsAsync();
+        var uoms = result.Value;
         _uoms.Clear();
-        var uoms = _services.WpfCatalogApi.TryGetUoms(out var apiUoms)
-            ? apiUoms
-            : Array.Empty<Uom>();
         foreach (var uom in uoms)
         {
             _uoms.Add(uom);
         }
 
         UpdateSelectionButtons();
-    }
+    });
 
     private async void AddUom_Click(object sender, RoutedEventArgs e)
     {
@@ -54,7 +55,7 @@ public partial class UomWindow : Window
             }
 
             UomNameBox.Text = string.Empty;
-            LoadUoms();
+            await LoadUomsAsync();
             _onChanged?.Invoke();
         }
         catch (ArgumentException ex)
@@ -94,7 +95,7 @@ public partial class UomWindow : Window
                 throw new InvalidOperationException(result.Error ?? "Не удалось удалить единицу измерения через сервер.");
             }
 
-            LoadUoms();
+            await LoadUomsAsync();
             _onChanged?.Invoke();
         }
         catch (ArgumentException ex)
@@ -137,7 +138,7 @@ public partial class UomWindow : Window
 
             UomNameBox.Text = string.Empty;
             _selectedUom = null;
-            LoadUoms();
+            await LoadUomsAsync();
             _onChanged?.Invoke();
         }
         catch (ArgumentException ex)

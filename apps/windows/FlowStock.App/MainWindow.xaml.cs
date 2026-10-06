@@ -3270,9 +3270,20 @@ public partial class MainWindow : Window
 
     private void OpenAdmin_Click(object sender, RoutedEventArgs e)
     {
-        var window = new AdminWindow(_services);
+        var window = new AdminWindow(_services, RefreshAfterSettingsCenterChange);
         window.Owner = this;
         window.ShowDialog();
+    }
+
+    private void RefreshAfterSettingsCenterChange()
+    {
+        LoadUoms();
+        LoadTaras();
+        LoadItemTypes();
+        LoadLocations();
+        LoadItems();
+        LoadStock(StatusSearchBox.Text);
+        LoadLowStockView();
     }
 
     private void SelectTab(int index)

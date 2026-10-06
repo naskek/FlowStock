@@ -16,6 +16,7 @@ public sealed class WpfCatalogApiService
 
     private readonly SettingsService _settings;
     private readonly FileLogger _logger;
+    private readonly Func<HttpMessageHandler>? _readHandlerFactory;
 
     public WpfCatalogApiService(SettingsService settings, FileLogger logger)
     {
@@ -23,10 +24,22 @@ public sealed class WpfCatalogApiService
         _logger = logger;
     }
 
+    internal WpfCatalogApiService(SettingsService settings, FileLogger logger, Func<HttpMessageHandler> readHandlerFactory)
+        : this(settings, logger)
+    {
+        _readHandlerFactory = readHandlerFactory;
+    }
+
     public bool TryGetUoms(out IReadOnlyList<Uom> uoms)
     {
-        uoms = Array.Empty<Uom>();
-        return TryRead(
+        var result = TryGetUomsAsync().GetAwaiter().GetResult();
+        uoms = result.Value;
+        return result.IsSuccess;
+    }
+
+    public Task<(bool IsSuccess, IReadOnlyList<Uom> Value)> TryGetUomsAsync(CancellationToken cancellationToken = default)
+    {
+        return TryReadAsync<IReadOnlyList<Uom>>(
             "/api/uoms",
             root => root.ValueKind == JsonValueKind.Array
                 ? root.EnumerateArray()
@@ -38,13 +51,19 @@ public sealed class WpfCatalogApiService
                     .ToList()
                 : new List<Uom>(),
             "catalog-uoms",
-            out uoms);
+            Array.Empty<Uom>(), cancellationToken);
     }
 
     public bool TryGetWriteOffReasons(out IReadOnlyList<WriteOffReason> reasons)
     {
-        reasons = Array.Empty<WriteOffReason>();
-        return TryRead(
+        var result = TryGetWriteOffReasonsAsync().GetAwaiter().GetResult();
+        reasons = result.Value;
+        return result.IsSuccess;
+    }
+
+    public Task<(bool IsSuccess, IReadOnlyList<WriteOffReason> Value)> TryGetWriteOffReasonsAsync(CancellationToken cancellationToken = default)
+    {
+        return TryReadAsync<IReadOnlyList<WriteOffReason>>(
             "/api/write-off-reasons",
             root => root.ValueKind == JsonValueKind.Array
                 ? root.EnumerateArray()
@@ -57,13 +76,19 @@ public sealed class WpfCatalogApiService
                     .ToList()
                 : new List<WriteOffReason>(),
             "catalog-write-off-reasons",
-            out reasons);
+            Array.Empty<WriteOffReason>(), cancellationToken);
     }
 
     public bool TryGetTaras(out IReadOnlyList<Tara> taras)
     {
-        taras = Array.Empty<Tara>();
-        return TryRead(
+        var result = TryGetTarasAsync().GetAwaiter().GetResult();
+        taras = result.Value;
+        return result.IsSuccess;
+    }
+
+    public Task<(bool IsSuccess, IReadOnlyList<Tara> Value)> TryGetTarasAsync(CancellationToken cancellationToken = default)
+    {
+        return TryReadAsync<IReadOnlyList<Tara>>(
             "/api/taras",
             root => root.ValueKind == JsonValueKind.Array
                 ? root.EnumerateArray()
@@ -75,14 +100,20 @@ public sealed class WpfCatalogApiService
                     .ToList()
                 : new List<Tara>(),
             "catalog-taras",
-            out taras);
+            Array.Empty<Tara>(), cancellationToken);
     }
 
     public bool TryGetItemTypes(bool includeInactive, out IReadOnlyList<ItemType> itemTypes)
     {
-        itemTypes = Array.Empty<ItemType>();
+        var result = TryGetItemTypesAsync(includeInactive).GetAwaiter().GetResult();
+        itemTypes = result.Value;
+        return result.IsSuccess;
+    }
+
+    public Task<(bool IsSuccess, IReadOnlyList<ItemType> Value)> TryGetItemTypesAsync(bool includeInactive, CancellationToken cancellationToken = default)
+    {
         var path = includeInactive ? "/api/item-types?include_inactive=1" : "/api/item-types";
-        return TryRead(
+        return TryReadAsync<IReadOnlyList<ItemType>>(
             path,
             root => root.ValueKind == JsonValueKind.Array
                 ? root.EnumerateArray()
@@ -103,14 +134,20 @@ public sealed class WpfCatalogApiService
                     .ToList()
                 : new List<ItemType>(),
             "catalog-item-types",
-            out itemTypes);
+            Array.Empty<ItemType>(), cancellationToken);
     }
 
     public bool TryGetVatRates(bool includeInactive, out IReadOnlyList<VatRate> vatRates)
     {
-        vatRates = Array.Empty<VatRate>();
+        var result = TryGetVatRatesAsync(includeInactive).GetAwaiter().GetResult();
+        vatRates = result.Value;
+        return result.IsSuccess;
+    }
+
+    public Task<(bool IsSuccess, IReadOnlyList<VatRate> Value)> TryGetVatRatesAsync(bool includeInactive, CancellationToken cancellationToken = default)
+    {
         var path = includeInactive ? "/api/vat-rates?include_inactive=true" : "/api/vat-rates";
-        return TryRead(
+        return TryReadAsync<IReadOnlyList<VatRate>>(
             path,
             root => root.ValueKind == JsonValueKind.Array
                 ? root.EnumerateArray()
@@ -125,7 +162,7 @@ public sealed class WpfCatalogApiService
                     .ToList()
                 : new List<VatRate>(),
             "catalog-vat-rates",
-            out vatRates);
+            Array.Empty<VatRate>(), cancellationToken);
     }
 
     public async Task<(bool IsSuccess, long? CreatedId, string? Error)> TryCreateItemAsync(Item item, CancellationToken cancellationToken = default)
@@ -396,47 +433,42 @@ public sealed class WpfCatalogApiService
             .ConfigureAwait(false);
     }
 
-    private bool TryRead<T>(string relativePath, Func<JsonElement, T> map, string operationName, out T value)
+    private async Task<(bool IsSuccess, T Value)> TryReadAsync<T>(
+        string relativePath, Func<JsonElement, T> map, string operationName, T emptyValue, CancellationToken cancellationToken)
     {
-        value = default!;
-
         try
         {
-            if (!TryLoadConfiguration(out var configuration))
+            var configuration = await Task.Run(() =>
+                TryLoadConfiguration(out var loaded) ? loaded : null, cancellationToken).ConfigureAwait(false);
+            if (configuration is null)
             {
                 _logger.Info($"Catalog API skipped for {operationName}: server base URL is not configured.");
-                return false;
+                return (false, emptyValue);
             }
 
-            using var handler = CreateHandler(configuration);
+            using var handler = _readHandlerFactory?.Invoke() ?? CreateHandler(configuration);
             using var client = new HttpClient(handler)
             {
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
                 Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             };
             WpfTrustedRequestHeaders.Add(client, configuration.WpfAdminApiKey);
-            using var response = client.GetAsync(relativePath, HttpCompletionOption.ResponseHeadersRead)
-                .ConfigureAwait(false)
-                .GetAwaiter()
-                .GetResult();
+            using var response = await client.GetAsync(relativePath, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 _logger.Warn($"Catalog API request failed: {relativePath} -> {(int)response.StatusCode} {response.ReasonPhrase}");
-                return false;
+                return (false, emptyValue);
             }
 
-            var json = response.Content.ReadAsStringAsync()
-                .ConfigureAwait(false)
-                .GetAwaiter()
-                .GetResult();
+            var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             using var document = JsonDocument.Parse(json);
-            value = map(document.RootElement);
-            return true;
+            return (true, map(document.RootElement));
         }
         catch (Exception ex)
         {
             _logger.Error($"Catalog API failed for {operationName}", ex);
-            return false;
+            return (false, emptyValue);
         }
     }
 

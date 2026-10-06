@@ -1,174 +1,315 @@
 <Window x:Class="FlowStock.App.AdminWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Администрирование"
-        Height="720" Width="820"
+        Title="Настройки FlowStock"
+        Height="760" Width="1180"
+        MinHeight="620" MinWidth="900"
         WindowStartupLocation="CenterOwner">
-    <ScrollViewer VerticalScrollBarVisibility="Auto">
-        <Grid Margin="12">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="220" />
+            <ColumnDefinition Width="12" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <Grid Grid.Row="0" Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Text="Настройки"
+                       FontSize="16"
+                       FontWeight="SemiBold"
+                       Margin="4,2,4,8" />
+
+            <TreeView x:Name="AdminNavigationTree"
+                      Grid.Row="1"
+                      SelectedItemChanged="AdminNavigationTree_SelectedItemChanged">
+                <TreeViewItem Header="Общие" IsExpanded="True">
+                    <TreeViewItem x:Name="SystemSettingsNavigationItem"
+                                  Header="Система"
+                                  Tag="system" />
+                    <TreeViewItem Header="Подключение к БД"
+                                  Tag="db-connection" />
+                    <TreeViewItem Header="Учётные записи"
+                                  Tag="accounts" />
+                    <TreeViewItem Header="Обновление"
+                                  Tag="update" />
+                </TreeViewItem>
+                <TreeViewItem Header="Справочники" IsExpanded="True">
+                    <TreeViewItem Header="Типы номенклатуры"
+                                  Tag="item-types" />
+                    <TreeViewItem Header="Ставки НДС"
+                                  Tag="vat-rates" />
+                    <TreeViewItem Header="Цены клиентов"
+                                  Tag="partner-prices" />
+                    <TreeViewItem Header="Места хранения"
+                                  Tag="locations" />
+                    <TreeViewItem Header="Тара"
+                                  Tag="tara" />
+                    <TreeViewItem Header="Единицы измерения"
+                                  Tag="uom" />
+                    <TreeViewItem Header="Причины списания"
+                                  Tag="write-off-reasons" />
+                    <TreeViewItem Header="Упаковочные единицы"
+                                  Tag="packaging" />
+                    <TreeViewItem Header="Нумерация документов"
+                                  Tag="doc-numbering" />
+                </TreeViewItem>
+                <TreeViewItem Header="Веб-клиенты" IsExpanded="True">
+                    <TreeViewItem Header="Доступ к блокам"
+                                  Tag="clients" />
+                </TreeViewItem>
+                <TreeViewItem Header="Печать" IsExpanded="True">
+                    <TreeViewItem Header="Паллетные этикетки"
+                                  Tag="printing" />
+                </TreeViewItem>
+                <TreeViewItem Header="Обслуживание" IsExpanded="True">
+                    <TreeViewItem Header="Резервные копии"
+                                  Tag="backups" />
+                    <TreeViewItem Header="Обслуживание FlowStock"
+                                  Tag="maintenance" />
+                </TreeViewItem>
+            </TreeView>
+        </Grid>
+
+        <Grid Grid.Row="0" Grid.Column="2">
+            <ScrollViewer x:Name="SystemCategoryPanel"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Margin="4,0,4,12">
+                    <TextBlock Text="Система"
+                               FontSize="20"
+                               FontWeight="SemiBold" />
+                    <TextBlock Text="Подключение к базе данных и административные учётные данные."
+                               Margin="0,4,0,12"
+                               Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
+                               TextWrapping="Wrap" />
+
+                    <GroupBox Header="Системные настройки">
+                        <StackPanel Margin="8">
+                            <TextBlock Text="Подключение к БД и учётные записи вынесены в отдельные встроенные страницы этой категории."
+                                       TextWrapping="Wrap" />
+                            <WrapPanel Margin="0,10,0,0">
+                                <Button Content="Сменить пароль администратора..."
+                                        Width="240"
+                                        Margin="0,0,8,8"
+                                        Click="ChangeAdminPassword_Click" />
+                            </WrapPanel>
+                        </StackPanel>
+                    </GroupBox>
+                </StackPanel>
+            </ScrollViewer>
+
+            <ScrollViewer x:Name="UpdateCategoryPanel"
+                          Visibility="Collapsed"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Margin="4,0,4,12">
+                    <TextBlock Text="Обновление"
+                               FontSize="20"
+                               FontWeight="SemiBold" />
+                    <TextBlock Text="Проверка production-сервера и запуск штатного обновления FlowStock."
+                               Margin="0,4,0,12"
+                               Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
+                               TextWrapping="Wrap" />
+
+                    <GroupBox Header="Обновление FlowStock">
+                        <StackPanel Margin="8">
+                            <TextBlock x:Name="InstalledBuildText" TextWrapping="Wrap" />
+                            <TextBlock x:Name="UpdateStatusText" Margin="0,6,0,0" TextWrapping="Wrap" />
+                            <TextBlock x:Name="UpdateTargetText" Margin="0,4,0,0" TextWrapping="Wrap" />
+                            <TextBlock x:Name="UpdateDiagnosticsText"
+                                       Margin="0,4,0,0"
+                                       Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
+                                       TextWrapping="Wrap" />
+                            <WrapPanel Margin="0,10,0,0">
+                                <Button x:Name="CheckUpdateButton"
+                                        Content="Проверить"
+                                        Width="130"
+                                        Margin="0,0,8,8"
+                                        Click="CheckUpdate_Click" />
+                                <Button x:Name="InstallUpdateButton"
+                                        Content="Обновить и перезапустить"
+                                        Width="210"
+                                        Margin="0,0,8,8"
+                                        IsEnabled="False"
+                                        Click="InstallUpdate_Click" />
+                            </WrapPanel>
+                        </StackPanel>
+                    </GroupBox>
+                </StackPanel>
+            </ScrollViewer>
+
+            <ScrollViewer x:Name="ClientsCategoryPanel"
+                          Visibility="Collapsed"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Margin="4,0,4,12">
+                    <TextBlock Text="Веб-клиенты"
+                               FontSize="20"
+                               FontWeight="SemiBold" />
+                    <TextBlock Text="Глобальный доступ к функциональным блокам ПК и ТСД веб-клиентов."
+                               Margin="0,4,0,12"
+                               Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
+                               TextWrapping="Wrap" />
+
+                    <GroupBox Header="Доступ к веб-блокам">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="24" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Row="0" Grid.Column="0">
+                                <TextBlock Text="ПК веб-клиент" FontWeight="SemiBold" />
+                                <TextBlock Text="Отключенный блок скрывается у всех пользователей ПК."
+                                           Margin="0,4,0,10"
+                                           TextWrapping="Wrap" />
+                                <StackPanel x:Name="PcBlocksPanel" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Row="0" Grid.Column="2">
+                                <TextBlock Text="ТСД веб-клиент" FontWeight="SemiBold" />
+                                <TextBlock Text="Отключенные пункты не показываются на ТСД и не открываются по прямому маршруту."
+                                           Margin="0,4,0,10"
+                                           TextWrapping="Wrap" />
+                                <TextBlock Text="Основные блоки" FontWeight="SemiBold" />
+                                <StackPanel x:Name="TsdMainBlocksPanel" Margin="0,6,0,10" />
+                                <TextBlock Text="Операции" FontWeight="SemiBold" />
+                                <StackPanel x:Name="TsdOperationBlocksPanel" Margin="0,6,0,0" />
+                            </StackPanel>
+
+                            <TextBlock x:Name="ClientBlocksStatusText"
+                                       Grid.Row="1"
+                                       Grid.ColumnSpan="3"
+                                       Margin="0,12,0,10"
+                                       TextWrapping="Wrap" />
+
+                            <Button x:Name="SaveClientBlocksButton"
+                                    Grid.Row="2"
+                                    Grid.ColumnSpan="3"
+                                    Content="Сохранить доступ к блокам"
+                                    Width="240"
+                                    HorizontalAlignment="Left"
+                                    Click="SaveClientBlocks_Click" />
+                        </Grid>
+                    </GroupBox>
+                </StackPanel>
+            </ScrollViewer>
+
+            <ScrollViewer x:Name="PrintingCategoryPanel"
+                          Visibility="Collapsed"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Margin="4,0,4,12">
+                    <TextBlock Text="Печать"
+                               FontSize="20"
+                               FontWeight="SemiBold" />
+                    <TextBlock Text="Настройки устройств для печати производственных этикеток."
+                               Margin="0,4,0,12"
+                               Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
+                               TextWrapping="Wrap" />
+
+                    <GroupBox Header="Печать паллетных этикеток">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Grid.Row="0"
+                                       Grid.Column="0"
+                                       Text="Принтер"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,12,0" />
+                            <ComboBox x:Name="PalletLabelPrinterComboBox"
+                                      Grid.Row="0"
+                                      Grid.Column="1"
+                                      MinWidth="280"
+                                      IsEditable="True"
+                                      IsTextSearchEnabled="True"
+                                      StaysOpenOnEdit="True" />
+                            <Button Grid.Row="0"
+                                    Grid.Column="2"
+                                    Content="Обновить список"
+                                    Width="150"
+                                    Margin="12,0,0,0"
+                                    Click="RefreshPalletLabelPrinters_Click" />
+
+                            <TextBlock Grid.Row="1"
+                                       Grid.ColumnSpan="3"
+                                       Margin="0,8,0,0"
+                                       Text="Оставьте поле пустым, чтобы использовать принтер шаблона BarTender или системный принтер по умолчанию. Можно ввести точное имя вручную."
+                                       TextWrapping="Wrap" />
+
+                            <TextBlock x:Name="PalletLabelPrinterStatusText"
+                                       Grid.Row="2"
+                                       Grid.ColumnSpan="3"
+                                       Margin="0,8,0,0"
+                                       TextWrapping="Wrap" />
+
+                            <Button x:Name="SavePalletLabelPrinterButton"
+                                    Grid.Row="3"
+                                    Grid.ColumnSpan="3"
+                                    Content="Сохранить"
+                                    Width="140"
+                                    Margin="0,10,0,0"
+                                    HorizontalAlignment="Left"
+                                    Click="SavePalletLabelPrinter_Click" />
+                        </Grid>
+                    </GroupBox>
+                </StackPanel>
+            </ScrollViewer>
+
+
+            <Grid x:Name="EmbeddedPagePanel"
+                  Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <TextBlock x:Name="EmbeddedPageTitleText"
+                           FontSize="20"
+                           FontWeight="SemiBold"
+                           Margin="4,0,4,8" />
+                <ContentControl x:Name="EmbeddedPageContent"
+                                Grid.Row="1"
+                                HorizontalContentAlignment="Stretch"
+                                VerticalContentAlignment="Stretch" />
+            </Grid>
+        </Grid>
+
+        <Grid Grid.Row="1" Grid.ColumnSpan="3" Margin="0,12,0,0">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-
-            <TextBlock Grid.Row="0"
-                       Text="Админка управляет системными настройками и глобальным доступом к веб-блокам."
-                       TextWrapping="Wrap"
-                       Margin="0,0,0,8" />
-
-            <GroupBox Header="Системные настройки" Grid.Row="1" Margin="0,12,0,0">
-                <StackPanel Margin="8">
-                    <TextBlock Text="Настройка подключения к БД и управление аккаунтами для входа в веб-клиенты."
-                               TextWrapping="Wrap" />
-                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                        <Button Content="Подключение к БД..."
-                                Width="180"
-                                HorizontalAlignment="Left"
-                                Click="OpenDbConnection_Click" />
-                        <Button Content="Создание аккаунта..."
-                                Width="180"
-                                Margin="12,0,0,0"
-                                HorizontalAlignment="Left"
-                                Click="OpenTsdDevices_Click" />
-                        <Button Content="Сменить пароль администратора..."
-                                Width="240"
-                                Margin="12,0,0,0"
-                                HorizontalAlignment="Left"
-                                Click="ChangeAdminPassword_Click" />
-                    </StackPanel>
-                </StackPanel>
-            </GroupBox>
-
-            <GroupBox Header="Обновление FlowStock" Grid.Row="2" Margin="0,12,0,0">
-                <StackPanel Margin="8">
-                    <TextBlock x:Name="InstalledBuildText" TextWrapping="Wrap" />
-                    <TextBlock x:Name="UpdateStatusText" Margin="0,6,0,0" TextWrapping="Wrap" />
-                    <TextBlock x:Name="UpdateTargetText" Margin="0,4,0,0" TextWrapping="Wrap" />
-                    <TextBlock x:Name="UpdateDiagnosticsText" Margin="0,4,0,0" Foreground="#666666" TextWrapping="Wrap" />
-                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                        <Button x:Name="CheckUpdateButton" Content="Проверить" Width="130" Click="CheckUpdate_Click" />
-                        <Button x:Name="InstallUpdateButton" Content="Обновить и перезапустить" Width="210"
-                                Margin="12,0,0,0" IsEnabled="False" Click="InstallUpdate_Click" />
-                    </StackPanel>
-                </StackPanel>
-            </GroupBox>
-
-            <GroupBox Header="Доступ к веб-блокам" Grid.Row="3" Margin="0,12,0,0">
-                <Grid Margin="8">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="24" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-
-                    <StackPanel Grid.Row="0" Grid.Column="0">
-                        <TextBlock Text="ПК веб-клиент" FontWeight="SemiBold" />
-                        <TextBlock Text="Отключенный блок скрывается у всех пользователей ПК."
-                                   Margin="0,4,0,10"
-                                   TextWrapping="Wrap" />
-                        <StackPanel x:Name="PcBlocksPanel" />
-                    </StackPanel>
-
-                    <StackPanel Grid.Row="0" Grid.Column="2">
-                        <TextBlock Text="ТСД веб-клиент" FontWeight="SemiBold" />
-                        <TextBlock Text="Отключенные пункты не показываются на ТСД и не открываются по прямому маршруту."
-                                   Margin="0,4,0,10"
-                                   TextWrapping="Wrap" />
-                        <TextBlock Text="Основные блоки" FontWeight="SemiBold" />
-                        <StackPanel x:Name="TsdMainBlocksPanel" Margin="0,6,0,10" />
-                        <TextBlock Text="Операции" FontWeight="SemiBold" />
-                        <StackPanel x:Name="TsdOperationBlocksPanel" Margin="0,6,0,0" />
-                    </StackPanel>
-
-                    <TextBlock x:Name="ClientBlocksStatusText"
-                               Grid.Row="1"
-                               Grid.ColumnSpan="3"
-                               Margin="0,12,0,10"
-                               TextWrapping="Wrap" />
-
-                    <Button x:Name="SaveClientBlocksButton"
-                            Grid.Row="2"
-                            Grid.ColumnSpan="3"
-                            Content="Сохранить доступ к блокам"
-                            Width="240"
-                            HorizontalAlignment="Left"
-                            Click="SaveClientBlocks_Click" />
-                </Grid>
-            </GroupBox>
-
-            <GroupBox Header="Печать паллетных этикеток" Grid.Row="4" Margin="0,12,0,0">
-                <Grid Margin="8">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-
-                    <TextBlock Grid.Row="0"
-                               Grid.Column="0"
-                               Text="Принтер"
-                               VerticalAlignment="Center"
-                               Margin="0,0,12,0" />
-                    <ComboBox x:Name="PalletLabelPrinterComboBox"
-                              Grid.Row="0"
-                              Grid.Column="1"
-                              MinWidth="360"
-                              IsEditable="True"
-                              IsTextSearchEnabled="True"
-                              StaysOpenOnEdit="True" />
-                    <Button Grid.Row="0"
-                            Grid.Column="2"
-                            Content="Обновить список"
-                            Width="150"
-                            Margin="12,0,0,0"
-                            Click="RefreshPalletLabelPrinters_Click" />
-
-                    <TextBlock Grid.Row="1"
-                               Grid.ColumnSpan="3"
-                               Margin="0,8,0,0"
-                               Text="Оставьте поле пустым, чтобы использовать принтер шаблона BarTender или системный принтер по умолчанию. Можно ввести точное имя вручную."
-                               TextWrapping="Wrap" />
-
-                    <TextBlock x:Name="PalletLabelPrinterStatusText"
-                               Grid.Row="2"
-                               Grid.ColumnSpan="3"
-                               Margin="0,8,0,0"
-                               TextWrapping="Wrap" />
-
-                    <Button x:Name="SavePalletLabelPrinterButton"
-                            Grid.Row="3"
-                            Grid.ColumnSpan="3"
-                            Content="Сохранить"
-                            Width="140"
-                            Margin="0,10,0,0"
-                            HorizontalAlignment="Left"
-                            Click="SavePalletLabelPrinter_Click" />
-                </Grid>
-            </GroupBox>
-
-            <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-                <Button Content="Обслуживание..."
-                        Width="150"
-                        Margin="0,0,12,0"
-                        Click="OpenMaintenance_Click" />
-                <Button Content="Закрыть" Width="120" IsCancel="True" />
-            </StackPanel>
+            <Separator />
+            <Button Grid.Row="1"
+                    Content="Закрыть"
+                    Width="120"
+                    Margin="0,10,0,0"
+                    HorizontalAlignment="Right"
+                    IsCancel="True" />
         </Grid>
-    </ScrollViewer>
+    </Grid>
 </Window>

@@ -25,16 +25,16 @@ public sealed class PostgresDiscoveryService
 
     public async Task<IReadOnlyList<PostgresDiscoveryCandidate>> DiscoverAsync(CancellationToken cancellationToken)
     {
-        var endpoints = BuildCandidateEndpoints();
+        var endpoints = await Task.Run(BuildCandidateEndpoints, cancellationToken).ConfigureAwait(false);
         var results = new ConcurrentBag<PostgresDiscoveryCandidate>();
         using var gate = new SemaphoreSlim(MaxParallelism);
 
         var tasks = endpoints.Select(async endpoint =>
         {
-            await gate.WaitAsync(cancellationToken);
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (await IsTcpPortOpenAsync(endpoint.Host, endpoint.Port, cancellationToken))
+                if (await IsTcpPortOpenAsync(endpoint.Host, endpoint.Port, cancellationToken).ConfigureAwait(false))
                 {
                     results.Add(endpoint);
                 }
@@ -45,7 +45,7 @@ public sealed class PostgresDiscoveryService
             }
         });
 
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(tasks).ConfigureAwait(false);
 
         return results
             .DistinctBy(candidate => $"{candidate.Host}:{candidate.Port}")

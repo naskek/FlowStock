@@ -28,7 +28,7 @@ public sealed class CatalogMachineHeadersSourceTests
 
         var uomWindowSource = ReadRepoFile("apps", "windows", "FlowStock.App", "UomWindow.xaml.cs");
         Assert.Contains("TryUpdateUomAsync", uomWindowSource, StringComparison.Ordinal);
-        Assert.Contains("LoadUoms();", uomWindowSource, StringComparison.Ordinal);
+        Assert.Contains("await LoadUomsAsync();", uomWindowSource, StringComparison.Ordinal);
     }
 
     private static string ReadRepoFile(params string[] parts)

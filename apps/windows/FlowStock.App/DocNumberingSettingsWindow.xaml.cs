@@ -11,6 +11,7 @@ public partial class DocNumberingSettingsWindow : Window
     private static readonly Regex YearRegex = new(@"^\d{4}$", RegexOptions.Compiled);
 
     private readonly AppServices _services;
+    private readonly SettingsPageLoading _loading;
     private readonly IReadOnlyList<SequenceStyleOption> _styles = new[]
     {
         new SequenceStyleOption("D6", "NNNNNN (6 цифр, с нулями)"),
@@ -23,19 +24,21 @@ public partial class DocNumberingSettingsWindow : Window
     {
         _services = services;
         InitializeComponent();
+        _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
         SequenceStyleCombo.ItemsSource = _styles;
-        LoadSettings();
+        _loading.InitializeOnLoaded(LoadSettingsAsync);
     }
 
-    private void LoadSettings()
+    private Task LoadSettingsAsync() => _loading.RunAsync(async () =>
     {
-        var settings = (_services.Settings.Load().DocumentNumbering ?? new DocumentNumberingSettings()).Normalize();
+        var settings = await Task.Run(() =>
+            (_services.Settings.Load().DocumentNumbering ?? new DocumentNumberingSettings()).Normalize());
         TemplateBox.Text = settings.Template;
         YearBox.Text = settings.Year ?? string.Empty;
         SequenceStyleCombo.SelectedItem = _styles.FirstOrDefault(style =>
                                            string.Equals(style.Code, settings.SequenceStyle, StringComparison.OrdinalIgnoreCase))
                                        ?? _styles.First();
-    }
+    });
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {

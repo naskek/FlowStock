@@ -8,6 +8,7 @@ namespace FlowStock.App;
 public partial class TsdDeviceWindow : Window
 {
     private readonly AppServices _services;
+    private readonly SettingsPageLoading _loading;
     private readonly ObservableCollection<TsdDeviceInfo> _devices = new();
     private TsdDeviceInfo? _selected;
 
@@ -15,16 +16,22 @@ public partial class TsdDeviceWindow : Window
     {
         _services = services;
         InitializeComponent();
+        _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
 
         DevicesGrid.ItemsSource = _devices;
-        LoadDevices();
+        _loading.InitializeOnLoaded(LoadDevicesAsync);
         ClearForm();
     }
 
-    private void LoadDevices()
+    private Task LoadDevicesAsync() => _loading.RunAsync(async () =>
     {
+        var result = await Task.Run(() =>
+        {
+            var success = _services.WpfAdminApi.TryGetTsdDevices(out var devices);
+            return (success, devices);
+        });
         _devices.Clear();
-        if (!_services.WpfAdminApi.TryGetTsdDevices(out var devices))
+        if (!result.success)
         {
             MessageBox.Show(
                 "Не удалось загрузить аккаунты через защищённый server API.",
@@ -33,11 +40,11 @@ public partial class TsdDeviceWindow : Window
                 MessageBoxImage.Error);
             return;
         }
-        foreach (var device in devices)
+        foreach (var device in result.devices)
         {
             _devices.Add(device);
         }
-    }
+    });
 
     private void DevicesGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -56,9 +63,9 @@ public partial class TsdDeviceWindow : Window
         SetPlatformSelection(device.Platform);
     }
 
-    private void Refresh_Click(object sender, RoutedEventArgs e)
+    private async void Refresh_Click(object sender, RoutedEventArgs e)
     {
-        LoadDevices();
+        await LoadDevicesAsync();
     }
 
     private void New_Click(object sender, RoutedEventArgs e)
@@ -101,7 +108,7 @@ public partial class TsdDeviceWindow : Window
                 }
             }
 
-            LoadDevices();
+            await LoadDevicesAsync();
             if (selectedId > 0)
             {
                 SelectDevice(selectedId);
