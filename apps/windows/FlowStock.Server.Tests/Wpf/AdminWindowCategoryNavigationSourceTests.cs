@@ -3,17 +3,24 @@ namespace FlowStock.Server.Tests.Wpf;
 public sealed class AdminWindowCategoryNavigationSourceTests
 {
     [Fact]
-    public void AdminWindow_UsesPersistentCategoryNavigationAndSeparateContentPanels()
+    public void AdminWindow_UsesNativeTreeNavigationAndSeparateContentPanels()
     {
         var xaml = ReadAppFile("AdminWindow.xaml");
 
-        Assert.Contains("x:Name=\"AdminCategoryList\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("SelectionChanged=\"AdminCategoryList_SelectionChanged\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Content=\"Система\" Tag=\"system\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Content=\"Обновление\" Tag=\"update\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Content=\"Веб-клиенты\" Tag=\"clients\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Content=\"Печать\" Tag=\"printing\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Content=\"Обслуживание\" Tag=\"maintenance\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Title=\"Настройки FlowStock\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"AdminNavigationTree\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("SelectedItemChanged=\"AdminNavigationTree_SelectedItemChanged\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"Общие\" IsExpanded=\"True\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"Система\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Tag=\"system\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"Обновление\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Tag=\"update\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"Доступ к блокам\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Tag=\"clients\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"Паллетные этикетки\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Tag=\"printing\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"Обслуживание FlowStock\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Tag=\"maintenance\"", xaml, StringComparison.Ordinal);
 
         foreach (var panelName in new[]
                  {
@@ -32,10 +39,23 @@ public sealed class AdminWindowCategoryNavigationSourceTests
     }
 
     [Fact]
+    public void AdminWindow_DoesNotPaintCustomWebLikeNavigationChrome()
+    {
+        var xaml = ReadAppFile("AdminWindow.xaml");
+
+        Assert.DoesNotContain("AdminCategoryItemStyle", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Cursor=\"Hand\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("CornerRadius=", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("#F4F6F8", xaml, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("#D8DDE3", xaml, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("SystemColors.GrayTextBrushKey", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void CategorySwitching_OnlyChangesPresentationState()
     {
         var code = ReadAppFile("AdminWindow.xaml.cs");
-        var handler = ExtractMethodBody(code, "private void AdminCategoryList_SelectionChanged");
+        var handler = ExtractMethodBody(code, "private void AdminNavigationTree_SelectedItemChanged");
 
         Assert.Contains("SystemCategoryPanel.Visibility", handler, StringComparison.Ordinal);
         Assert.Contains("UpdateCategoryPanel.Visibility", handler, StringComparison.Ordinal);
