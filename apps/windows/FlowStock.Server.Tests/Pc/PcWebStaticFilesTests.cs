@@ -61,7 +61,7 @@ public sealed class PcWebStaticFilesTests
         var html = Encoding.UTF8.GetString(first.RenderedIndex);
 
         Assert.DoesNotContain(PcWebStaticFiles.VersionPlaceholder, html, StringComparison.Ordinal);
-        Assert.Equal(9, CountOccurrences(html, $"?v={first.Version}"));
+        Assert.Equal(10, CountOccurrences(html, $"?v={first.Version}"));
         Assert.Contains(
             $"name=\"flowstock-pc-web-version\" content=\"{first.Version}\"",
             html,
@@ -75,6 +75,7 @@ public sealed class PcWebStaticFilesTests
                      "./pc-order-modal.js",
                      "./pc-catalog.js",
                      "./pc-stock.js",
+                     "./pc-stock-scroll-anchor.js",
                      "./warehouse-board.js",
                      "./app.js"
                  })
@@ -182,6 +183,11 @@ public sealed class PcWebStaticFilesTests
         await AssertCacheControl(client, "/app.js?v=stale", PcWebStaticFiles.RevalidatedCacheControl);
         await AssertCacheControl(
             client,
+            $"/pc-stock-scroll-anchor.js?v={bundle.Version}",
+            PcWebStaticFiles.ImmutableCacheControl);
+        await AssertCacheControl(client, "/pc-stock-scroll-anchor.js", PcWebStaticFiles.RevalidatedCacheControl);
+        await AssertCacheControl(
+            client,
             $"/compat.js?v={bundle.Version}",
             PcWebStaticFiles.ImmutableCacheControl);
         await AssertCacheControl(client, "/compat.js?v=unknown", PcWebStaticFiles.RevalidatedCacheControl);
@@ -241,6 +247,7 @@ public sealed class PcWebStaticFilesTests
             Path.Combine("pc", "pc-catalog.js"),
             Path.Combine("pc", "pc-core.js"),
             Path.Combine("pc", "pc-order-modal.js"),
+            Path.Combine("pc", "pc-stock-scroll-anchor.js"),
             Path.Combine("pc", "pc-stock.js"),
             Path.Combine("pc", "styles.css"),
             Path.Combine("pc", "warehouse-board.js")
@@ -266,6 +273,7 @@ public sealed class PcWebStaticFilesTests
                   <script src="./pc-order-modal.js?v=__FLOWSTOCK_PC_WEB_VERSION__"></script>
                   <script src="./pc-catalog.js?v=__FLOWSTOCK_PC_WEB_VERSION__"></script>
                   <script src="./pc-stock.js?v=__FLOWSTOCK_PC_WEB_VERSION__"></script>
+                  <script src="./pc-stock-scroll-anchor.js?v=__FLOWSTOCK_PC_WEB_VERSION__"></script>
                   <script src="./warehouse-board.js?v=__FLOWSTOCK_PC_WEB_VERSION__"></script>
                   <script src="./app.js?v=__FLOWSTOCK_PC_WEB_VERSION__"></script>
                 </body>
