@@ -61,6 +61,13 @@ for job_id in required_jobs:
         text=block,
     )
 
+expected_checkout_pin = "3d3c42e5aac5ba805825da76410c181273ba90b1"
+checkout_pins = re.findall(r"actions/checkout@([0-9a-f]{40})\s+# v7", source)
+if len(checkout_pins) != len(required_jobs):
+    raise AssertionError("every canonical CI job must use one pinned actions/checkout@v7 step")
+if any(pin != expected_checkout_pin for pin in checkout_pins):
+    raise AssertionError("all canonical CI checkout steps must use the approved pinned v7 SHA")
+
 web = job_block("web-tests")
 if re.search(r"(?m)^\s{4}if:\s*", web):
     raise AssertionError("web-tests is the always-on required policy/scope gate and must not be job-skipped")
@@ -119,6 +126,11 @@ require(
     r'dotnet test apps/windows/FlowStock\.Server\.Tests/FlowStock\.Server\.Tests\.csproj.*'
     r'--filter "FullyQualifiedName~Postgres"',
     "postgres-regression must run only convention-protected PostgreSQL tests",
+    text=postgres,
+)
+require(
+    r"-- xUnit\.ParallelizeTestCollections=false",
+    "PostgreSQL-only regression run must serialize xUnit test collections sharing the test database",
     text=postgres,
 )
 require(
