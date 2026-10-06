@@ -47,8 +47,10 @@ public partial class MainWindow
 
     private void RewireCommercialStatisticsAdvancedInteractions()
     {
+#pragma warning disable CS8622 // Legacy XAML handler uses non-null sender; WPF supplies the DatePicker instance.
         StatisticsFromDate.SelectedDateChanged -= StatisticsPeriod_Changed;
         StatisticsToDate.SelectedDateChanged -= StatisticsPeriod_Changed;
+#pragma warning restore CS8622
         StatisticsFromDate.SelectedDateChanged += StatisticsAdvancedPeriod_Changed;
         StatisticsToDate.SelectedDateChanged += StatisticsAdvancedPeriod_Changed;
 
@@ -500,7 +502,7 @@ public partial class MainWindow
         }
     }
 
-    private void StatisticsAdvancedPeriod_Changed(object sender, EventArgs e)
+    private void StatisticsAdvancedPeriod_Changed(object? sender, EventArgs e)
     {
         if (!IsLoaded || _applyingCommercialStatisticsMonth)
         {
