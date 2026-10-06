@@ -22,14 +22,16 @@ public partial class MainWindow
         StatisticsPartnerCombo.SelectionChanged += StatisticsModeDefaultsPartner_SelectionChanged;
 
         RestoreCommercialStatisticsStatusFilter();
+        if (_commercialStatisticsResetFiltersButton is not null)
+        {
+            _commercialStatisticsResetFiltersButton.Click += StatisticsModeDefaultsResetStatuses_Click;
+        }
 
         var previousSuppression = _suppressCommercialStatisticsFilterEvents;
         _suppressCommercialStatisticsFilterEvents = true;
         try
         {
-            CommercialStatisticsModeDefaultsPolicy.ApplyDefaultOrderStatuses(_statisticsStatusOptions);
-            StatisticsStatusesCombo.Text =
-                CommercialStatisticsFilterOptions.BuildStatusesLabel(_statisticsStatusOptions);
+            ResetCommercialStatisticsOrderStatusesToDefault();
 
             var salesItem = StatisticsModeCombo.Items
                 .OfType<ComboBoxItem>()
@@ -85,6 +87,27 @@ public partial class MainWindow
 
         StatisticsStatusesCombo.Visibility = Visibility.Visible;
         AddLabeledToolbarControl(grid, 2, "Статусы", StatisticsStatusesCombo, 2, 3);
+    }
+
+    private void StatisticsModeDefaultsResetStatuses_Click(object sender, RoutedEventArgs e)
+    {
+        var previousSuppression = _suppressCommercialStatisticsFilterEvents;
+        _suppressCommercialStatisticsFilterEvents = true;
+        try
+        {
+            ResetCommercialStatisticsOrderStatusesToDefault();
+        }
+        finally
+        {
+            _suppressCommercialStatisticsFilterEvents = previousSuppression;
+        }
+    }
+
+    private void ResetCommercialStatisticsOrderStatusesToDefault()
+    {
+        CommercialStatisticsModeDefaultsPolicy.ApplyDefaultOrderStatuses(_statisticsStatusOptions);
+        StatisticsStatusesCombo.Text =
+            CommercialStatisticsFilterOptions.BuildStatusesLabel(_statisticsStatusOptions);
     }
 
     private async void StatisticsModeDefaultsPartner_SelectionChanged(
