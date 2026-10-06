@@ -5,7 +5,9 @@ using System.Windows;
 using FlowStock.DesktopUpdate;
 using FlowStock.Core.Models;
 using WpfCheckBox = System.Windows.Controls.CheckBox;
+using WpfListBoxItem = System.Windows.Controls.ListBoxItem;
 using WpfPanel = System.Windows.Controls.Panel;
+using WpfSelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventArgs;
 
 namespace FlowStock.App;
 
@@ -23,12 +25,30 @@ public partial class AdminWindow : Window
         _services = services;
 
         InitializeComponent();
+        AdminCategoryList.SelectedIndex = 0;
         LoadClientBlocksUi();
         LoadPalletLabelPrinterUi();
         InstalledBuildText.Text = $"Установлено: {AppRuntimeInfo.Current.ProductVersion}\n{AppRuntimeInfo.Current.SourceCommit}"
             + (AppRuntimeInfo.IsSourceRun ? "\nРежим: запуск из исходного checkout" : string.Empty);
         Loaded += async (_, _) => await CheckForUpdateAsync();
         Closed += (_, _) => CancelUpdateCheck();
+    }
+
+    private void AdminCategoryList_SelectionChanged(object sender, WpfSelectionChangedEventArgs e)
+    {
+        var key = AdminCategoryList.SelectedItem is WpfListBoxItem selectedItem
+            ? selectedItem.Tag?.ToString()
+            : null;
+        if (key is not ("system" or "update" or "clients" or "printing" or "maintenance"))
+        {
+            key = "system";
+        }
+
+        SystemCategoryPanel.Visibility = key == "system" ? Visibility.Visible : Visibility.Collapsed;
+        UpdateCategoryPanel.Visibility = key == "update" ? Visibility.Visible : Visibility.Collapsed;
+        ClientsCategoryPanel.Visibility = key == "clients" ? Visibility.Visible : Visibility.Collapsed;
+        PrintingCategoryPanel.Visibility = key == "printing" ? Visibility.Visible : Visibility.Collapsed;
+        MaintenanceCategoryPanel.Visibility = key == "maintenance" ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private async void CheckUpdate_Click(object sender, RoutedEventArgs e) => await CheckForUpdateAsync();
