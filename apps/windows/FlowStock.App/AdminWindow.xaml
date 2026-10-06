@@ -1,66 +1,56 @@
 <Window x:Class="FlowStock.App.AdminWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Администрирование"
+        Title="Настройки FlowStock"
         Height="720" Width="940"
         MinHeight="620" MinWidth="820"
         WindowStartupLocation="CenterOwner">
-    <Window.Resources>
-        <Style x:Key="AdminCategoryItemStyle" TargetType="{x:Type ListBoxItem}">
-            <Setter Property="Padding" Value="12,10" />
-            <Setter Property="Margin" Value="0,0,0,4" />
-            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-            <Setter Property="Cursor" Value="Hand" />
-        </Style>
-    </Window.Resources>
-
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="190" />
+            <ColumnDefinition Width="220" />
             <ColumnDefinition Width="12" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
-        <Border Grid.Row="0"
-                Grid.Column="0"
-                Padding="10"
-                Background="#F4F6F8"
-                BorderBrush="#D8DDE3"
-                BorderThickness="1"
-                CornerRadius="6">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
+        <Grid Grid.Row="0" Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
 
-                <StackPanel Margin="2,2,2,12">
-                    <TextBlock Text="Настройки"
-                               FontSize="18"
-                               FontWeight="SemiBold" />
-                    <TextBlock Text="Выберите категорию"
-                               Margin="0,3,0,0"
-                               Foreground="#666666" />
-                </StackPanel>
+            <TextBlock Text="Настройки"
+                       FontSize="16"
+                       FontWeight="SemiBold"
+                       Margin="4,2,4,8" />
 
-                <ListBox x:Name="AdminCategoryList"
-                         Grid.Row="1"
-                         BorderThickness="0"
-                         Background="Transparent"
-                         ItemContainerStyle="{StaticResource AdminCategoryItemStyle}"
-                         SelectionChanged="AdminCategoryList_SelectionChanged">
-                    <ListBoxItem Content="Система" Tag="system" />
-                    <ListBoxItem Content="Обновление" Tag="update" />
-                    <ListBoxItem Content="Веб-клиенты" Tag="clients" />
-                    <ListBoxItem Content="Печать" Tag="printing" />
-                    <ListBoxItem Content="Обслуживание" Tag="maintenance" />
-                </ListBox>
-            </Grid>
-        </Border>
+            <TreeView x:Name="AdminNavigationTree"
+                      Grid.Row="1"
+                      SelectedItemChanged="AdminNavigationTree_SelectedItemChanged">
+                <TreeViewItem Header="Общие" IsExpanded="True">
+                    <TreeViewItem x:Name="SystemSettingsNavigationItem"
+                                  Header="Система"
+                                  Tag="system" />
+                    <TreeViewItem Header="Обновление"
+                                  Tag="update" />
+                </TreeViewItem>
+                <TreeViewItem Header="Веб-клиенты" IsExpanded="True">
+                    <TreeViewItem Header="Доступ к блокам"
+                                  Tag="clients" />
+                </TreeViewItem>
+                <TreeViewItem Header="Печать" IsExpanded="True">
+                    <TreeViewItem Header="Паллетные этикетки"
+                                  Tag="printing" />
+                </TreeViewItem>
+                <TreeViewItem Header="Обслуживание" IsExpanded="True">
+                    <TreeViewItem Header="Обслуживание FlowStock"
+                                  Tag="maintenance" />
+                </TreeViewItem>
+            </TreeView>
+        </Grid>
 
         <Grid Grid.Row="0" Grid.Column="2">
             <ScrollViewer x:Name="SystemCategoryPanel"
@@ -68,11 +58,11 @@
                           HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Margin="4,0,4,12">
                     <TextBlock Text="Система"
-                               FontSize="22"
+                               FontSize="20"
                                FontWeight="SemiBold" />
                     <TextBlock Text="Подключение к базе данных и административные учётные данные."
                                Margin="0,4,0,12"
-                               Foreground="#666666"
+                               Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                TextWrapping="Wrap" />
 
                     <GroupBox Header="Системные настройки">
@@ -104,11 +94,11 @@
                           HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Margin="4,0,4,12">
                     <TextBlock Text="Обновление"
-                               FontSize="22"
+                               FontSize="20"
                                FontWeight="SemiBold" />
                     <TextBlock Text="Проверка production-сервера и запуск штатного обновления FlowStock."
                                Margin="0,4,0,12"
-                               Foreground="#666666"
+                               Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                TextWrapping="Wrap" />
 
                     <GroupBox Header="Обновление FlowStock">
@@ -116,7 +106,10 @@
                             <TextBlock x:Name="InstalledBuildText" TextWrapping="Wrap" />
                             <TextBlock x:Name="UpdateStatusText" Margin="0,6,0,0" TextWrapping="Wrap" />
                             <TextBlock x:Name="UpdateTargetText" Margin="0,4,0,0" TextWrapping="Wrap" />
-                            <TextBlock x:Name="UpdateDiagnosticsText" Margin="0,4,0,0" Foreground="#666666" TextWrapping="Wrap" />
+                            <TextBlock x:Name="UpdateDiagnosticsText"
+                                       Margin="0,4,0,0"
+                                       Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
+                                       TextWrapping="Wrap" />
                             <WrapPanel Margin="0,10,0,0">
                                 <Button x:Name="CheckUpdateButton"
                                         Content="Проверить"
@@ -141,11 +134,11 @@
                           HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Margin="4,0,4,12">
                     <TextBlock Text="Веб-клиенты"
-                               FontSize="22"
+                               FontSize="20"
                                FontWeight="SemiBold" />
                     <TextBlock Text="Глобальный доступ к функциональным блокам ПК и ТСД веб-клиентов."
                                Margin="0,4,0,12"
-                               Foreground="#666666"
+                               Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                TextWrapping="Wrap" />
 
                     <GroupBox Header="Доступ к веб-блокам">
@@ -204,11 +197,11 @@
                           HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Margin="4,0,4,12">
                     <TextBlock Text="Печать"
-                               FontSize="22"
+                               FontSize="20"
                                FontWeight="SemiBold" />
                     <TextBlock Text="Настройки устройств для печати производственных этикеток."
                                Margin="0,4,0,12"
-                               Foreground="#666666"
+                               Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                TextWrapping="Wrap" />
 
                     <GroupBox Header="Печать паллетных этикеток">
@@ -275,11 +268,11 @@
                           HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Margin="4,0,4,12">
                     <TextBlock Text="Обслуживание"
-                               FontSize="22"
+                               FontSize="20"
                                FontWeight="SemiBold" />
-                    <TextBlock Text="Диагностические и служебные операции вынесены в отдельное окно обслуживания."
+                    <TextBlock Text="Диагностические и служебные операции FlowStock."
                                Margin="0,4,0,12"
-                               Foreground="#666666"
+                               Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                TextWrapping="Wrap" />
 
                     <GroupBox Header="Обслуживание">
@@ -297,16 +290,18 @@
             </ScrollViewer>
         </Grid>
 
-        <Border Grid.Row="1"
-                Grid.ColumnSpan="3"
-                Margin="0,12,0,0"
-                Padding="0,10,0,0"
-                BorderBrush="#D8DDE3"
-                BorderThickness="0,1,0,0">
-            <Button Content="Закрыть"
+        <Grid Grid.Row="1" Grid.ColumnSpan="3" Margin="0,12,0,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Separator />
+            <Button Grid.Row="1"
+                    Content="Закрыть"
                     Width="120"
+                    Margin="0,10,0,0"
                     HorizontalAlignment="Right"
                     IsCancel="True" />
-        </Border>
+        </Grid>
     </Grid>
 </Window>
