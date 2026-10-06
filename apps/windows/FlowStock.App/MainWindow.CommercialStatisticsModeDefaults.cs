@@ -101,6 +101,11 @@ public partial class MainWindow
         {
             _suppressCommercialStatisticsFilterEvents = previousSuppression;
         }
+
+        ApplyCommercialStatisticsAdvancedFilters();
+        _commercialStatisticsState.CriteriaChanged(periodChanged: false);
+        UpdateCommercialStatisticsNavigation();
+        ScheduleCommercialStatisticsRefresh();
     }
 
     private void ResetCommercialStatisticsOrderStatusesToDefault()
