@@ -24,6 +24,17 @@ public sealed class HistoricalFinancialSnapshotAuditPostgresTests
     {
         var connectionString = ResolveRequiredPostgresTestConnectionString();
         var builder = new NpgsqlConnectionStringBuilder(connectionString);
+        var host = builder.Host;
+        var username = builder.Username;
+        var database = builder.Database;
+        if (string.IsNullOrWhiteSpace(host) ||
+            string.IsNullOrWhiteSpace(username) ||
+            string.IsNullOrWhiteSpace(database))
+        {
+            throw new InvalidOperationException(
+                "PostgreSQL test connection must include host, username, and database.");
+        }
+
         var scriptPath = FindRepoFile(
             "tools",
             "audit",
@@ -39,13 +50,13 @@ public sealed class HistoricalFinancialSnapshotAuditPostgresTests
         };
         startInfo.Environment["PGPASSWORD"] = builder.Password;
         startInfo.ArgumentList.Add("-h");
-        startInfo.ArgumentList.Add(builder.Host);
+        startInfo.ArgumentList.Add(host);
         startInfo.ArgumentList.Add("-p");
         startInfo.ArgumentList.Add(builder.Port.ToString());
         startInfo.ArgumentList.Add("-U");
-        startInfo.ArgumentList.Add(builder.Username);
+        startInfo.ArgumentList.Add(username);
         startInfo.ArgumentList.Add("-d");
-        startInfo.ArgumentList.Add(builder.Database);
+        startInfo.ArgumentList.Add(database);
         startInfo.ArgumentList.Add("-v");
         startInfo.ArgumentList.Add("ON_ERROR_STOP=1");
         startInfo.ArgumentList.Add("-v");
