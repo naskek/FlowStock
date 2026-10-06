@@ -232,6 +232,12 @@ public sealed class GitRepositoryClient
 
     public async Task<string> ReadDiagnosticsAsync(string repositoryRoot, CancellationToken cancellationToken)
     {
+        if (IsManagedRepository(repositoryRoot))
+        {
+            return $"Updater-managed Git cache: {DesktopUpdateConstants.RemoteName}/{DesktopUpdateConstants.RemoteBranch}; "
+                   + "working tree intentionally отсутствует.";
+        }
+
         var branch = await GitRawAsync(repositoryRoot, ["status", "--short", "--branch"], cancellationToken);
         return branch.Success ? branch.StandardOutput.Trim() : branch.StandardError.Trim();
     }

@@ -27,6 +27,7 @@ public sealed class UpdateBootstrapService
         string repositoryRoot,
         BuildIdentity current,
         BuildIdentity target,
+        bool isSourceRun,
         CancellationToken cancellationToken)
     {
         _paths.EnsureBaseDirectories();
@@ -37,8 +38,7 @@ public sealed class UpdateBootstrapService
         Directory.CreateDirectory(transactionRoot);
 
         var active = _state.ReadActive();
-        var sourceRun = active is null;
-        if (sourceRun)
+        if (isSourceRun)
         {
             await PublishBootstrapUpdaterAsync(
                 repositoryRoot,
@@ -49,7 +49,7 @@ public sealed class UpdateBootstrapService
         }
         else
         {
-            if (active!.GetIdentity() != current)
+            if (active is null || active.GetIdentity() != current)
             {
                 throw new InvalidOperationException("Запущенная assembly не совпадает с active runtime manifest.");
             }
@@ -71,7 +71,7 @@ public sealed class UpdateBootstrapService
             current,
             target,
             Environment.ProcessId,
-            sourceRun);
+            isSourceRun && active is null);
         JsonStateStore.WriteAtomic(_paths.RequestFile(sessionId), request);
 
         RuntimeStateManager.Start(

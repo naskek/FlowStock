@@ -86,7 +86,8 @@ public sealed class ManagedGitRepositoryTests
             Assert.Equal(1, runner.AccessDeniedCount);
             Assert.Equal(1, runner.CloneCount);
             Assert.Equal(1, runner.FetchCount);
-            Assert.Equal("## origin/main", diagnostics);
+            Assert.Equal("Updater-managed Git cache: origin/main; working tree intentionally отсутствует.", diagnostics);
+            Assert.Equal(0, runner.StatusCount);
             Assert.True(Directory.Exists(repository));
             Assert.True(File.Exists(outside));
             Assert.Equal("keep", File.ReadAllText(outside));
@@ -209,6 +210,7 @@ public sealed class ManagedGitRepositoryTests
         public int AccessDeniedCount { get; private set; }
         public int CloneCount { get; private set; }
         public int FetchCount { get; private set; }
+        public int StatusCount { get; private set; }
 
         public Task<ProcessResult> RunAsync(
             string fileName,
@@ -259,7 +261,8 @@ public sealed class ManagedGitRepositoryTests
 
             if (args.Length >= 5 && args[0] == "-C" && args[2] == "status")
             {
-                return Task.FromResult(new ProcessResult(0, "## origin/main\n", string.Empty));
+                StatusCount++;
+                return Task.FromResult(new ProcessResult(0, "D apps/windows/FlowStock.App/App.xaml.cs\n", string.Empty));
             }
 
             return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));

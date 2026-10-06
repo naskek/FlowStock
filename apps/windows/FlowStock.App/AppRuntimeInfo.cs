@@ -11,23 +11,11 @@ public static class AppRuntimeInfo
     public static bool IsDevelopmentCheckout =>
         IsUnder(AppContext.BaseDirectory, DesktopUpdateConstants.DevelopmentRepositoryRoot);
 
-    public static bool IsSourceRun
-    {
-        get
-        {
-            var paths = new DesktopUpdatePaths();
-            var active = JsonStateStore.Read<RuntimeManifest>(paths.ActiveManifest);
-            if (active is null || !BuildIdentity.IsFullCommit(active.Commit))
-            {
-                return true;
-            }
+    public static bool IsSourceRun => IsSourceCheckoutDirectory(AppContext.BaseDirectory);
 
-            return !string.Equals(
-                Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar),
-                Path.GetFullPath(paths.AppDirectory(active.Commit)).TrimEnd(Path.DirectorySeparatorChar),
-                StringComparison.OrdinalIgnoreCase);
-        }
-    }
+    public static bool IsSourceCheckoutDirectory(string candidate) =>
+        IsUnder(candidate, DesktopUpdateConstants.LegacySourceRepositoryRoot)
+        || IsUnder(candidate, DesktopUpdateConstants.DevelopmentRepositoryRoot);
 
     public static string DisplayText =>
         $"FlowStock {Current.ProductVersion} · {Current.ShortCommit}"
