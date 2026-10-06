@@ -11,27 +11,11 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <Menu Grid.Column="0">
-                <MenuItem Header="Справочники">
-                    <MenuItem Header="Типы номенклатуры..." Click="ItemTypesMenu_Click" />
-                    <MenuItem Header="Ставки НДС..." Click="VatRatesMenu_Click" />
-                    <MenuItem Header="Цены клиентов..." Click="PartnerItemPricesMenu_Click" />
-                    <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
-                    <MenuItem Header="Тара..." Click="TaraMenu_Click" />
-                    <Separator />
+                <MenuItem Header="Операции">
                     <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
-                    <Separator />
-                    <MenuItem Header="Ед. измерения..." Click="UomMenu_Click" />
-                    <MenuItem Header="Причины списания..." Click="WriteOffReasonsMenu_Click" />
-                    <MenuItem Header="Упаковочные единицы / кратности..." Click="PackagingManager_Click" />
-                    <MenuItem Header="Нумерация документов..." Click="DocNumberingSettingsMenu_Click" />
                 </MenuItem>
                 <MenuItem Header="Сервис">
-                    <MenuItem Header="Центр событий..." Click="OpenIncomingRequests_Click" />
-                    <Separator />
-                    <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
-                    <MenuItem Header="Администрирование..." Click="OpenAdmin_Click" />
-                    <MenuItem Header="Открыть папку данных" Click="OpenDataFolder_Click" />
-                    <MenuItem Header="Открыть папку логов" Click="OpenLogsFolder_Click" />
+                    <MenuItem Header="Настройки FlowStock..." Click="OpenAdmin_Click" />
                 </MenuItem>
             </Menu>
             <Button Grid.Column="1" x:Name="ItemRequestsButton" Margin="6,0,6,0" Padding="8,2"

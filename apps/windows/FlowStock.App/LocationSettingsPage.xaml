@@ -1,0 +1,43 @@
+<UserControl x:Class="FlowStock.App.LocationSettingsPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             PreviewKeyDown="Page_PreviewKeyDown">
+    <Grid Margin="4,0,4,12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+            <Button Content="Добавить" Click="Add_Click" />
+            <Button x:Name="EditButton"
+                    Content="Редактировать"
+                    Margin="8,0,0,0"
+                    IsEnabled="False"
+                    Click="Edit_Click" />
+            <Button x:Name="DeleteButton"
+                    Content="Удалить"
+                    Margin="8,0,0,0"
+                    IsEnabled="False"
+                    Click="Delete_Click" />
+            <Button Content="Обновить"
+                    Margin="8,0,0,0"
+                    Click="Refresh_Click" />
+        </StackPanel>
+        <DataGrid x:Name="LocationsGrid"
+                  Grid.Row="1"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  SelectionMode="Extended"
+                  SelectionUnit="FullRow"
+                  SelectionChanged="LocationsGrid_SelectionChanged"
+                  MouseDoubleClick="LocationsGrid_MouseDoubleClick">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="Auto" MaxWidth="120" />
+                <DataGridTextColumn Header="Код" Binding="{Binding Code}" Width="Auto" MaxWidth="320" />
+                <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" MinWidth="220" />
+                <DataGridTextColumn Header="Макс. HU мест" Binding="{Binding MaxHuSlots}" Width="Auto" MaxWidth="180" />
+                <DataGridCheckBoxColumn Header="Авто HU" Binding="{Binding AutoHuDistributionEnabled}" Width="Auto" MaxWidth="120" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </Grid>
+</UserControl>

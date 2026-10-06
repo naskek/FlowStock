@@ -10,6 +10,8 @@ public sealed class CommercialWpfSourceTests
         "apps", "windows", "FlowStock.App", "ItemEditWindow.xaml.cs");
     private static readonly string MainWindow = ReadRepoFile(
         "apps", "windows", "FlowStock.App", "MainWindow.xaml");
+    private static readonly string AdminWindow = ReadRepoFile(
+        "apps", "windows", "FlowStock.App", "AdminWindow.xaml");
     private static readonly string PartnerItemSalePriceWindow = ReadRepoFile(
         "apps", "windows", "FlowStock.App", "PartnerItemSalePriceWindow.xaml.cs");
 
@@ -33,10 +35,10 @@ public sealed class CommercialWpfSourceTests
     }
 
     [Fact]
-    public void Item_and_main_windows_expose_customer_prices_and_statistics()
+    public void Item_and_settings_windows_expose_customer_prices_and_statistics()
     {
         Assert.Contains("PartnerItemSalePriceWindow", ItemWindow, StringComparison.Ordinal);
-        Assert.Contains("Цены клиентов...", MainWindow, StringComparison.Ordinal);
+        Assert.Contains("Header=\"Цены клиентов\"", AdminWindow, StringComparison.Ordinal);
         Assert.Contains("<TabItem Header=\"Статистика\">", MainWindow, StringComparison.Ordinal);
     }
 

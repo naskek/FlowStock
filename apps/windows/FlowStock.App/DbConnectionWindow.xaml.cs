@@ -16,6 +16,7 @@ namespace FlowStock.App;
 
 public partial class DbConnectionWindow : Window
 {
+    private FrameworkElement? _contentRoot;
     private readonly AppServices _services;
     private readonly PostgresDiscoveryService _discoveryService = new();
     private readonly CloseDocumentApiClient _closeDocumentApiClient = new();
@@ -74,8 +75,12 @@ public partial class DbConnectionWindow : Window
         LoadRecentConnections();
         LoadServerSettingsUi();
         SetManualConnectionMode(false);
-        Loaded += DbConnectionWindow_Loaded;
-        Closed += DbConnectionWindow_Closed;
+        if (Content is FrameworkElement content)
+        {
+            _contentRoot = content;
+            content.Loaded += DbConnectionWindow_Loaded;
+            content.Unloaded += DbConnectionWindow_Unloaded;
+        }
     }
 
     private async void DbConnectionWindow_Loaded(object sender, RoutedEventArgs e)
@@ -83,7 +88,7 @@ public partial class DbConnectionWindow : Window
         await DiscoverConnectionsAsync();
     }
 
-    private void DbConnectionWindow_Closed(object? sender, EventArgs e)
+    private void DbConnectionWindow_Unloaded(object sender, RoutedEventArgs e)
     {
         _discoveryCts?.Cancel();
         _discoveryCts?.Dispose();
@@ -962,10 +967,12 @@ LIMIT 1;";
 
     private void ShowConnectionError(string summary, string details)
     {
-        var window = new ErrorTextWindow("Подключение к БД", $"{summary}{Environment.NewLine}{Environment.NewLine}{details}")
+        var window = new ErrorTextWindow("Подключение к БД", $"{summary}{Environment.NewLine}{Environment.NewLine}{details}");
+        var owner = _contentRoot is null ? null : Window.GetWindow(_contentRoot);
+        if (owner is not null)
         {
-            Owner = this
-        };
+            window.Owner = owner;
+        }
         window.ShowDialog();
     }
 

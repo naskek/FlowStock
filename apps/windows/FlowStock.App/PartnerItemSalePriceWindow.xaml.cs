@@ -20,6 +20,7 @@ public partial class PartnerItemSalePriceWindow : Window
     private int _partnerAutocompleteTextGeneration;
     private int _offset;
     private int _totalCount;
+    private bool _initialPageLoaded;
 
     public PartnerItemSalePriceWindow(AppServices services, long? itemId = null)
     {
@@ -32,7 +33,19 @@ public partial class PartnerItemSalePriceWindow : Window
             new System.Windows.Controls.TextChangedEventHandler(PartnerCombo_TextChanged));
         LoadLookups();
         ResetForm();
-        Loaded += async (_, _) => await LoadPageAsync().ConfigureAwait(true);
+        if (Content is FrameworkElement content)
+        {
+            content.Loaded += async (_, _) =>
+            {
+                if (_initialPageLoaded)
+                {
+                    return;
+                }
+
+                _initialPageLoaded = true;
+                await LoadPageAsync().ConfigureAwait(true);
+            };
+        }
     }
 
     private void LoadLookups()

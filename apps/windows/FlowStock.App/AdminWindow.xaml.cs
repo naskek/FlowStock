@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Windows;
 using FlowStock.DesktopUpdate;
@@ -13,24 +15,33 @@ namespace FlowStock.App;
 public partial class AdminWindow : Window
 {
     private readonly AppServices _services;
+    private readonly Action? _catalogsChanged;
     private readonly Dictionary<string, WpfCheckBox> _clientBlockBoxes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, HostedSettingsPage> _embeddedPages = new(StringComparer.OrdinalIgnoreCase);
     private string? _palletLabelPrinterEnvironmentOverride;
     private CancellationTokenSource? _updateCheckCancellation;
     private int _updateCheckGeneration;
     private DesktopUpdateCheckResult? _updateCheckResult;
 
-    public AdminWindow(AppServices services)
+    public AdminWindow(AppServices services, Action? catalogsChanged = null)
     {
         _services = services;
+        _catalogsChanged = catalogsChanged;
 
         InitializeComponent();
         SystemSettingsNavigationItem.IsSelected = true;
+        DataFolderPathText.Text = _services.BaseDir;
+        LogsFolderPathText.Text = _services.LogsDir;
         LoadClientBlocksUi();
         LoadPalletLabelPrinterUi();
         InstalledBuildText.Text = $"Установлено: {AppRuntimeInfo.Current.ProductVersion}\n{AppRuntimeInfo.Current.SourceCommit}"
             + (AppRuntimeInfo.IsSourceRun ? "\nРежим: запуск из исходного checkout" : string.Empty);
         Loaded += async (_, _) => await CheckForUpdateAsync();
-        Closed += (_, _) => CancelUpdateCheck();
+        Closed += (_, _) =>
+        {
+            CancelUpdateCheck();
+            _catalogsChanged?.Invoke();
+        };
     }
 
     private void AdminNavigationTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
@@ -41,7 +52,7 @@ public partial class AdminWindow : Window
         }
 
         var key = selectedItem.Tag?.ToString();
-        if (key is not ("system" or "update" or "clients" or "printing" or "maintenance"))
+        if (string.IsNullOrWhiteSpace(key))
         {
             return;
         }
@@ -50,7 +61,70 @@ public partial class AdminWindow : Window
         UpdateCategoryPanel.Visibility = key == "update" ? Visibility.Visible : Visibility.Collapsed;
         ClientsCategoryPanel.Visibility = key == "clients" ? Visibility.Visible : Visibility.Collapsed;
         PrintingCategoryPanel.Visibility = key == "printing" ? Visibility.Visible : Visibility.Collapsed;
-        MaintenanceCategoryPanel.Visibility = key == "maintenance" ? Visibility.Visible : Visibility.Collapsed;
+        FoldersCategoryPanel.Visibility = key == "folders" ? Visibility.Visible : Visibility.Collapsed;
+
+        if (!EmbeddedPageTitles.TryGetValue(key, out var title))
+        {
+            EmbeddedPagePanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var page = GetOrCreateEmbeddedPage(key);
+        EmbeddedPageTitleText.Text = title;
+        EmbeddedPageContent.Content = page.Content;
+        EmbeddedPagePanel.Visibility = Visibility.Visible;
+    }
+
+    private static IReadOnlyDictionary<string, string> EmbeddedPageTitles { get; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["db-connection"] = "Подключение к БД",
+            ["accounts"] = "Учётные записи",
+            ["item-types"] = "Типы номенклатуры",
+            ["vat-rates"] = "Ставки НДС",
+            ["partner-prices"] = "Цены клиентов",
+            ["locations"] = "Места хранения",
+            ["tara"] = "Тара",
+            ["uom"] = "Единицы измерения",
+            ["write-off-reasons"] = "Причины списания",
+            ["packaging"] = "Упаковочные единицы / кратности",
+            ["doc-numbering"] = "Нумерация документов",
+            ["backups"] = "Резервные копии",
+            ["maintenance"] = "Обслуживание FlowStock"
+        };
+
+    private HostedSettingsPage GetOrCreateEmbeddedPage(string key)
+    {
+        if (_embeddedPages.TryGetValue(key, out var existing))
+        {
+            return existing;
+        }
+
+        var created = key switch
+        {
+            "db-connection" => SettingsCenterWindowPageHost.Detach(new DbConnectionWindow(_services)),
+            "accounts" => SettingsCenterWindowPageHost.Detach(new TsdDeviceWindow(_services)),
+            "item-types" => SettingsCenterWindowPageHost.Detach(new ItemTypeWindow(_services, _catalogsChanged)),
+            "vat-rates" => SettingsCenterWindowPageHost.Detach(new VatRateWindow(_services)),
+            "partner-prices" => SettingsCenterWindowPageHost.Detach(new PartnerItemSalePriceWindow(_services)),
+            "locations" => CreateLocationSettingsPage(),
+            "tara" => SettingsCenterWindowPageHost.Detach(new TaraWindow(_services, _catalogsChanged)),
+            "uom" => SettingsCenterWindowPageHost.Detach(new UomWindow(_services, _catalogsChanged)),
+            "write-off-reasons" => SettingsCenterWindowPageHost.Detach(new WriteOffReasonWindow(_services, _catalogsChanged)),
+            "packaging" => SettingsCenterWindowPageHost.Detach(new PackagingManagerWindow(_services)),
+            "doc-numbering" => SettingsCenterWindowPageHost.Detach(new DocNumberingSettingsWindow(_services)),
+            "backups" => SettingsCenterWindowPageHost.Detach(new BackupManagerWindow(_services)),
+            "maintenance" => SettingsCenterWindowPageHost.Detach(new MaintenanceWindow(_services)),
+            _ => throw new InvalidOperationException($"Неизвестная страница настроек: {key}")
+        };
+        _embeddedPages[key] = created;
+        return created;
+    }
+
+    private HostedSettingsPage CreateLocationSettingsPage()
+    {
+        var page = new LocationSettingsPage(_services, _catalogsChanged);
+        return new HostedSettingsPage(page, page);
     }
 
     private async void CheckUpdate_Click(object sender, RoutedEventArgs e) => await CheckForUpdateAsync();
@@ -184,31 +258,25 @@ public partial class AdminWindow : Window
         _updateCheckCancellation = null;
     }
 
-    private void OpenDbConnection_Click(object sender, RoutedEventArgs e)
-    {
-        var window = new DbConnectionWindow(_services)
-        {
-            Owner = this
-        };
-        window.ShowDialog();
-    }
+    private void OpenDataFolder_Click(object sender, RoutedEventArgs e) =>
+        OpenFolder(_services.BaseDir, "Папка данных не найдена.");
 
-    private void OpenTsdDevices_Click(object sender, RoutedEventArgs e)
-    {
-        var window = new TsdDeviceWindow(_services)
-        {
-            Owner = this
-        };
-        window.ShowDialog();
-    }
+    private void OpenLogsFolder_Click(object sender, RoutedEventArgs e) =>
+        OpenFolder(_services.LogsDir, "Папка логов не найдена.");
 
-    private void OpenMaintenance_Click(object sender, RoutedEventArgs e)
+    private static void OpenFolder(string? path, string notFoundMessage)
     {
-        var window = new MaintenanceWindow(_services)
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
         {
-            Owner = this
-        };
-        window.ShowDialog();
+            MessageBox.Show(notFoundMessage, "Настройки FlowStock", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = path,
+            UseShellExecute = true
+        });
     }
 
     private void ChangeAdminPassword_Click(object sender, RoutedEventArgs e)
