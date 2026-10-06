@@ -164,7 +164,7 @@ jobs:
       PGPASSWORD: flowstock_test
       FLOWSTOCK_POSTGRES_TEST_CONNECTION: Host=127.0.0.1;Port=15432;Database=flowstock_test;Username=flowstock_test;Password=flowstock_test;Pooling=false
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d342e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       # Emulate the source-run updater contract while runtime still depends on the canonical repository root.
@@ -263,7 +263,8 @@ jobs:
             -c Release --no-build `
             --filter "FullyQualifiedName~Postgres" `
             --logger "trx;LogFilePrefix=postgres" `
-            --results-directory "$env:RUNNER_TEMP\test-results\postgres"
+            --results-directory "$env:RUNNER_TEMP\test-results\postgres" `
+            -- xUnit.ParallelizeTestCollections=false
           if ($LASTEXITCODE -ne 0) { throw "PostgreSQL tests failed with exit code $LASTEXITCODE." }
 
           & tools/ci/assert-trx.ps1 `
