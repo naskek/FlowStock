@@ -31,6 +31,7 @@ internal static class PcWebStaticFiles
         "pc/pc-catalog.js",
         "pc/pc-core.js",
         "pc/pc-order-modal.js",
+        "pc/pc-stock-scroll-anchor.js",
         "pc/pc-stock.js",
         "pc/styles.css",
         "pc/warehouse-board.js"
@@ -44,6 +45,7 @@ internal static class PcWebStaticFiles
         "/pc-catalog.js",
         "/pc-core.js",
         "/pc-order-modal.js",
+        "/pc-stock-scroll-anchor.js",
         "/pc-stock.js",
         "/styles.css",
         "/warehouse-board.js"
