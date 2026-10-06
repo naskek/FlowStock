@@ -93,6 +93,21 @@ public sealed class UpdaterLifecycleRegressionTests
     }
 
     [Fact]
+    public async Task SourceBootstrapWithExistingActive_FailureStartsPreviousInstalledRuntime()
+    {
+        using var fixture = LifecycleFixture.Create(sourceRun: true, existingActiveRuntime: true);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Engine.RunUpdateAsync(fixture.SessionId, new Progress<UpdateProgress>(), CancellationToken.None));
+
+        Assert.Equal(fixture.Previous, fixture.State.ReadActive()?.GetIdentity());
+        Assert.Equal(1, fixture.Launcher.ExecutableStarts);
+        Assert.Equal(0, fixture.Launcher.SourceRunStarts);
+        Assert.Equal(fixture.Paths.AppExecutable(fixture.Previous.SourceCommit), fixture.Launcher.LastExecutable);
+        Assert.False(File.Exists(fixture.Paths.PendingTransaction));
+    }
+
+    [Fact]
     public async Task FallbackLaunchFailure_PreservesPendingAndRecordsBothErrors()
     {
         using var fixture = LifecycleFixture.Create(sourceRun: true, failFallbackLaunch: true);
@@ -185,7 +200,8 @@ public sealed class UpdaterLifecycleRegressionTests
         public static LifecycleFixture Create(
             bool sourceRun,
             bool pendingAfterSwitch = false,
-            bool failFallbackLaunch = false)
+            bool failFallbackLaunch = false,
+            bool existingActiveRuntime = false)
         {
             var root = Path.Combine(Path.GetTempPath(), $"flowstock-lifecycle-test-{Guid.NewGuid():N}");
             var paths = new DesktopUpdatePaths(root, root);
@@ -197,12 +213,14 @@ public sealed class UpdaterLifecycleRegressionTests
             var target = BuildIdentity.Create("1.1.0", "2222222222222222222222222222222222222222");
             var state = new RuntimeStateManager(paths);
 
-            if (!sourceRun)
+            if (!sourceRun || existingActiveRuntime)
             {
                 InstallRuntime(paths, previous, appSource, updaterSource);
                 state.WriteActive(previous);
                 state.WriteLastKnownGood(previous);
             }
+
+            var sourceRunFallback = sourceRun && !existingActiveRuntime;
 
             var sessionId = Guid.NewGuid().ToString("N");
             Directory.CreateDirectory(paths.RecoveryDirectory(sessionId));
@@ -216,7 +234,7 @@ public sealed class UpdaterLifecycleRegressionTests
                 previous,
                 target,
                 int.MaxValue,
-                sourceRun);
+                sourceRunFallback);
             JsonStateStore.WriteAtomic(paths.RequestFile(sessionId), request);
 
             if (pendingAfterSwitch)
@@ -230,13 +248,13 @@ public sealed class UpdaterLifecycleRegressionTests
                         "active-switched",
                         previous,
                         target,
-                        sourceRun ? null : previous.SourceCommit,
+                        sourceRunFallback ? null : previous.SourceCommit,
                         target.SourceCommit,
-                        sourceRun,
+                        sourceRunFallback,
                         RuntimeStateManager.Sha256Bundle(paths.RecoveryDirectory(sessionId)),
                         DateTimeOffset.UtcNow,
                         $"{sessionId}.log"));
-                if (sourceRun)
+                if (sourceRunFallback)
                 {
                     JsonStateStore.WriteAtomic(paths.ActiveManifest, RuntimeStateManager.ToManifest(target));
                 }

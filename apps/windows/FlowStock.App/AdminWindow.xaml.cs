@@ -140,6 +140,7 @@ public partial class AdminWindow : Window
                 DesktopUpdateConstants.DefaultRepositoryRoot,
                 result.Installed,
                 result.Target,
+                AppRuntimeInfo.IsSourceRun,
                 CancellationToken.None);
             UpdateStatusText.Text = "Updater подготовлен; FlowStock завершает работу...";
             await bootstrap.WaitUntilReadyAsync(session, TimeSpan.FromSeconds(30), CancellationToken.None);
