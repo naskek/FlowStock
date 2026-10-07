@@ -12,6 +12,21 @@ namespace FlowStock.Server.Tests.ProductionPallets;
 public sealed class ProductionPalletServiceTests
 {
     [Fact]
+    public void OrderLineView_CustomPalletCapacity_IsPerLineAndDisabledForMixed()
+    {
+        var line = new OrderLineView { Id = 101, ItemName = "Товар" };
+
+        Assert.True(line.CanUseCustomPalletCapacity);
+        line.UseCustomPalletCapacity = true;
+        Assert.True(line.UseCustomPalletCapacity);
+
+        line.ProductionPalletGroup = "MIX-1";
+
+        Assert.False(line.CanUseCustomPalletCapacity);
+        Assert.False(line.UseCustomPalletCapacity);
+    }
+
+    [Fact]
     public void GetFillingOrders_DoesNotReturnOrderWithoutPreparedPallets()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 1200, maxQtyPerHu: 600);
@@ -53,7 +68,7 @@ public sealed class ProductionPalletServiceTests
         var result = service.PlanOrder(
             10,
             scopedOrderLineIds: null,
-            new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = 2250 });
+            new[] { new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = 2250 } });
 
         var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(result.PrdDocId));
         Assert.Equal(2250, pallet.PlannedQty, 3);
@@ -93,7 +108,7 @@ public sealed class ProductionPalletServiceTests
         var result = service.PlanOrder(
             10,
             scopedOrderLineIds: null,
-            new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = 2250 });
+            new[] { new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = 2250 } });
 
         var quantities = harness.Store.GetProductionPalletsByDoc(result.PrdDocId)
             .OrderBy(pallet => pallet.Id)
@@ -114,7 +129,7 @@ public sealed class ProductionPalletServiceTests
         var result = service.PlanOrder(
             10,
             scopedOrderLineIds: null,
-            new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = 2250 });
+            new[] { new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = 2250 } });
 
         var pallets = harness.Store.GetProductionPalletsByDoc(result.PrdDocId);
         Assert.Equal(new[] { 2250d }, pallets.Where(p => p.OrderLineId == 101).Select(p => p.PlannedQty).ToArray());
@@ -124,15 +139,58 @@ public sealed class ProductionPalletServiceTests
     }
 
     [Fact]
+    public void PlanOrder_CustomCapacityOverrides_ApplyDifferentValuesToMultipleLines()
+    {
+        var harness = CreateHarnessWithTwoOrderLines(firstQty: 5000, secondQty: 2500);
+        var service = new ProductionPalletService(harness.Store);
+
+        var result = service.PlanOrder(
+            10,
+            scopedOrderLineIds: null,
+            new[]
+            {
+                new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = 2250 },
+                new ProductionPalletCapacityOverride { OrderLineId = 102, MaxQtyPerHu = 1000 }
+            });
+
+        var pallets = harness.Store.GetProductionPalletsByDoc(result.PrdDocId);
+        Assert.Equal(
+            new[] { 2250d, 2250d, 500d },
+            pallets.Where(p => p.OrderLineId == 101).OrderBy(p => p.Id).Select(p => p.PlannedQty).ToArray());
+        Assert.Equal(
+            new[] { 1000d, 1000d, 500d },
+            pallets.Where(p => p.OrderLineId == 102).OrderBy(p => p.Id).Select(p => p.PlannedQty).ToArray());
+    }
+
+    [Fact]
+    public void PlanOrder_CustomCapacityOverrides_RejectDuplicateLineBeforeMutation()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 2250, maxQtyPerHu: 1800);
+        var service = new ProductionPalletService(harness.Store);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => service.PlanOrder(
+            10,
+            scopedOrderLineIds: null,
+            new[]
+            {
+                new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = 2250 },
+                new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = 2000 }
+            }));
+
+        Assert.Contains("несколько значений", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(harness.Store.GetDocsByOrder(10), doc => doc.Type == DocType.ProductionReceipt);
+    }
+
+    [Fact]
     public void PlanOrder_CustomCapacityOverride_RepeatedRequest_DoesNotCreateDuplicates()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 2250, maxQtyPerHu: 1800);
         var service = new ProductionPalletService(harness.Store);
-        var capacity = new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = 2250 };
+        var capacityOverrides = new[] { new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = 2250 } };
 
-        var first = service.PlanOrder(10, scopedOrderLineIds: null, capacity);
+        var first = service.PlanOrder(10, scopedOrderLineIds: null, capacityOverrides);
         var firstHu = Assert.Single(harness.Store.GetProductionPalletsByDoc(first.PrdDocId)).HuCode;
-        var second = service.PlanOrder(10, scopedOrderLineIds: null, capacity);
+        var second = service.PlanOrder(10, scopedOrderLineIds: null, capacityOverrides);
 
         var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(second.PrdDocId));
         Assert.Equal(firstHu, pallet.HuCode);
@@ -148,7 +206,7 @@ public sealed class ProductionPalletServiceTests
         var ex = Assert.Throws<InvalidOperationException>(() => service.PlanOrder(
             10,
             scopedOrderLineIds: null,
-            new ProductionPalletCapacityOverride { OrderLineId = 999, MaxQtyPerHu = 2250 }));
+            new[] { new ProductionPalletCapacityOverride { OrderLineId = 999, MaxQtyPerHu = 2250 } }));
 
         Assert.Contains("не принадлежит заказу", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(harness.Store.GetDocsByOrder(10), doc => doc.Type == DocType.ProductionReceipt);
@@ -163,7 +221,7 @@ public sealed class ProductionPalletServiceTests
         var ex = Assert.Throws<InvalidOperationException>(() => service.PlanOrder(
             10,
             scopedOrderLineIds: null,
-            new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = 2250 }));
+            new[] { new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = 2250 } }));
 
         Assert.Contains("mixed", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(harness.Store.GetDocsByOrder(10), doc => doc.Type == DocType.ProductionReceipt);
@@ -180,7 +238,7 @@ public sealed class ProductionPalletServiceTests
             Assert.Throws<InvalidOperationException>(() => service.PlanOrder(
                 10,
                 scopedOrderLineIds: null,
-                new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = invalid }));
+                new[] { new ProductionPalletCapacityOverride { OrderLineId = 101, MaxQtyPerHu = invalid } }));
             Assert.DoesNotContain(harness.Store.GetDocsByOrder(10), doc => doc.Type == DocType.ProductionReceipt);
         }
     }

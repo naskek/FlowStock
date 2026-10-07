@@ -59,10 +59,13 @@ VALUES (@order_id, @item_id, 2250, 'INTERNAL_STOCK') RETURNING id;",
             var result = service.PlanOrder(
                 orderId,
                 scopedOrderLineIds: null,
-                new ProductionPalletCapacityOverride
+                new[]
                 {
-                    OrderLineId = orderLineId,
-                    MaxQtyPerHu = 2250
+                    new ProductionPalletCapacityOverride
+                    {
+                        OrderLineId = orderLineId,
+                        MaxQtyPerHu = 2250
+                    }
                 });
 
             var pallet = Assert.Single(store.GetProductionPalletsByDoc(result.PrdDocId));

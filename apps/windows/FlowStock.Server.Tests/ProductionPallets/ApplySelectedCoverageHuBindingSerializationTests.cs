@@ -46,17 +46,24 @@ public sealed class ApplySelectedCoverageHuBindingSerializationTests
     }
 
     [Fact]
-    public void BuildPlanBody_WithCapacityOverride_SerializesExplicitSnakeCaseScope()
+    public void BuildPlanBody_WithCapacityOverrides_SerializesExplicitSnakeCaseScopes()
     {
         var body = WpfProductionPalletApiService.BuildPlanBody(
             WpfProductionPalletPlanMode.Full,
             selectedCoverage: null,
-            new WpfProductionPalletCapacityOverride(101, 2250));
+            new[]
+            {
+                new WpfProductionPalletCapacityOverride(101, 2250),
+                new WpfProductionPalletCapacityOverride(102, 1000)
+            });
 
         var json = JsonSerializer.Serialize(body, WebOptions);
 
+        Assert.Contains("\"capacity_overrides\"", json, StringComparison.Ordinal);
         Assert.Contains("\"order_line_id\":101", json, StringComparison.Ordinal);
         Assert.Contains("\"max_qty_per_hu_override\":2250", json, StringComparison.Ordinal);
+        Assert.Contains("\"order_line_id\":102", json, StringComparison.Ordinal);
+        Assert.Contains("\"max_qty_per_hu_override\":1000", json, StringComparison.Ordinal);
         Assert.DoesNotContain("orderLineId", json, StringComparison.Ordinal);
         Assert.DoesNotContain("maxQtyPerHuOverride", json, StringComparison.Ordinal);
     }
@@ -69,8 +76,9 @@ public sealed class ApplySelectedCoverageHuBindingSerializationTests
 
         const string payload = """
         {
-          "order_line_id": 101,
-          "max_qty_per_hu_override": 2250
+          "capacity_overrides": [
+            { "order_line_id": 101, "max_qty_per_hu_override": 2250 }
+          ]
         }
         """;
 
@@ -90,8 +98,8 @@ public sealed class ApplySelectedCoverageHuBindingSerializationTests
     }
 
     [Theory]
-    [InlineData("{ \"order_line_id\": 101 }")]
-    [InlineData("{ \"max_qty_per_hu_override\": 2250 }")]
+    [InlineData("{ \"capacity_overrides\": [ { \"order_line_id\": 101 } ] }")]
+    [InlineData("{ \"capacity_overrides\": [ { \"max_qty_per_hu_override\": 2250 } ] }")]
     public async Task PlanEndpoint_WithIncompleteCapacityOverride_Returns400WithoutMutation(string payload)
     {
         var harness = CreateCustomerHarness(customerQty: 2250, maxQtyPerHu: 1800);
@@ -113,8 +121,9 @@ public sealed class ApplySelectedCoverageHuBindingSerializationTests
 
         const string payload = """
         {
-          "order_line_id": 999,
-          "max_qty_per_hu_override": 2250
+          "capacity_overrides": [
+            { "order_line_id": 999, "max_qty_per_hu_override": 2250 }
+          ]
         }
         """;
 
