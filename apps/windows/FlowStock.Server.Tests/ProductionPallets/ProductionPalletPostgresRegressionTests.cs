@@ -1,3 +1,5 @@
+using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 using FlowStock.Data;
 using Npgsql;
 
@@ -5,6 +7,93 @@ namespace FlowStock.Server.Tests.ProductionPallets;
 
 public sealed class ProductionPalletPostgresRegressionTests
 {
+
+    [Fact]
+    public void PlanOrder_CustomCapacityOverride_Postgres_CreatesExactHuAndPreservesCatalogCapacity()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        var token = $"custom-cap-{Guid.NewGuid():N}";
+        long itemId = 0;
+        long locationId = 0;
+        long orderId = 0;
+        long orderLineId = 0;
+        string[] huCodes = Array.Empty<string>();
+
+        using var connection = new NpgsqlConnection(connectionString);
+        connection.Open();
+
+        long Scalar(string sql, params (string Name, object Value)[] parameters)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            foreach (var parameter in parameters)
+            {
+                command.Parameters.AddWithValue(parameter.Name, parameter.Value);
+            }
+            return Convert.ToInt64(command.ExecuteScalar());
+        }
+
+        try
+        {
+            itemId = Scalar(
+                "INSERT INTO items(name, barcode, base_uom, max_qty_per_hu) VALUES (@name, @barcode, 'шт', 1800) RETURNING id;",
+                ("name", token), ("barcode", token));
+            locationId = Scalar(
+                "INSERT INTO locations(code, name) VALUES (@code, @name) RETURNING id;",
+                ("code", token), ("name", token));
+            orderId = Scalar(
+                "INSERT INTO orders(order_ref, order_type, status, created_at) VALUES (@ref, 'INTERNAL', 'IN_PROGRESS', @created) RETURNING id;",
+                ("ref", token), ("created", "2042-01-01T00:00:00"));
+            orderLineId = Scalar(
+                @"INSERT INTO order_lines(order_id, item_id, qty_ordered, production_purpose)
+VALUES (@order_id, @item_id, 2250, 'INTERNAL_STOCK') RETURNING id;",
+                ("order_id", orderId), ("item_id", itemId));
+
+            var store = new PostgresDataStore(connectionString);
+            var service = new ProductionPalletService(store);
+            var result = service.PlanOrder(
+                orderId,
+                scopedOrderLineIds: null,
+                new ProductionPalletCapacityOverride
+                {
+                    OrderLineId = orderLineId,
+                    MaxQtyPerHu = 2250
+                });
+
+            var pallet = Assert.Single(store.GetProductionPalletsByDoc(result.PrdDocId));
+            Assert.Equal(2250, pallet.PlannedQty, 3);
+            Assert.Single(service.GetPrintRows(orderId));
+            Assert.Equal(1800d, store.GetItems(null).Single(item => item.Id == itemId).MaxQtyPerHu!.Value, 3);
+            huCodes = new[] { pallet.HuCode };
+        }
+        finally
+        {
+            using var cleanup = connection.CreateCommand();
+            cleanup.CommandText = @"
+DELETE FROM production_pallet_lines
+WHERE production_pallet_id IN (SELECT id FROM production_pallets WHERE order_id = @order_id);
+DELETE FROM production_pallets WHERE order_id = @order_id;
+DELETE FROM doc_lines WHERE doc_id IN (SELECT id FROM docs WHERE order_id = @order_id);
+DELETE FROM docs WHERE order_id = @order_id;
+DELETE FROM order_lines WHERE order_id = @order_id;
+DELETE FROM orders WHERE id = @order_id;
+DELETE FROM hus WHERE hu_code = ANY(@hu_codes);
+DELETE FROM items WHERE id = @item_id;
+DELETE FROM locations WHERE id = @location_id;
+";
+            cleanup.Parameters.AddWithValue("order_id", orderId);
+            cleanup.Parameters.AddWithValue("hu_codes", huCodes);
+            cleanup.Parameters.AddWithValue("item_id", itemId);
+            cleanup.Parameters.AddWithValue("location_id", locationId);
+            cleanup.ExecuteNonQuery();
+        }
+    }
+
     [Fact]
     public void GetFilledProductionPalletQtyByOrderLine_Sql_UsesTypedNullableExcludePalletId()
     {

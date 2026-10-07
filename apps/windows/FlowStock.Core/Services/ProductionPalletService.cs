@@ -191,7 +191,7 @@ public sealed class ProductionPalletService
     {
         if (mode == ProductionPalletPlanMode.Full)
         {
-            return PlanOrder(orderId, scopedOrderLineIds: null, capacityOverride);
+            return PlanOrder(orderId, scopedOrderLineIds: null, capacityOverride: capacityOverride);
         }
 
         if (mode == ProductionPalletPlanMode.AdoptInternalThenPlan)

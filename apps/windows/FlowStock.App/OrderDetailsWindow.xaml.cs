@@ -580,7 +580,7 @@ public partial class OrderDetailsWindow : Window
                     _orderId.Value,
                     WpfProductionPalletPlanMode.SkipInternalSupply,
                     selectedCoverage: null,
-                    capacityOverride).ConfigureAwait(true)
+                    capacityOverride: capacityOverride).ConfigureAwait(true)
                 : decision == PrePlanFlowDecision.AdoptInternalThenPlan
                     ? await _services.WpfProductionPalletApi.TryPlanOrderAsync(
                         _orderId.Value,
@@ -597,7 +597,7 @@ public partial class OrderDetailsWindow : Window
                     _orderId.Value,
                     WpfProductionPalletPlanMode.Full,
                     selectedCoverage: null,
-                    capacityOverride).ConfigureAwait(true);
+                    capacityOverride: capacityOverride).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
                 MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
