@@ -138,19 +138,6 @@
                 <GroupBox Grid.Row="0" Grid.Column="1" Header="Паллетный план" Margin="8,0,0,8" Padding="8">
                     <StackPanel Orientation="Vertical">
                         <Button x:Name="PlanPalletsButton" Style="{StaticResource OrderActionButtonStyle}" Content="План паллет (производство)" Click="PlanPallets_Click" TabIndex="11" />
-                        <CheckBox x:Name="CustomPalletCapacityCheckBox"
-                                  Content="Нестандартная палетизация для выбранной строки"
-                                  Checked="CustomPalletCapacityCheckBox_Changed"
-                                  Unchecked="CustomPalletCapacityCheckBox_Changed"
-                                  Margin="0,4,0,2" />
-                        <StackPanel x:Name="CustomPalletCapacityPanel" Orientation="Vertical" Visibility="Collapsed" Margin="0,0,0,4">
-                            <TextBlock x:Name="CustomPalletCapacityTargetText" Text="Выберите строку заказа" Foreground="Gray" TextWrapping="Wrap" />
-                            <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
-                                <TextBlock Text="Максимум на палету:" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                <TextBox x:Name="CustomPalletCapacityTextBox" Width="90" VerticalContentAlignment="Center" />
-                                <TextBlock Text="баз. ед." VerticalAlignment="Center" Margin="6,0,0,0" Foreground="Gray" />
-                            </StackPanel>
-                        </StackPanel>
                         <Button x:Name="PrintPalletLabelsButton" Style="{StaticResource OrderActionButtonStyle}" Content="Печать паллетных этикеток" Click="PrintPalletLabels_Click" TabIndex="12" />
                         <Button x:Name="DeletePalletPlanButton" Style="{StaticResource OrderActionButtonStyle}" Content="Удалить план паллет" Click="DeletePalletPlan_Click" TabIndex="13" Margin="0" />
                     </StackPanel>
@@ -229,6 +216,17 @@
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="Нестандартная палетизация" Width="165">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding UseCustomPalletCapacity, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              IsEnabled="{Binding CanUseCustomPalletCapacity}"
+                                              Click="CustomPalletCapacityLineCheckBox_Click"
+                                              HorizontalAlignment="Center"
+                                              ToolTip="После нажатия «План паллет» будет запрошен разовый максимум на палету для этой позиции." />
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>

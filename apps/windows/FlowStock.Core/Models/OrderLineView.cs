@@ -18,6 +18,7 @@ public sealed class OrderLineView : INotifyPropertyChanged
     private string? _productionPalletGroup;
     private int _mixedPalletGroupNumber = 1;
     private bool _isProductionPalletGroupEditable = true;
+    private bool _useCustomPalletCapacity;
     private IReadOnlyList<OrderLineHuDisplayEntry> _productionHuDisplayEntries = Array.Empty<OrderLineHuDisplayEntry>();
     private IReadOnlyList<OrderLineHuDisplayEntry> _huFateDisplayEntries = Array.Empty<OrderLineHuDisplayEntry>();
     private OrderLineHuPresentation? _huPresentation;
@@ -55,6 +56,12 @@ public sealed class OrderLineView : INotifyPropertyChanged
             OnPropertyChanged(nameof(IsMixedPalletLine));
             OnPropertyChanged(nameof(ProductionPalletGroupDisplay));
             OnPropertyChanged(nameof(IsMixedPalletGroupNumberEditable));
+            OnPropertyChanged(nameof(CanUseCustomPalletCapacity));
+            if (IsMixedPalletLine && _useCustomPalletCapacity)
+            {
+                _useCustomPalletCapacity = false;
+                OnPropertyChanged(nameof(UseCustomPalletCapacity));
+            }
         }
     }
 
@@ -241,6 +248,18 @@ public sealed class OrderLineView : INotifyPropertyChanged
     }
 
     public bool IsMixedPalletGroupNumberEditable => IsMixedPalletLine && IsProductionPalletGroupEditable;
+
+    public bool UseCustomPalletCapacity
+    {
+        get => _useCustomPalletCapacity;
+        set
+        {
+            var normalized = value && CanUseCustomPalletCapacity;
+            SetField(ref _useCustomPalletCapacity, normalized);
+        }
+    }
+
+    public bool CanUseCustomPalletCapacity => Id > 0 && !IsMixedPalletLine;
     public string HuCoverageTone
     {
         get
@@ -282,6 +301,8 @@ public sealed class OrderLineView : INotifyPropertyChanged
         OnPropertyChanged(nameof(ProductionPalletGroupDisplay));
         OnPropertyChanged(nameof(IsProductionPalletGroupEditable));
         OnPropertyChanged(nameof(IsMixedPalletGroupNumberEditable));
+        OnPropertyChanged(nameof(UseCustomPalletCapacity));
+        OnPropertyChanged(nameof(CanUseCustomPalletCapacity));
         OnPropertyChanged(nameof(QtyShipped));
         OnPropertyChanged(nameof(QtyProduced));
         OnPropertyChanged(nameof(QtyRemaining));

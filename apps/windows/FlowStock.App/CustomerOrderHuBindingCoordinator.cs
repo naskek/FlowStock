@@ -840,6 +840,14 @@ public sealed class CustomerOrderLinePresentation : INotifyPropertyChanged
 
     public bool IsMixedPalletLine => State.Line.IsMixedPalletLine;
 
+    public bool UseCustomPalletCapacity
+    {
+        get => State.Line.UseCustomPalletCapacity;
+        set => State.Line.UseCustomPalletCapacity = value;
+    }
+
+    public bool CanUseCustomPalletCapacity => State.Line.CanUseCustomPalletCapacity;
+
     public int MixedPalletGroupNumber
     {
         get => State.Line.MixedPalletGroupNumber;
@@ -885,6 +893,8 @@ public sealed class CustomerOrderLinePresentation : INotifyPropertyChanged
         OnPropertyChanged(nameof(CanShipNow));
         OnPropertyChanged(nameof(Shortage));
         OnPropertyChanged(nameof(IsMixedPalletLine));
+        OnPropertyChanged(nameof(UseCustomPalletCapacity));
+        OnPropertyChanged(nameof(CanUseCustomPalletCapacity));
         OnPropertyChanged(nameof(MixedPalletGroupNumber));
         OnPropertyChanged(nameof(AvailableHuDisplay));
         OnPropertyChanged(nameof(BoundHuDisplay));
