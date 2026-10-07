@@ -384,6 +384,7 @@ public static class ProductionPalletEndpoints
 
         try
         {
+            var capacityOverride = BuildCapacityOverride(parsedRequest);
             var modeEcho = mode switch
             {
                 ProductionPalletPlanMode.SkipInternalSupply => "skip_internal_supply",
@@ -407,8 +408,9 @@ public static class ProductionPalletEndpoints
                         SelectedInternalProductionPalletIds =
                             parsedRequest.SelectedInternalProductionPalletIds ?? Array.Empty<long>(),
                         PlanRemainder = parsedRequest.PlanRemainder ?? true
-                    })
-                : service.PlanOrder(orderId, mode);
+                    },
+                    capacityOverride)
+                : service.PlanOrder(orderId, mode, capacityOverride);
             return Results.Ok(MapOrderPlan(result, modeEcho));
         }
         catch (ProductionPalletSelectedCoverageException ex)
@@ -428,8 +430,9 @@ public static class ProductionPalletEndpoints
     }
 
     /// <summary>
-    /// Пустое тело, отсутствующий Content-Type, null-JSON, {} или отсутствующий mode означают Full;
-    /// неизвестный mode возвращает null (400 INVALID_PLAN_MODE). Клиентские qty/order_line_ids не читаются.
+    /// Пустое тело, отсутствующий Content-Type, null-JSON, {} или отсутствующий mode означают Full.
+    /// Для нестандартной палетизации принимается только явная пара order_line_id + max_qty_per_hu_override.
+    /// Неизвестный mode возвращает null (400 INVALID_PLAN_MODE).
     /// </summary>
     private static async Task<PlanOrderRequest> TryReadPlanRequestAsync(HttpRequest request)
     {
@@ -445,6 +448,35 @@ public static class ProductionPalletEndpoints
         }
 
         return JsonSerializer.Deserialize<PlanOrderRequest>(raw, PlanRequestJsonOptions) ?? new PlanOrderRequest();
+    }
+
+    private static ProductionPalletCapacityOverride? BuildCapacityOverride(PlanOrderRequest request)
+    {
+        var hasOrderLineId = request.OrderLineId.HasValue;
+        var hasCapacity = request.MaxQtyPerHuOverride.HasValue;
+        if (!hasOrderLineId && !hasCapacity)
+        {
+            return null;
+        }
+
+        if (!hasOrderLineId || !hasCapacity)
+        {
+            throw new InvalidOperationException(
+                "Для нестандартной палетизации нужно передать order_line_id и max_qty_per_hu_override вместе.");
+        }
+
+        if (request.OrderLineId!.Value <= 0
+            || !double.IsFinite(request.MaxQtyPerHuOverride!.Value)
+            || request.MaxQtyPerHuOverride.Value <= 0)
+        {
+            throw new InvalidOperationException("Некорректный разовый максимум на палету.");
+        }
+
+        return new ProductionPalletCapacityOverride
+        {
+            OrderLineId = request.OrderLineId.Value,
+            MaxQtyPerHu = request.MaxQtyPerHuOverride.Value
+        };
     }
 
     private static ProductionPalletPlanMode? TryParsePlanMode(string? mode)
@@ -491,6 +523,12 @@ public static class ProductionPalletEndpoints
 
         [JsonPropertyName("plan_remainder")]
         public bool? PlanRemainder { get; init; }
+
+        [JsonPropertyName("order_line_id")]
+        public long? OrderLineId { get; init; }
+
+        [JsonPropertyName("max_qty_per_hu_override")]
+        public double? MaxQtyPerHuOverride { get; init; }
     }
 
     private sealed class SelectedWarehouseHuRequest

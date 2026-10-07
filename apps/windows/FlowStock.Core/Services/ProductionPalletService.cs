@@ -39,7 +39,7 @@ public sealed class ProductionPalletService
 
     public ProductionPalletOrderPlanResult PlanOrder(long orderId)
     {
-        return PlanOrder(orderId, scopedOrderLineIds: null);
+        return PlanOrder(orderId, scopedOrderLineIds: null, capacityOverride: null);
     }
 
     public void SyncOrderLinePlan(long orderId, long orderLineId, double orderedQty, double? oldOrderedQty = null, string source = "UpdateOrder")
@@ -133,6 +133,14 @@ public sealed class ProductionPalletService
 
     public ProductionPalletOrderPlanResult PlanOrder(long orderId, IReadOnlyCollection<long>? scopedOrderLineIds)
     {
+        return PlanOrder(orderId, scopedOrderLineIds, capacityOverride: null);
+    }
+
+    public ProductionPalletOrderPlanResult PlanOrder(
+        long orderId,
+        IReadOnlyCollection<long>? scopedOrderLineIds,
+        ProductionPalletCapacityOverride? capacityOverride)
+    {
         var prdDocId = 0L;
         var wasExisting = false;
         var productionRequired = true;
@@ -167,7 +175,8 @@ public sealed class ProductionPalletService
                 scopedOrderLineIds,
                 allowEmptyRemaining: false,
                 out prdDocId,
-                existingPrdDocId: prdDocId);
+                existingPrdDocId: prdDocId,
+                capacityOverride: capacityOverride);
         });
 
         return productionRequired || prdDocId > 0
@@ -175,21 +184,27 @@ public sealed class ProductionPalletService
             : BuildNoProductionRequiredResult(orderId);
     }
 
-    public ProductionPalletOrderPlanResult PlanOrder(long orderId, ProductionPalletPlanMode mode)
+    public ProductionPalletOrderPlanResult PlanOrder(
+        long orderId,
+        ProductionPalletPlanMode mode,
+        ProductionPalletCapacityOverride? capacityOverride = null)
     {
         if (mode == ProductionPalletPlanMode.Full)
         {
-            return PlanOrder(orderId);
+            return PlanOrder(orderId, scopedOrderLineIds: null, capacityOverride);
         }
 
         if (mode == ProductionPalletPlanMode.AdoptInternalThenPlan)
         {
-            return PlanOrderAdoptInternalThenPlan(orderId);
+            return PlanOrderAdoptInternalThenPlan(orderId, capacityOverride);
         }
 
         if (mode == ProductionPalletPlanMode.ApplySelectedCoverageThenPlan)
         {
-            return PlanOrderApplySelectedCoverageThenPlan(orderId, new ProductionPalletSelectedCoveragePlanRequest());
+            return PlanOrderApplySelectedCoverageThenPlan(
+                orderId,
+                new ProductionPalletSelectedCoveragePlanRequest(),
+                capacityOverride);
         }
 
         var prdDocId = 0L;
@@ -239,7 +254,8 @@ public sealed class ProductionPalletService
                 scopedOrderLineIds,
                 allowEmptyRemaining: false,
                 out prdDocId,
-                existingPrdDocId: prdDocId);
+                existingPrdDocId: prdDocId,
+                capacityOverride: capacityOverride);
         });
 
         if (noSafeLines)
@@ -285,7 +301,8 @@ public sealed class ProductionPalletService
 
     public ProductionPalletOrderPlanResult PlanOrderApplySelectedCoverageThenPlan(
         long orderId,
-        ProductionPalletSelectedCoveragePlanRequest request)
+        ProductionPalletSelectedCoveragePlanRequest request,
+        ProductionPalletCapacityOverride? capacityOverride = null)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -439,7 +456,8 @@ public sealed class ProductionPalletService
                     scopedOrderLineIds: null,
                     allowEmptyRemaining: adopted.Count > 0 || boundWarehouseHus.Count > 0,
                     out prdDocId,
-                    existingPrdDocId: prdDocId);
+                    existingPrdDocId: prdDocId,
+                    capacityOverride: capacityOverride);
             }
             else
             {
@@ -484,7 +502,9 @@ public sealed class ProductionPalletService
         };
     }
 
-    private ProductionPalletOrderPlanResult PlanOrderAdoptInternalThenPlan(long orderId)
+    private ProductionPalletOrderPlanResult PlanOrderAdoptInternalThenPlan(
+        long orderId,
+        ProductionPalletCapacityOverride? capacityOverride)
     {
         var prdDocId = 0L;
         var wasExisting = false;
@@ -580,7 +600,8 @@ public sealed class ProductionPalletService
                 scopedOrderLineIds: null,
                 allowEmptyRemaining: adopted.Count > 0,
                 out prdDocId,
-                existingPrdDocId: prdDocId);
+                existingPrdDocId: prdDocId,
+                capacityOverride: capacityOverride);
 
             var newPallets = GetProductionPalletsByOrder(store, orderId)
                 .Where(pallet => !palletIdsBeforeAppend.Contains(pallet.Id))
@@ -1884,7 +1905,8 @@ public sealed class ProductionPalletService
         IReadOnlyCollection<long>? scopedOrderLineIds,
         bool allowEmptyRemaining,
         out long prdDocId,
-        long existingPrdDocId = 0)
+        long existingPrdDocId = 0,
+        ProductionPalletCapacityOverride? capacityOverride = null)
     {
         prdDocId = existingPrdDocId;
         var remainingLines = GetLinesNeedingPalletAppend(store, order);
@@ -1895,6 +1917,9 @@ public sealed class ProductionPalletService
                 .Where(line => scoped.Contains(line.OrderLineId))
                 .ToList();
         }
+
+        var orderLinesById = store.GetOrderLines(orderId).ToDictionary(line => line.Id, line => line);
+        ValidateCapacityOverride(orderLinesById, capacityOverride);
 
         if (remainingLines.Count == 0)
         {
@@ -1912,7 +1937,6 @@ public sealed class ProductionPalletService
         }
 
         var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
-        var orderLinesById = store.GetOrderLines(orderId).ToDictionary(line => line.Id, line => line);
         var manualMixedLineIds = GetManualMixedOrderLineIds(remainingLines, orderLinesById);
         foreach (var line in remainingLines)
         {
@@ -1926,9 +1950,11 @@ public sealed class ProductionPalletService
                 continue;
             }
 
-            if (!itemsById.TryGetValue(line.ItemId, out var item)
-                || !item.MaxQtyPerHu.HasValue
-                || item.MaxQtyPerHu.Value <= QtyTolerance)
+            var hasCapacityOverride = capacityOverride?.OrderLineId == line.OrderLineId;
+            if (!hasCapacityOverride
+                && (!itemsById.TryGetValue(line.ItemId, out var item)
+                    || !item.MaxQtyPerHu.HasValue
+                    || item.MaxQtyPerHu.Value <= QtyTolerance))
             {
                 throw new InvalidOperationException("Не задано количество на паллете для номенклатуры");
             }
@@ -1964,7 +1990,10 @@ public sealed class ProductionPalletService
         foreach (var line in remainingLines.Where(line => !mixedLineIds.Contains(line.OrderLineId)))
         {
             var item = itemsById[line.ItemId];
-            AddPlannedPalletLines(store, prdDocId, line, item.MaxQtyPerHu!.Value, targetLocation.Id);
+            var palletQty = capacityOverride?.OrderLineId == line.OrderLineId
+                ? capacityOverride.MaxQtyPerHu
+                : item.MaxQtyPerHu!.Value;
+            AddPlannedPalletLines(store, prdDocId, line, palletQty, targetLocation.Id);
         }
 
         store.PlanProductionPallets(prdDocId, DateTime.Now);
@@ -3997,6 +4026,37 @@ public sealed class ProductionPalletService
         }
 
         return locations.FirstOrDefault(location => location.AutoHuDistributionEnabled) ?? locations[0];
+    }
+
+    private static void ValidateCapacityOverride(
+        IReadOnlyDictionary<long, OrderLine> orderLinesById,
+        ProductionPalletCapacityOverride? capacityOverride)
+    {
+        if (capacityOverride == null)
+        {
+            return;
+        }
+
+        if (capacityOverride.OrderLineId <= 0
+            || !double.IsFinite(capacityOverride.MaxQtyPerHu)
+            || capacityOverride.MaxQtyPerHu <= QtyTolerance)
+        {
+            throw new InvalidOperationException("Некорректный разовый максимум на палету.");
+        }
+
+        if (!orderLinesById.TryGetValue(capacityOverride.OrderLineId, out var targetLine))
+        {
+            throw new InvalidOperationException("Выбранная строка для нестандартной палетизации не принадлежит заказу.");
+        }
+
+        var group = targetLine.ProductionPalletGroup?.Trim();
+        if (!string.IsNullOrWhiteSpace(group)
+            && orderLinesById.Values.Count(line =>
+                string.Equals(line.ProductionPalletGroup?.Trim(), group, StringComparison.OrdinalIgnoreCase)) > 1)
+        {
+            throw new InvalidOperationException(
+                "Нестандартный максимум на палету нельзя применять к строке общего HU / mixed pallet.");
+        }
     }
 
     private static void AddPlannedPalletLines(
