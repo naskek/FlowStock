@@ -11,7 +11,11 @@ function Invoke-ProcessWithRawStdin {
         [string[]]$ArgumentList,
 
         [Parameter(Mandatory = $true)]
-        [byte[]]$StdinBytes
+        [byte[]]$StdinBytes,
+
+        [scriptblock]$StdOutHandler,
+
+        [scriptblock]$StdErrHandler
     )
 
     $encoding = [System.Text.UTF8Encoding]::new($false)
@@ -39,8 +43,14 @@ function Invoke-ProcessWithRawStdin {
         }
         $started = $true
 
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $stdoutCapture = [System.Text.StringBuilder]::new()
+        $stderrCapture = [System.Text.StringBuilder]::new()
+        $stdoutBuffer = [char[]]::new(4096)
+        $stderrBuffer = [char[]]::new(4096)
+        $stdoutClosed = $false
+        $stderrClosed = $false
+        $stdoutRead = $process.StandardOutput.ReadAsync($stdoutBuffer, 0, $stdoutBuffer.Length)
+        $stderrRead = $process.StandardError.ReadAsync($stderrBuffer, 0, $stderrBuffer.Length)
 
         try {
             $process.StandardInput.BaseStream.Write($StdinBytes, 0, $StdinBytes.Length)
@@ -50,14 +60,52 @@ function Invoke-ProcessWithRawStdin {
             $process.StandardInput.Close()
         }
 
+        while (-not ($stdoutClosed -and $stderrClosed -and $process.HasExited)) {
+            $madeProgress = $false
+
+            if (-not $stdoutClosed -and $stdoutRead.IsCompleted) {
+                $count = $stdoutRead.GetAwaiter().GetResult()
+                if ($count -eq 0) {
+                    $stdoutClosed = $true
+                }
+                else {
+                    $chunk = [string]::new($stdoutBuffer, 0, $count)
+                    [void]$stdoutCapture.Append($chunk)
+                    if ($null -ne $StdOutHandler) {
+                        & $StdOutHandler $chunk
+                    }
+                    $stdoutRead = $process.StandardOutput.ReadAsync($stdoutBuffer, 0, $stdoutBuffer.Length)
+                }
+                $madeProgress = $true
+            }
+
+            if (-not $stderrClosed -and $stderrRead.IsCompleted) {
+                $count = $stderrRead.GetAwaiter().GetResult()
+                if ($count -eq 0) {
+                    $stderrClosed = $true
+                }
+                else {
+                    $chunk = [string]::new($stderrBuffer, 0, $count)
+                    [void]$stderrCapture.Append($chunk)
+                    if ($null -ne $StdErrHandler) {
+                        & $StdErrHandler $chunk
+                    }
+                    $stderrRead = $process.StandardError.ReadAsync($stderrBuffer, 0, $stderrBuffer.Length)
+                }
+                $madeProgress = $true
+            }
+
+            if (-not $madeProgress) {
+                Start-Sleep -Milliseconds 10
+            }
+        }
+
         $process.WaitForExit()
-        $stdout = $stdoutTask.GetAwaiter().GetResult()
-        $stderr = $stderrTask.GetAwaiter().GetResult()
 
         return [pscustomobject]@{
             ExitCode = $process.ExitCode
-            StdOut = $stdout
-            StdErr = $stderr
+            StdOut = $stdoutCapture.ToString()
+            StdErr = $stderrCapture.ToString()
         }
     }
     finally {
@@ -83,7 +131,11 @@ function Invoke-RemoteBashScriptViaSsh {
         [Parameter(Mandatory = $true)]
         [byte[]]$ScriptBytes,
 
-        [string[]]$RemoteArgumentList = @()
+        [string[]]$RemoteArgumentList = @(),
+
+        [scriptblock]$StdOutHandler,
+
+        [scriptblock]$StdErrHandler
     )
 
     $remoteScriptPath = "/tmp/flowstock-deploy-$([Guid]::NewGuid().ToString('N')).sh"
@@ -100,5 +152,5 @@ function Invoke-RemoteBashScriptViaSsh {
     # Therefore nested commands in the deploy script cannot drain the script source.
     $remoteCommand = "umask 077; trap 'rm -f $remoteScriptPath' EXIT; cat > '$remoteScriptPath' || exit; bash '$remoteScriptPath'$argumentSuffix"
 
-    return Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @($SshTarget, $remoteCommand) -StdinBytes $ScriptBytes
+    return Invoke-ProcessWithRawStdin -FilePath 'ssh' -ArgumentList @($SshTarget, $remoteCommand) -StdinBytes $ScriptBytes -StdOutHandler $StdOutHandler -StdErrHandler $StdErrHandler
 }

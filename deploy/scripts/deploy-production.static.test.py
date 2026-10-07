@@ -155,4 +155,20 @@ if "bash -s" in transport_source:
 if transport_source.find("cat > '$remoteScriptPath' || exit") > transport_source.find("bash '$remoteScriptPath'$argumentSuffix"):
     raise AssertionError("remote helper must finish materializing stdin before starting bash")
 
+if "ReadToEndAsync" in transport_source:
+    raise AssertionError("remote transport must not buffer stdout/stderr until process exit")
+for marker, message in {
+    "StandardOutput.ReadAsync": "stdout must be consumed incrementally",
+    "StandardError.ReadAsync": "stderr must be consumed incrementally",
+    "StdOutHandler": "stdout streaming handler is missing",
+    "StdErrHandler": "stderr streaming handler is missing",
+}.items():
+    if marker not in transport_source:
+        raise AssertionError(message)
+
+require(
+    r"Invoke-RemoteBashScriptViaSsh\s+.*?-StdOutHandler\s+\{.*?Write-Host -NoNewline.*?-StdErrHandler\s+\{.*?Write-Host -NoNewline",
+    "production deploy must stream remote stdout/stderr while ssh is running",
+)
+
 print("deploy-production.ps1 static contract tests passed")
