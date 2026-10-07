@@ -473,6 +473,68 @@ public partial class OrderDetailsWindow : Window
         }
     }
 
+    private void CustomPalletCapacityCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        var enabled = CustomPalletCapacityCheckBox.IsChecked == true;
+        CustomPalletCapacityPanel.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+        if (!enabled)
+        {
+            CustomPalletCapacityTextBox.Clear();
+        }
+
+        UpdateCustomPalletCapacityTargetText();
+    }
+
+    private void UpdateCustomPalletCapacityTargetText()
+    {
+        if (CustomPalletCapacityTargetText == null)
+        {
+            return;
+        }
+
+        CustomPalletCapacityTargetText.Text = _selectedLine == null
+            ? "Выберите строку заказа"
+            : $"Строка: {_selectedLine.ItemName}";
+    }
+
+    private bool TryBuildCustomPalletCapacityOverride(out WpfProductionPalletCapacityOverride? capacityOverride)
+    {
+        capacityOverride = null;
+        if (CustomPalletCapacityCheckBox.IsChecked != true)
+        {
+            return true;
+        }
+
+        var selectedLine = GetSelectedOrderLine() ?? _selectedLine;
+        if (selectedLine == null || selectedLine.Id <= 0)
+        {
+            MessageBox.Show(
+                "Для нестандартной палетизации выберите сохранённую строку заказа.",
+                "Паллеты",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return false;
+        }
+
+        var raw = (CustomPalletCapacityTextBox.Text ?? string.Empty).Trim();
+        if ((!double.TryParse(raw, NumberStyles.Float, CultureInfo.CurrentCulture, out var value)
+             && !double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+            || !double.IsFinite(value)
+            || value <= QtyTolerance)
+        {
+            MessageBox.Show(
+                "Введите положительный максимум на палету в базовых единицах товара.",
+                "Паллеты",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            CustomPalletCapacityTextBox.Focus();
+            return false;
+        }
+
+        capacityOverride = new WpfProductionPalletCapacityOverride(selectedLine.Id, value);
+        return true;
+    }
+
     private async void PlanPallets_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsurePalletPlanningReady())
@@ -488,6 +550,11 @@ public partial class OrderDetailsWindow : Window
         if (!_orderId.HasValue)
         {
             MessageBox.Show("Сначала сохраните заказ.", "Паллеты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!TryBuildCustomPalletCapacityOverride(out var capacityOverride))
+        {
             return;
         }
 
@@ -509,15 +576,28 @@ public partial class OrderDetailsWindow : Window
             }
 
             var result = decision == PrePlanFlowDecision.PlanSafeOnly
-                ? await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value, WpfProductionPalletPlanMode.SkipInternalSupply).ConfigureAwait(true)
+                ? await _services.WpfProductionPalletApi.TryPlanOrderAsync(
+                    _orderId.Value,
+                    WpfProductionPalletPlanMode.SkipInternalSupply,
+                    selectedCoverage: null,
+                    capacityOverride).ConfigureAwait(true)
                 : decision == PrePlanFlowDecision.AdoptInternalThenPlan
-                    ? await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value, WpfProductionPalletPlanMode.AdoptInternalThenPlan).ConfigureAwait(true)
+                    ? await _services.WpfProductionPalletApi.TryPlanOrderAsync(
+                        _orderId.Value,
+                        WpfProductionPalletPlanMode.AdoptInternalThenPlan,
+                        selectedCoverage: null,
+                        capacityOverride).ConfigureAwait(true)
                 : decision == PrePlanFlowDecision.ApplySelectedCoverageThenPlan
                     ? await _services.WpfProductionPalletApi.TryPlanOrderAsync(
                         _orderId.Value,
                         WpfProductionPalletPlanMode.ApplySelectedCoverageThenPlan,
-                        _pendingSelectedCoveragePlanRequest).ConfigureAwait(true)
-                : await _services.WpfProductionPalletApi.TryPlanOrderAsync(_orderId.Value).ConfigureAwait(true);
+                        _pendingSelectedCoveragePlanRequest,
+                        capacityOverride).ConfigureAwait(true)
+                : await _services.WpfProductionPalletApi.TryPlanOrderAsync(
+                    _orderId.Value,
+                    WpfProductionPalletPlanMode.Full,
+                    selectedCoverage: null,
+                    capacityOverride).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
                 MessageBox.Show(result.Message, "Паллеты", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -2255,6 +2335,7 @@ public partial class OrderDetailsWindow : Window
     {
         DeleteLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
         EditLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
+        UpdateCustomPalletCapacityTargetText();
         UpdateMarkingExportButton();
     }
 

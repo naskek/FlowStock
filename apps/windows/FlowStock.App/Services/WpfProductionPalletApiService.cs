@@ -22,10 +22,25 @@ public sealed class WpfProductionPalletApiService
         _logger = logger;
     }
 
-    public async Task<WpfProductionPalletPlanApiResult> TryPlanOrderAsync(
+    public Task<WpfProductionPalletPlanApiResult> TryPlanOrderAsync(
         long orderId,
         WpfProductionPalletPlanMode planMode = WpfProductionPalletPlanMode.Full,
         WpfSelectedCoveragePlanRequest? selectedCoverage = null,
+        CancellationToken cancellationToken = default)
+    {
+        return TryPlanOrderAsync(
+            orderId,
+            planMode,
+            selectedCoverage,
+            capacityOverride: null,
+            cancellationToken);
+    }
+
+    public async Task<WpfProductionPalletPlanApiResult> TryPlanOrderAsync(
+        long orderId,
+        WpfProductionPalletPlanMode planMode,
+        WpfSelectedCoveragePlanRequest? selectedCoverage,
+        WpfProductionPalletCapacityOverride? capacityOverride,
         CancellationToken cancellationToken = default)
     {
         try
@@ -36,15 +51,9 @@ public sealed class WpfProductionPalletApiService
                 return WpfProductionPalletPlanApiResult.Failure("FlowStock Server API не настроен.");
             }
 
-            // Клиент передаёт только режим; количества и строки заказа сервер пересчитывает сам.
-            object body = planMode switch
-            {
-                WpfProductionPalletPlanMode.SkipInternalSupply => new { mode = "skip_internal_supply" },
-                WpfProductionPalletPlanMode.AdoptInternalThenPlan => new { mode = "adopt_internal_then_plan" },
-                WpfProductionPalletPlanMode.ApplySelectedCoverageThenPlan =>
-                    BuildApplySelectedCoverageBody(selectedCoverage),
-                _ => new { }
-            };
+            // Количество к планированию сервер пересчитывает сам. Клиент может передать только
+            // явный разовый capacity override для одной выбранной строки заказа.
+            object body = BuildPlanBody(planMode, selectedCoverage, capacityOverride);
             using var handler = CreateHandler(configuration);
             using var client = CreateClient(handler, configuration);
             using var response = await client.PostAsJsonAsync($"/api/orders/{orderId}/production-pallets/plan", body, cancellationToken)
@@ -119,12 +128,36 @@ public sealed class WpfProductionPalletApiService
         }
     }
 
+    internal static object BuildPlanBody(
+        WpfProductionPalletPlanMode planMode,
+        WpfSelectedCoveragePlanRequest? selectedCoverage,
+        WpfProductionPalletCapacityOverride? capacityOverride)
+    {
+        if (planMode == WpfProductionPalletPlanMode.ApplySelectedCoverageThenPlan)
+        {
+            return BuildApplySelectedCoverageBody(selectedCoverage, capacityOverride);
+        }
+
+        return new PlanOrderRequestBody
+        {
+            Mode = planMode switch
+            {
+                WpfProductionPalletPlanMode.SkipInternalSupply => "skip_internal_supply",
+                WpfProductionPalletPlanMode.AdoptInternalThenPlan => "adopt_internal_then_plan",
+                _ => null
+            },
+            OrderLineId = capacityOverride?.OrderLineId,
+            MaxQtyPerHuOverride = capacityOverride?.MaxQtyPerHu
+        };
+    }
+
     // Явный DTO с [JsonPropertyName] гарантирует snake_case независимо от дефолтной camelCase-политики
     // System.Net.Http.Json (PostAsJsonAsync использует JsonSerializerOptions.Web). Сервер различает
     // hu_code vs huCode (PropertyNameCaseInsensitive не игнорирует подчёркивания), поэтому имена обязаны
     // точно совпадать, иначе поля не биндятся и apply падает с INVALID_WAREHOUSE_SELECTION.
     internal static ApplySelectedCoverageThenPlanRequestBody BuildApplySelectedCoverageBody(
-        WpfSelectedCoveragePlanRequest? request)
+        WpfSelectedCoveragePlanRequest? request,
+        WpfProductionPalletCapacityOverride? capacityOverride = null)
     {
         var warehouseHus = (request?.SelectedWarehouseHus ?? Array.Empty<WpfSelectedWarehouseHu>())
             .Select(row => new SelectedWarehouseHuBody
@@ -139,8 +172,22 @@ public sealed class WpfProductionPalletApiService
             SelectedWarehouseHus = warehouseHus,
             SelectedInternalProductionPalletIds =
                 request?.SelectedInternalProductionPalletIds ?? Array.Empty<long>(),
-            PlanRemainder = request?.PlanRemainder ?? true
+            PlanRemainder = request?.PlanRemainder ?? true,
+            OrderLineId = capacityOverride?.OrderLineId,
+            MaxQtyPerHuOverride = capacityOverride?.MaxQtyPerHu
         };
+    }
+
+    internal sealed class PlanOrderRequestBody
+    {
+        [JsonPropertyName("mode")]
+        public string? Mode { get; init; }
+
+        [JsonPropertyName("order_line_id")]
+        public long? OrderLineId { get; init; }
+
+        [JsonPropertyName("max_qty_per_hu_override")]
+        public double? MaxQtyPerHuOverride { get; init; }
     }
 
     internal sealed class ApplySelectedCoverageThenPlanRequestBody
@@ -158,6 +205,12 @@ public sealed class WpfProductionPalletApiService
 
         [JsonPropertyName("plan_remainder")]
         public bool PlanRemainder { get; init; } = true;
+
+        [JsonPropertyName("order_line_id")]
+        public long? OrderLineId { get; init; }
+
+        [JsonPropertyName("max_qty_per_hu_override")]
+        public double? MaxQtyPerHuOverride { get; init; }
     }
 
     internal sealed class SelectedWarehouseHuBody
@@ -2036,6 +2089,10 @@ public enum WpfProductionPalletPlanMode
     AdoptInternalThenPlan,
     ApplySelectedCoverageThenPlan
 }
+
+public sealed record WpfProductionPalletCapacityOverride(
+    long OrderLineId,
+    double MaxQtyPerHu);
 
 public sealed record WpfSelectedCoveragePlanRequest(
     IReadOnlyList<WpfSelectedWarehouseHu> SelectedWarehouseHus,
