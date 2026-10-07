@@ -10,8 +10,11 @@ public partial class DocNumberingSettingsWindow : Window
 {
     private static readonly Regex YearRegex = new(@"^\d{4}$", RegexOptions.Compiled);
 
-    private readonly AppServices _services;
-    private readonly SettingsPageLoading _loading;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
+    private readonly SettingsPageLoading _loading = null!;
     private readonly IReadOnlyList<SequenceStyleOption> _styles = new[]
     {
         new SequenceStyleOption("D6", "NNNNNN (6 цифр, с нулями)"),
@@ -22,7 +25,8 @@ public partial class DocNumberingSettingsWindow : Window
 
     public DocNumberingSettingsWindow(AppServices services)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         InitializeComponent();
         _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
         SequenceStyleCombo.ItemsSource = _styles;
@@ -42,6 +46,8 @@ public partial class DocNumberingSettingsWindow : Window
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var template = (TemplateBox.Text ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(template))
         {
@@ -76,6 +82,8 @@ public partial class DocNumberingSettingsWindow : Window
 
     private void Reset_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         TemplateBox.Text = "{PREFIX}-{YYYY}-{SEQ}";
         YearBox.Text = string.Empty;
         SequenceStyleCombo.SelectedItem = _styles.First();

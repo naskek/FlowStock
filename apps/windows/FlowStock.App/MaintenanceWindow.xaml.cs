@@ -6,22 +6,30 @@ namespace FlowStock.App;
 
 public partial class MaintenanceWindow : Window
 {
-    private readonly AppServices _services;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
     private bool _dryRunSucceeded;
 
     public MaintenanceWindow(AppServices services)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         InitializeComponent();
     }
 
     private async void DryRun_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         await RunBackfillAsync(apply: false);
     }
 
     private async void Apply_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         await RunBackfillAsync(apply: true);
     }
 

@@ -8,14 +8,18 @@ namespace FlowStock.App;
 
 public partial class VatRateWindow : Window
 {
-    private readonly AppServices _services;
-    private readonly SettingsPageLoading _loading;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
+    private readonly SettingsPageLoading _loading = null!;
     private readonly ObservableCollection<VatRate> _vatRates = new();
     private VatRate? _selected;
 
     public VatRateWindow(AppServices services)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         InitializeComponent();
         _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
         VatRatesGrid.ItemsSource = _vatRates;
@@ -36,6 +40,8 @@ public partial class VatRateWindow : Window
 
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var name = NameBox.Text?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -89,6 +95,8 @@ public partial class VatRateWindow : Window
 
     private async void Delete_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selected == null)
         {
             return;
@@ -117,6 +125,8 @@ public partial class VatRateWindow : Window
 
     private void VatRatesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _selected = VatRatesGrid.SelectedItem as VatRate;
         if (_selected == null)
         {
@@ -133,6 +143,8 @@ public partial class VatRateWindow : Window
 
     private void New_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         ResetForm();
     }
 
@@ -169,6 +181,8 @@ public partial class VatRateWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!DeleteKeyGesture.IsDeleteGesture(e) || !VatRatesGrid.IsKeyboardFocusWithin || _selected == null)
         {
             return;

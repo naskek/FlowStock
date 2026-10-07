@@ -91,6 +91,8 @@ public partial class MainWindow
 
     private void StatisticsModeDefaultsResetStatuses_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var previousSuppression = _suppressCommercialStatisticsFilterEvents;
         _suppressCommercialStatisticsFilterEvents = true;
         try

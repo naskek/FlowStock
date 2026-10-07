@@ -8,8 +8,11 @@ namespace FlowStock.App;
 public partial class PartnerItemSalePriceWindow : Window
 {
     private const int PageSize = 100;
-    private readonly AppServices _services;
-    private readonly SettingsPageLoading _loading;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
+    private readonly SettingsPageLoading _loading = null!;
     private readonly long? _initialItemId;
     private readonly ObservableCollection<PartnerItemSalePrice> _prices = new();
     private readonly List<Partner> _partners = new();
@@ -24,7 +27,8 @@ public partial class PartnerItemSalePriceWindow : Window
 
     public PartnerItemSalePriceWindow(AppServices services, long? itemId = null)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         _initialItemId = itemId;
         InitializeComponent();
         _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
@@ -99,6 +103,8 @@ public partial class PartnerItemSalePriceWindow : Window
 
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (PartnerCombo.SelectedItem is not Partner partner || ItemCombo.SelectedItem is not Item item)
         {
             MessageBox.Show("Выберите контрагента и товар.", "Цены клиентов", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -135,6 +141,8 @@ public partial class PartnerItemSalePriceWindow : Window
 
     private async void Delete_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selected == null)
         {
             return;
@@ -163,6 +171,8 @@ public partial class PartnerItemSalePriceWindow : Window
 
     private void PricesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _selected = PricesGrid.SelectedItem as PartnerItemSalePrice;
         if (_selected == null)
         {
@@ -192,6 +202,8 @@ public partial class PartnerItemSalePriceWindow : Window
 
     private void PartnerCombo_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_suppressPartnerAutocomplete || !PartnerCombo.IsKeyboardFocusWithin)
         {
             return;
@@ -302,24 +314,32 @@ public partial class PartnerItemSalePriceWindow : Window
 
     private async void New_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         ResetForm();
         await Task.CompletedTask;
     }
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _offset = 0;
         await LoadPageAsync().ConfigureAwait(true);
     }
 
     private async void ApplyFilter_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _offset = 0;
         await LoadPageAsync().ConfigureAwait(true);
     }
 
     private async void ClearFilter_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         FilterPartnerCombo.SelectedItem = null;
         FilterItemCombo.SelectedItem = null;
         _offset = 0;
@@ -328,12 +348,16 @@ public partial class PartnerItemSalePriceWindow : Window
 
     private async void Previous_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _offset = Math.Max(0, _offset - PageSize);
         await LoadPageAsync().ConfigureAwait(true);
     }
 
     private async void Next_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_offset + PageSize < _totalCount)
         {
             _offset += PageSize;

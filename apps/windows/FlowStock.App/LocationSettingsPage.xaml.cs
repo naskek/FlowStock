@@ -9,14 +9,18 @@ namespace FlowStock.App;
 
 public partial class LocationSettingsPage : WpfUserControl
 {
-    private readonly AppServices _services;
-    private readonly SettingsPageLoading _loading;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
+    private readonly SettingsPageLoading _loading = null!;
     private readonly Action? _onChanged;
     private readonly ObservableCollection<Location> _locations = new();
 
     public LocationSettingsPage(AppServices services, Action? onChanged)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         _onChanged = onChanged;
         InitializeComponent();
         _loading = new SettingsPageLoading(this, _services.AppLogger);
@@ -50,6 +54,8 @@ public partial class LocationSettingsPage : WpfUserControl
 
     private async void Add_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new LocationEditWindow(_services);
         var owner = Window.GetWindow(this);
         if (owner is not null)
@@ -68,6 +74,8 @@ public partial class LocationSettingsPage : WpfUserControl
 
     private async void Edit_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (LocationsGrid.SelectedItem is not Location selected)
         {
             MessageBox.Show("Выберите место хранения.", "Места хранения", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -96,6 +104,8 @@ public partial class LocationSettingsPage : WpfUserControl
 
     private async void Delete_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var selected = LocationsGrid.SelectedItems.Cast<Location>().ToList();
         if (selected.Count == 0 && LocationsGrid.SelectedItem is Location single)
         {
@@ -146,12 +156,22 @@ public partial class LocationSettingsPage : WpfUserControl
         }
     }
 
-    private async void Refresh_Click(object sender, RoutedEventArgs e) => await LoadLocationsAsync();
+    private async void Refresh_Click(object sender, RoutedEventArgs e)
+    {
+        if (IsUiPreview) return;
+        await LoadLocationsAsync();
+    }
 
-    private void LocationsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateButtons();
+    private void LocationsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (IsUiPreview) return;
+        UpdateButtons();
+    }
 
     private void LocationsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (LocationsGrid.SelectedItem is Location)
         {
             Edit_Click(sender, new RoutedEventArgs());
@@ -160,6 +180,8 @@ public partial class LocationSettingsPage : WpfUserControl
 
     private void Page_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!DeleteKeyGesture.IsDeleteGesture(e) || !LocationsGrid.IsKeyboardFocusWithin)
         {
             return;

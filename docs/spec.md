@@ -1,5 +1,13 @@
 # Спецификация FlowStock Server
 
+## WPF UI/UX preview без инфраструктуры
+
+Явный флаг `--ui-preview` открывает обычный `MainWindow` и Settings Center без PostgreSQL и FlowStock Server. Для локального checkout доступны `FLOWSTOCK.cmd devui`, `tools/windows/start-flowstock-ui-preview.ps1` и `dotnet run --project apps/windows/FlowStock.App -- --ui-preview`. Launcher использует исходники текущего checkout, не installed runtime и не updater recovery.
+
+Режим отмечен баннером и заголовком `UI Preview / DEV`. Экраны показывают пустые read models; действия с данными отключены. Отдельные presentation-конструкторы не создают `AppServices`, не читают production settings или connection credentials, не регистрируют loaders, таймеры, SSE/live refresh. DB/API, migrations, backup, печать и updater недоступны; event handlers дополнительно отклоняют программно вызванные действия. Закрытие главного окна завершает preview-процесс. Preview не подтверждает updater startup ACK. Неожиданные ошибки пишутся только в временный каталог `FlowStock-UiPreview`.
+
+Без точного CLI-флага production startup остаётся прежним: недоступная БД открывает настройку подключения, а не пустое главное окно. Автоматического fallback в preview нет. Preview не является источником бизнес-данных и не моделирует серверную бизнес-логику.
+
 ## Самообновление операторского WPF
 
 Канонические термины:

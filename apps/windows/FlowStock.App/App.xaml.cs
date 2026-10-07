@@ -8,7 +8,7 @@ namespace FlowStock.App;
 
 public partial class App : Application
 {
-    private readonly FileLogger _fallbackLogger = new(Path.Combine(AppPaths.LogsDir, "app.log"));
+    private FileLogger? _fallbackLogger;
     private FileLogger? _appLogger;
     private string _logPath = Path.Combine(AppPaths.LogsDir, "app.log");
     private AppServices? _services;
@@ -17,6 +17,20 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        if (UiPreviewStartup.TryStart(e.Args, preview =>
+            {
+                _logPath = Path.Combine(Path.GetTempPath(), "FlowStock-UiPreview", "app.log");
+                DispatcherUnhandledException += OnDispatcherUnhandledException;
+                AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+                ShutdownMode = ShutdownMode.OnMainWindowClose;
+                var window = new MainWindow(preview);
+                MainWindow = window;
+                window.Show();
+            }))
+        {
+            return;
+        }
 
         _instanceMutex = new Mutex(true, DesktopUpdateConstants.AppMutexName, out var createdNew);
         if (!createdNew)
@@ -163,7 +177,7 @@ public partial class App : Application
 
     private void Log(string message)
     {
-        var logger = _appLogger ?? _fallbackLogger;
+        var logger = _appLogger ?? (_fallbackLogger ??= new FileLogger(_logPath));
         logger.Error(message);
     }
 }

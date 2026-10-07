@@ -9,15 +9,19 @@ namespace FlowStock.App;
 
 public partial class ItemTypeWindow : Window
 {
-    private readonly AppServices _services;
-    private readonly SettingsPageLoading _loading;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
+    private readonly SettingsPageLoading _loading = null!;
     private readonly ObservableCollection<ItemType> _itemTypes = new();
     private readonly Action? _onChanged;
     private ItemType? _selectedItemType;
 
     public ItemTypeWindow(AppServices services, Action? onChanged)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         _onChanged = onChanged;
         InitializeComponent();
         _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
@@ -42,6 +46,8 @@ public partial class ItemTypeWindow : Window
 
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var name = NameBox.Text?.Trim() ?? string.Empty;
         var code = string.IsNullOrWhiteSpace(CodeBox.Text) ? null : CodeBox.Text.Trim();
         if (string.IsNullOrWhiteSpace(name))
@@ -106,6 +112,8 @@ public partial class ItemTypeWindow : Window
 
     private async void Delete_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selectedItemType == null)
         {
             MessageBox.Show("Выберите тип номенклатуры.", "Типы номенклатуры", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -143,11 +151,15 @@ public partial class ItemTypeWindow : Window
 
     private void New_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         ResetForm();
     }
 
     private void ItemTypesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _selectedItemType = ItemTypesGrid.SelectedItem as ItemType;
         if (_selectedItemType == null)
         {
@@ -171,6 +183,8 @@ public partial class ItemTypeWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!DeleteKeyGesture.IsDeleteGesture(e)
             || !ItemTypesGrid.IsKeyboardFocusWithin
             || _selectedItemType == null)

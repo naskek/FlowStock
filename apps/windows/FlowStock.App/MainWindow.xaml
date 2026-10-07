@@ -5,6 +5,11 @@
         Title="FlowStock" Height="720" Width="1100"
         PreviewKeyDown="MainWindow_PreviewKeyDown">
     <DockPanel>
+        <Border x:Name="UiPreviewBanner" DockPanel.Dock="Top" Visibility="Collapsed"
+                Background="#FFF2CC" Padding="12,8">
+            <TextBlock Text="UI Preview / DEV — пустые данные; операции с БД, API, печатью и настройками отключены."
+                       FontWeight="SemiBold" TextWrapping="Wrap" />
+        </Border>
         <Grid DockPanel.Dock="Top">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
@@ -15,7 +20,7 @@
                     <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
                 </MenuItem>
                 <MenuItem Header="Сервис">
-                    <MenuItem Header="Настройки FlowStock..." Click="OpenAdmin_Click" />
+                    <MenuItem x:Name="OpenSettingsMenuItem" Header="Настройки FlowStock..." Click="OpenAdmin_Click" />
                 </MenuItem>
             </Menu>
             <Button Grid.Column="1" x:Name="ItemRequestsButton" Margin="6,0,6,0" Padding="8,2"

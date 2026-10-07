@@ -7,15 +7,19 @@ namespace FlowStock.App;
 
 public partial class UomWindow : Window
 {
-    private readonly AppServices _services;
-    private readonly SettingsPageLoading _loading;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
+    private readonly SettingsPageLoading _loading = null!;
     private readonly Action? _onChanged;
     private readonly ObservableCollection<Uom> _uoms = new();
     private Uom? _selectedUom;
 
     public UomWindow(AppServices services, Action? onChanged)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         _onChanged = onChanged;
         InitializeComponent();
         _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
@@ -40,6 +44,8 @@ public partial class UomWindow : Window
 
     private async void AddUom_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (string.IsNullOrWhiteSpace(UomNameBox.Text))
         {
             MessageBox.Show("Введите единицу измерения.", "Ед. измерения", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -70,6 +76,8 @@ public partial class UomWindow : Window
 
     private async void DeleteUom_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selectedUom == null)
         {
             MessageBox.Show("Выберите единицу измерения.", "Ед. измерения", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -114,6 +122,8 @@ public partial class UomWindow : Window
 
     private async void EditUom_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selectedUom == null)
         {
             MessageBox.Show("Выберите единицу измерения.", "Ед. измерения", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -157,6 +167,8 @@ public partial class UomWindow : Window
 
     private void UomsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _selectedUom = UomsGrid.SelectedItem as Uom;
         if (_selectedUom != null)
         {
@@ -167,6 +179,8 @@ public partial class UomWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!DeleteKeyGesture.IsDeleteGesture(e)
             || !UomsGrid.IsKeyboardFocusWithin
             || _selectedUom == null)

@@ -18,7 +18,7 @@ public partial class MainWindow
         object sender,
         RoutedEventArgs e)
     {
-        if (sender is not MainWindow window)
+        if (sender is not MainWindow window || window.IsUiPreview)
         {
             return;
         }

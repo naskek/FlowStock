@@ -33,6 +33,7 @@ if /i "%~1"=="sim" goto run_tsd_sim
 if /i "%~1"=="build" goto rebuild_and_run_both
 if /i "%~1"=="buildall" goto rebuild_and_run_all
 
+if /i "%~1"=="devui" goto run_ui_preview
 rem DEV shortcuts
 if /i "%~1"=="dev" (
     call :use_dev
@@ -296,6 +297,11 @@ if errorlevel 1 exit /b 1
 
 call :start_server
 exit /b 0
+
+:run_ui_preview
+rem Preview uses this exact checkout and bypasses installed runtime/update recovery.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\windows\start-flowstock-ui-preview.ps1" -RepositoryRoot "%~dp0."
+exit /b %errorlevel%
 
 :run_app
 call :ensure_root

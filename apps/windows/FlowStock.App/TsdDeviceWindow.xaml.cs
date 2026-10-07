@@ -7,14 +7,18 @@ namespace FlowStock.App;
 
 public partial class TsdDeviceWindow : Window
 {
-    private readonly AppServices _services;
-    private readonly SettingsPageLoading _loading;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
+    private readonly SettingsPageLoading _loading = null!;
     private readonly ObservableCollection<TsdDeviceInfo> _devices = new();
     private TsdDeviceInfo? _selected;
 
     public TsdDeviceWindow(AppServices services)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         InitializeComponent();
         _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
 
@@ -48,6 +52,8 @@ public partial class TsdDeviceWindow : Window
 
     private void DevicesGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var device = DevicesGrid.SelectedItem as TsdDeviceInfo;
         _selected = device;
         if (device == null)
@@ -65,11 +71,15 @@ public partial class TsdDeviceWindow : Window
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         await LoadDevicesAsync();
     }
 
     private void New_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         DevicesGrid.SelectedItem = null;
         _selected = null;
         ClearForm();
@@ -77,6 +87,8 @@ public partial class TsdDeviceWindow : Window
 
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var login = LoginBox.Text?.Trim() ?? string.Empty;
         var password = PasswordBox.Text ?? string.Empty;
         var isActive = IsActiveCheck.IsChecked == true;

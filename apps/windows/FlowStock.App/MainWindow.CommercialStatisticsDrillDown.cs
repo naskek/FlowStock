@@ -156,6 +156,8 @@ public partial class MainWindow
 
     private void StatisticsDrillDownGrouping_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _commercialStatisticsDrillDownCache.Clear();
         CollapseCommercialStatisticsDrillDownRows();
         UpdateCommercialStatisticsGroupPresentation();
@@ -163,6 +165,8 @@ public partial class MainWindow
 
     private void StatisticsDrillDownItemsSource_Changed(object? sender, EventArgs e)
     {
+        if (IsUiPreview) return;
+
         _commercialStatisticsDrillDownCache.Clear();
         UpdateCommercialStatisticsGroupPresentation();
     }
@@ -190,6 +194,8 @@ public partial class MainWindow
 
     private async void StatisticsGroupsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!string.Equals(GetCommercialStatisticsGroupingTag(), "partner", StringComparison.OrdinalIgnoreCase)
             || e.OriginalSource is not DependencyObject originalSource)
         {

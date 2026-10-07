@@ -21,7 +21,10 @@ namespace FlowStock.App;
 
 public partial class MainWindow : Window
 {
-    private readonly AppServices _services;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
     private readonly ObservableCollection<Item> _items = new();
     private readonly ObservableCollection<Location> _locations = new();
     private readonly ObservableCollection<Uom> _uoms = new();
@@ -42,7 +45,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<StockHuFilterOption> _stockHuFilters = new();
     private readonly ObservableCollection<StockItemTypeFilterOption> _stockItemTypeFilters = new();
     private readonly ObservableCollection<KmCodeBatch> _kmBatches = new();
-    private readonly IDisposable _liveRefreshSubscription;
+    private readonly IDisposable? _liveRefreshSubscription;
     private readonly HashSet<int> _pendingLiveRefreshTabs = new();
     private readonly HashSet<long> _expandedStockItemIds = new();
     private bool _autoRefreshInProgress;
@@ -125,7 +128,8 @@ public partial class MainWindow : Window
 
     public MainWindow(AppServices services)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         InitializeComponent();
         BuildIdentityText.Text = AppRuntimeInfo.DisplayText;
         BuildIdentityText.ToolTip = AppRuntimeInfo.Current.SourceCommit;
@@ -351,6 +355,8 @@ public partial class MainWindow : Window
 
     private void MainWindow_Loaded(object? sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         AttachWarehouseProductionStateGridScrollTracking();
         ScheduleItemRequestsBadgeUpdate();
         StartItemRequestsBadgeRefreshTimer();
@@ -383,6 +389,8 @@ public partial class MainWindow : Window
 
     private void OnWarehouseProductionStateGridScrollChanged(object sender, ScrollChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (Math.Abs(e.VerticalChange) < 0.01d && Math.Abs(e.ViewportHeightChange) < 0.01d)
         {
             return;
@@ -398,6 +406,8 @@ public partial class MainWindow : Window
 
     private void OnStockGridScrollIdleTimerTick(object? sender, EventArgs e)
     {
+        if (IsUiPreview) return;
+
         _stockGridScrollIdleTimer?.Stop();
         _stockGridUserScrolling = false;
 
@@ -512,7 +522,7 @@ public partial class MainWindow : Window
     {
         _itemRequestsBadgeRefreshTimer?.Stop();
         _commercialStatisticsRefreshTimer?.Stop();
-        _liveRefreshSubscription.Dispose();
+        _liveRefreshSubscription?.Dispose();
     }
 
     private bool CanApplyLiveRefresh()
@@ -565,6 +575,7 @@ public partial class MainWindow : Window
 
     private void RefreshPendingActiveTab()
     {
+        if (IsUiPreview) return;
         var selectedIndex = MainTabs.SelectedIndex;
         if (!_pendingLiveRefreshTabs.Contains(selectedIndex) || !CanApplyLiveRefresh())
         {
@@ -577,6 +588,8 @@ public partial class MainWindow : Window
 
     private void MainTabs_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!IsLoaded || !ReferenceEquals(e.Source, MainTabs))
         {
             return;
@@ -657,6 +670,8 @@ public partial class MainWindow : Window
 
     private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (DeleteKeyGesture.IsDeleteGesture(e))
         {
             if (TryHandleMainGridDeleteGesture())
@@ -740,6 +755,8 @@ public partial class MainWindow : Window
 
     private void ItemFilterOptionChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!_suppressItemFilterSelectionChanged && e.PropertyName == nameof(CatalogItemFilterOption.IsChecked))
         {
             ApplyItemFilters();
@@ -1067,6 +1084,8 @@ public partial class MainWindow : Window
 
     private void ShowCancelledMergedOrdersCheckBox_Changed(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!IsLoaded)
         {
             return;
@@ -1077,6 +1096,8 @@ public partial class MainWindow : Window
 
     private void LoadMoreOrders_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         LoadOrders(reset: false);
     }
 
@@ -1628,16 +1649,22 @@ public partial class MainWindow : Window
 
     private void StatusSearch_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         LoadStock(StatusSearchBox.Text);
     }
 
     private void ItemsSearch_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         ApplyItemFilters();
     }
 
     private void ItemsResetSearch_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (ItemsSearchBox != null)
         {
             ItemsSearchBox.Text = string.Empty;
@@ -1659,6 +1686,8 @@ public partial class MainWindow : Window
 
     private void ItemsSearchBox_KeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (e.Key == Key.Enter)
         {
             e.Handled = true;
@@ -1668,36 +1697,50 @@ public partial class MainWindow : Window
 
     private void ItemBrandFilterAll_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SetItemFilters(_itemBrandFilters, true);
     }
 
     private void ItemBrandFilterNone_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SetItemFilters(_itemBrandFilters, false);
     }
 
     private void ItemVolumeFilterAll_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SetItemFilters(_itemVolumeFilters, true);
     }
 
     private void ItemVolumeFilterNone_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SetItemFilters(_itemVolumeFilters, false);
     }
 
     private void ItemUomFilterAll_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SetItemFilters(_itemUomFilters, true);
     }
 
     private void ItemUomFilterNone_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SetItemFilters(_itemUomFilters, false);
     }
 
     private void StockLocationFilter_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_suppressStockFilterSelectionChanged)
         {
             return;
@@ -1709,6 +1752,8 @@ public partial class MainWindow : Window
 
     private void StockHuFilter_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_suppressStockFilterSelectionChanged)
         {
             return;
@@ -1719,6 +1764,8 @@ public partial class MainWindow : Window
 
     private void StockItemTypeFilter_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_suppressStockFilterSelectionChanged)
         {
             return;
@@ -1729,6 +1776,8 @@ public partial class MainWindow : Window
 
     private void StockBelowMinOnlyCheckBox_Changed(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         LoadStock(StatusSearchBox.Text);
     }
 
@@ -1743,11 +1792,15 @@ public partial class MainWindow : Window
 
     private void ProductionNeedRefresh_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         LoadProductionNeedRows(showErrorMessage: true);
     }
 
     private async void ProductionNeedCreateOrders_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         ProductionNeedCreateOrdersButton.IsEnabled = false;
         ProductionNeedSummaryText.Text = "Подготовка предпросмотра...";
 
@@ -1884,11 +1937,15 @@ public partial class MainWindow : Window
 
     private void StockGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
+        if (IsUiPreview) return;
+
         ToggleStockRowDetails<StockDisplayRow>(StockGrid, e);
     }
 
     private void WarehouseProductionStateGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
+        if (IsUiPreview) return;
+
         ToggleStockRowDetails<WarehouseProductionStateDisplayRow>(WarehouseProductionStateGrid, e);
     }
 
@@ -1943,6 +2000,8 @@ public partial class MainWindow : Window
 
     private void WarehouseProductionStateGrid_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
+        if (IsUiPreview) return;
+
         AttachWarehouseProductionStateGridScrollTracking();
         ScrollViewerWheelBubble.HandlePreviewMouseWheel(e, _warehouseProductionStateScrollViewer);
     }
@@ -1997,11 +2056,15 @@ public partial class MainWindow : Window
 
     private void DocsApplyFilters_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         LoadDocs();
     }
 
     private void DocsResetFilters_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         DocsSearchBox.Text = string.Empty;
         DocsTypeFilter.SelectedIndex = 0;
         DocsStatusFilter.SelectedIndex = 0;
@@ -2010,6 +2073,8 @@ public partial class MainWindow : Window
 
     private void DocsSearchBox_KeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (e.Key == Key.Enter)
         {
             e.Handled = true;
@@ -2019,6 +2084,8 @@ public partial class MainWindow : Window
 
     private void DocsOpen_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         OpenSelectedDoc();
     }
 
@@ -2064,11 +2131,15 @@ public partial class MainWindow : Window
 
     private void DocsGrid_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
+        if (IsUiPreview) return;
+
         OpenSelectedDoc();
     }
 
     private void HuFillingCorrection_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new ProductionPalletFillingCorrectionWindow(_services) { Owner = this };
         window.ShowDialog();
         LoadDocs();
@@ -2088,6 +2159,8 @@ public partial class MainWindow : Window
 
     private void DocsGrid_KeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (e.Key == Key.Enter)
         {
             e.Handled = true;
@@ -2097,6 +2170,8 @@ public partial class MainWindow : Window
 
     private void OrdersNew_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new OrderDetailsWindow(_services);
         window.Owner = this;
         window.OrderStateChanged += (_, _) => RefreshOrdersKeepingPagedDepth();
@@ -2106,11 +2181,15 @@ public partial class MainWindow : Window
 
     private void OrdersEdit_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         OpenSelectedOrder();
     }
 
     private void OrdersCancel_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (OrdersGrid.SelectedItem is not Order order)
         {
             MessageBox.Show("Выберите заказ.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2165,11 +2244,15 @@ public partial class MainWindow : Window
 
     private void OrdersGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         UpdateDeleteButtonsAvailability();
     }
 
     private async void OrdersCreateControl_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var selectedOrders = OrdersGrid.SelectedItems
             .OfType<Order>()
             .ToArray();
@@ -2200,6 +2283,8 @@ public partial class MainWindow : Window
 
     private void OrderControlWindow_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new OrderControlWindow(_services)
         {
             Owner = this
@@ -2210,6 +2295,8 @@ public partial class MainWindow : Window
 
     private void HuAssignmentManagement_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new HuAssignmentManagementWindow(_services)
         {
             Owner = this
@@ -2221,11 +2308,15 @@ public partial class MainWindow : Window
 
     private void OrdersGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
+        if (IsUiPreview) return;
+
         OpenSelectedOrder();
     }
 
     private void OrdersGrid_KeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (e.Key == Key.Enter)
         {
             e.Handled = true;
@@ -2252,6 +2343,8 @@ public partial class MainWindow : Window
 
     private async void DocClose_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         await TryCloseSelectedDocAsync();
     }
 
@@ -2321,6 +2414,8 @@ public partial class MainWindow : Window
 
     private void AddItem_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new ItemEditWindow(_services)
         {
             Owner = this
@@ -2337,6 +2432,8 @@ public partial class MainWindow : Window
 
     private void EditItem_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selectedItem == null)
         {
             MessageBox.Show("Выберите товар.", "Товары", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2361,6 +2458,8 @@ public partial class MainWindow : Window
 
     private void ImportItems_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var dialog = new OpenFileDialog
         {
             Filter = "Excel файлы (*.xlsx;*.xls)|*.xlsx;*.xls|Все файлы (*.*)|*.*",
@@ -2423,6 +2522,8 @@ public partial class MainWindow : Window
 
     private void ItemPackaging_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selectedItem == null)
         {
             MessageBox.Show("Выберите товар.", "Товары", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2441,6 +2542,8 @@ public partial class MainWindow : Window
 
     private void AddLocation_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new LocationEditWindow(_services)
         {
             Owner = this
@@ -2457,6 +2560,8 @@ public partial class MainWindow : Window
 
     private void EditLocation_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selectedLocation == null)
         {
             MessageBox.Show("Выберите место хранения.", "Места хранения", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2481,6 +2586,8 @@ public partial class MainWindow : Window
 
     private void AddPartner_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new PartnerEditWindow(_services)
         {
             Owner = this
@@ -2497,6 +2604,8 @@ public partial class MainWindow : Window
 
     private void EditPartner_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selectedPartner == null)
         {
             MessageBox.Show("Выберите контрагента.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2525,6 +2634,8 @@ public partial class MainWindow : Window
 
     private void ItemsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _selectedItem = ItemsGrid.SelectedItem as Item;
         UpdateDeleteButtonsAvailability();
     }
@@ -2550,6 +2661,8 @@ public partial class MainWindow : Window
 
     private void ItemsGrid_KeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!DeleteKeyGesture.IsDeleteGesture(e))
         {
             return;
@@ -2561,6 +2674,8 @@ public partial class MainWindow : Window
 
     private void LocationsGrid_KeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!DeleteKeyGesture.IsDeleteGesture(e))
         {
             return;
@@ -2572,6 +2687,8 @@ public partial class MainWindow : Window
 
     private void PartnersGrid_KeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!DeleteKeyGesture.IsDeleteGesture(e))
         {
             return;
@@ -2583,6 +2700,8 @@ public partial class MainWindow : Window
 
     private void ItemsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (ItemsGrid.SelectedItem is not Item)
         {
             return;
@@ -2593,6 +2712,8 @@ public partial class MainWindow : Window
 
     private async void DeleteItem_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var itemsToDelete = GetSelectedItemsForDelete();
         if (itemsToDelete.Count == 0)
         {
@@ -2684,6 +2805,8 @@ public partial class MainWindow : Window
 
     private void LocationsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _selectedLocation = LocationsGrid.SelectedItem as Location;
         UpdateDeleteButtonsAvailability();
     }
@@ -2707,6 +2830,8 @@ public partial class MainWindow : Window
 
     private void LocationsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (LocationsGrid.SelectedItem is not Location)
         {
             return;
@@ -2717,6 +2842,8 @@ public partial class MainWindow : Window
 
     private async void DeleteLocation_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var locationsToDelete = GetSelectedLocationsForDelete();
         if (locationsToDelete.Count == 0)
         {
@@ -2779,6 +2906,8 @@ public partial class MainWindow : Window
 
     private void PartnersGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var row = PartnersGrid.SelectedItem as PartnerRow;
         _selectedPartner = row?.Partner;
         UpdateDeleteButtonsAvailability();
@@ -2803,6 +2932,8 @@ public partial class MainWindow : Window
 
     private void PartnersGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (PartnersGrid.SelectedItem is not PartnerRow)
         {
             return;
@@ -2847,6 +2978,8 @@ public partial class MainWindow : Window
 
     private async void DeletePartner_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var partnersToDelete = GetSelectedPartnersForDelete();
         if (partnersToDelete.Count == 0)
         {
@@ -2912,6 +3045,8 @@ public partial class MainWindow : Window
 
     private void NewDocMenu_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         ShowNewDocDialog();
     }
 
@@ -2935,6 +3070,8 @@ public partial class MainWindow : Window
 
     private void ImportMenu_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         RunImportDialog();
     }
 
@@ -2985,36 +3122,50 @@ public partial class MainWindow : Window
 
     private void ViewStatus_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SelectTab(TabStatusIndex);
     }
 
     private void ViewDocs_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SelectTab(TabDocsIndex);
     }
 
     private void ViewOrders_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SelectTab(TabOrdersIndex);
     }
 
     private void ViewItems_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SelectTab(TabItemsIndex);
     }
 
     private void ViewLocations_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SelectTab(TabLocationsIndex);
     }
 
     private void ViewPartners_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SelectTab(TabPartnersIndex);
     }
 
     private void KmImport_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new KmImportWindow(_services, () =>
         {
             LoadKmBatches();
@@ -3025,11 +3176,15 @@ public partial class MainWindow : Window
 
     private void KmOpenBatch_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         OpenSelectedKmBatch();
     }
 
     private void KmEditBatch_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (KmBatchesGrid.SelectedItem is not KmCodeBatch batch)
         {
             MessageBox.Show("Выберите пакет.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -3045,6 +3200,8 @@ public partial class MainWindow : Window
 
     private void KmDeleteBatch_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!EnsureDeleteModeEnabled("Маркировка"))
         {
             return;
@@ -3084,11 +3241,15 @@ public partial class MainWindow : Window
 
     private void KmBatchesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         UpdateDeleteButtonsAvailability();
     }
 
     private void KmBatchesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
+        if (IsUiPreview) return;
+
         OpenSelectedKmBatch();
     }
 
@@ -3110,6 +3271,8 @@ public partial class MainWindow : Window
 
     private void OpenDataFolder_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var dataDir = _services.BaseDir;
         if (string.IsNullOrWhiteSpace(dataDir) || !Directory.Exists(dataDir))
         {
@@ -3126,6 +3289,8 @@ public partial class MainWindow : Window
 
     private void OpenLogsFolder_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var logsDir = _services.LogsDir;
         if (string.IsNullOrWhiteSpace(logsDir) || !Directory.Exists(logsDir))
         {
@@ -3142,6 +3307,8 @@ public partial class MainWindow : Window
 
     private void OpenBackupManager_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new BackupManagerWindow(_services);
         window.Owner = this;
         window.ShowDialog();
@@ -3149,6 +3316,8 @@ public partial class MainWindow : Window
 
     private void OpenHuRegistry_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new HuRegistryWindow(_services)
         {
             Owner = this
@@ -3158,6 +3327,8 @@ public partial class MainWindow : Window
 
     private void OpenDbConnection_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new DbConnectionWindow(_services)
         {
             Owner = this
@@ -3167,6 +3338,8 @@ public partial class MainWindow : Window
 
     private void OpenIncomingRequests_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         ScheduleItemRequestsBadgeUpdate();
         var window = new IncomingRequestsWindow(_services, () =>
         {
@@ -3185,6 +3358,8 @@ public partial class MainWindow : Window
 
     private void OpenTsdDevices_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new TsdDeviceWindow(_services)
         {
             Owner = this
@@ -3221,19 +3396,33 @@ public partial class MainWindow : Window
         }
     }
 
-    private void WarehouseBundlesRefresh_Click(object sender, RoutedEventArgs e) => LoadWarehouseBundles();
+    private void WarehouseBundlesRefresh_Click(object sender, RoutedEventArgs e)
+    {
+        if (IsUiPreview) return;
+        LoadWarehouseBundles();
+    }
 
     private void WarehouseBundleFilterCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (ExperimentalFeatureFlags.WarehouseTasksEnabled && MainTabs.SelectedIndex == TabTasksIndex)
         {
             LoadWarehouseBundles();
         }
     }
 
-    private void WarehouseBundlesOpen_Click(object sender, RoutedEventArgs e) => OpenSelectedWarehouseBundle();
+    private void WarehouseBundlesOpen_Click(object sender, RoutedEventArgs e)
+    {
+        if (IsUiPreview) return;
+        OpenSelectedWarehouseBundle();
+    }
 
-    private void WarehouseBundlesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e) => OpenSelectedWarehouseBundle();
+    private void WarehouseBundlesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (IsUiPreview) return;
+        OpenSelectedWarehouseBundle();
+    }
 
     private void OpenSelectedWarehouseBundle()
     {
@@ -3252,6 +3441,8 @@ public partial class MainWindow : Window
 
     private void WarehouseTestMove_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var dialog = new WarehouseTestBundleDialog(_services, WarehouseTestBundleMode.MoveHu) { Owner = this };
         if (dialog.ShowDialog() == true)
         {
@@ -3261,6 +3452,8 @@ public partial class MainWindow : Window
 
     private void WarehouseTestAdopt_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var dialog = new WarehouseTestBundleDialog(_services, WarehouseTestBundleMode.AdoptPalletPlan) { Owner = this };
         if (dialog.ShowDialog() == true)
         {
@@ -3270,7 +3463,9 @@ public partial class MainWindow : Window
 
     private void OpenAdmin_Click(object sender, RoutedEventArgs e)
     {
-        var window = new AdminWindow(_services, RefreshAfterSettingsCenterChange);
+        var window = IsUiPreview
+            ? new AdminWindow(new UiPreviewContext())
+            : new AdminWindow(_services, RefreshAfterSettingsCenterChange);
         window.Owner = this;
         window.ShowDialog();
     }
@@ -3298,6 +3493,8 @@ public partial class MainWindow : Window
 
     private void UomMenu_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new UomWindow(_services, () => LoadUoms());
         window.Owner = this;
         window.ShowDialog();
@@ -3306,6 +3503,8 @@ public partial class MainWindow : Window
 
     private void WriteOffReasonsMenu_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new WriteOffReasonWindow(_services, null)
         {
             Owner = this
@@ -3315,6 +3514,8 @@ public partial class MainWindow : Window
 
     private void ItemTypesMenu_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new ItemTypeWindow(_services, () =>
         {
             LoadItemTypes();
@@ -3334,6 +3535,8 @@ public partial class MainWindow : Window
 
     private void VatRatesMenu_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new VatRateWindow(_services)
         {
             Owner = this
@@ -3344,6 +3547,8 @@ public partial class MainWindow : Window
 
     private void TaraMenu_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new TaraWindow(_services, LoadTaras)
         {
             Owner = this
@@ -3354,6 +3559,8 @@ public partial class MainWindow : Window
 
     private void PackagingManager_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new PackagingManagerWindow(_services)
         {
             Owner = this
@@ -3366,6 +3573,8 @@ public partial class MainWindow : Window
 
     private void DocNumberingSettingsMenu_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new DocNumberingSettingsWindow(_services)
         {
             Owner = this
@@ -3375,6 +3584,8 @@ public partial class MainWindow : Window
 
     private void PartnerItemPricesMenu_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         new PartnerItemSalePriceWindow(_services)
         {
             Owner = this
@@ -3490,6 +3701,8 @@ public partial class MainWindow : Window
 
     private void StatisticsSearchCombo_TextChanged(object sender, TextChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_suppressCommercialStatisticsFilterEvents
             || sender is not System.Windows.Controls.ComboBox comboBox
             || !comboBox.IsKeyboardFocusWithin)
@@ -3558,6 +3771,8 @@ public partial class MainWindow : Window
 
     private void StatisticsSearchCombo_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (sender is not System.Windows.Controls.ComboBox comboBox)
         {
             return;
@@ -3609,6 +3824,8 @@ public partial class MainWindow : Window
 
     private void StatisticsSearchCombo_DropDownClosed(object? sender, EventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!_suppressCommercialStatisticsFilterEvents
             && sender is System.Windows.Controls.ComboBox comboBox)
         {
@@ -3763,6 +3980,8 @@ public partial class MainWindow : Window
 
     private void StatisticsCriteria_Changed(object sender, EventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_suppressCommercialStatisticsFilterEvents || !IsLoaded)
         {
             return;
@@ -3783,6 +4002,8 @@ public partial class MainWindow : Window
 
     private void StatisticsStatusOption_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_suppressCommercialStatisticsFilterEvents)
         {
             return;
@@ -3802,6 +4023,8 @@ public partial class MainWindow : Window
 
     private void StatisticsPeriod_Changed(object sender, EventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!IsLoaded)
         {
             return;
@@ -3815,6 +4038,8 @@ public partial class MainWindow : Window
 
     private async void StatisticsPreviousPage_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_commercialStatisticsState.MovePrevious())
         {
             await LoadCommercialStatisticsImmediatelyAsync().ConfigureAwait(true);
@@ -3823,6 +4048,8 @@ public partial class MainWindow : Window
 
     private async void StatisticsNextPage_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_commercialStatisticsState.MoveNext())
         {
             await LoadCommercialStatisticsImmediatelyAsync().ConfigureAwait(true);
@@ -3831,6 +4058,8 @@ public partial class MainWindow : Window
 
     private async void StatisticsMonthlyGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!IsLoaded
             || StatisticsMonthlyGrid.SelectedItem is not WpfCommercialStatisticsMonth month)
         {
@@ -3852,6 +4081,8 @@ public partial class MainWindow : Window
 
     private async void StatisticsAllPeriod_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!_commercialStatisticsState.ReturnToWholePeriod())
         {
             return;
@@ -3872,6 +4103,7 @@ public partial class MainWindow : Window
 
     private void ScheduleCommercialStatisticsRefresh()
     {
+        if (IsUiPreview) return;
         if (!IsLoaded || MainTabs.SelectedIndex != TabStatisticsIndex)
         {
             return;
@@ -3890,6 +4122,8 @@ public partial class MainWindow : Window
 
     private async void CommercialStatisticsRefreshTimer_Tick(object? sender, EventArgs e)
     {
+        if (IsUiPreview) return;
+
         _commercialStatisticsRefreshTimer?.Stop();
         if (!_commercialStatisticsAutoRefresh.TryConsume(out _))
         {
@@ -3949,11 +4183,15 @@ public partial class MainWindow : Window
 
     private async void StatisticsExportPdf_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         await ExportCommercialStatisticsAsync(pdf: true).ConfigureAwait(true);
     }
 
     private async void StatisticsExportExcel_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         await ExportCommercialStatisticsAsync(pdf: false).ConfigureAwait(true);
     }
 
@@ -4159,6 +4397,8 @@ public partial class MainWindow : Window
     // Обработчик и MarkingWindow сохраняются для совместимости и возможной диагностики.
     private void OpenMarking_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var window = new MarkingWindow(_services)
         {
             Owner = this
@@ -4169,6 +4409,8 @@ public partial class MainWindow : Window
 
     private void ImportErrors_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SelectTab(TabDocsIndex);
         var window = new ImportErrorsWindow(_services, () =>
         {
