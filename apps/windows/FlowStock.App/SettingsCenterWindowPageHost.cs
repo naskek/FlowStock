@@ -21,6 +21,12 @@ internal static class SettingsCenterWindowPageHost
         }
 
         HideWindowCloseButtons(content);
+
+        // The legacy Window is only a controller for the embedded settings content.
+        // Close the empty shell so it does not remain in Application.Windows and
+        // prevent normal OnLastWindowClose application shutdown.
+        controller.Close();
+
         return new HostedSettingsPage(controller, content);
     }
 
