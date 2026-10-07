@@ -22,10 +22,12 @@ require(
     r"github\.event\.workflow_run\.conclusion == 'success'",
     "job must require successful pull_request CI",
 )
-require(r"(?m)^\s*issues:\s*write\s*$", "issues write permission is required only for the marker comment")
-require(r"(?m)^\s*pull-requests:\s*read\s*$", "pull-request permission must be read-only")
-if re.search(r"(?m)^\s*(?:actions|contents):\s*", source):
-    raise AssertionError("workflow must not request unused actions/contents permissions")
+require(
+    r"(?m)^\s*pull-requests:\s*write\s*$",
+    "pull-request write permission is required for the review-ready marker comment",
+)
+if re.search(r"(?m)^\s*(?:actions|contents|issues):\s*", source):
+    raise AssertionError("workflow must not request unused actions/contents/issues permissions")
 require(
     r"group:\s*review-ready-\$\{\{ github\.event\.workflow_run\.head_sha \}\}",
     "same-SHA events must share a concurrency group",

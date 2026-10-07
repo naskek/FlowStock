@@ -17,8 +17,64 @@ env:
   DOTNET_NOLOGO: "1"
 
 jobs:
+  web-tests:
+    name: web-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      windows: ${{ steps.scope.outputs.windows }}
+      postgres: ${{ steps.scope.outputs.postgres }}
+      web: ${{ steps.scope.outputs.web }}
+      android: ${{ steps.scope.outputs.android }}
+      docker: ${{ steps.scope.outputs.docker }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Resolve CI scope
+        id: scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 tools/ci/resolve-ci-scope.py \
+            --event-name "$EVENT_NAME" \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        if: ${{ steps.scope.outputs.web == 'true' }}
+        with:
+          node-version: "22"
+      - name: Run tracked Node tests
+        if: ${{ steps.scope.outputs.web == 'true' }}
+        shell: bash
+        run: |
+          mapfile -d '' tests < <(git ls-files -z ':(glob)apps/android/tsd/**/*.test.js')
+          (( ${#tests[@]} > 0 )) || { echo "No tracked web tests found"; exit 1; }
+
+          for test_file in "${tests[@]}"; do
+            echo "::group::$test_file"
+            node "$test_file"
+            echo "::endgroup::"
+          done
+      - name: Validate CI automation contracts
+        shell: bash
+        run: |
+          python3 tools/ci/ci-scope.static.test.py
+          python3 tools/ci/ci-workflow-trigger.static.test.py
+          python3 tools/ci/review-ready-workflow.static.test.py
+      - name: Validate public repository hygiene
+        shell: bash
+        run: python3 tools/ci/public-repo-hygiene.static.test.py
+
   windows-build-test:
     name: windows-build-test
+    needs: web-tests
+    if: ${{ needs['web-tests'].outputs.windows == 'true' }}
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -96,6 +152,8 @@ jobs:
 
   postgres-regression:
     name: postgres-regression
+    needs: web-tests
+    if: ${{ needs['web-tests'].outputs.postgres == 'true' }}
     runs-on: windows-2022
     timeout-minutes: 75
     env:
@@ -140,6 +198,11 @@ jobs:
         with:
           path: ${{ runner.temp }}\nuget-packages
           key: nuget-${{ runner.os }}-${{ hashFiles('global.json', 'NuGet.Config', 'apps/windows/**/*.csproj') }}
+      - name: Restore and build PostgreSQL test target
+        shell: pwsh
+        run: |
+          dotnet restore apps/windows/FlowStock.Server.Tests/FlowStock.Server.Tests.csproj
+          dotnet build apps/windows/FlowStock.Server.Tests/FlowStock.Server.Tests.csproj -c Release --no-restore
       - name: Provision PostgreSQL 16
         uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee # v8
         with:
@@ -193,30 +256,19 @@ jobs:
             $difference | Format-Table | Out-String | Write-Error
             throw "Applied migration chain differs from tracked migration chain."
           }
-      - name: Restore and build
+      - name: Run PostgreSQL regression suite
         shell: pwsh
         run: |
-          dotnet restore apps/windows/FlowStock.sln
-          dotnet build apps/windows/FlowStock.sln -c Release --no-restore
-      - name: Run focused PostgreSQL release gate
-        shell: pwsh
-        run: |
-          $filter = @(
-            "FullyQualifiedName~CatalogCutoverPostgresTests"
-            "FullyQualifiedName~UomCatalogPostgresTests"
-            "FullyQualifiedName~CommercialCatalogPostgresConcurrencyTests"
-            "FullyQualifiedName~CommercialPriceShipmentConcurrencyPostgresTests"
-          ) -join "|"
-
           dotnet test apps/windows/FlowStock.Server.Tests/FlowStock.Server.Tests.csproj `
             -c Release --no-build `
-            --filter $filter `
-            --logger "trx;LogFilePrefix=postgres-focused" `
-            --results-directory "$env:RUNNER_TEMP\test-results\postgres-focused"
-          if ($LASTEXITCODE -ne 0) { throw "Focused PostgreSQL tests failed with exit code $LASTEXITCODE." }
+            --filter "FullyQualifiedName~Postgres" `
+            --logger "trx;LogFilePrefix=postgres" `
+            --results-directory "$env:RUNNER_TEMP\test-results\postgres" `
+            -- xUnit.ParallelizeTestCollections=false
+          if ($LASTEXITCODE -ne 0) { throw "PostgreSQL tests failed with exit code $LASTEXITCODE." }
 
           & tools/ci/assert-trx.ps1 `
-            -Path "$env:RUNNER_TEMP\test-results\postgres-focused" `
+            -Path "$env:RUNNER_TEMP\test-results\postgres" `
             -RequiredTestClasses @(
               "FlowStock.Server.Tests.Catalog.CatalogCutoverPostgresTests",
               "FlowStock.Server.Tests.Catalog.UomCatalogPostgresTests",
@@ -224,55 +276,11 @@ jobs:
               "FlowStock.Server.Tests.Commercial.CommercialPriceShipmentConcurrencyPostgresTests"
             ) `
             -RequireOnlyPassed
-      - name: Run full suite with PostgreSQL
-        shell: pwsh
-        run: |
-          dotnet test apps/windows/FlowStock.sln -c Release --no-build `
-            --logger "trx;LogFilePrefix=postgres-full" `
-            --results-directory "$env:RUNNER_TEMP\test-results\postgres-full"
-          if ($LASTEXITCODE -ne 0) { throw "PostgreSQL test suite failed with exit code $LASTEXITCODE." }
-
-          & tools/ci/assert-trx.ps1 `
-            -Path "$env:RUNNER_TEMP\test-results\postgres-full" `
-            -RequireAnyTests `
-            -AllowedSkippedTests @(
-              "FlowStock.Server.Tests.CreateDocLine.LegacyBoundaryTests.JsonlImport_RemainsOutsideCanonicalLifecycle",
-              "FlowStock.Server.Tests.CreateDocDraft.LegacyBoundaryTests.JsonlImport_RemainsOutsideCanonicalDraftLifecycle"
-            )
-
-  web-tests:
-    name: web-tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: "22"
-      - name: Run tracked Node tests
-        shell: bash
-        run: |
-          mapfile -d '' tests < <(git ls-files -z ':(glob)apps/android/tsd/**/*.test.js')
-          (( ${#tests[@]} > 0 )) || { echo "No tracked web tests found"; exit 1; }
-
-          for test_file in "${tests[@]}"; do
-            echo "::group::$test_file"
-            node "$test_file"
-            echo "::endgroup::"
-          done
-      - name: Validate CI automation contracts
-        shell: bash
-        run: |
-          python3 tools/ci/ci-workflow-trigger.static.test.py
-          python3 tools/ci/review-ready-workflow.static.test.py
-      - name: Validate public repository hygiene
-        shell: bash
-        run: python3 tools/ci/public-repo-hygiene.static.test.py
 
   android-native:
     name: android-native
+    needs: web-tests
+    if: ${{ needs['web-tests'].outputs.android == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -283,7 +291,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
         with:
           packages: ""
       - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
@@ -304,6 +312,8 @@ jobs:
 
   docker-migrations:
     name: docker-migrations
+    needs: web-tests
+    if: ${{ needs['web-tests'].outputs.docker == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
