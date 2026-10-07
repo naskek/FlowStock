@@ -89,7 +89,7 @@ try {
     $streamResult = Invoke-ProcessWithRawStdin `
         -FilePath $pwsh `
         -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', $streamingChildCommand) `
-        -StdinBytes ([byte[]]::new(0)) `
+        -StdinBytes ([byte[]]@(0)) `
         -StdOutHandler $stdoutHandler `
         -StdErrHandler $stderrHandler
 
