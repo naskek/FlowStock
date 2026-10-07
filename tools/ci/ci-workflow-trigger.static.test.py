@@ -120,6 +120,28 @@ build_index = postgres.find("Restore and build PostgreSQL test target")
 provision_index = postgres.find("Provision PostgreSQL 16")
 if build_index < 0 or provision_index < 0 or build_index >= provision_index:
     raise AssertionError("PostgreSQL compile gate must run before PostgreSQL provisioning")
+if "ikalnytskyi/action-setup-postgres" in postgres:
+    raise AssertionError("PostgreSQL regression must not use the Chocolatey-backed setup action")
+require(
+    r"name:\s*Restore PostgreSQL 16 portable binaries.*"
+    r"id:\s*postgres-binaries-cache.*"
+    r"actions/cache@caa296126883cff596d87d8935842f9db880ef25\s+# v5.*"
+    r"path:\s*\$\{\{ runner\.temp \}\}\\postgresql-16\.15-5.*"
+    r"key:\s*postgresql-windows-x64-16\.15-5-43BB45F173A6F08CF1D29A97A6D8DEB119E8E8093A24C00D2D1001A0CCAA8281",
+    "PostgreSQL 16 binaries must use the exact pinned portable cache",
+    text=postgres,
+)
+if "restore-keys:" in postgres:
+    raise AssertionError("PostgreSQL binary cache must not fall back to a different archive")
+require(
+    r"\.\/tools\/ci\/provision-postgres\.ps1.*"
+    r"-InstallRoot.*postgresql-16\.15-5.*"
+    r"-DataRoot.*postgresql-data.*"
+    r"-Port 15432.*"
+    r"-CacheHit",
+    "PostgreSQL provisioning must use the tracked portable provisioner",
+    text=postgres,
+)
 if "dotnet test apps/windows/FlowStock.sln" in postgres:
     raise AssertionError("postgres-regression must not rerun the full Windows solution test suite")
 require(
