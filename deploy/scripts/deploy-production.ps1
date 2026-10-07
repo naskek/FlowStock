@@ -298,12 +298,7 @@ printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
     # and send the resulting UTF-8 bytes directly to ssh stdin.
     $remoteScript = $remoteScript.Replace("`r`n", "`n").Replace("`r", "`n")
     $remoteBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($remoteScript)
-    $remoteResult = Invoke-RemoteBashScriptViaSsh `
-        -SshTarget $sshTarget `
-        -ScriptBytes $remoteBytes `
-        -RemoteArgumentList @($ExpectedCommit, $expectedTsdVersion, $RemoteRepoPath, $RemoteBackupDir) `
-        -StdOutHandler { param([string]$Chunk) Write-Host -NoNewline $Chunk } `
-        -StdErrHandler { param([string]$Chunk) Write-Host -NoNewline $Chunk }
+    $remoteResult = Invoke-RemoteBashScriptViaSsh -SshTarget $sshTarget -ScriptBytes $remoteBytes -RemoteArgumentList @($ExpectedCommit, $expectedTsdVersion, $RemoteRepoPath, $RemoteBackupDir) -StdOutHandler { param([string]$Chunk) Write-Host -NoNewline $Chunk } -StdErrHandler { param([string]$Chunk) Write-Host -NoNewline $Chunk }
 
     if ($remoteResult.ExitCode -ne 0) {
         throw "Remote production deploy failed with exit code $($remoteResult.ExitCode)"
