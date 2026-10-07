@@ -485,7 +485,7 @@ public partial class OrderDetailsWindow : Window
 
     private void CustomPalletCapacityLineCheckBox_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not CheckBox checkBox
+        if (sender is not System.Windows.Controls.CheckBox checkBox
             || !TryGetLineFromGridContext(checkBox.DataContext, out var line))
         {
             return;
