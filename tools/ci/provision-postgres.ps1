@@ -102,10 +102,9 @@ $initdb = Join-Path $binRoot "initdb.exe"
     --pgdata="$DataRoot" `
     --username="$env:PGUSER" `
     --pwfile="$passwordFile" `
-    --auth-host=scram-sha-256 `
-    --encoding=UTF8 `
-    --no-locale `
-    --no-sync `
+    --auth=scram-sha-256 `
+    --encoding=UTF-8 `
+    --locale=en_US.UTF-8 `
     --no-instructions
 if ($LASTEXITCODE -ne 0) {
     throw "initdb failed with exit code $LASTEXITCODE."
