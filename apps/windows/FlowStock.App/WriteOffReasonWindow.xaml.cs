@@ -7,15 +7,19 @@ namespace FlowStock.App;
 
 public partial class WriteOffReasonWindow : Window
 {
-    private readonly AppServices _services;
-    private readonly SettingsPageLoading _loading;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
+    private readonly SettingsPageLoading _loading = null!;
     private readonly Action? _onChanged;
     private readonly ObservableCollection<WriteOffReason> _reasons = new();
     private WriteOffReason? _selectedReason;
 
     public WriteOffReasonWindow(AppServices services, Action? onChanged)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         _onChanged = onChanged;
         InitializeComponent();
         _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
@@ -40,6 +44,8 @@ public partial class WriteOffReasonWindow : Window
 
     private async void AddReason_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var code = ReasonCodeBox.Text?.Trim() ?? string.Empty;
         var name = ReasonNameBox.Text?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(code))
@@ -85,6 +91,8 @@ public partial class WriteOffReasonWindow : Window
 
     private async void DeleteReason_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selectedReason == null)
         {
             MessageBox.Show("Выберите причину списания.", "Причины списания", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -132,12 +140,16 @@ public partial class WriteOffReasonWindow : Window
 
     private void ReasonsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _selectedReason = ReasonsGrid.SelectedItem as WriteOffReason;
         UpdateDeleteButton();
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!DeleteKeyGesture.IsDeleteGesture(e)
             || !ReasonsGrid.IsKeyboardFocusWithin
             || _selectedReason == null)

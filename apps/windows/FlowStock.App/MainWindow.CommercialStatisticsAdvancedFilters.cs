@@ -23,6 +23,7 @@ public partial class MainWindow
     protected override void OnContentRendered(EventArgs e)
     {
         base.OnContentRendered(e);
+        if (IsUiPreview) return;
         EnsureCommercialStatisticsAdvancedUi();
     }
 
@@ -321,6 +322,8 @@ public partial class MainWindow
 
     private void StatisticsVolumeOption_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_suppressCommercialStatisticsFilterEvents)
         {
             return;
@@ -382,6 +385,8 @@ public partial class MainWindow
 
     private void StatisticsAdvancedSelector_TextChanged(object sender, TextChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_suppressCommercialStatisticsFilterEvents || !IsLoaded)
         {
             return;
@@ -395,6 +400,8 @@ public partial class MainWindow
 
     private void StatisticsAdvancedSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_suppressCommercialStatisticsFilterEvents || !IsLoaded)
         {
             return;
@@ -504,6 +511,8 @@ public partial class MainWindow
 
     private void StatisticsAdvancedPeriod_Changed(object? sender, EventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!IsLoaded || _applyingCommercialStatisticsMonth)
         {
             return;
@@ -530,6 +539,8 @@ public partial class MainWindow
 
     private void StatisticsMonthDate_Changed(object? sender, SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!IsLoaded
             || _applyingCommercialStatisticsMonth
             || _statisticsMonthDate?.SelectedDate is not DateTime selected)
@@ -542,11 +553,15 @@ public partial class MainWindow
 
     private void StatisticsCurrentMonth_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         ApplyCommercialStatisticsMonth(DateTime.Today);
     }
 
     private void StatisticsPreviousMonth_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         ApplyCommercialStatisticsMonth(DateTime.Today.AddMonths(-1));
     }
 
@@ -580,11 +595,15 @@ public partial class MainWindow
 
     private async void StatisticsAdvancedExportPdf_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         await ExportCommercialStatisticsWithAdvancedFiltersAsync(pdf: true).ConfigureAwait(true);
     }
 
     private async void StatisticsAdvancedExportExcel_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         await ExportCommercialStatisticsWithAdvancedFiltersAsync(pdf: false).ConfigureAwait(true);
     }
 

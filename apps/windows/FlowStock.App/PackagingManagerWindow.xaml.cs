@@ -8,8 +8,11 @@ namespace FlowStock.App;
 
 public partial class PackagingManagerWindow : Window
 {
-    private readonly AppServices _services;
-    private readonly SettingsPageLoading _loading;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
+    private readonly SettingsPageLoading _loading = null!;
     private readonly ObservableCollection<ItemOption> _items = new();
     private readonly ObservableCollection<ItemFilterOption> _filters = new();
     private readonly ObservableCollection<PackagingRow> _packagings = new();
@@ -18,7 +21,8 @@ public partial class PackagingManagerWindow : Window
 
     public PackagingManagerWindow(AppServices services)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         InitializeComponent();
         _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
 
@@ -97,6 +101,8 @@ public partial class PackagingManagerWindow : Window
 
     private async void FilterItemCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!_loadingItems)
         {
             await LoadPackagingsAsync();
@@ -105,11 +111,15 @@ public partial class PackagingManagerWindow : Window
 
     private void FilterReset_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         FilterItemCombo.SelectedIndex = 0;
     }
 
     private void PackagingGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _selectedRow = PackagingGrid.SelectedItem as PackagingRow;
         if (_selectedRow == null)
         {
@@ -129,6 +139,8 @@ public partial class PackagingManagerWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!DeleteKeyGesture.IsDeleteGesture(e)
             || !PackagingGrid.IsKeyboardFocusWithin
             || _selectedRow == null)
@@ -142,6 +154,8 @@ public partial class PackagingManagerWindow : Window
 
     private void ItemCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (ItemCombo.SelectedItem is ItemOption item)
         {
             PackagingFactorLabel.Text = "Коэффициент к складской единице";
@@ -153,6 +167,8 @@ public partial class PackagingManagerWindow : Window
 
     private async void AddPackaging_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!TryReadForm(out var item, out var code, out var name, out var factor, out var sortOrder))
         {
             return;
@@ -178,6 +194,8 @@ public partial class PackagingManagerWindow : Window
 
     private async void SavePackaging_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selectedRow == null)
         {
             MessageBox.Show("Выберите упаковочную единицу / кратность.", "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -210,6 +228,8 @@ public partial class PackagingManagerWindow : Window
 
     private async void DeletePackaging_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selectedRow == null)
         {
             MessageBox.Show("Выберите упаковочную единицу / кратность.", "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -241,6 +261,8 @@ public partial class PackagingManagerWindow : Window
 
     private async void SetDefault_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selectedRow == null)
         {
             MessageBox.Show("Выберите упаковочную единицу / кратность.", "Упаковочные единицы / кратности", MessageBoxButton.OK, MessageBoxImage.Information);

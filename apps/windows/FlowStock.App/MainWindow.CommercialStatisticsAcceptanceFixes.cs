@@ -111,6 +111,8 @@ public partial class MainWindow
 
     private void StatisticsAcceptanceResetFilters_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         ++_commercialStatisticsPartnerFilterRequestId;
         _commercialStatisticsScopedPartnerId = null;
         _statisticsPartnerId = null;
@@ -304,6 +306,8 @@ public partial class MainWindow
 
     private void StatisticsAcceptanceSelector_TextChanged(object sender, TextChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_suppressCommercialStatisticsFilterEvents
             || !IsLoaded
             || sender is not System.Windows.Controls.ComboBox comboBox
@@ -352,6 +356,8 @@ public partial class MainWindow
 
     private void StatisticsAcceptanceSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_suppressCommercialStatisticsFilterEvents
             || !IsLoaded
             || sender is not System.Windows.Controls.ComboBox comboBox
@@ -425,6 +431,8 @@ public partial class MainWindow
 
     private void StatisticsAcceptanceMonthlyItemsSource_Changed(object? sender, EventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_restoringCommercialStatisticsMonthSelection
             || string.IsNullOrWhiteSpace(_commercialStatisticsNavigationSelectedMonth)
             || !string.Equals(
@@ -520,6 +528,8 @@ public partial class MainWindow
 
     private async void StatisticsAcceptanceAllPeriod_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var navigationFrom = _commercialStatisticsState.DetailPeriodFrom;
         var navigationTo = _commercialStatisticsState.DetailPeriodTo;
         if (!_commercialStatisticsState.ReturnToWholePeriod())
@@ -556,11 +566,15 @@ public partial class MainWindow
 
     private async void StatisticsAcceptanceExportPdf_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         await ExportCommercialStatisticsWithAcceptancePeriodAsync(pdf: true).ConfigureAwait(true);
     }
 
     private async void StatisticsAcceptanceExportExcel_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         await ExportCommercialStatisticsWithAcceptancePeriodAsync(pdf: false).ConfigureAwait(true);
     }
 

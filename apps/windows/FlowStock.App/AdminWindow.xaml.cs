@@ -12,9 +12,12 @@ namespace FlowStock.App;
 
 public partial class AdminWindow : Window
 {
-    private readonly AppServices _services;
-    private readonly SettingsPageLoading _clientBlocksLoading;
-    private readonly SettingsPageLoading _printersLoading;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
+    private readonly SettingsPageLoading _clientBlocksLoading = null!;
+    private readonly SettingsPageLoading _printersLoading = null!;
     private readonly Action? _catalogsChanged;
     private readonly Dictionary<string, WpfCheckBox> _clientBlockBoxes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, HostedSettingsPage> _embeddedPages = new(StringComparer.OrdinalIgnoreCase);
@@ -25,7 +28,8 @@ public partial class AdminWindow : Window
 
     public AdminWindow(AppServices services, Action? catalogsChanged = null)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         _catalogsChanged = catalogsChanged;
 
         InitializeComponent();
@@ -99,7 +103,7 @@ public partial class AdminWindow : Window
             return existing;
         }
 
-        var created = key switch
+        var created = IsUiPreview ? CreateUiPreviewPage(key) : key switch
         {
             "db-connection" => SettingsCenterWindowPageHost.Detach(new DbConnectionWindow(_services)),
             "accounts" => SettingsCenterWindowPageHost.Detach(new TsdDeviceWindow(_services)),
@@ -126,10 +130,16 @@ public partial class AdminWindow : Window
         return new HostedSettingsPage(page, page);
     }
 
-    private async void CheckUpdate_Click(object sender, RoutedEventArgs e) => await CheckForUpdateAsync();
+    private async void CheckUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (IsUiPreview) return;
+
+        await CheckForUpdateAsync();
+    }
 
     private async Task CheckForUpdateAsync()
     {
+        if (IsUiPreview) return;
         if (_updateCheckCancellation is not null)
         {
             return;
@@ -199,6 +209,8 @@ public partial class AdminWindow : Window
 
     private async void InstallUpdate_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         var result = _updateCheckResult;
         if (result?.CanUpdate != true || result.Target is null)
         {
@@ -259,6 +271,8 @@ public partial class AdminWindow : Window
 
     private void ChangeAdminPassword_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_services.AdminAuth.EnsureAdminPasswordExists())
         {
             var prompt = new PasswordPromptWindow(_services.AdminAuth) { Owner = this };
@@ -282,6 +296,8 @@ public partial class AdminWindow : Window
 
     private async void SaveClientBlocks_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         try
         {
             var settings = _clientBlockBoxes
@@ -352,11 +368,15 @@ public partial class AdminWindow : Window
 
     private async void RefreshPalletLabelPrinters_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         await RefreshPalletLabelPrintersAsync(PalletLabelPrinterComboBox.Text, statusPrefix: null);
     }
 
     private async void SavePalletLabelPrinter_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _palletLabelPrinterEnvironmentOverride = PalletLabelPrinterNameResolver.ResolveEnvironmentOverride(
             Environment.GetEnvironmentVariable(PalletLabelPrinterNameResolver.EnvironmentVariableName));
         if (_palletLabelPrinterEnvironmentOverride != null)

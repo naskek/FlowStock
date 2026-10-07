@@ -8,15 +8,19 @@ namespace FlowStock.App;
 
 public partial class TaraWindow : Window
 {
-    private readonly AppServices _services;
-    private readonly SettingsPageLoading _loading;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
+    private readonly SettingsPageLoading _loading = null!;
     private readonly ObservableCollection<Tara> _taras = new();
     private readonly Action? _onChanged;
     private Tara? _selectedTara;
 
     public TaraWindow(AppServices services, Action? onChanged)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         _onChanged = onChanged;
         InitializeComponent();
         _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
@@ -41,6 +45,8 @@ public partial class TaraWindow : Window
 
     private async void AddTara_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (string.IsNullOrWhiteSpace(TaraNameBox.Text))
         {
             MessageBox.Show("Введите наименование тары.", "Тара", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -75,6 +81,8 @@ public partial class TaraWindow : Window
 
     private async void DeleteTara_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selectedTara == null)
         {
             MessageBox.Show("Выберите тару.", "Тара", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -119,12 +127,16 @@ public partial class TaraWindow : Window
 
     private void TarasGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _selectedTara = TarasGrid.SelectedItem as Tara;
         UpdateDeleteButton();
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!DeleteKeyGesture.IsDeleteGesture(e)
             || !TarasGrid.IsKeyboardFocusWithin
             || _selectedTara == null)

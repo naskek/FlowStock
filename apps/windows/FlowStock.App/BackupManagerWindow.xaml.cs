@@ -8,14 +8,18 @@ namespace FlowStock.App;
 
 public partial class BackupManagerWindow : Window
 {
-    private readonly AppServices _services;
-    private readonly SettingsPageLoading _loading;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
+    private readonly SettingsPageLoading _loading = null!;
     private readonly ObservableCollection<BackupInfo> _backups = new();
     private BackupInfo? _selectedBackup;
 
     public BackupManagerWindow(AppServices services)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         InitializeComponent();
         _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
 
@@ -55,6 +59,8 @@ public partial class BackupManagerWindow : Window
 
     private async void CreateBackup_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         try
         {
             await _loading.RunAsync(() => Task.Run(() =>
@@ -73,11 +79,17 @@ public partial class BackupManagerWindow : Window
         }
     }
 
-    private void OpenDataFolder_Click(object sender, RoutedEventArgs e) =>
+    private void OpenDataFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (IsUiPreview) return;
         OpenFolder(_services.BaseDir, "Папка данных не найдена.");
+    }
 
-    private void OpenLogsFolder_Click(object sender, RoutedEventArgs e) =>
+    private void OpenLogsFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (IsUiPreview) return;
         OpenFolder(_services.LogsDir, "Папка логов не найдена.");
+    }
 
     private static void OpenFolder(string? path, string notFoundMessage)
     {
@@ -96,11 +108,15 @@ public partial class BackupManagerWindow : Window
 
     private void OpenFolder_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _services.Backups.OpenBackupsFolder();
     }
 
     private async void DeleteBackup_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_selectedBackup == null)
         {
             MessageBox.Show("Выберите бэкап.", "Резервные копии", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -129,6 +145,8 @@ public partial class BackupManagerWindow : Window
 
     private void SaveSettings_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!TryParseSettings(out var settings))
         {
             return;
@@ -148,11 +166,15 @@ public partial class BackupManagerWindow : Window
 
     private void BackupsEnabledChanged(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         UpdateModeControls();
     }
 
     private void BackupModeChanged(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         UpdateModeControls();
     }
 
@@ -191,12 +213,16 @@ public partial class BackupManagerWindow : Window
 
     private void BackupsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _selectedBackup = BackupsGrid.SelectedItem as BackupInfo;
         UpdateDeleteButton();
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!DeleteKeyGesture.IsDeleteGesture(e)
             || !BackupsGrid.IsKeyboardFocusWithin
             || _selectedBackup == null)

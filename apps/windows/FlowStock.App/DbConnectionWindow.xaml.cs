@@ -17,10 +17,13 @@ namespace FlowStock.App;
 public partial class DbConnectionWindow : Window
 {
     private FrameworkElement? _contentRoot;
-    private readonly AppServices _services;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
     private readonly PostgresDiscoveryService _discoveryService = new();
     private readonly CloseDocumentApiClient _closeDocumentApiClient = new();
-    private BackupSettings _settings;
+    private BackupSettings _settings = BackupSettings.Default();
     private readonly List<RecentConnectionOption> _recentOptions = new();
     private readonly List<PostgresDiscoveryCandidate> _discoveredConnections = new();
     private readonly bool _requireConnectionOnStartup;
@@ -46,7 +49,8 @@ public partial class DbConnectionWindow : Window
 
     public DbConnectionWindow(AppServices services, bool requireConnectionOnStartup = false)
     {
-        _services = services;
+        ArgumentNullException.ThrowIfNull(services);
+        _productionServices = services;
         _settings = _services.Settings.Load();
         _requireConnectionOnStartup = requireConnectionOnStartup;
 
@@ -85,11 +89,15 @@ public partial class DbConnectionWindow : Window
 
     private async void DbConnectionWindow_Loaded(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         await DiscoverConnectionsAsync();
     }
 
     private void DbConnectionWindow_Unloaded(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         _discoveryCts?.Cancel();
         _discoveryCts?.Dispose();
         _discoveryCts = null;
@@ -97,6 +105,8 @@ public partial class DbConnectionWindow : Window
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!TryReadInput(out var input))
         {
             return;
@@ -157,6 +167,8 @@ public partial class DbConnectionWindow : Window
 
     private async void TestConnection_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!TryReadInput(out var input))
         {
             return;
@@ -269,6 +281,8 @@ public partial class DbConnectionWindow : Window
 
     private async void ApplyMigrations_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!TryReadInput(out var input))
         {
             return;
@@ -334,11 +348,15 @@ public partial class DbConnectionWindow : Window
 
     private async void ScanConnections_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         await DiscoverConnectionsAsync();
     }
 
     private void DiscoveredConnectionsCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (DiscoveredConnectionsCombo.SelectedItem is not PostgresDiscoveryCandidate candidate)
         {
             return;
@@ -353,11 +371,15 @@ public partial class DbConnectionWindow : Window
 
     private void ManualModeButton_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SetManualConnectionMode(true);
     }
 
     private void AutoModeButton_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         SetManualConnectionMode(false);
         if (DiscoveredConnectionsCombo.SelectedItem is PostgresDiscoveryCandidate candidate)
         {
@@ -412,6 +434,8 @@ public partial class DbConnectionWindow : Window
 
     private async void CheckServer_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!TryReadServerSettingsInput(out var serverSettings))
         {
             return;
@@ -437,6 +461,8 @@ public partial class DbConnectionWindow : Window
 
     private void SaveServerSettings_Click(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (!TryReadServerSettingsInput(out var serverSettings))
         {
             return;
@@ -1289,6 +1315,8 @@ LIMIT 1;";
 
     private void RecentConnectionsCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (RecentConnectionsCombo.SelectedItem is not RecentConnectionOption option)
         {
             return;
