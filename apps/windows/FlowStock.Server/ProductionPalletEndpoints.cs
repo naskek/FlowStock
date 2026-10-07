@@ -384,7 +384,7 @@ public static class ProductionPalletEndpoints
 
         try
         {
-            var capacityOverride = BuildCapacityOverride(parsedRequest);
+            var capacityOverrides = BuildCapacityOverrides(parsedRequest);
             var modeEcho = mode switch
             {
                 ProductionPalletPlanMode.SkipInternalSupply => "skip_internal_supply",
@@ -409,8 +409,8 @@ public static class ProductionPalletEndpoints
                             parsedRequest.SelectedInternalProductionPalletIds ?? Array.Empty<long>(),
                         PlanRemainder = parsedRequest.PlanRemainder ?? true
                     },
-                    capacityOverride)
-                : service.PlanOrder(orderId, mode, capacityOverride);
+                    capacityOverrides)
+                : service.PlanOrder(orderId, mode, capacityOverrides);
             return Results.Ok(MapOrderPlan(result, modeEcho));
         }
         catch (ProductionPalletSelectedCoverageException ex)
@@ -431,7 +431,7 @@ public static class ProductionPalletEndpoints
 
     /// <summary>
     /// Пустое тело, отсутствующий Content-Type, null-JSON, {} или отсутствующий mode означают Full.
-    /// Для нестандартной палетизации принимается только явная пара order_line_id + max_qty_per_hu_override.
+    /// Для нестандартной палетизации принимается список capacity_overrides, привязанный к order_line_id.
     /// Неизвестный mode возвращает null (400 INVALID_PLAN_MODE).
     /// </summary>
     private static async Task<PlanOrderRequest> TryReadPlanRequestAsync(HttpRequest request)
@@ -450,33 +450,29 @@ public static class ProductionPalletEndpoints
         return JsonSerializer.Deserialize<PlanOrderRequest>(raw, PlanRequestJsonOptions) ?? new PlanOrderRequest();
     }
 
-    private static ProductionPalletCapacityOverride? BuildCapacityOverride(PlanOrderRequest request)
+    private static IReadOnlyList<ProductionPalletCapacityOverride> BuildCapacityOverrides(PlanOrderRequest request)
     {
-        var hasOrderLineId = request.OrderLineId.HasValue;
-        var hasCapacity = request.MaxQtyPerHuOverride.HasValue;
-        if (!hasOrderLineId && !hasCapacity)
+        var rows = request.CapacityOverrides ?? Array.Empty<CapacityOverrideRequest>();
+        if (rows.Count == 0)
         {
-            return null;
+            return Array.Empty<ProductionPalletCapacityOverride>();
         }
 
-        if (!hasOrderLineId || !hasCapacity)
+        return rows.Select(row =>
         {
-            throw new InvalidOperationException(
-                "Для нестандартной палетизации нужно передать order_line_id и max_qty_per_hu_override вместе.");
-        }
+            if (row.OrderLineId <= 0
+                || !double.IsFinite(row.MaxQtyPerHuOverride)
+                || row.MaxQtyPerHuOverride <= 0)
+            {
+                throw new InvalidOperationException("Некорректный разовый максимум на палету.");
+            }
 
-        if (request.OrderLineId!.Value <= 0
-            || !double.IsFinite(request.MaxQtyPerHuOverride!.Value)
-            || request.MaxQtyPerHuOverride.Value <= 0)
-        {
-            throw new InvalidOperationException("Некорректный разовый максимум на палету.");
-        }
-
-        return new ProductionPalletCapacityOverride
-        {
-            OrderLineId = request.OrderLineId.Value,
-            MaxQtyPerHu = request.MaxQtyPerHuOverride.Value
-        };
+            return new ProductionPalletCapacityOverride
+            {
+                OrderLineId = row.OrderLineId,
+                MaxQtyPerHu = row.MaxQtyPerHuOverride
+            };
+        }).ToArray();
     }
 
     private static ProductionPalletPlanMode? TryParsePlanMode(string? mode)
@@ -524,11 +520,17 @@ public static class ProductionPalletEndpoints
         [JsonPropertyName("plan_remainder")]
         public bool? PlanRemainder { get; init; }
 
+        [JsonPropertyName("capacity_overrides")]
+        public IReadOnlyList<CapacityOverrideRequest>? CapacityOverrides { get; init; }
+    }
+
+    private sealed class CapacityOverrideRequest
+    {
         [JsonPropertyName("order_line_id")]
-        public long? OrderLineId { get; init; }
+        public long OrderLineId { get; init; }
 
         [JsonPropertyName("max_qty_per_hu_override")]
-        public double? MaxQtyPerHuOverride { get; init; }
+        public double MaxQtyPerHuOverride { get; init; }
     }
 
     private sealed class SelectedWarehouseHuRequest
