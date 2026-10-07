@@ -134,7 +134,6 @@ public partial class AdminWindow : Window
     {
         if (IsUiPreview) return;
 
-        if (IsUiPreview) return;
         await CheckForUpdateAsync();
     }
 
