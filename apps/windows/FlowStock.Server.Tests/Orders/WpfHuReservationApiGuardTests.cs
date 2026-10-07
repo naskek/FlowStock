@@ -302,8 +302,10 @@ public sealed class WpfHuReservationApiGuardTests
         var method = source[methodStart..methodEnd];
 
         var optionsIndex = method.IndexOf("TryGetCancelPlanOptionsAsync(_orderId.Value)", StringComparison.Ordinal);
-        var planIndex = method.IndexOf("TryPlanOrderAsync(_orderId.Value)", StringComparison.Ordinal);
-        var afterOptionsIndex = method.IndexOf("TryGetCancelPlanOptionsAsync(_orderId.Value)", planIndex, StringComparison.Ordinal);
+        var planIndex = method.IndexOf("TryPlanOrderAsync(", optionsIndex, StringComparison.Ordinal);
+        var afterOptionsIndex = planIndex >= 0
+            ? method.IndexOf("TryGetCancelPlanOptionsAsync(_orderId.Value)", planIndex, StringComparison.Ordinal)
+            : -1;
         Assert.True(optionsIndex >= 0);
         Assert.True(planIndex > optionsIndex);
         Assert.True(afterOptionsIndex > planIndex);
