@@ -219,6 +219,17 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="Нестандартная палетизация" Width="165">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding UseCustomPalletCapacity, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              IsEnabled="{Binding CanUseCustomPalletCapacity}"
+                                              Click="CustomPalletCapacityLineCheckBox_Click"
+                                              HorizontalAlignment="Center"
+                                              ToolTip="После нажатия «План паллет» будет запрошен разовый максимум на палету для этой позиции." />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTemplateColumn Header="Общий HU" Width="100">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>

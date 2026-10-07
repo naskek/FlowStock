@@ -8,6 +8,12 @@ public enum ProductionPalletPlanMode
     ApplySelectedCoverageThenPlan
 }
 
+public sealed class ProductionPalletCapacityOverride
+{
+    public long OrderLineId { get; init; }
+    public double MaxQtyPerHu { get; init; }
+}
+
 public sealed class ProductionPalletPrePlanCoveragePreview
 {
     public long OrderId { get; init; }

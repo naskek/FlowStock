@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using FlowStock.App;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 
 namespace FlowStock.Server.Tests.ProductionPallets;
@@ -42,6 +43,96 @@ public sealed class ApplySelectedCoverageHuBindingSerializationTests
         Assert.DoesNotContain("itemId", json, StringComparison.Ordinal);
         Assert.DoesNotContain("TargetOrderLineId", json, StringComparison.Ordinal);
         Assert.DoesNotContain("targetOrderLineId", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildPlanBody_WithCapacityOverrides_SerializesExplicitSnakeCaseScopes()
+    {
+        var body = WpfProductionPalletApiService.BuildPlanBody(
+            WpfProductionPalletPlanMode.Full,
+            selectedCoverage: null,
+            new[]
+            {
+                new WpfProductionPalletCapacityOverride(101, 2250),
+                new WpfProductionPalletCapacityOverride(102, 1000)
+            });
+
+        var json = JsonSerializer.Serialize(body, WebOptions);
+
+        Assert.Contains("\"capacity_overrides\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"order_line_id\":101", json, StringComparison.Ordinal);
+        Assert.Contains("\"max_qty_per_hu_override\":2250", json, StringComparison.Ordinal);
+        Assert.Contains("\"order_line_id\":102", json, StringComparison.Ordinal);
+        Assert.Contains("\"max_qty_per_hu_override\":1000", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("orderLineId", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("maxQtyPerHuOverride", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PlanEndpoint_WithCapacityOverride_CreatesOne2250Pallet_AndOnePrintRow()
+    {
+        var harness = CreateCustomerHarness(customerQty: 2250, maxQtyPerHu: 1800);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        const string payload = """
+        {
+          "capacity_overrides": [
+            { "order_line_id": 101, "max_qty_per_hu_override": 2250 }
+          ]
+        }
+        """;
+
+        using var response = await host.Client.PostAsync(
+            "/api/orders/10/production-pallets/plan",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var prd = Assert.Single(harness.Store.GetDocsByOrder(10).Where(doc => doc.Type == DocType.ProductionReceipt));
+        var pallet = Assert.Single(harness.Store.GetProductionPalletsByDoc(prd.Id));
+        Assert.Equal(2250, pallet.PlannedQty, 3);
+        var printRow = Assert.Single(new ProductionPalletService(harness.Store).GetPrintRows(10));
+        Assert.Equal(pallet.HuCode, printRow.HuCode);
+        Assert.Equal(2250, printRow.Qty, 3);
+        Assert.DoesNotContain("error", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("{ \"capacity_overrides\": [ { \"order_line_id\": 101 } ] }")]
+    [InlineData("{ \"capacity_overrides\": [ { \"max_qty_per_hu_override\": 2250 } ] }")]
+    public async Task PlanEndpoint_WithIncompleteCapacityOverride_Returns400WithoutMutation(string payload)
+    {
+        var harness = CreateCustomerHarness(customerQty: 2250, maxQtyPerHu: 1800);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        using var response = await host.Client.PostAsync(
+            "/api/orders/10/production-pallets/plan",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.DoesNotContain(harness.Store.GetDocsByOrder(10), doc => doc.Type == DocType.ProductionReceipt);
+    }
+
+    [Fact]
+    public async Task PlanEndpoint_WithForeignOverrideLine_Returns400WithoutMutation()
+    {
+        var harness = CreateCustomerHarness(customerQty: 2250, maxQtyPerHu: 1800);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+
+        const string payload = """
+        {
+          "capacity_overrides": [
+            { "order_line_id": 999, "max_qty_per_hu_override": 2250 }
+          ]
+        }
+        """;
+
+        using var response = await host.Client.PostAsync(
+            "/api/orders/10/production-pallets/plan",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.DoesNotContain(harness.Store.GetDocsByOrder(10), doc => doc.Type == DocType.ProductionReceipt);
     }
 
     [Fact]
@@ -133,7 +224,7 @@ public sealed class ApplySelectedCoverageHuBindingSerializationTests
             .SelectMany(doc => harness.Store.GetProductionPalletsByDoc(doc.Id)));
     }
 
-    private static CloseDocumentHarness CreateCustomerHarness(double customerQty)
+    private static CloseDocumentHarness CreateCustomerHarness(double customerQty, double maxQtyPerHu = 378)
     {
         var harness = new CloseDocumentHarness();
         harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
@@ -142,7 +233,7 @@ public sealed class ApplySelectedCoverageHuBindingSerializationTests
             Id = 100,
             Name = "Аджика",
             BaseUom = "шт",
-            MaxQtyPerHu = 378
+            MaxQtyPerHu = maxQtyPerHu
         });
         harness.SeedOrder(new Order
         {
