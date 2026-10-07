@@ -107,7 +107,14 @@ public sealed class AdminWindowCategoryNavigationSourceTests
         Assert.Contains("new LocationSettingsPage", code, StringComparison.Ordinal);
         Assert.Contains("SettingsCenterWindowPageHost.Detach", factory, StringComparison.Ordinal);
         Assert.DoesNotContain("ShowDialog", factory, StringComparison.Ordinal);
-        Assert.Contains("controller.Content = null", host, StringComparison.Ordinal);
+
+        var detach = ExtractMethodBody(host, "public static HostedSettingsPage Detach");
+        var detachContentIndex = detach.IndexOf("controller.Content = null", StringComparison.Ordinal);
+        var closeControllerIndex = detach.IndexOf("controller.Close();", StringComparison.Ordinal);
+        var returnPageIndex = detach.IndexOf("return new HostedSettingsPage(controller, content);", StringComparison.Ordinal);
+        Assert.True(detachContentIndex >= 0, "Embedded settings content must be detached from the legacy Window.");
+        Assert.True(closeControllerIndex > detachContentIndex, "Detached legacy Window must be closed after its content is removed.");
+        Assert.True(returnPageIndex > closeControllerIndex, "Hosted page must be returned only after the empty legacy Window is closed.");
     }
 
     [Fact]
