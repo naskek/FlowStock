@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using FlowStock.App;
 using FlowStock.Core.Models;
+using FlowStock.Core.Services;
 using FlowStock.Server.Tests.CloseDocument.Infrastructure;
 
 namespace FlowStock.Server.Tests.ProductionPallets;
