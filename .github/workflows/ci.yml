@@ -203,14 +203,22 @@ jobs:
         run: |
           dotnet restore apps/windows/FlowStock.Server.Tests/FlowStock.Server.Tests.csproj
           dotnet build apps/windows/FlowStock.Server.Tests/FlowStock.Server.Tests.csproj -c Release --no-restore
-      - name: Provision PostgreSQL 16
-        uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee # v8
+      - name: Restore PostgreSQL 16 portable binaries
+        id: postgres-binaries-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
-          username: flowstock_test
-          password: flowstock_test
-          database: flowstock_test
-          port: "15432"
-          postgres-version: "16"
+          path: ${{ runner.temp }}\postgresql-16.15-5
+          key: postgresql-windows-x64-16.15-5-43BB45F173A6F08CF1D29A97A6D8DEB119E8E8093A24C00D2D1001A0CCAA8281
+      - name: Provision PostgreSQL 16
+        shell: pwsh
+        env:
+          POSTGRES_CACHE_HIT: ${{ steps.postgres-binaries-cache.outputs.cache-hit }}
+        run: |
+          ./tools/ci/provision-postgres.ps1 `
+            -InstallRoot "$env:RUNNER_TEMP\postgresql-16.15-5" `
+            -DataRoot "$env:RUNNER_TEMP\postgresql-data" `
+            -Port 15432 `
+            -CacheHit $env:POSTGRES_CACHE_HIT
       - name: Restore PostgreSQL client environment
         shell: pwsh
         run: |
