@@ -28,6 +28,8 @@ public partial class TsdDeviceEditorWindow : Window
     private bool _saving;
 
     public bool IsUiPreview => _saveAction is null;
+    // Preview never retains or persists the entered password.
+    public AccountEditSubmission? PreviewSubmission { get; private set; }
 
     public TsdDeviceEditorWindow(
         AccountDialogMode mode,
@@ -60,12 +62,19 @@ public partial class TsdDeviceEditorWindow : Window
 
         if (IsUiPreview)
         {
-            // Presentation-only mode: all input fields may be inspected, but
-            // no persistence callback, credentials, services or backend exist.
+            // Preview only returns a sanitized submission to the in-memory demo list.
+            // No AppServices, credentials, API or database are involved.
             Title += " [UI Preview / DEV]";
-            SaveButton.IsEnabled = false;
-            SaveButton.ToolTip = UiPreviewContext.OperationUnavailable;
+            SaveButton.ToolTip = "Сохранить только в демонстрационных данных.";
         }
+        LoginBox.TextChanged += (_, _) => UpdateSaveButton();
+        PlatformBox.SelectionChanged += (_, _) => UpdateSaveButton();
+        AccessRoleBox.SelectionChanged += (_, _) => UpdateSaveButton();
+        IsActiveCheck.Checked += (_, _) => UpdateSaveButton();
+        IsActiveCheck.Unchecked += (_, _) => UpdateSaveButton();
+        NewPasswordBox.PasswordChanged += (_, _) => UpdateSaveButton();
+        ConfirmPasswordBox.PasswordChanged += (_, _) => UpdateSaveButton();
+        UpdateSaveButton();
         Closing += (_, args) =>
         {
             // A request that has reached the server must not be abandoned
@@ -98,6 +107,31 @@ public partial class TsdDeviceEditorWindow : Window
     private static string SelectedTag(WpfComboBox box) =>
         (box.SelectedItem as ComboBoxItem)?.Tag as string ?? string.Empty;
 
+    private bool HasChanges()
+    {
+        var passwordChanged = NewPasswordBox.Password.Length > 0
+            || ConfirmPasswordBox.Password.Length > 0;
+
+        if (_mode == AccountDialogMode.Create)
+        {
+            return LoginBox.Text.Length > 0
+                || passwordChanged
+                || IsActiveCheck.IsChecked != true
+                || SelectedTag(PlatformBox) != "TSD"
+                || SelectedTag(AccessRoleBox) != "OPERATOR";
+        }
+
+        return passwordChanged
+            || IsActiveCheck.IsChecked != _account!.IsActive
+            || !string.Equals(SelectedTag(PlatformBox), _account.Platform, StringComparison.Ordinal)
+            || !string.Equals(SelectedTag(AccessRoleBox), _account.AccessRole, StringComparison.Ordinal);
+    }
+
+    private void UpdateSaveButton()
+    {
+        SaveButton.IsEnabled = !_saving && HasChanges();
+    }
+
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
         if (!_saving) DialogResult = false;
@@ -105,7 +139,7 @@ public partial class TsdDeviceEditorWindow : Window
 
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
-        if (_saving || IsUiPreview) return;
+        if (_saving || !HasChanges()) return;
 
         ErrorText.Visibility = Visibility.Collapsed;
         // Existing login is immutable in WPF, regardless of editor text state.
@@ -154,7 +188,15 @@ public partial class TsdDeviceEditorWindow : Window
         var saved = false;
         try
         {
-            await _saveAction!(submission);
+            if (IsUiPreview)
+            {
+                // Password is deliberately dropped before returning to the demo list.
+                PreviewSubmission = submission with { Password = null };
+            }
+            else
+            {
+                await _saveAction!(submission);
+            }
             saved = true;
         }
         catch (Exception ex)
@@ -165,7 +207,7 @@ public partial class TsdDeviceEditorWindow : Window
         finally
         {
             _saving = false;
-            SaveButton.IsEnabled = true;
+            UpdateSaveButton();
             CancelButton.IsEnabled = true;
         }
 
