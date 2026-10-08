@@ -80,6 +80,12 @@ public partial class TsdDeviceEditorWindow : Window
             SaveButton.IsEnabled = false;
             SaveButton.ToolTip = UiPreviewContext.OperationUnavailable;
         }
+        Closing += (_, args) =>
+        {
+            // A request that has reached the server must not be abandoned
+            // via the title-bar close button while its result is unknown.
+            if (_saving) args.Cancel = true;
+        };
         Loaded += (_, _) =>
         {
             if (mode == AccountDialogMode.ChangePassword || mode == AccountDialogMode.Create)
