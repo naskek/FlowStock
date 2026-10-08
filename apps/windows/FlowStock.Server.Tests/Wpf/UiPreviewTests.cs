@@ -123,7 +123,7 @@ public sealed class UiPreviewTests
                 var grid = (DataGrid)accounts.FindName("DevicesGrid");
                 Assert.Equal(6, grid.Items.Count);
                 Assert.All(grid.Items.OfType<TsdDeviceInfo>(), row =>
-                    Assert.StartsWith("DEMO-DEVICE-", row.DeviceId, StringComparison.Ordinal));
+                    Assert.StartsWith("DEMO-DEVICE-", row.DeviceId));
                 Assert.True(grid.IsReadOnly);
                 Assert.Null(typeof(TsdDeviceWindow)
                     .GetField("_productionServices", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -158,6 +158,35 @@ public sealed class UiPreviewTests
                 }
             }
             finally { accounts.Close(); }
+        });
+    }
+
+    [Fact]
+    public async Task Account_modal_validation_does_not_submit_incomplete_credentials()
+    {
+        await OnUiThread(() =>
+        {
+            var calls = 0;
+            var dialog = new TsdDeviceEditorWindow(
+                AccountDialogMode.Create, null,
+                _ => { calls++; return Task.CompletedTask; });
+            try
+            {
+                ((TextBox)dialog.FindName("LoginBox")).Text = "test_login";
+                var save = (Button)dialog.FindName("SaveButton");
+                save.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert.Equal(0, calls);
+                Assert.Equal(Visibility.Visible,
+                    ((TextBlock)dialog.FindName("ErrorText")).Visibility);
+
+                ((PasswordBox)dialog.FindName("NewPasswordBox")).Password = "test-secret";
+                ((PasswordBox)dialog.FindName("ConfirmPasswordBox")).Password = "other-secret";
+                save.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert.Equal(0, calls);
+                Assert.Equal(Visibility.Visible,
+                    ((TextBlock)dialog.FindName("ErrorText")).Visibility);
+            }
+            finally { dialog.Close(); }
         });
     }
 
