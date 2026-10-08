@@ -153,6 +153,9 @@ public partial class TsdDeviceWindow : Window
                 return;
             }
 
+            // Abort on stale selection before the destructive server request.
+            await EnsureCurrentAccountAsync(account);
+
             // A failed/unknown DELETE response must never be treated as success.
             var deleted = false;
             Exception? error = null;
