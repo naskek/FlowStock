@@ -23,6 +23,12 @@ public partial class MainWindow
     protected override void OnContentRendered(EventArgs e)
     {
         base.OnContentRendered(e);
+        if (IsUiPreview)
+        {
+            // The production Loaded bootstrap normally removes this XAML setting
+            // before applying the multi-select ItemTemplate.
+            StatisticsVolumeCombo.ClearValue(ItemsControl.DisplayMemberPathProperty);
+        }
         EnsureCommercialStatisticsAdvancedUi();
         if (IsUiPreview)
         {
