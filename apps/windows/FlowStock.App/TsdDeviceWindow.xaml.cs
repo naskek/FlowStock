@@ -236,6 +236,8 @@ public partial class TsdDeviceWindow : Window
         }
         DevicesGrid.SelectedIndex = 0;
         AccountsStatusText.Text = "UI Preview / DEV · Демонстрационные аккаунты, сервер отключён.";
+        foreach (var button in new[] { CreateAccountButton, EditAccountButton, ChangePasswordButton })
+            button.ToolTip = "Открыть демонстрационный диалог (без сохранения).";
         UpdateActions();
     }
 }
