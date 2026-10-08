@@ -131,6 +131,7 @@ public sealed class UiPreviewTests
                 var account = Assert.IsType<TsdDeviceInfo>(grid.SelectedItem);
                 Assert.True(((Button)accounts.FindName("CreateAccountButton")).IsEnabled);
                 Assert.True(((Button)accounts.FindName("EditAccountButton")).IsEnabled);
+                Assert.True(((Button)accounts.FindName("DeleteAccountButton")).IsEnabled);
                 Assert.Null(accounts.FindName("ChangePasswordButton"));
                 Assert.Null(accounts.FindName("RefreshAccountsButton"));
 
@@ -286,6 +287,141 @@ public sealed class UiPreviewTests
                 watchdog.Stop();
                 if (dialog.IsVisible) dialog.Close();
             }
+        });
+    }
+
+    [Fact]
+    public async Task Account_rename_field_only_activates_after_explicit_button()
+    {
+        await OnUiThread(() =>
+        {
+            var account = new TsdDeviceInfo
+            {
+                Id = 88, Login = "current_login", DeviceId = "ACC-TEST-088",
+                Platform = "PC", IsActive = true, AccessRole = "OPERATOR"
+            };
+            var editor = new TsdDeviceEditorWindow(AccountDialogMode.Edit, account, null);
+            try
+            {
+                var save = (Button)editor.FindName("SaveButton");
+                var editLogin = (StackPanel)editor.FindName("EditLoginPanel");
+                var renamePanel = (StackPanel)editor.FindName("NewLoginPanel");
+                var renameButton = (Button)editor.FindName("ChangeLoginButton");
+                var renameBox = (TextBox)editor.FindName("NewLoginBox");
+
+                Assert.Equal(Visibility.Visible, editLogin.Visibility);
+                Assert.Equal(Visibility.Collapsed, renamePanel.Visibility);
+                Assert.False(save.IsEnabled);
+
+                // Programmatic changes to a hidden input are ignored.
+                renameBox.Text = "invisible_change";
+                Assert.False(save.IsEnabled);
+
+                renameButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert.Equal(Visibility.Visible, renamePanel.Visibility);
+                Assert.True(save.IsEnabled);
+                renameBox.Text = "current_login";
+                Assert.False(save.IsEnabled);
+                renameBox.Text = "new_login";
+                Assert.True(save.IsEnabled);
+
+                renameButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert.Equal(Visibility.Collapsed, renamePanel.Visibility);
+                Assert.Empty(renameBox.Text);
+                Assert.False(save.IsEnabled);
+                Assert.Equal("current_login",
+                    ((TextBlock)editor.FindName("LoginDisplayText")).Text);
+            }
+            finally { editor.Close(); }
+        });
+    }
+
+    [Fact]
+    public async Task Account_preview_rename_is_in_memory_and_keeps_device_id()
+    {
+        await OnUiThread(() =>
+        {
+            var accounts = new TsdDeviceWindow(new UiPreviewContext());
+            try
+            {
+                var grid = (DataGrid)accounts.FindName("DevicesGrid");
+                var original = Assert.IsType<TsdDeviceInfo>(grid.SelectedItem);
+                var renamed = new TsdDeviceEditorWindow(AccountDialogMode.Edit, original, null);
+                var watchdog = new DispatcherTimer(DispatcherPriority.Background)
+                {
+                    Interval = TimeSpan.FromSeconds(4)
+                };
+                var timeout = false;
+                watchdog.Tick += (_, _) =>
+                {
+                    timeout = true;
+                    watchdog.Stop();
+                    renamed.Close();
+                };
+                renamed.Loaded += (_, _) =>
+                {
+                    Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background,
+                        new Action(() =>
+                        {
+                            ((Button)renamed.FindName("ChangeLoginButton")).RaiseEvent(
+                                new RoutedEventArgs(ButtonBase.ClickEvent));
+                            ((TextBox)renamed.FindName("NewLoginBox")).Text = "renamed_demo";
+                            ((Button)renamed.FindName("SaveButton")).RaiseEvent(
+                                new RoutedEventArgs(ButtonBase.ClickEvent));
+                        }));
+                };
+                try
+                {
+                    watchdog.Start();
+                    Assert.True(renamed.ShowDialog());
+                    Assert.False(timeout);
+                    var submission = Assert.IsType<AccountEditSubmission>(renamed.PreviewSubmission);
+                    Assert.Equal("renamed_demo", submission.Login);
+                    Assert.Null(submission.Password);
+                    Assert.Equal(original.DeviceId, original.DeviceId);
+                }
+                finally
+                {
+                    watchdog.Stop();
+                    if (renamed.IsVisible) renamed.Close();
+                }
+
+                // Demo row replacement does not touch backend or change identity.
+                var copy = typeof(TsdDeviceWindow).GetMethod(
+                    "CopyAccount", BindingFlags.Static | BindingFlags.NonPublic)!;
+                var updated = Assert.IsType<TsdDeviceInfo>(copy.Invoke(null,
+                [
+                    original, original.Platform, original.IsActive, original.AccessRole, "renamed_demo"
+                ]));
+                Assert.Equal(original.Id, updated.Id);
+                Assert.Equal(original.DeviceId, updated.DeviceId);
+                Assert.Equal("renamed_demo", updated.Login);
+            }
+            finally { accounts.Close(); }
+        });
+    }
+
+    [Fact]
+    public async Task Account_preview_delete_removes_only_synthetic_account()
+    {
+        await OnUiThread(() =>
+        {
+            var accounts = new TsdDeviceWindow(new UiPreviewContext());
+            try
+            {
+                var grid = (DataGrid)accounts.FindName("DevicesGrid");
+                var selected = Assert.IsType<TsdDeviceInfo>(grid.SelectedItem);
+                Assert.True(((Button)accounts.FindName("DeleteAccountButton")).IsEnabled);
+                var delete = typeof(TsdDeviceWindow).GetMethod(
+                    "DeleteAccountAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                var task = Assert.IsType<Task>(delete.Invoke(accounts, [selected]));
+                Assert.True(task.IsCompletedSuccessfully);
+                Assert.Equal(5, grid.Items.Count);
+                Assert.DoesNotContain(grid.Items.OfType<TsdDeviceInfo>(),
+                    row => row.Id == selected.Id);
+                Assert.True(accounts.IsUiPreview);
+            }
+            finally { accounts.Close(); }
         });
     }
 
@@ -529,7 +665,7 @@ public sealed class UiPreviewTests
                 // Account preview buttons open presentation-only dialogs. They
                 // deliberately cannot persist data; don't invoke a modal from
                 // this generic event-probing loop.
-                if (button.Name is "CreateAccountButton" or "EditAccountButton")
+                if (button.Name is "CreateAccountButton" or "EditAccountButton" or "DeleteAccountButton")
                 {
                     // These only navigate to local, non-persisting demo dialogs.
                     // Their enabled state depends on the currently selected row.
