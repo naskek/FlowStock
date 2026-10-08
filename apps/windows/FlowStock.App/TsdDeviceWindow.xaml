@@ -18,28 +18,59 @@
                     Width="150" Margin="0,0,8,4" Click="Create_Click" />
             <Button x:Name="EditAccountButton" Content="Редактировать"
                     Width="140" Margin="0,0,8,4" Click="Edit_Click" IsEnabled="False" />
-            <Button x:Name="ChangePasswordButton" Content="Сменить пароль"
-                    Width="145" Margin="0,0,8,4" Click="ChangePassword_Click" IsEnabled="False" />
-            <Button x:Name="RefreshAccountsButton" Content="Обновить"
-                    Width="105" Margin="0,0,8,4" Click="Refresh_Click" />
         </WrapPanel>
         <DataGrid x:Name="DevicesGrid"
                   Grid.Row="2"
                   AutoGenerateColumns="False"
-                  IsReadOnly="True"
+                  IsReadOnly="False"
                   CanUserAddRows="False"
                   SelectionMode="Single"
                   SelectionChanged="DevicesGrid_SelectionChanged"
-                  MouseDoubleClick="DevicesGrid_MouseDoubleClick">
+                  MouseDoubleClick="DevicesGrid_MouseDoubleClick"
+                  KeyDown="DevicesGrid_KeyDown">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Логин" Binding="{Binding Login}" Width="2*" />
-                <DataGridTextColumn Header="Платформа" Binding="{Binding PlatformDisplay}" Width="*" />
-                <DataGridCheckBoxColumn Header="Активен" Binding="{Binding IsActive}" Width="95" />
-                <DataGridTextColumn Header="Роль ПК Web" Binding="{Binding AccessRole}" Width="*" />
-                <DataGridTextColumn Header="ID устройства" Binding="{Binding DeviceId}" Width="1.6*" />
+                <DataGridTextColumn Header="Логин" Binding="{Binding Login}"
+                                    IsReadOnly="True" Width="2*" />
+                <DataGridTemplateColumn Header="Платформа" Width="*">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <ComboBox SelectedValuePath="Tag"
+                                      SelectedValue="{Binding Platform, Mode=OneWay}"
+                                      SelectionChanged="InlinePlatform_SelectionChanged">
+                                <ComboBoxItem Content="ТСД" Tag="TSD" />
+                                <ComboBoxItem Content="ПК" Tag="PC" />
+                                <ComboBoxItem Content="ПК + ТСД" Tag="BOTH" />
+                            </ComboBox>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn Header="Активен" Width="95">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <CheckBox IsChecked="{Binding IsActive, Mode=OneWay}"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"
+                                      Click="InlineActive_Click" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn Header="Роль ПК Web" Width="*">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <ComboBox SelectedValuePath="Tag"
+                                      SelectedValue="{Binding AccessRole, Mode=OneWay}"
+                                      SelectionChanged="InlineRole_SelectionChanged">
+                                <ComboBoxItem Content="OPERATOR" Tag="OPERATOR" />
+                                <ComboBoxItem Content="ADMIN" Tag="ADMIN" />
+                            </ComboBox>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Header="ID устройства" Binding="{Binding DeviceId}"
+                                    IsReadOnly="True" Width="1.6*" />
             </DataGrid.Columns>
         </DataGrid>
         <TextBlock x:Name="AccountsStatusText" Grid.Row="3" Margin="0,8,0,0"
-                   Foreground="Gray" Text="Выберите запись для редактирования или смены пароля." />
+                   Foreground="Gray" Text="Выберите запись для редактирования. F5 — перечитать список." />
     </Grid>
 </Window>
