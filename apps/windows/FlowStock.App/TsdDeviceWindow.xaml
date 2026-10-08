@@ -66,7 +66,7 @@
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
-                <DataGridTextColumn Header="ID устройства" Binding="{Binding DeviceId}"
+                <DataGridTextColumn Header="ID аккаунта" Binding="{Binding DeviceId}"
                                     IsReadOnly="True" Width="1.6*" />
             </DataGrid.Columns>
         </DataGrid>
