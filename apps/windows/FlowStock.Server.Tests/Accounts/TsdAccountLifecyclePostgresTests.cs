@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using FlowStock.Server.Tests.Tsd;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -11,7 +12,9 @@ namespace FlowStock.Server.Tests.Accounts;
 
 public sealed class TsdAccountLifecyclePostgresTests
 {
-    private const string MachineKey = "test-account-lifecycle-machine-key-not-a-secret";
+    private static readonly string MachineKey = new('k', 40);
+    private static string FixturePassword(string login) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(login)));
 
     [PostgresFact]
     public async Task Account_delete_requires_machine_key_and_rejects_unknown_account()
@@ -45,7 +48,7 @@ public sealed class TsdAccountLifecyclePostgresTests
         try
         {
             var sessions = new PcWebSessionStore(cs);
-            var login = sessions.Login(target.Login, "fixture-pass", DateTimeOffset.UtcNow);
+            var login = sessions.Login(target.Login, FixturePassword(target.Login), DateTimeOffset.UtcNow);
             Assert.True(login.IsSuccess);
             var http = new DefaultHttpContext();
             http.Request.Headers.Cookie = $"{PcWebSessionStore.CookieName}={login.Token}";
@@ -162,7 +165,7 @@ WHERE is_active AND access_role = 'ADMIN' AND platform IN ('PC','BOTH');"));
         var deviceId = "ACC-TEST-" + Guid.NewGuid().ToString("N");
         var salt = RandomNumberGenerator.GetBytes(16);
         using var passwordHash = new Rfc2898DeriveBytes(
-            "fixture-pass", salt, 100_000, HashAlgorithmName.SHA256);
+            FixturePassword(login), salt, 100_000, HashAlgorithmName.SHA256);
         var hash = passwordHash.GetBytes(32);
         await using var connection = new NpgsqlConnection(cs);
         await connection.OpenAsync();
