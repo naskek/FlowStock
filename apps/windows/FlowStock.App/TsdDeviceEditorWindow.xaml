@@ -38,6 +38,8 @@
                     <CheckBox x:Name="IsActiveCheck" Content="Аккаунт активен" Margin="0,0,0,16" />
                 </StackPanel>
                 <StackPanel x:Name="PasswordFieldsPanel">
+                    <TextBlock x:Name="PasswordHintText" Foreground="Gray" Margin="0,0,0,8"
+                               TextWrapping="Wrap" />
                     <TextBlock Text="Новый пароль" />
                     <PasswordBox x:Name="NewPasswordBox" Margin="0,4,0,12" />
                     <TextBlock Text="Подтверждение пароля" />
