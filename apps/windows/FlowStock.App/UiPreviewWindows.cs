@@ -178,6 +178,7 @@ public partial class TsdDeviceWindow
         ArgumentNullException.ThrowIfNull(preview);
         InitializeComponent();
         UiPreviewContext.Prepare(this);
+        InitializeUiPreviewAccounts();
     }
 }
 
