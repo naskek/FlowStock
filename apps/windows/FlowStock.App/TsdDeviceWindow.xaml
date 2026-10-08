@@ -1,62 +1,45 @@
 <Window x:Class="FlowStock.App.TsdDeviceWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Создание аккаунта"
-        Height="560" Width="900"
+        Title="Учётные записи"
+        Height="550" Width="900" MinHeight="340" MinWidth="650"
         WindowStartupLocation="CenterOwner">
     <Grid Margin="12">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="2*" />
-            <ColumnDefinition Width="*" />
-        </Grid.ColumnDefinitions>
-        <Grid Grid.Column="0">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-            <TextBlock Grid.Row="0" Text="Аккаунты" FontWeight="SemiBold" />
-            <DataGrid x:Name="DevicesGrid"
-                      Grid.Row="1"
-                      AutoGenerateColumns="False"
-                      IsReadOnly="True"
-                      Margin="0,6,0,8"
-                      SelectionChanged="DevicesGrid_SelectionChanged">
-                <DataGrid.Columns>
-                    <DataGridTextColumn Header="ID" Binding="{Binding DeviceId}" Width="160" />
-                    <DataGridTextColumn Header="Логин" Binding="{Binding Login}" Width="160" />
-                    <DataGridTextColumn Header="Платформа" Binding="{Binding PlatformDisplay}" Width="120" />
-                    <DataGridCheckBoxColumn Header="Активен" Binding="{Binding IsActive}" Width="90" />
-                    <DataGridTextColumn Header="Роль ПК" Binding="{Binding AccessRole}" Width="100" />
-                </DataGrid.Columns>
-            </DataGrid>
-            <StackPanel Grid.Row="2" Orientation="Horizontal">
-                <Button Content="Обновить" Width="120" Click="Refresh_Click" />
-                <Button Content="Новый" Width="120" Margin="8,0,0,0" Click="New_Click" />
-            </StackPanel>
-        </Grid>
-        <GroupBox Grid.Column="1" Header="Данные аккаунта" Margin="12,0,0,0">
-            <DockPanel Margin="8" LastChildFill="True">
-                <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-                    <Button Content="Сохранить" Width="140" Click="Save_Click" />
-                </StackPanel>
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel>
-                        <TextBlock Text="Логин" />
-                        <TextBox x:Name="LoginBox" Margin="0,2,0,8" />
-                        <TextBlock Text="Пароль" />
-                        <TextBox x:Name="PasswordBox" Margin="0,2,0,8" />
-                        <CheckBox x:Name="IsActiveCheck" Content="Активен" Margin="0,0,0,8" />
-                        <CheckBox x:Name="IsAdminCheck" Content="ADMIN в ПК Web" Margin="0,0,0,8" />
-                        <TextBlock Text="Платформа" />
-                        <ComboBox x:Name="PlatformBox" Margin="0,2,0,8">
-                            <ComboBoxItem Content="ТСД" Tag="TSD" />
-                            <ComboBoxItem Content="ПК" Tag="PC" />
-                            <ComboBoxItem Content="ПК + ТСД" Tag="BOTH" />
-                        </ComboBox>
-                    </StackPanel>
-                </ScrollViewer>
-            </DockPanel>
-        </GroupBox>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" Text="Учётные записи ПК Web и ТСД"
+                   FontSize="17" FontWeight="SemiBold" Margin="0,0,0,12" />
+        <WrapPanel Grid.Row="1" Margin="0,0,0,8">
+            <Button x:Name="CreateAccountButton" Content="Создать аккаунт"
+                    Width="150" Margin="0,0,8,4" Click="Create_Click" />
+            <Button x:Name="EditAccountButton" Content="Редактировать"
+                    Width="140" Margin="0,0,8,4" Click="Edit_Click" IsEnabled="False" />
+            <Button x:Name="ChangePasswordButton" Content="Сменить пароль"
+                    Width="145" Margin="0,0,8,4" Click="ChangePassword_Click" IsEnabled="False" />
+            <Button x:Name="RefreshAccountsButton" Content="Обновить"
+                    Width="105" Margin="0,0,8,4" Click="Refresh_Click" />
+        </WrapPanel>
+        <DataGrid x:Name="DevicesGrid"
+                  Grid.Row="2"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  CanUserAddRows="False"
+                  SelectionMode="Single"
+                  SelectionChanged="DevicesGrid_SelectionChanged"
+                  MouseDoubleClick="DevicesGrid_MouseDoubleClick">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Логин" Binding="{Binding Login}" Width="2*" />
+                <DataGridTextColumn Header="Платформа" Binding="{Binding PlatformDisplay}" Width="*" />
+                <DataGridCheckBoxColumn Header="Активен" Binding="{Binding IsActive}" Width="95" />
+                <DataGridTextColumn Header="Роль ПК Web" Binding="{Binding AccessRole}" Width="*" />
+                <DataGridTextColumn Header="ID устройства" Binding="{Binding DeviceId}" Width="1.6*" />
+            </DataGrid.Columns>
+        </DataGrid>
+        <TextBlock x:Name="AccountsStatusText" Grid.Row="3" Margin="0,8,0,0"
+                   Foreground="Gray" Text="Выберите запись для редактирования или смены пароля." />
     </Grid>
 </Window>
