@@ -337,6 +337,67 @@ public sealed class UiPreviewTests
     }
 
     [Fact]
+    public async Task Account_rename_submits_new_login_to_existing_update_callback()
+    {
+        await OnUiThread(() =>
+        {
+            var account = new TsdDeviceInfo
+            {
+                Id = 89, DeviceId = "ACC-TEST-089", Login = "old_login",
+                Platform = "PC", IsActive = true, AccessRole = "OPERATOR"
+            };
+            AccountEditSubmission? received = null;
+            var editor = new TsdDeviceEditorWindow(
+                AccountDialogMode.Edit, account, submission =>
+                {
+                    received = submission;
+                    return Task.CompletedTask;
+                });
+            var timedOut = false;
+            var watchdog = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromSeconds(4)
+            };
+            watchdog.Tick += (_, _) =>
+            {
+                timedOut = true;
+                watchdog.Stop();
+                editor.Close();
+            };
+            editor.Loaded += (_, _) =>
+            {
+                Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background,
+                    new Action(() =>
+                    {
+                        var save = (Button)editor.FindName("SaveButton");
+                        Assert.False(save.IsEnabled);
+                        ((Button)editor.FindName("ChangeLoginButton")).RaiseEvent(
+                            new RoutedEventArgs(ButtonBase.ClickEvent));
+                        ((TextBox)editor.FindName("NewLoginBox")).Text = "new_login";
+                        Assert.True(save.IsEnabled);
+                        save.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                    }));
+            };
+            try
+            {
+                watchdog.Start();
+                Assert.True(editor.ShowDialog());
+                Assert.False(timedOut);
+                var submission = Assert.IsType<AccountEditSubmission>(received);
+                Assert.Equal("new_login", submission.Login);
+                Assert.Null(submission.Password);
+                Assert.Equal("old_login", account.Login);
+                Assert.Equal("ACC-TEST-089", account.DeviceId);
+            }
+            finally
+            {
+                watchdog.Stop();
+                if (editor.IsVisible) editor.Close();
+            }
+        });
+    }
+
+    [Fact]
     public async Task Account_preview_rename_is_in_memory_and_keeps_device_id()
     {
         await OnUiThread(() =>
