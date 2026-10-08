@@ -110,6 +110,57 @@ public sealed class UiPreviewTests
         });
     }
 
+
+    [Fact]
+    public async Task Account_preview_shows_demo_rows_and_all_three_backend_free_dialogs()
+    {
+        await OnUiThread(() =>
+        {
+            var accounts = new TsdDeviceWindow(new UiPreviewContext());
+            try
+            {
+                Assert.True(accounts.IsUiPreview);
+                var grid = (DataGrid)accounts.FindName("DevicesGrid");
+                Assert.Equal(6, grid.Items.Count);
+                Assert.All(grid.Items.OfType<TsdDeviceInfo>(), row =>
+                    Assert.StartsWith("DEMO-DEVICE-", row.DeviceId, StringComparison.Ordinal));
+                Assert.True(grid.IsReadOnly);
+                Assert.Null(typeof(TsdDeviceWindow)
+                    .GetField("_productionServices", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .GetValue(accounts));
+                var account = Assert.IsType<TsdDeviceInfo>(grid.SelectedItem);
+
+                foreach (var mode in new[]
+                {
+                    AccountDialogMode.Create, AccountDialogMode.Edit, AccountDialogMode.ChangePassword
+                })
+                {
+                    var dialog = new TsdDeviceEditorWindow(
+                        mode, mode == AccountDialogMode.Create ? null : account, null);
+                    try
+                    {
+                        Assert.True(dialog.IsUiPreview);
+                        Assert.Contains("UI Preview / DEV", dialog.Title);
+                        Assert.False(((Button)dialog.FindName("SaveButton")).IsEnabled);
+                        Assert.Empty(((PasswordBox)dialog.FindName("NewPasswordBox")).Password);
+                        Assert.Empty(((PasswordBox)dialog.FindName("ConfirmPasswordBox")).Password);
+                        var profile = (StackPanel)dialog.FindName("ProfileFieldsPanel");
+                        var password = (StackPanel)dialog.FindName("PasswordFieldsPanel");
+                        Assert.Equal(mode == AccountDialogMode.ChangePassword
+                            ? Visibility.Collapsed : Visibility.Visible, profile.Visibility);
+                        Assert.Equal(mode == AccountDialogMode.Edit
+                            ? Visibility.Collapsed : Visibility.Visible, password.Visibility);
+                        Assert.Equal(mode == AccountDialogMode.Create
+                            ? string.Empty : account.Login,
+                            ((TextBox)dialog.FindName("LoginBox")).Text);
+                    }
+                    finally { dialog.Close(); }
+                }
+            }
+            finally { accounts.Close(); }
+        });
+    }
+
     [Fact]
     public async Task Hu_registry_preview_is_populated_and_safe_without_services()
     {
@@ -156,6 +207,14 @@ public sealed class UiPreviewTests
         {
             if (element is Button button && button.Content as string != "Закрыть")
             {
+                // Account preview buttons open presentation-only dialogs. They
+                // deliberately cannot persist data; don't invoke a modal from
+                // this generic event-probing loop.
+                if (button.Name is "CreateAccountButton" or "EditAccountButton" or "ChangePasswordButton")
+                {
+                    Assert.True(button.IsEnabled);
+                    continue;
+                }
                 Assert.False(button.IsEnabled);
                 button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 Assert.False(button.IsEnabled);
