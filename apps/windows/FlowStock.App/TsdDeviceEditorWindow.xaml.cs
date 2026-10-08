@@ -165,10 +165,11 @@ public partial class TsdDeviceEditorWindow : Window
         _saving = true;
         SaveButton.IsEnabled = false;
         CancelButton.IsEnabled = false;
+        var saved = false;
         try
         {
             await _saveAction!(submission);
-            DialogResult = true;
+            saved = true;
         }
         catch (Exception ex)
         {
@@ -181,6 +182,11 @@ public partial class TsdDeviceEditorWindow : Window
             SaveButton.IsEnabled = true;
             CancelButton.IsEnabled = true;
         }
+
+        // Setting DialogResult closes a modal synchronously. Closing must see
+        // _saving = false, otherwise it cancels a successful save.
+        if (saved)
+            DialogResult = true;
     }
 
     private void ShowError(string message)
