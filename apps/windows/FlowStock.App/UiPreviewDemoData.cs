@@ -130,7 +130,7 @@ internal static class UiPreviewDemoData
         var state = States[i % States.Length];
 
         if (BooleanFields.Contains(name)) return i % 3 != 0;
-        if (DateFields.Contains(name)) return name is "ClosedAt" or "ShippedAt" && i % 3 != 0
+        if (DateFields.Contains(name)) return (name is "ClosedAt" or "ShippedAt") && i % 3 != 0
             ? null : date;
         if (NumberFields.Contains(name)) return (decimal)(name switch
         {
