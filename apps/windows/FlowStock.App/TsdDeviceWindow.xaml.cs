@@ -145,6 +145,13 @@ public partial class TsdDeviceWindow : Window
                     ? "Пароль успешно изменён." : "Изменения аккаунта сохранены.";
             }
         }
+        catch (Exception ex)
+        {
+            if (!IsUiPreview)
+                _services.AppLogger.Error("account_dialog_failed", ex);
+            MessageBox.Show("Не удалось завершить операцию с аккаунтом: " + ex.Message,
+                "Аккаунты", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
         finally
         {
             _dialogOpen = false;
