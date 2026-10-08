@@ -111,6 +111,36 @@ WHERE is_active AND access_role = 'ADMIN' AND platform IN ('PC','BOTH');"));
         }
     }
 
+    [PostgresFact]
+    public async Task Concurrent_deletion_of_two_administrators_leaves_one_active()
+    {
+        var cs = TestConnection();
+        Assert.Equal(0, await Count(cs, @"
+SELECT COUNT(*) FROM tsd_devices
+WHERE is_active AND access_role = 'ADMIN' AND platform IN ('PC','BOTH');"));
+        var suffix = Guid.NewGuid().ToString("N");
+        var first = await CreateAccount(cs, "concurrent-first-"+suffix, "PC", "ADMIN");
+        var second = await CreateAccount(cs, "concurrent-second-"+suffix, "BOTH", "ADMIN");
+        try
+        {
+            using var start = new ManualResetEventSlim();
+            var one = Task.Run(() => { start.Wait(); return TsdAccountLifecycle.Delete(cs, first.Id); });
+            var two = Task.Run(() => { start.Wait(); return TsdAccountLifecycle.Delete(cs, second.Id); });
+            start.Set();
+            var results = await Task.WhenAll(one, two);
+            Assert.Contains(TsdAccountLifecycle.DeleteOutcome.Deleted, results);
+            Assert.Contains(TsdAccountLifecycle.DeleteOutcome.LastActivePcAdmin, results);
+            Assert.Equal(1, await Count(cs, @"
+SELECT COUNT(*) FROM tsd_devices
+WHERE is_active AND access_role = 'ADMIN' AND platform IN ('PC','BOTH');"));
+        }
+        finally
+        {
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", first.Id);
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", second.Id);
+        }
+    }
+
     private static async Task<WebApplication> StartHost(string cs)
     {
         var builder = WebApplication.CreateBuilder();
