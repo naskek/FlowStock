@@ -117,6 +117,7 @@
     var requestOptions = Object.assign(
       {
         cache: "no-store",
+        credentials: "same-origin",
         signal: controller ? controller.signal : undefined,
       },
       options || {}
@@ -144,6 +145,10 @@
               if (code === "BLOCK_DISABLED") {
                 notifyBlockDisabled(url, payload);
               }
+              if (response.status === 401 && url.indexOf("/api/tsd/login") === -1
+                  && url.indexOf("/api/tsd/") !== -1) {
+                notifyTsdSessionExpired();
+              }
               throw requestError;
             }
             if (!payload && response.status !== 204) {
@@ -163,6 +168,11 @@
           clearTimeout(timer);
         }
       });
+  }
+
+  function notifyTsdSessionExpired() {
+    try { localStorage.removeItem("flowstock_account"); } catch (error) {}
+    try { window.dispatchEvent(new Event("flowstock:tsd-session-expired")); } catch (error) {}
   }
 
   function getClientBlockContext() {
