@@ -154,7 +154,6 @@ public partial class AdminWindow
             "packaging" => new PackagingManagerWindow(preview),
             "doc-numbering" => new DocNumberingSettingsWindow(preview),
             "backups" => new BackupManagerWindow(preview),
-            "maintenance" => new MaintenanceWindow(preview),
             _ => throw new InvalidOperationException($"Неизвестная страница настроек: {key}")
         };
         return SettingsCenterWindowPageHost.Detach(controller);

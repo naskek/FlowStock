@@ -339,10 +339,11 @@ Read-контракт строки возвращает `unit_price_gross`, `vat
 - явное применение: `dotnet FlowStock.Server.dll maintenance backfill-reservations --apply`
 - docker/deploy wrapper: `bash deploy/scripts/backfill_order_reservations.sh` или `bash deploy/scripts/backfill_order_reservations.sh --apply`
 
-Server API/WPF:
+Серверный maintenance API (операторская функция; не часть WPF Settings Center):
 - `POST /api/admin/maintenance/backfill-reservations/dry-run` выполняет dry-run на сервере и возвращает структурированный отчет без изменения данных;
 - `POST /api/admin/maintenance/backfill-reservations/apply` применяет backfill только при `confirm = "APPLY"`;
-- WPF запускает backfill только через server API из окна `Администрирование / Обслуживание`;
+- доступ к вызовам API требует отдельной оценки и обеспечения авторизации; строка `APPLY` не удостоверяет личность оператора;
+- штатный WPF больше не показывает страницу запуска legacy backfill: операторские/восстановительные сценарии используют поддерживаемую серверную команду/скрипт;
 - в рамках процесса сервера параллельный запуск backfill блокируется.
 
 Правила backfill:

@@ -26,8 +26,8 @@ public sealed class AdminWindowCategoryNavigationSourceTests
         Assert.Contains("Tag=\"clients\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Header=\"Паллетные этикетки\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Tag=\"printing\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Header=\"Обслуживание FlowStock\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Tag=\"maintenance\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Header=\"Обслуживание FlowStock\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Tag=\"maintenance\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Tag=\"backups\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Tag=\"folders\"", xaml, StringComparison.Ordinal);
 
@@ -98,8 +98,7 @@ public sealed class AdminWindowCategoryNavigationSourceTests
                      "WriteOffReasonWindow",
                      "PackagingManagerWindow",
                      "DocNumberingSettingsWindow",
-                     "BackupManagerWindow",
-                     "MaintenanceWindow"
+                     "BackupManagerWindow"
                  })
         {
             Assert.Contains($"new {manager}", factory, StringComparison.Ordinal);
@@ -107,6 +106,8 @@ public sealed class AdminWindowCategoryNavigationSourceTests
 
         Assert.Contains("new LocationSettingsPage", code, StringComparison.Ordinal);
         Assert.Contains("SettingsCenterWindowPageHost.Detach", factory, StringComparison.Ordinal);
+        Assert.DoesNotContain("new MaintenanceWindow", factory, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"maintenance\"", factory, StringComparison.Ordinal);
         Assert.DoesNotContain("ShowDialog", factory, StringComparison.Ordinal);
 
         var detach = ExtractMethodBody(host, "public static HostedSettingsPage Detach");

@@ -65,8 +65,9 @@ public sealed class UiPreviewTests
 
                 var tree = (TreeView)admin.FindName("AdminNavigationTree");
                 var categories = Descendants(tree).OfType<TreeViewItem>().Where(item => item.Tag is string).ToArray();
-                Assert.Equal(16, categories.Length);
+                Assert.Equal(15, categories.Length);
                 Assert.DoesNotContain(categories, category => Equals(category.Tag, "update"));
+                Assert.DoesNotContain(categories, category => Equals(category.Tag, "maintenance"));
 
                 var systemPanel = (ScrollViewer)admin.FindName("SystemCategoryPanel");
                 Assert.Contains(Descendants(systemPanel).OfType<GroupBox>(),
@@ -83,7 +84,7 @@ public sealed class UiPreviewTests
 
                 var cache = (System.Collections.IDictionary)typeof(AdminWindow)
                     .GetField("_embeddedPages", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(admin)!;
-                Assert.Equal(13, cache.Count);
+                Assert.Equal(12, cache.Count);
                 foreach (var hosted in cache.Values)
                 {
                     var controller = hosted!.GetType().GetProperty("Controller")!.GetValue(hosted)!;
