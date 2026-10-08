@@ -15,8 +15,9 @@ public sealed class AdminWindowCategoryNavigationSourceTests
         Assert.Contains("Tag=\"system\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Tag=\"db-connection\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Tag=\"accounts\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Header=\"Обновление\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Tag=\"update\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Header=\"Обновление\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Tag=\"update\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"Обновление FlowStock\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Header=\"Справочники\" IsExpanded=\"True\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Tag=\"item-types\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Tag=\"locations\"", xaml, StringComparison.Ordinal);
@@ -33,7 +34,6 @@ public sealed class AdminWindowCategoryNavigationSourceTests
         foreach (var panelName in new[]
                  {
                      "SystemCategoryPanel",
-                     "UpdateCategoryPanel",
                      "ClientsCategoryPanel",
                      "PrintingCategoryPanel",
                      "EmbeddedPagePanel"
@@ -42,7 +42,7 @@ public sealed class AdminWindowCategoryNavigationSourceTests
             Assert.Contains($"x:Name=\"{panelName}\"", xaml, StringComparison.Ordinal);
         }
 
-        Assert.Equal(4, CountOccurrences(xaml, "HorizontalScrollBarVisibility=\"Disabled\""));
+        Assert.Equal(3, CountOccurrences(xaml, "HorizontalScrollBarVisibility=\"Disabled\""));
         Assert.Contains("MinHeight=\"620\" MinWidth=\"900\"", xaml, StringComparison.Ordinal);
     }
 
@@ -66,7 +66,8 @@ public sealed class AdminWindowCategoryNavigationSourceTests
         var handler = ExtractMethodBody(code, "private void AdminNavigationTree_SelectedItemChanged");
 
         Assert.Contains("SystemCategoryPanel.Visibility", handler, StringComparison.Ordinal);
-        Assert.Contains("UpdateCategoryPanel.Visibility", handler, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpdateCategoryPanel.Visibility", handler, StringComparison.Ordinal);
+        Assert.DoesNotContain("key == \"update\"", handler, StringComparison.Ordinal);
         Assert.Contains("ClientsCategoryPanel.Visibility", handler, StringComparison.Ordinal);
         Assert.Contains("PrintingCategoryPanel.Visibility", handler, StringComparison.Ordinal);
         Assert.DoesNotContain("FoldersCategoryPanel", code, StringComparison.Ordinal);
