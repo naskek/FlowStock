@@ -3316,12 +3316,10 @@ public partial class MainWindow : Window
 
     private void OpenHuRegistry_Click(object sender, RoutedEventArgs e)
     {
-        if (IsUiPreview) return;
-
-        var window = new HuRegistryWindow(_services)
-        {
-            Owner = this
-        };
+        var window = IsUiPreview
+            ? new HuRegistryWindow(new UiPreviewContext())
+            : new HuRegistryWindow(_services);
+        window.Owner = this;
         window.ShowDialog();
     }
 
