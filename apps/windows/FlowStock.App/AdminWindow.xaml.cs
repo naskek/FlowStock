@@ -91,8 +91,7 @@ public partial class AdminWindow : Window
             ["write-off-reasons"] = "Причины списания",
             ["packaging"] = "Упаковочные единицы / кратности",
             ["doc-numbering"] = "Нумерация документов",
-            ["backups"] = "Резервные копии",
-            ["maintenance"] = "Обслуживание FlowStock"
+            ["backups"] = "Резервные копии"
         };
 
     private HostedSettingsPage GetOrCreateEmbeddedPage(string key)
@@ -116,7 +115,6 @@ public partial class AdminWindow : Window
             "packaging" => SettingsCenterWindowPageHost.Detach(new PackagingManagerWindow(_services)),
             "doc-numbering" => SettingsCenterWindowPageHost.Detach(new DocNumberingSettingsWindow(_services)),
             "backups" => SettingsCenterWindowPageHost.Detach(new BackupManagerWindow(_services)),
-            "maintenance" => SettingsCenterWindowPageHost.Detach(new MaintenanceWindow(_services)),
             _ => throw new InvalidOperationException($"Неизвестная страница настроек: {key}")
         };
         _embeddedPages[key] = created;
