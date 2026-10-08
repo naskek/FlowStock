@@ -17,9 +17,66 @@ public partial class MainWindow
         ApplyExperimentalTabVisibility();
         UpdateStockModeUi();
         InitializeCommercialStatisticsFilters();
-        StatisticsKpiText.Text = "Демо: продажи 2 468 750 ₽ · 24 документа · 12 контрагентов";
+        PopulatePreviewStatisticsFilters();
+        StatisticsKpiText.Text = "Демо: продажи 2 468 750 ₽ · 24 документа · 6 контрагентов";
         StatisticsQualityText.Text = "Демонстрационные значения — без подключения к серверу";
         StatisticsPageText.Text = "24 из 24 (DEMO)";
+    }
+    private void PopulatePreviewStatisticsFilters()
+    {
+        // Real filter option types keep the production ComboBox templates identical.
+        _suppressCommercialStatisticsFilterEvents = true;
+        try
+        {
+            _statisticsPartnerOptions =
+            [
+                new(null, "Все контрагенты"),
+                new(1, "ООО «Торговый дом Север»"),
+                new(2, "ООО «Гастрономия и традиции»"),
+                new(3, "ИП Иванов Иван Иванович"),
+                new(4, "ООО «Продуктовая логистика — Северо-Западный регион»")
+            ];
+            _statisticsItemOptions =
+            [
+                new(null, "Все товары"),
+                new(1, "Хрен столовый классический 200 г"),
+                new(2, "Горчица русская острая 200 г"),
+                new(3, "Аджика домашняя 200 г"),
+                new(4, "Паста чесночная 200 г")
+            ];
+            _statisticsGtinOptions =
+            [
+                new(null, "Все GTIN"),
+                new("0460000000001", "0460000000001"),
+                new("0460000000002", "0460000000002")
+            ];
+            _statisticsBrandOptions =
+            [
+                new(null, "Все бренды"),
+                new("Русские закуски", "Русские закуски"),
+                new("СТМ / демонстрация", "СТМ / демонстрация")
+            ];
+            _statisticsVolumeOptions =
+            [
+                new(null, "Все фасовки"),
+                new("200 г", "200 г"),
+                new("1 кг", "1 кг")
+            ];
+            StatisticsPartnerCombo.ItemsSource = _statisticsPartnerOptions;
+            StatisticsPartnerCombo.SelectedIndex = 0;
+            StatisticsItemCombo.ItemsSource = _statisticsItemOptions;
+            StatisticsItemCombo.SelectedIndex = 0;
+            StatisticsGtinCombo.ItemsSource = _statisticsGtinOptions;
+            StatisticsGtinCombo.SelectedIndex = 0;
+            StatisticsBrandCombo.ItemsSource = _statisticsBrandOptions;
+            StatisticsBrandCombo.SelectedIndex = 0;
+            StatisticsVolumeCombo.ItemsSource = _statisticsVolumeOptions;
+            StatisticsVolumeCombo.SelectedIndex = 0;
+        }
+        finally
+        {
+            _suppressCommercialStatisticsFilterEvents = false;
+        }
     }
 }
 
