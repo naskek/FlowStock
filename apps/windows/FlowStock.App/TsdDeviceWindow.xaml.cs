@@ -82,7 +82,9 @@ public partial class TsdDeviceWindow : Window
         {
             if (element is WpfComboBox or WpfCheckBox)
                 return true;
-            element = VisualTreeHelper.GetParent(element);
+            element = element is Visual
+                ? VisualTreeHelper.GetParent(element)
+                : LogicalTreeHelper.GetParent(element);
         }
         return false;
     }
