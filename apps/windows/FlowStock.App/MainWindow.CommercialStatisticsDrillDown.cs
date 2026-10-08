@@ -359,7 +359,9 @@ public partial class MainWindow
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture) =>
             value is WpfCommercialStatisticsGroup group
                 ? owner.GetCommercialStatisticsGroupDisplayLabel(group)
-                : string.Empty;
+                : owner.IsUiPreview && value is System.Data.DataRowView previewRow
+                    ? previewRow["Label"]?.ToString() ?? string.Empty
+                    : string.Empty;
 
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
             throw new NotSupportedException();
