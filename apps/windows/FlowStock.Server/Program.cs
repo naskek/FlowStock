@@ -693,10 +693,11 @@ app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest requ
     string previousAccessRole;
     bool previousIsActive;
     string previousPlatform;
+    string previousLogin;
     using (var exists = connection.CreateCommand())
     {
         exists.Transaction = transaction;
-        exists.CommandText = "SELECT is_active, platform, access_role FROM tsd_devices WHERE id = @id FOR UPDATE;";
+        exists.CommandText = "SELECT is_active, platform, access_role, login FROM tsd_devices WHERE id = @id FOR UPDATE;";
         AddParam(exists, "@id", id);
         using var reader = exists.ExecuteReader();
         if (!reader.Read())
@@ -708,6 +709,7 @@ app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest requ
         previousIsActive = reader.GetBoolean(0);
         previousPlatform = reader.GetString(1);
         previousAccessRole = PcAccessRole.Normalize(reader.GetString(2));
+        previousLogin = reader.GetString(3);
     }
 
     if (TsdAccountLifecycle.IsActivePcAdmin(previousIsActive, previousPlatform, previousAccessRole)
@@ -788,9 +790,13 @@ WHERE id = @id;";
         }
     }
 
-    if (!string.Equals(previousAccessRole, PcAccessRole.Admin, StringComparison.Ordinal)
-        && string.Equals(accessRole, PcAccessRole.Admin, StringComparison.Ordinal))
+    if ((!string.Equals(previousAccessRole, PcAccessRole.Admin, StringComparison.Ordinal)
+            && string.Equals(accessRole, PcAccessRole.Admin, StringComparison.Ordinal))
+        || !string.Equals(previousLogin, login, StringComparison.Ordinal)
+        || (previousIsActive && !upsertRequest.IsActive)
+        || ((previousPlatform is "PC" or "BOTH") && normalizedPlatform == "TSD"))
     {
+        // Rename and disabled/restricted profiles cannot revive an older PC session.
         PcWebSessionStore.RevokeForAdminPromotion(connection, transaction, id, DateTimeOffset.UtcNow);
     }
 
