@@ -642,6 +642,8 @@ VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @ac
     });
 });
 
+TsdAccountLifecycle.Map(app, postgresConnectionString);
+
 app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest request, WpfMachineAuthorization wpfAuthorization) =>
 {
     if (!wpfAuthorization.IsAuthorized(request))
@@ -687,20 +689,33 @@ app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest requ
 
     using var connection = OpenConnection(postgresConnectionString);
     using var transaction = connection.BeginTransaction();
+    TsdAccountLifecycle.LockAccountMutations(connection, (NpgsqlTransaction)transaction);
     string previousAccessRole;
+    bool previousIsActive;
+    string previousPlatform;
     using (var exists = connection.CreateCommand())
     {
         exists.Transaction = transaction;
-        exists.CommandText = "SELECT access_role FROM tsd_devices WHERE id = @id FOR UPDATE;";
+        exists.CommandText = "SELECT is_active, platform, access_role FROM tsd_devices WHERE id = @id FOR UPDATE;";
         AddParam(exists, "@id", id);
-        var currentAccessRole = exists.ExecuteScalar();
-        if (currentAccessRole == null)
+        using var reader = exists.ExecuteReader();
+        if (!reader.Read())
         {
+            reader.Close();
             transaction.Rollback();
             return Results.NotFound(new ApiResult(false, "DEVICE_NOT_FOUND"));
         }
+        previousIsActive = reader.GetBoolean(0);
+        previousPlatform = reader.GetString(1);
+        previousAccessRole = PcAccessRole.Normalize(reader.GetString(2));
+    }
 
-        previousAccessRole = PcAccessRole.Normalize(Convert.ToString(currentAccessRole, CultureInfo.InvariantCulture));
+    if (TsdAccountLifecycle.IsActivePcAdmin(previousIsActive, previousPlatform, previousAccessRole)
+        && !TsdAccountLifecycle.IsActivePcAdmin(upsertRequest.IsActive, normalizedPlatform, accessRole)
+        && !TsdAccountLifecycle.HasOtherActivePcAdmin(connection, (NpgsqlTransaction)transaction, id))
+    {
+        transaction.Rollback();
+        return Results.Conflict(new ApiResult(false, "LAST_ACTIVE_PC_ADMIN"));
     }
 
     try
