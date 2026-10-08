@@ -16,12 +16,52 @@ public partial class MainWindow
         BuildIdentityText.Text = "UI Preview / DEV · " + AppRuntimeInfo.DisplayText;
         ApplyExperimentalTabVisibility();
         UpdateStockModeUi();
+        PopulatePreviewListFilters();
         InitializeCommercialStatisticsFilters();
         PopulatePreviewStatisticsFilters();
         StatisticsKpiText.Text = "Демо: продажи 2 468 750 ₽ · 24 документа · 6 контрагентов";
         StatisticsQualityText.Text = "Демонстрационные значения — без подключения к серверу";
         StatisticsPageText.Text = "24 из 24 (DEMO)";
     }
+    private void PopulatePreviewListFilters()
+    {
+        // The same option classes/labels as the production main window.
+        _stockLocationFilters.Add(new(null, "Все места"));
+        _stockLocationFilters.Add(new("A-01-01", "A-01-01 · Склад готовой продукции"));
+        _stockLocationFilters.Add(new("A-02-01", "A-02-01 · Зона отгрузки"));
+        StockLocationFilter.ItemsSource = _stockLocationFilters;
+        StockLocationFilter.SelectedIndex = 0;
+
+        _stockHuFilters.Add(new(null, "Все HU"));
+        _stockHuFilters.Add(new("HU-DEMO-000001", "HU-DEMO-000001"));
+        _stockHuFilters.Add(new("HU-DEMO-000002", "HU-DEMO-000002"));
+        StockHuFilter.ItemsSource = _stockHuFilters;
+        StockHuFilter.SelectedIndex = 0;
+
+        _stockItemTypeFilters.Add(new(null, "Все типы"));
+        _stockItemTypeFilters.Add(new(1, "Товар"));
+        _stockItemTypeFilters.Add(new(2, "Сырьё"));
+        StockItemTypeFilter.ItemsSource = _stockItemTypeFilters;
+        StockItemTypeFilter.SelectedIndex = 0;
+
+        DocsTypeFilter.ItemsSource = _docTypeFilters;
+        DocsStatusFilter.ItemsSource = _docStatusFilters;
+        DocsTypeFilter.SelectedIndex = 0;
+        DocsStatusFilter.SelectedIndex = 0;
+
+        WarehouseBundleFilterCombo.ItemsSource = new[]
+        {
+            new WarehouseBundleFilterOption(null, "Все"),
+            new WarehouseBundleFilterOption("SUBMITTED", "На подтверждении"),
+            new WarehouseBundleFilterOption("IN_EXECUTION", "В работе"),
+            new WarehouseBundleFilterOption("EXECUTED", "Исполнено ТСД"),
+            new WarehouseBundleFilterOption("COMPLETED", "Проведено")
+        };
+        WarehouseBundleFilterCombo.DisplayMemberPath = nameof(WarehouseBundleFilterOption.Label);
+        WarehouseBundleFilterCombo.SelectedIndex = 0;
+        ProductionNeedSummaryText.Text = "Демонстрационные остатки и производственный план";
+    }
+
     private void PopulatePreviewStatisticsFilters()
     {
         // Real filter option types keep the production ComboBox templates identical.
