@@ -38,8 +38,6 @@
                                   Tag="db-connection" />
                     <TreeViewItem Header="Учётные записи"
                                   Tag="accounts" />
-                    <TreeViewItem Header="Обновление"
-                                  Tag="update" />
                 </TreeViewItem>
                 <TreeViewItem Header="Справочники" IsExpanded="True">
                     <TreeViewItem Header="Типы номенклатуры"
@@ -86,7 +84,7 @@
                     <TextBlock Text="Система"
                                FontSize="20"
                                FontWeight="SemiBold" />
-                    <TextBlock Text="Подключение к базе данных и административные учётные данные."
+                    <TextBlock Text="Системные параметры, административные учётные данные и обновление FlowStock."
                                Margin="0,4,0,12"
                                Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                TextWrapping="Wrap" />
@@ -103,23 +101,8 @@
                             </WrapPanel>
                         </StackPanel>
                     </GroupBox>
-                </StackPanel>
-            </ScrollViewer>
 
-            <ScrollViewer x:Name="UpdateCategoryPanel"
-                          Visibility="Collapsed"
-                          VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Disabled">
-                <StackPanel Margin="4,0,4,12">
-                    <TextBlock Text="Обновление"
-                               FontSize="20"
-                               FontWeight="SemiBold" />
-                    <TextBlock Text="Проверка production-сервера и запуск штатного обновления FlowStock."
-                               Margin="0,4,0,12"
-                               Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
-                               TextWrapping="Wrap" />
-
-                    <GroupBox Header="Обновление FlowStock">
+                    <GroupBox Header="Обновление FlowStock" Margin="0,12,0,0">
                         <StackPanel Margin="8">
                             <TextBlock x:Name="InstalledBuildText" TextWrapping="Wrap" />
                             <TextBlock x:Name="UpdateStatusText" Margin="0,6,0,0" TextWrapping="Wrap" />

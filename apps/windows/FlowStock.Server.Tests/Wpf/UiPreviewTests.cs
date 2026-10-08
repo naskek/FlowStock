@@ -65,7 +65,16 @@ public sealed class UiPreviewTests
 
                 var tree = (TreeView)admin.FindName("AdminNavigationTree");
                 var categories = Descendants(tree).OfType<TreeViewItem>().Where(item => item.Tag is string).ToArray();
-                Assert.Equal(17, categories.Length);
+                Assert.Equal(16, categories.Length);
+                Assert.DoesNotContain(categories, category => Equals(category.Tag, "update"));
+
+                var systemPanel = (ScrollViewer)admin.FindName("SystemCategoryPanel");
+                Assert.Contains(Descendants(systemPanel).OfType<GroupBox>(),
+                    group => Equals(group.Header, "Обновление FlowStock"));
+                Assert.Contains(Descendants(systemPanel).OfType<Button>(),
+                    button => Equals(button.Content, "Проверить"));
+                Assert.Contains(Descendants(systemPanel).OfType<Button>(),
+                    button => Equals(button.Content, "Обновить и перезапустить"));
                 foreach (var category in categories)
                 {
                     category.IsSelected = true;
