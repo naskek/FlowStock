@@ -17,7 +17,7 @@
             </Grid.ColumnDefinitions>
             <Menu Grid.Column="0">
                 <MenuItem Header="Операции">
-                    <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
+                    <MenuItem x:Name="OpenHuRegistryMenuItem" Header="HU Реестр..." Click="OpenHuRegistry_Click" />
                 </MenuItem>
                 <MenuItem Header="Сервис">
                     <MenuItem x:Name="OpenSettingsMenuItem" Header="Настройки FlowStock..." Click="OpenAdmin_Click" />
