@@ -73,7 +73,7 @@ JOIN tsd_devices a ON a.id = s.account_id
 WHERE s.token_hash = @hash AND s.revoked_at IS NULL
   AND s.expires_at > @now AND a.is_active = TRUE
   AND UPPER(COALESCE(a.platform, 'TSD')) IN ('TSD', 'BOTH')
-FOR SHARE OF s, a;", connection, transaction);
+FOR SHARE OF a;", connection, transaction);
             command.Parameters.AddWithValue("@hash", HashToken(token));
             command.Parameters.AddWithValue("@now", now.UtcDateTime);
             var deviceId = command.ExecuteScalar() as string;
@@ -83,6 +83,23 @@ FOR SHARE OF s, a;", connection, transaction);
                 connection.Dispose();
                 return null;
             }
+
+            // Always acquire the account row before the session row.
+            // Account DELETE locks account -> FK-cascade sessions in this order.
+            // Recheck expiry/revocation under the session lock, before handing out a lease.
+            using var session = new NpgsqlCommand(@"
+SELECT 1 FROM tsd_sessions
+WHERE token_hash = @hash AND revoked_at IS NULL AND expires_at > @now
+FOR SHARE;", connection, transaction);
+            session.Parameters.AddWithValue("@hash", HashToken(token));
+            session.Parameters.AddWithValue("@now", now.UtcDateTime);
+            if (session.ExecuteScalar() == null)
+            {
+                transaction.Dispose();
+                connection.Dispose();
+                return null;
+            }
+
             return new SessionLease(connection, transaction, deviceId);
         }
         catch
