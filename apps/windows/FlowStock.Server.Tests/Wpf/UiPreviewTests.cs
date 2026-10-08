@@ -152,10 +152,19 @@ public sealed class UiPreviewTests
                         var password = (StackPanel)dialog.FindName("PasswordFieldsPanel");
                         Assert.Equal(Visibility.Visible, profile.Visibility);
                         Assert.Equal(Visibility.Visible, password.Visibility);
+                        var createLogin = (StackPanel)dialog.FindName("CreateLoginPanel");
+                        var editLogin = (StackPanel)dialog.FindName("EditLoginPanel");
                         var loginBox = (TextBox)dialog.FindName("LoginBox");
+                        var loginDisplay = (TextBlock)dialog.FindName("LoginDisplayText");
                         Assert.Equal(mode == AccountDialogMode.Create
-                            ? string.Empty : account.Login, loginBox.Text);
-                        Assert.Equal(mode == AccountDialogMode.Edit, loginBox.IsReadOnly);
+                            ? Visibility.Visible : Visibility.Collapsed, createLogin.Visibility);
+                        Assert.Equal(mode == AccountDialogMode.Edit
+                            ? Visibility.Visible : Visibility.Collapsed, editLogin.Visibility);
+                        Assert.Empty(loginBox.Text);
+                        Assert.Equal(mode == AccountDialogMode.Edit
+                            ? account.Login : string.Empty, loginDisplay.Text);
+                        Assert.Equal(FontWeights.Bold, loginDisplay.FontWeight);
+                        Assert.Null(dialog.FindName("AccountNameText"));
                     }
                     finally { dialog.Close(); }
                 }
@@ -176,6 +185,7 @@ public sealed class UiPreviewTests
                 Assert.False(grid.IsReadOnly);
                 Assert.True(((DataGridTextColumn)grid.Columns[0]).IsReadOnly);
                 Assert.True(((DataGridTextColumn)grid.Columns[4]).IsReadOnly);
+                Assert.Equal("ID аккаунта", grid.Columns[4].Header);
                 Assert.IsType<DataGridTemplateColumn>(grid.Columns[1]);
                 Assert.IsType<DataGridTemplateColumn>(grid.Columns[2]);
                 Assert.IsType<DataGridTemplateColumn>(grid.Columns[3]);
@@ -240,8 +250,11 @@ public sealed class UiPreviewTests
                     new Action(() =>
                     {
                         var login = (TextBox)dialog.FindName("LoginBox");
-                        Assert.True(login.IsReadOnly);
-                        // Even programmatic manipulation must not rename this user.
+                        Assert.Equal(Visibility.Collapsed,
+                            ((StackPanel)dialog.FindName("CreateLoginPanel")).Visibility);
+                        Assert.Equal("fixed_login",
+                            ((TextBlock)dialog.FindName("LoginDisplayText")).Text);
+                        // Hidden create-only input cannot rename the existing account.
                         login.Text = "tampered_login";
                         ((PasswordBox)dialog.FindName("NewPasswordBox")).Password = "new-password";
                         ((PasswordBox)dialog.FindName("ConfirmPasswordBox")).Password = "new-password";
