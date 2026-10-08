@@ -121,6 +121,8 @@ public partial class MainWindow
         object sender,
         SelectionChangedEventArgs e)
     {
+        if (IsUiPreview) return;
+
         if (_suppressCommercialStatisticsFilterEvents
             || !IsLoaded
             || StatisticsPartnerCombo.SelectedItem is not CommercialStatisticsEntityFilterOption partner
