@@ -266,6 +266,67 @@ WHERE application_name = @name AND wait_event_type = 'Lock';", watcher);
         return (string)(await command.ExecuteScalarAsync() ?? string.Empty);
     }
 
+    [PostgresFact]
+    public async Task Concurrent_delete_and_admin_demotion_leave_one_active_PC_admin()
+    {
+        var cs = TestConnection();
+        Assert.Equal(0, await Count(cs, @"
+SELECT COUNT(*) FROM tsd_devices
+WHERE is_active AND access_role = 'ADMIN' AND platform IN ('PC','BOTH');"));
+        var suffix = Guid.NewGuid().ToString("N");
+        var first = await CreateAccount(cs, "delete-vs-update-a-" + suffix, "PC", "ADMIN");
+        var second = await CreateAccount(cs, "delete-vs-update-b-" + suffix, "BOTH", "ADMIN");
+        try
+        {
+            using var start = new ManualResetEventSlim();
+            var deletion = Task.Run(() =>
+            {
+                start.Wait();
+                return TsdAccountLifecycle.Delete(cs, first.Id);
+            });
+            // Same serializing lock and last-admin guard as the production update route.
+            var demotion = Task.Run(() =>
+            {
+                start.Wait();
+                using var connection = new NpgsqlConnection(cs);
+                connection.Open();
+                using var transaction = connection.BeginTransaction();
+                TsdAccountLifecycle.LockAccountMutations(connection, transaction);
+                using (var row = new NpgsqlCommand(
+                    "SELECT id FROM tsd_devices WHERE id = @id FOR UPDATE;", connection, transaction))
+                {
+                    row.Parameters.AddWithValue("@id", second.Id);
+                    Assert.Equal(second.Id, Convert.ToInt64(row.ExecuteScalar()));
+                }
+                if (!TsdAccountLifecycle.HasOtherActivePcAdmin(connection, transaction, second.Id))
+                {
+                    transaction.Rollback();
+                    return false;
+                }
+                using var update = new NpgsqlCommand(
+                    "UPDATE tsd_devices SET access_role = 'OPERATOR' WHERE id = @id;",
+                    connection, transaction);
+                update.Parameters.AddWithValue("@id", second.Id);
+                Assert.Equal(1, update.ExecuteNonQuery());
+                transaction.Commit();
+                return true;
+            });
+            start.Set();
+            var deleteOutcome = await deletion.WaitAsync(TimeSpan.FromSeconds(15));
+            var demoted = await demotion.WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.Equal(1, (deleteOutcome == TsdAccountLifecycle.DeleteOutcome.Deleted ? 1 : 0)
+                + (demoted ? 1 : 0));
+            Assert.Equal(1, await Count(cs, @"
+SELECT COUNT(*) FROM tsd_devices
+WHERE is_active AND access_role = 'ADMIN' AND platform IN ('PC','BOTH');"));
+        }
+        finally
+        {
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", first.Id);
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", second.Id);
+        }
+    }
+
     private static async Task<WebApplication> StartHost(string cs)
     {
         var builder = WebApplication.CreateBuilder();
