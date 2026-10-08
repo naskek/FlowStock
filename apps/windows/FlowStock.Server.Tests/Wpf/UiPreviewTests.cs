@@ -112,7 +112,7 @@ public sealed class UiPreviewTests
 
 
     [Fact]
-    public async Task Account_preview_shows_demo_rows_and_all_three_backend_free_dialogs()
+    public async Task Account_preview_shows_demo_rows_and_both_backend_free_dialogs()
     {
         await OnUiThread(() =>
         {
