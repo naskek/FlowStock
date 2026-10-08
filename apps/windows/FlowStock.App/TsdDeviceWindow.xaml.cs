@@ -172,8 +172,11 @@ public partial class TsdDeviceWindow : Window
             if (!refreshed)
             {
                 AccountsStatusText.Text = "Исход удаления неизвестен. Нажмите F5.";
-                MessageBox.Show("Не удалось подтвердить состояние аккаунта на сервере. " +
-                                "Проверьте список перед повторным удалением.",
+                var explanation = error is null
+                    ? "Не удалось подтвердить состояние аккаунта на сервере."
+                    : "Сервер отклонил удаление: " + error.Message
+                      + " Состояние списка проверить не удалось.";
+                MessageBox.Show(explanation + " Проверьте список перед повторным удалением.",
                     "Удаление аккаунта", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
