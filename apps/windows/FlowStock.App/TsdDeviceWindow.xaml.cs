@@ -113,6 +113,7 @@ public partial class TsdDeviceWindow : Window
     {
         CreateAccountButton.IsEnabled = !_dialogOpen && !_inlineBusy;
         EditAccountButton.IsEnabled = !_dialogOpen && !_inlineBusy && _selected != null;
+        DeleteAccountButton.IsEnabled = !_dialogOpen && !_inlineBusy && _selected != null;
         DevicesGrid.IsEnabled = !_dialogOpen && !_inlineBusy;
     }
 
@@ -121,6 +122,81 @@ public partial class TsdDeviceWindow : Window
 
     private async void Edit_Click(object sender, RoutedEventArgs e) =>
         await ShowEditorAsync(AccountDialogMode.Edit);
+
+    private async void Delete_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dialogOpen || _inlineBusy || _selected is null) return;
+        var account = _selected;
+        var confirm = MessageBox.Show(
+            $"Удалить аккаунт «{account.Login}»?\\n\\n" +
+            "Это действие нельзя отменить. История операций сохранится. " +
+            "Активные сессии ПК Web будут закрыты.",
+            "Удаление аккаунта", MessageBoxButton.YesNo,
+            MessageBoxImage.Warning, MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes) return;
+        await DeleteAccountAsync(account);
+    }
+
+    private async Task DeleteAccountAsync(TsdDeviceInfo account)
+    {
+        if (_dialogOpen || _inlineBusy || !_devices.Contains(account)) return;
+        _inlineBusy = true;
+        UpdateActions();
+        try
+        {
+            if (IsUiPreview)
+            {
+                _devices.Remove(account);
+                SelectDevice(null);
+                AccountsStatusText.Text =
+                    "UI Preview / DEV · Аккаунт удалён только из демоданных.";
+                return;
+            }
+
+            // A failed/unknown DELETE response must never be treated as success.
+            var deleted = false;
+            Exception? error = null;
+            try
+            {
+                deleted = await _services.WpfAdminApi.TryDeleteTsdDeviceAsync(account.Id);
+            }
+            catch (Exception ex)
+            {
+                error = ex;
+            }
+
+            var refreshed = await LoadDevicesAsync();
+            if (!refreshed)
+            {
+                AccountsStatusText.Text = "Исход удаления неизвестен. Нажмите F5.";
+                MessageBox.Show("Не удалось подтвердить состояние аккаунта на сервере. " +
+                                "Проверьте список перед повторным удалением.",
+                    "Удаление аккаунта", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var remains = _devices.Any(row => row.Id == account.Id);
+            if (deleted || !remains)
+            {
+                AccountsStatusText.Text = "Аккаунт удалён, история операций сохранена.";
+                return;
+            }
+
+            throw error ?? new InvalidOperationException("Сервер не подтвердил удаление аккаунта.");
+        }
+        catch (Exception ex)
+        {
+            if (!IsUiPreview)
+                _services.AppLogger.Error("account_delete_failed", ex);
+            MessageBox.Show("Не удалось удалить аккаунт: " + ex.Message,
+                "Удаление аккаунта", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _inlineBusy = false;
+            UpdateActions();
+        }
+    }
 
     private async Task ShowEditorAsync(AccountDialogMode mode)
     {
@@ -147,7 +223,7 @@ public partial class TsdDeviceWindow : Window
                     await EnsureCurrentAccountAsync(account!);
                     // Always preserve the original login, even if the UI is modified.
                     succeeded = await _services.WpfAdminApi.TryUpdateTsdDeviceAsync(
-                        account!.Id, account.Login, submission.Password,
+                        account!.Id, submission.Login, submission.Password,
                         submission.IsActive, submission.Platform, submission.AccessRole);
                 }
                 if (!succeeded)
@@ -183,8 +259,12 @@ public partial class TsdDeviceWindow : Window
                     }
                     else
                     {
+                        if (_devices.Any(row => row.Id != account!.Id
+                            && string.Equals(row.Login, submitted.Login, StringComparison.OrdinalIgnoreCase)))
+                            throw new InvalidOperationException("Логин уже используется.");
                         ReplaceDevice(account!, CopyAccount(
-                            account!, submitted.Platform, submitted.IsActive, submitted.AccessRole));
+                            account!, submitted.Platform, submitted.IsActive, submitted.AccessRole,
+                            submitted.Login));
                     }
                     AccountsStatusText.Text =
                         "UI Preview / DEV · Изменения сохранены только в демоданных.";
@@ -305,12 +385,13 @@ public partial class TsdDeviceWindow : Window
         finally { _suppressInlineEvents = false; }
     }
 
-    private static TsdDeviceInfo CopyAccount(TsdDeviceInfo account, string platform, bool active, string role) =>
+    private static TsdDeviceInfo CopyAccount(
+        TsdDeviceInfo account, string platform, bool active, string role, string? login = null) =>
         new()
         {
             Id = account.Id,
             DeviceId = account.DeviceId,
-            Login = account.Login,
+            Login = login ?? account.Login,
             Platform = platform,
             IsActive = active,
             AccessRole = role,
