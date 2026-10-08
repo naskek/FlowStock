@@ -378,8 +378,7 @@ public sealed class UiPreviewTests
                     var submission = Assert.IsType<AccountEditSubmission>(renamed.PreviewSubmission);
                     Assert.Equal("renamed_demo", submission.Login);
                     Assert.Null(submission.Password);
-                    Assert.Equal(original.DeviceId, original.DeviceId);
-                }
+                    }
                 finally
                 {
                     watchdog.Stop();
@@ -414,7 +413,7 @@ public sealed class UiPreviewTests
                 Assert.True(((Button)accounts.FindName("DeleteAccountButton")).IsEnabled);
                 var delete = typeof(TsdDeviceWindow).GetMethod(
                     "DeleteAccountAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
-                var task = Assert.IsType<Task>(delete.Invoke(accounts, [selected]));
+                var task = Assert.IsAssignableFrom<Task>(delete.Invoke(accounts, [selected]));
                 Assert.True(task.IsCompletedSuccessfully);
                 Assert.Equal(5, grid.Items.Count);
                 Assert.DoesNotContain(grid.Items.OfType<TsdDeviceInfo>(),
