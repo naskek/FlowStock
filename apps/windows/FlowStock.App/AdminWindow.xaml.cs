@@ -62,7 +62,6 @@ public partial class AdminWindow : Window
         }
 
         SystemCategoryPanel.Visibility = key == "system" ? Visibility.Visible : Visibility.Collapsed;
-        UpdateCategoryPanel.Visibility = key == "update" ? Visibility.Visible : Visibility.Collapsed;
         ClientsCategoryPanel.Visibility = key == "clients" ? Visibility.Visible : Visibility.Collapsed;
         PrintingCategoryPanel.Visibility = key == "printing" ? Visibility.Visible : Visibility.Collapsed;
 
