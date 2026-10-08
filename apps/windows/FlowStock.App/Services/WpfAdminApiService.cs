@@ -373,6 +373,8 @@ public sealed class WpfAdminApiService
                 "MISSING_LOGIN" => "Логин не задан.",
                 "MISSING_PASSWORD" => "Пароль не задан.",
                 "DEVICE_NOT_FOUND" => "Аккаунт не найден на сервере.",
+                "LAST_ACTIVE_PC_ADMIN" => "Нельзя удалить или лишить прав последнего активного администратора ПК Web.",
+                "WPF_ADMIN_KEY_REQUIRED" => "Сервер отклонил ключ администратора WPF (401).",
                 "LOGIN_ALREADY_EXISTS" => "Логин уже используется другим аккаунтом ПК/ТСД.",
                 "CONFIRM_REQUIRED" => "Для apply нужно ввести подтверждение APPLY.",
                 "BACKFILL_ALREADY_RUNNING" => "Backfill резервов уже выполняется на сервере.",

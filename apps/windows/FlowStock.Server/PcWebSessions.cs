@@ -134,6 +134,13 @@ FOR UPDATE;";
             transaction.Rollback();
             return PcWebLoginResult.Invalid("PC_ACCESS_DENIED");
         }
+        // The first credential lookup preceded the row lock: rename may have
+        // committed meanwhile. Do not issue a new PC session for the old login.
+        if (!string.Equals(storedLogin, login.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            transaction.Rollback();
+            return PcWebLoginResult.Invalid("INVALID_CREDENTIALS");
+        }
         if (!VerifyPassword(password, salt, hash, iterations))
         {
             transaction.Rollback();

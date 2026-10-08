@@ -91,12 +91,12 @@ FOR UPDATE;", connection, transaction))
 
     public static void LockAccountMutations(DbConnection connection, DbTransaction transaction)
     {
-        // Acquire the table lock before row locks in both delete and profile updates.
-        // SHARE ROW EXCLUSIVE conflicts with concurrent writers and prevents two
-        // administrators from independently deleting the final pair of PC admins.
+        // Serialize admin delete/profile-update decisions without blocking ordinary
+        // PC login's row-lock-then-last_seen update. A SHARE ROW EXCLUSIVE table
+        // lock would deadlock against that existing login lock order.
         using var lockCommand = connection.CreateCommand();
         lockCommand.Transaction = transaction;
-        lockCommand.CommandText = "LOCK TABLE tsd_devices IN SHARE ROW EXCLUSIVE MODE;";
+        lockCommand.CommandText = "SELECT pg_advisory_xact_lock(139, 1);";
         lockCommand.ExecuteNonQuery();
     }
 

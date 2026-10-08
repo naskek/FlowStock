@@ -144,6 +144,128 @@ WHERE is_active AND access_role = 'ADMIN' AND platform IN ('PC','BOTH');"));
         }
     }
 
+
+    [PostgresFact]
+    public async Task Account_mutation_lock_does_not_deadlock_with_existing_PC_login_row_lock_order()
+    {
+        var cs = TestConnection();
+        var target = await CreateAccount(cs, "lock-order-" + Guid.NewGuid().ToString("N"), "PC", "OPERATOR");
+        try
+        {
+            await using var writer = new NpgsqlConnection(cs);
+            await writer.OpenAsync();
+            await using var writerTx = await writer.BeginTransactionAsync();
+            await using (var lockRow = new NpgsqlCommand(
+                "SELECT id FROM tsd_devices WHERE id = @id FOR UPDATE;", writer, writerTx))
+            {
+                lockRow.Parameters.AddWithValue("@id", target.Id);
+                Assert.Equal(target.Id, Convert.ToInt64(await lockRow.ExecuteScalarAsync()));
+            }
+
+            using var mutationLockAcquired = new ManualResetEventSlim();
+            var concurrentMutation = Task.Run(() =>
+            {
+                using var other = new NpgsqlConnection(cs);
+                other.Open();
+                using var tx = other.BeginTransaction();
+                TsdAccountLifecycle.LockAccountMutations(other, tx);
+                mutationLockAcquired.Set();
+                using var read = new NpgsqlCommand(
+                    "SELECT id FROM tsd_devices WHERE id = @id FOR UPDATE;", other, tx);
+                read.Parameters.AddWithValue("@id", target.Id);
+                Assert.Equal(target.Id, Convert.ToInt64(read.ExecuteScalar()));
+                tx.Commit();
+            });
+
+            Assert.True(mutationLockAcquired.Wait(TimeSpan.FromSeconds(10)));
+            await using (var limit = new NpgsqlCommand("SET LOCAL lock_timeout = '1500ms';", writer, writerTx))
+                await limit.ExecuteNonQueryAsync();
+            await using (var update = new NpgsqlCommand(
+                "UPDATE tsd_devices SET last_seen = @last_seen WHERE id = @id;", writer, writerTx))
+            {
+                update.Parameters.AddWithValue("@last_seen", DateTime.UtcNow.ToString("s"));
+                update.Parameters.AddWithValue("@id", target.Id);
+                Assert.Equal(1, await update.ExecuteNonQueryAsync());
+            }
+
+            await writerTx.CommitAsync();
+            await concurrentMutation.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", target.Id);
+        }
+    }
+
+    [PostgresFact]
+    public async Task Concurrent_rename_must_not_issue_PC_session_for_old_login()
+    {
+        var cs = TestConnection();
+        var target = await CreateAccount(cs, "rename-race-" + Guid.NewGuid().ToString("N"), "PC", "OPERATOR");
+        var nextLogin = "renamed-" + Guid.NewGuid().ToString("N");
+        var appName = "rename-test-" + Guid.NewGuid().ToString("N");
+        var loginCs = new NpgsqlConnectionStringBuilder(cs) { ApplicationName = appName }.ConnectionString;
+        try
+        {
+            await using var renamer = new NpgsqlConnection(cs);
+            await renamer.OpenAsync();
+            await using var tx = await renamer.BeginTransactionAsync();
+            await using (var command = new NpgsqlCommand(
+                "UPDATE tsd_devices SET login = @login WHERE id = @id;", renamer, tx))
+            {
+                command.Parameters.AddWithValue("@login", nextLogin);
+                command.Parameters.AddWithValue("@id", target.Id);
+                Assert.Equal(1, await command.ExecuteNonQueryAsync());
+            }
+
+            // Login first sees the old committed login, then blocks on the
+            // account row while the rename is still uncommitted.
+            var attempt = Task.Run(() => new PcWebSessionStore(loginCs).Login(
+                target.Login, FixturePassword(target.Login), DateTimeOffset.UtcNow));
+            var blocked = false;
+            for (var i = 0; i < 100; i++)
+            {
+                await using var watcher = new NpgsqlConnection(cs);
+                await watcher.OpenAsync();
+                await using var command = new NpgsqlCommand(@"
+SELECT COUNT(*) FROM pg_stat_activity
+WHERE application_name = @name AND wait_event_type = 'Lock';", watcher);
+                command.Parameters.AddWithValue("@name", appName);
+                if (Convert.ToInt64(await command.ExecuteScalarAsync()) > 0)
+                {
+                    blocked = true;
+                    break;
+                }
+                await Task.Delay(50);
+            }
+            Assert.True(blocked, "PC login should be waiting on the renamed account row.");
+            await tx.CommitAsync();
+
+            var result = await attempt.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.False(result.IsSuccess);
+            Assert.Equal("INVALID_CREDENTIALS", result.Error);
+            Assert.Equal(0, await Count(cs,
+                "SELECT COUNT(*) FROM pc_web_sessions WHERE account_id = @id;", target.Id));
+            Assert.Equal(1, await Count(cs,
+                "SELECT COUNT(*) FROM tsd_devices WHERE id = @id;", target.Id));
+            Assert.Equal(target.DeviceId, await GetDeviceId(cs, target.Id));
+        }
+        finally
+        {
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", target.Id);
+        }
+    }
+
+    private static async Task<string> GetDeviceId(string cs, long id)
+    {
+        await using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT device_id FROM tsd_devices WHERE id = @id;", connection);
+        command.Parameters.AddWithValue("@id", id);
+        return (string)(await command.ExecuteScalarAsync() ?? string.Empty);
+    }
+
     private static async Task<WebApplication> StartHost(string cs)
     {
         var builder = WebApplication.CreateBuilder();

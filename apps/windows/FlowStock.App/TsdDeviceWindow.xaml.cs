@@ -128,7 +128,7 @@ public partial class TsdDeviceWindow : Window
         if (_dialogOpen || _inlineBusy || _selected is null) return;
         var account = _selected;
         var confirm = MessageBox.Show(
-            $"Удалить аккаунт «{account.Login}»?\\n\\n" +
+            $"Удалить аккаунт «{account.Login}»?\n\n" +
             "Это действие нельзя отменить. История операций сохранится. " +
             "Активные сессии ПК Web будут закрыты.",
             "Удаление аккаунта", MessageBoxButton.YesNo,
@@ -179,13 +179,15 @@ public partial class TsdDeviceWindow : Window
             }
 
             var remains = _devices.Any(row => row.Id == account.Id);
-            if (deleted || !remains)
+            if (!remains)
             {
                 AccountsStatusText.Text = "Аккаунт удалён, история операций сохранена.";
                 return;
             }
 
-            throw error ?? new InvalidOperationException("Сервер не подтвердил удаление аккаунта.");
+            throw error ?? new InvalidOperationException(deleted
+                ? "Сервер подтвердил удаление, но аккаунт всё ещё присутствует. Нажмите F5."
+                : "Сервер не подтвердил удаление аккаунта.");
         }
         catch (Exception ex)
         {
