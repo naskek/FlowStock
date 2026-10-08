@@ -25,7 +25,13 @@
                     <StackPanel x:Name="EditLoginPanel" Visibility="Collapsed" Margin="0,0,0,12">
                         <TextBlock Text="Логин" />
                         <TextBlock x:Name="LoginDisplayText" FontWeight="Bold" FontSize="15"
-                                   Margin="0,4,0,0" TextTrimming="CharacterEllipsis" />
+                                   Margin="0,4,0,8" TextTrimming="CharacterEllipsis" />
+                        <Button x:Name="ChangeLoginButton" Content="Изменить логин"
+                                Width="145" HorizontalAlignment="Left" Click="ChangeLogin_Click" />
+                        <StackPanel x:Name="NewLoginPanel" Visibility="Collapsed" Margin="0,12,0,0">
+                            <TextBlock Text="Введите новый логин" />
+                            <TextBox x:Name="NewLoginBox" Margin="0,4,0,0" MaxLength="150" />
+                        </StackPanel>
                     </StackPanel>
                     <TextBlock Text="Платформа" />
                     <ComboBox x:Name="PlatformBox" Margin="0,4,0,12">
