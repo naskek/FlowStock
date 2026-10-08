@@ -26,12 +26,15 @@ public partial class TsdDeviceWindow : Window
         InitializeComponent();
         DevicesGrid.ItemsSource = _devices;
         _loading = new SettingsPageLoading((FrameworkElement)Content, _services.AppLogger);
-        _loading.InitializeOnLoaded(LoadDevicesAsync);
+        _loading.InitializeOnLoaded(async () => { await LoadDevicesAsync(); });
         UpdateActions();
     }
 
-    private Task LoadDevicesAsync() => _loading.RunAsync(async () =>
+    private async Task<bool> LoadDevicesAsync()
     {
+        var loaded = false;
+        await _loading.RunAsync(async () =>
+        {
         var selectedId = _selected?.Id;
         var result = await Task.Run(() =>
         {
@@ -52,7 +55,10 @@ public partial class TsdDeviceWindow : Window
             _devices.Add(device);
         SelectDevice(selectedId);
         AccountsStatusText.Text = $"Всего аккаунтов: {_devices.Count}";
-    });
+        loaded = true;
+        });
+        return loaded;
+    }
 
     private void DevicesGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -136,13 +142,20 @@ public partial class TsdDeviceWindow : Window
             };
             if (editor.ShowDialog() == true && !IsUiPreview)
             {
-                await LoadDevicesAsync();
-                if (mode == AccountDialogMode.Create)
-                    SelectDeviceByLogin(savedLogin!);
+                if (await LoadDevicesAsync())
+                {
+                    if (mode == AccountDialogMode.Create)
+                        SelectDeviceByLogin(savedLogin!);
+                    else
+                        SelectDevice(account!.Id);
+                    AccountsStatusText.Text = mode == AccountDialogMode.ChangePassword
+                        ? "Пароль успешно изменён." : "Изменения аккаунта сохранены.";
+                }
                 else
-                    SelectDevice(account!.Id);
-                AccountsStatusText.Text = mode == AccountDialogMode.ChangePassword
-                    ? "Пароль успешно изменён." : "Изменения аккаунта сохранены.";
+                {
+                    AccountsStatusText.Text =
+                        "Данные сохранены, но список не обновился. Нажмите «Обновить».";
+                }
             }
         }
         catch (Exception ex)
