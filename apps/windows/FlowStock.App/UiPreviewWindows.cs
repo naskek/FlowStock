@@ -15,6 +15,11 @@ public partial class MainWindow
         UiPreviewBanner.Visibility = Visibility.Visible;
         BuildIdentityText.Text = "UI Preview / DEV · " + AppRuntimeInfo.DisplayText;
         ApplyExperimentalTabVisibility();
+        UpdateStockModeUi();
+        InitializeCommercialStatisticsFilters();
+        StatisticsKpiText.Text = "Демо: продажи 2 468 750 ₽ · 24 документа · 12 контрагентов";
+        StatisticsQualityText.Text = "Демонстрационные значения — без подключения к серверу";
+        StatisticsPageText.Text = "24 из 24 (DEMO)";
     }
 }
 
