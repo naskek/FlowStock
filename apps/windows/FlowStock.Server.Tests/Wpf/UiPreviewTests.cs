@@ -195,6 +195,60 @@ public sealed class UiPreviewTests
     }
 
     [Fact]
+    public async Task Account_modal_closes_after_successful_save_instead_of_cancelling_its_own_close()
+    {
+        await OnUiThread(() =>
+        {
+            var submissions = 0;
+            var timedOut = false;
+            var dialog = new TsdDeviceEditorWindow(
+                AccountDialogMode.Create, null, request =>
+                {
+                    Assert.Equal("new_operator", request.Login);
+                    Assert.Equal("test-secret", request.Password);
+                    submissions++;
+                    return Task.CompletedTask;
+                });
+            var watchdog = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromSeconds(4)
+            };
+            watchdog.Tick += (_, _) =>
+            {
+                timedOut = true;
+                watchdog.Stop();
+                dialog.Close();
+            };
+            dialog.Loaded += (_, _) =>
+            {
+                Dispatcher.CurrentDispatcher.BeginInvoke(
+                    DispatcherPriority.Background,
+                    new Action(() =>
+                    {
+                        ((TextBox)dialog.FindName("LoginBox")).Text = "new_operator";
+                        ((PasswordBox)dialog.FindName("NewPasswordBox")).Password = "test-secret";
+                        ((PasswordBox)dialog.FindName("ConfirmPasswordBox")).Password = "test-secret";
+                        ((Button)dialog.FindName("SaveButton")).RaiseEvent(
+                            new RoutedEventArgs(ButtonBase.ClickEvent));
+                    }));
+            };
+            try
+            {
+                watchdog.Start();
+                var result = dialog.ShowDialog();
+                Assert.False(timedOut, "Successful save must close the modal without waiting for a watchdog.");
+                Assert.True(result);
+                Assert.Equal(1, submissions);
+            }
+            finally
+            {
+                watchdog.Stop();
+                if (dialog.IsVisible) dialog.Close();
+            }
+        });
+    }
+
+    [Fact]
     public async Task Hu_registry_preview_is_populated_and_safe_without_services()
     {
         await OnUiThread(() =>
