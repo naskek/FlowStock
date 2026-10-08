@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
 
 namespace FlowStock.Server;
@@ -54,7 +56,18 @@ public static class TsdSessionAuthorization
         {
             using var json = await JsonDocument.ParseAsync(request.Body,
                 cancellationToken: request.HttpContext.RequestAborted);
-            return HasMismatch(json.RootElement, deviceId);
+            if (HasMismatch(json.RootElement, deviceId)) return true;
+
+            // Force the canonical server identity into the downstream request.
+            // Missing client device_id can no longer produce unattributed TSD writes.
+            if (JsonNode.Parse(json.RootElement.GetRawText()) is JsonObject payload)
+            {
+                payload["device_id"] = deviceId;
+                var bytes = Encoding.UTF8.GetBytes(payload.ToJsonString());
+                request.Body = new MemoryStream(bytes);
+                request.ContentLength = bytes.Length;
+            }
+            return false;
         }
         catch (JsonException)
         {
