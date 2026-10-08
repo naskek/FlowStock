@@ -70,8 +70,6 @@
                 <TreeViewItem Header="Обслуживание" IsExpanded="True">
                     <TreeViewItem Header="Резервные копии"
                                   Tag="backups" />
-                    <TreeViewItem Header="Обслуживание FlowStock"
-                                  Tag="maintenance" />
                 </TreeViewItem>
             </TreeView>
         </Grid>
