@@ -129,6 +129,10 @@ public sealed class UiPreviewTests
                     .GetField("_productionServices", BindingFlags.Instance | BindingFlags.NonPublic)!
                     .GetValue(accounts));
                 var account = Assert.IsType<TsdDeviceInfo>(grid.SelectedItem);
+                Assert.True(((Button)accounts.FindName("CreateAccountButton")).IsEnabled);
+                Assert.True(((Button)accounts.FindName("EditAccountButton")).IsEnabled);
+                Assert.True(((Button)accounts.FindName("ChangePasswordButton")).IsEnabled);
+                Assert.False(((Button)accounts.FindName("RefreshAccountsButton")).IsEnabled);
 
                 foreach (var mode in new[]
                 {
@@ -241,7 +245,8 @@ public sealed class UiPreviewTests
                 // this generic event-probing loop.
                 if (button.Name is "CreateAccountButton" or "EditAccountButton" or "ChangePasswordButton")
                 {
-                    Assert.True(button.IsEnabled);
+                    // These only navigate to local, non-persisting demo dialogs.
+                    // Their enabled state depends on the currently selected row.
                     continue;
                 }
                 Assert.False(button.IsEnabled);
