@@ -19,7 +19,7 @@ public sealed record AccountEditSubmission(
     string Platform,
     string AccessRole);
 
-/// <summary>One modal presentation for the three existing account operations.</summary>
+/// <summary>Modal create/edit account editor; an optional password is part of edit.</summary>
 public partial class TsdDeviceEditorWindow : Window
 {
     private readonly AccountDialogMode _mode;
@@ -43,16 +43,17 @@ public partial class TsdDeviceEditorWindow : Window
 
         Title = mode == AccountDialogMode.Create ? "Создать аккаунт" : "Редактировать аккаунт";
         ModeHeader.Text = Title;
-        AccountNameText.Text = mode == AccountDialogMode.Create
-            ? "Новая учётная запись ПК Web / ТСД"
-            : $"Аккаунт: {account!.Login}. Логин изменить нельзя.";
+        CreateLoginPanel.Visibility = mode == AccountDialogMode.Create
+            ? Visibility.Visible : Visibility.Collapsed;
+        EditLoginPanel.Visibility = mode == AccountDialogMode.Edit
+            ? Visibility.Visible : Visibility.Collapsed;
+        LoginDisplayText.Text = account?.Login ?? string.Empty;
         SaveButton.Content = mode == AccountDialogMode.Create ? "Создать" : "Сохранить";
-        LoginBox.IsReadOnly = mode == AccountDialogMode.Edit;
         PasswordHintText.Text = mode == AccountDialogMode.Create
             ? "Укажите пароль для новой учётной записи."
             : "Оставьте пароль и подтверждение пустыми, если менять пароль не нужно.";
 
-        LoginBox.Text = account?.Login ?? string.Empty;
+        LoginBox.Text = string.Empty;
         IsActiveCheck.IsChecked = account?.IsActive ?? true;
         SetSelectedTag(PlatformBox, account?.Platform ?? "TSD");
         SetSelectedTag(AccessRoleBox, account?.AccessRole ?? "OPERATOR");
