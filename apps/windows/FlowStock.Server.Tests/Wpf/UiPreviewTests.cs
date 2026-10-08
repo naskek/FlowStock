@@ -146,6 +146,7 @@ public sealed class UiPreviewTests
                         Assert.True(dialog.IsUiPreview);
                         Assert.Contains("UI Preview / DEV", dialog.Title);
                         Assert.False(((Button)dialog.FindName("SaveButton")).IsEnabled);
+                        Assert.Null(dialog.PreviewSubmission);
                         Assert.Empty(((PasswordBox)dialog.FindName("NewPasswordBox")).Password);
                         Assert.Empty(((PasswordBox)dialog.FindName("ConfirmPasswordBox")).Password);
                         var profile = (StackPanel)dialog.FindName("ProfileFieldsPanel");
@@ -170,6 +171,121 @@ public sealed class UiPreviewTests
                 }
             }
             finally { accounts.Close(); }
+        });
+    }
+
+    [Fact]
+    public async Task Account_editor_save_tracks_actual_changes_in_production_and_preview()
+    {
+        await OnUiThread(() =>
+        {
+            var account = new TsdDeviceInfo
+            {
+                Id = 73, DeviceId = "DEMO-DEVICE-073", Login = "operator",
+                Platform = "PC", IsActive = true, AccessRole = "OPERATOR"
+            };
+
+            foreach (var preview in new[] { true, false })
+            {
+                var dialog = new TsdDeviceEditorWindow(
+                    AccountDialogMode.Edit, account,
+                    preview ? null : _ => Task.CompletedTask);
+                try
+                {
+                    var save = (Button)dialog.FindName("SaveButton");
+                    var role = (ComboBox)dialog.FindName("AccessRoleBox");
+                    var platform = (ComboBox)dialog.FindName("PlatformBox");
+                    var active = (CheckBox)dialog.FindName("IsActiveCheck");
+                    var password = (PasswordBox)dialog.FindName("NewPasswordBox");
+                    var confirmation = (PasswordBox)dialog.FindName("ConfirmPasswordBox");
+
+                    Assert.Equal(preview, dialog.IsUiPreview);
+                    Assert.False(save.IsEnabled);
+
+                    role.SelectedIndex = 1;
+                    Assert.True(save.IsEnabled);
+                    role.SelectedIndex = 0;
+                    Assert.False(save.IsEnabled);
+
+                    platform.SelectedIndex = 2;
+                    Assert.True(save.IsEnabled);
+                    platform.SelectedIndex = 1;
+                    Assert.False(save.IsEnabled);
+
+                    active.IsChecked = false;
+                    Assert.True(save.IsEnabled);
+                    active.IsChecked = true;
+                    Assert.False(save.IsEnabled);
+
+                    password.Password = "demo-password";
+                    Assert.True(save.IsEnabled);
+                    password.Clear();
+                    Assert.False(save.IsEnabled);
+
+                    confirmation.Password = "demo-confirmation";
+                    Assert.True(save.IsEnabled);
+                    confirmation.Clear();
+                    Assert.False(save.IsEnabled);
+                }
+                finally { dialog.Close(); }
+            }
+        });
+    }
+
+    [Fact]
+    public async Task Account_preview_modal_save_closes_and_never_retains_entered_password()
+    {
+        await OnUiThread(() =>
+        {
+            var account = new TsdDeviceInfo
+            {
+                Id = 74, DeviceId = "DEMO-DEVICE-074", Login = "fixed_account",
+                Platform = "PC", IsActive = true, AccessRole = "OPERATOR"
+            };
+            var dialog = new TsdDeviceEditorWindow(AccountDialogMode.Edit, account, null);
+            var timeout = false;
+            var watchdog = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromSeconds(4)
+            };
+            watchdog.Tick += (_, _) =>
+            {
+                timeout = true;
+                watchdog.Stop();
+                dialog.Close();
+            };
+            dialog.Loaded += (_, _) =>
+            {
+                Dispatcher.CurrentDispatcher.BeginInvoke(
+                    DispatcherPriority.Background,
+                    new Action(() =>
+                    {
+                        var save = (Button)dialog.FindName("SaveButton");
+                        Assert.False(save.IsEnabled);
+                        ((ComboBox)dialog.FindName("AccessRoleBox")).SelectedIndex = 1;
+                        ((PasswordBox)dialog.FindName("NewPasswordBox")).Password = "do-not-retain";
+                        ((PasswordBox)dialog.FindName("ConfirmPasswordBox")).Password = "do-not-retain";
+                        Assert.True(save.IsEnabled);
+                        save.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                    }));
+            };
+            try
+            {
+                watchdog.Start();
+                Assert.True(dialog.ShowDialog());
+                Assert.False(timeout);
+                Assert.True(dialog.IsUiPreview);
+                var saved = Assert.IsType<AccountEditSubmission>(dialog.PreviewSubmission);
+                Assert.Equal(account.Login, saved.Login);
+                Assert.Equal("ADMIN", saved.AccessRole);
+                Assert.Null(saved.Password);
+                Assert.Equal("OPERATOR", account.AccessRole);
+            }
+            finally
+            {
+                watchdog.Stop();
+                if (dialog.IsVisible) dialog.Close();
+            }
         });
     }
 
