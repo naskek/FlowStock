@@ -1,3 +1,4 @@
+using System.Data.Common;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Npgsql;
@@ -88,13 +89,14 @@ FOR UPDATE;", connection, transaction))
         return DeleteOutcome.Deleted;
     }
 
-    public static void LockAccountMutations(NpgsqlConnection connection, NpgsqlTransaction transaction)
+    public static void LockAccountMutations(DbConnection connection, DbTransaction transaction)
     {
         // Acquire the table lock before row locks in both delete and profile updates.
         // SHARE ROW EXCLUSIVE conflicts with concurrent writers and prevents two
         // administrators from independently deleting the final pair of PC admins.
-        using var lockCommand = new NpgsqlCommand(
-            "LOCK TABLE tsd_devices IN SHARE ROW EXCLUSIVE MODE;", connection, transaction);
+        using var lockCommand = connection.CreateCommand();
+        lockCommand.Transaction = transaction;
+        lockCommand.CommandText = "LOCK TABLE tsd_devices IN SHARE ROW EXCLUSIVE MODE;";
         lockCommand.ExecuteNonQuery();
     }
 
@@ -105,17 +107,22 @@ FOR UPDATE;", connection, transaction))
             || string.Equals(platform, "BOTH", StringComparison.OrdinalIgnoreCase));
 
     public static bool HasOtherActivePcAdmin(
-        NpgsqlConnection connection, NpgsqlTransaction transaction, long excludedId)
+        DbConnection connection, DbTransaction transaction, long excludedId)
     {
-        using var check = new NpgsqlCommand(@"
+        using var check = connection.CreateCommand();
+        check.Transaction = transaction;
+        check.CommandText = @"
 SELECT 1
 FROM tsd_devices
 WHERE id <> @id
   AND is_active = TRUE
   AND access_role = 'ADMIN'
   AND UPPER(platform) IN ('PC', 'BOTH')
-LIMIT 1;", connection, transaction);
-        check.Parameters.AddWithValue("@id", excludedId);
+LIMIT 1;";
+        var idParameter = check.CreateParameter();
+        idParameter.ParameterName = "@id";
+        idParameter.Value = excludedId;
+        check.Parameters.Add(idParameter);
         return check.ExecuteScalar() != null;
     }
 }
