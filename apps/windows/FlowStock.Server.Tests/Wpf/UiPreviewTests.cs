@@ -124,19 +124,19 @@ public sealed class UiPreviewTests
                 Assert.Equal(6, grid.Items.Count);
                 Assert.All(grid.Items.OfType<TsdDeviceInfo>(), row =>
                     Assert.StartsWith("DEMO-DEVICE-", row.DeviceId));
-                Assert.True(grid.IsReadOnly);
+                Assert.False(grid.IsReadOnly);
                 Assert.Null(typeof(TsdDeviceWindow)
                     .GetField("_productionServices", BindingFlags.Instance | BindingFlags.NonPublic)!
                     .GetValue(accounts));
                 var account = Assert.IsType<TsdDeviceInfo>(grid.SelectedItem);
                 Assert.True(((Button)accounts.FindName("CreateAccountButton")).IsEnabled);
                 Assert.True(((Button)accounts.FindName("EditAccountButton")).IsEnabled);
-                Assert.True(((Button)accounts.FindName("ChangePasswordButton")).IsEnabled);
-                Assert.False(((Button)accounts.FindName("RefreshAccountsButton")).IsEnabled);
+                Assert.Null(accounts.FindName("ChangePasswordButton"));
+                Assert.Null(accounts.FindName("RefreshAccountsButton"));
 
                 foreach (var mode in new[]
                 {
-                    AccountDialogMode.Create, AccountDialogMode.Edit, AccountDialogMode.ChangePassword
+                    AccountDialogMode.Create, AccountDialogMode.Edit
                 })
                 {
                     var dialog = new TsdDeviceEditorWindow(
@@ -150,13 +150,12 @@ public sealed class UiPreviewTests
                         Assert.Empty(((PasswordBox)dialog.FindName("ConfirmPasswordBox")).Password);
                         var profile = (StackPanel)dialog.FindName("ProfileFieldsPanel");
                         var password = (StackPanel)dialog.FindName("PasswordFieldsPanel");
-                        Assert.Equal(mode == AccountDialogMode.ChangePassword
-                            ? Visibility.Collapsed : Visibility.Visible, profile.Visibility);
-                        Assert.Equal(mode == AccountDialogMode.Edit
-                            ? Visibility.Collapsed : Visibility.Visible, password.Visibility);
+                        Assert.Equal(Visibility.Visible, profile.Visibility);
+                        Assert.Equal(Visibility.Visible, password.Visibility);
+                        var loginBox = (TextBox)dialog.FindName("LoginBox");
                         Assert.Equal(mode == AccountDialogMode.Create
-                            ? string.Empty : account.Login,
-                            ((TextBox)dialog.FindName("LoginBox")).Text);
+                            ? string.Empty : account.Login, loginBox.Text);
+                        Assert.Equal(mode == AccountDialogMode.Edit, loginBox.IsReadOnly);
                     }
                     finally { dialog.Close(); }
                 }
@@ -297,7 +296,7 @@ public sealed class UiPreviewTests
                 // Account preview buttons open presentation-only dialogs. They
                 // deliberately cannot persist data; don't invoke a modal from
                 // this generic event-probing loop.
-                if (button.Name is "CreateAccountButton" or "EditAccountButton" or "ChangePasswordButton")
+                if (button.Name is "CreateAccountButton" or "EditAccountButton")
                 {
                     // These only navigate to local, non-persisting demo dialogs.
                     // Their enabled state depends on the currently selected row.
@@ -309,7 +308,8 @@ public sealed class UiPreviewTests
             }
             if (element is DataGrid grid)
             {
-                Assert.True(grid.IsReadOnly);
+                // Only synthetic accounts allow inline changes in memory.
+                Assert.Equal(grid.Name == "DevicesGrid" ? false : true, grid.IsReadOnly);
                 Assert.NotEmpty(grid.Items);
             }
         }
