@@ -224,7 +224,7 @@ public partial class TsdDeviceWindow : Window
                 else
                 {
                     await EnsureCurrentAccountAsync(account!);
-                    // Always preserve the original login, even if the UI is modified.
+                    // Only an explicit rename action may change the account login.
                     succeeded = await _services.WpfAdminApi.TryUpdateTsdDeviceAsync(
                         account!.Id, submission.Login, submission.Password,
                         submission.IsActive, submission.Platform, submission.AccessRole);
