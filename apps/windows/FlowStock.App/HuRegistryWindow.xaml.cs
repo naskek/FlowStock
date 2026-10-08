@@ -13,14 +13,17 @@ public partial class HuRegistryWindow : Window
     private const int MaxLoad = 2000;
     private const string DefaultCreatedBy = "WINDOWS";
 
-    private readonly AppServices _services;
+    private readonly AppServices _services = null!;
+    private readonly bool _isUiPreview;
+    public bool IsUiPreview => _isUiPreview;
+    private readonly List<HuRow> _previewRows = [];
     private readonly ObservableCollection<HuRow> _rows = new();
     private readonly ObservableCollection<HuLedgerRowDisplay> _composition = new();
     private readonly ObservableCollection<string> _generated = new();
     private List<HuRecord> _items = new();
     private bool _commandInProgress;
     private bool _liveRefreshPending;
-    private readonly IDisposable _liveRefreshSubscription;
+    private readonly IDisposable _liveRefreshSubscription = null!;
 
     public HuRegistryWindow(AppServices services)
     {
@@ -39,6 +42,38 @@ public partial class HuRegistryWindow : Window
         Activated += (_, _) => ApplyPendingLiveRefresh();
         Closed += (_, _) => _liveRefreshSubscription.Dispose();
         LoadItems();
+    }
+
+    public HuRegistryWindow(UiPreviewContext preview)
+    {
+        ArgumentNullException.ThrowIfNull(preview);
+        _isUiPreview = true;
+        InitializeComponent();
+        UiPreviewContext.Prepare(this);
+
+        RegistryGrid.ItemsSource = _rows;
+        CompositionGrid.ItemsSource = _composition;
+        GeneratedList.ItemsSource = _generated;
+        StateFilter.ItemsSource = StateOptions;
+        StateFilter.SelectedIndex = 0;
+        GenerateCountBox.Text = "1";
+
+        for (var i = 0; i < 24; i++)
+        {
+            var state = new[] { "OPEN", "ACTIVE", "CLOSED", "VOID" }[i % 4];
+            _previewRows.Add(new HuRow(
+                $"HU-DEMO-{i + 1:000000}",
+                state,
+                new DateTime(2026, 9, 1).AddDays(i).ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture),
+                i % 2 == 0 ? "DEMO-OPERATOR" : "DEMO-ADMIN",
+                state == "CLOSED" ? "22/09/2026 15:20" : "",
+                i % 5 == 0 ? "Демонстрационная HU — длинный комментарий для проверки вёрстки" : "Только UI Preview"));
+        }
+
+        _generated.Add("HU-DEMO-000025");
+        _generated.Add("HU-DEMO-000026");
+        ApplyFilter();
+        RegistryGrid.SelectedIndex = 0;
     }
 
     private void ApplyLiveRefresh()
@@ -81,6 +116,19 @@ public partial class HuRegistryWindow : Window
 
     private void ApplyFilter()
     {
+        if (_isUiPreview)
+        {
+            var previewState = (StateFilter.SelectedItem as StateOption)?.Value;
+            var previewSearch = SearchBox.Text?.Trim();
+            _rows.Clear();
+            foreach (var row in _previewRows.Where(row =>
+                (string.IsNullOrEmpty(previewState) || row.Status == previewState)
+                && (string.IsNullOrWhiteSpace(previewSearch)
+                    || Contains(row.Code, previewSearch))))
+                _rows.Add(row);
+            return;
+        }
+
         var search = SearchBox.Text?.Trim();
         var state = (StateFilter.SelectedItem as StateOption)?.Value;
 
@@ -104,6 +152,11 @@ public partial class HuRegistryWindow : Window
 
     private void Refresh_Click(object sender, RoutedEventArgs e)
     {
+        if (_isUiPreview)
+        {
+            ApplyFilter();
+            return;
+        }
         LoadItems();
     }
 
@@ -134,6 +187,12 @@ public partial class HuRegistryWindow : Window
         {
             return;
         }
+        if (_isUiPreview)
+        {
+            _composition.Add(new HuLedgerRowDisplay("Хрен столовый классический 200 г", "A-01-01", "1 800 шт"));
+            _composition.Add(new HuLedgerRowDisplay("Горчица русская острая 200 г", "A-01-02", "450 шт"));
+            return;
+        }
 
         var rows = _services.WpfHuApi.TryGetHuLedgerRows(row.Code, out var apiRows)
             ? apiRows
@@ -146,6 +205,7 @@ public partial class HuRegistryWindow : Window
 
     private async void CloseHu_Click(object sender, RoutedEventArgs e)
     {
+        if (_isUiPreview) return;
         if (RegistryGrid.SelectedItem is not HuRow row)
         {
             MessageBox.Show("Выберите HU для закрытия.", "HU Реестр", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -181,6 +241,7 @@ public partial class HuRegistryWindow : Window
 
     private async void Generate_Click(object sender, RoutedEventArgs e)
     {
+        if (_isUiPreview) return;
         if (!TryParseCount(out var count))
         {
             MessageBox.Show("Введите корректное количество.", "HU Реестр", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -226,6 +287,7 @@ public partial class HuRegistryWindow : Window
 
     private void Copy_Click(object sender, RoutedEventArgs e)
     {
+        if (_isUiPreview) return;
         if (_generated.Count == 0)
         {
             MessageBox.Show("Сначала сгенерируйте HU-коды.", "HU Реестр", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -281,6 +343,16 @@ public partial class HuRegistryWindow : Window
 
     private sealed class HuRow
     {
+        public HuRow(string code, string status, string createdAt, string createdBy, string closedAt, string note)
+        {
+            Code = code;
+            Status = status;
+            CreatedAtDisplay = createdAt;
+            CreatedBy = createdBy;
+            ClosedAtDisplay = closedAt;
+            Note = note;
+        }
+
         public HuRow(HuRecord item)
         {
             Code = item.Code;
@@ -306,6 +378,13 @@ public partial class HuRegistryWindow : Window
 
     private sealed class HuLedgerRowDisplay
     {
+        public HuLedgerRowDisplay(string itemName, string locationCode, string qtyDisplay)
+        {
+            ItemName = itemName;
+            LocationCode = locationCode;
+            QtyDisplay = qtyDisplay;
+        }
+
         public HuLedgerRowDisplay(HuLedgerRow row)
         {
             ItemName = row.ItemName;

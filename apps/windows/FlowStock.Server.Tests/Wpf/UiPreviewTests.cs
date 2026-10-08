@@ -37,9 +37,24 @@ public sealed class UiPreviewTests
                 Assert.Contains("UI Preview / DEV", main.Title);
                 Assert.Equal(Visibility.Visible, ((FrameworkElement)main.FindName("UiPreviewBanner")).Visibility);
                 Assert.True(((MenuItem)main.FindName("OpenSettingsMenuItem")).IsEnabled);
+                Assert.True(((MenuItem)main.FindName("OpenHuRegistryMenuItem")).IsEnabled);
                 main.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
                 typeof(MainWindow).GetMethod("OnContentRendered", BindingFlags.Instance | BindingFlags.NonPublic)!
                     .Invoke(main, new object[] { EventArgs.Empty });
+
+                foreach (var gridName in new[]
+                {
+                    "WarehouseProductionStateGrid", "DocsGrid", "OrdersGrid", "StatisticsMonthlyGrid",
+                    "StatisticsGroupsGrid", "ItemsGrid", "LocationsGrid", "PartnersGrid"
+                })
+                {
+                    var grid = (DataGrid)main.FindName(gridName);
+                    Assert.True(grid.Items.Count >= 12, gridName + " should have demo records");
+                }
+                Assert.Contains(Descendants(main).OfType<GroupBox>(),
+                    group => Equals(group.Header, "Период"));
+                Assert.Contains(Descendants(main).OfType<GroupBox>(),
+                    group => Equals(group.Header, "Отображение и действия"));
 
                 var tabs = (TabControl)main.FindName("MainTabs");
                 for (var index = 0; index < tabs.Items.Count; index++)
@@ -85,6 +100,36 @@ public sealed class UiPreviewTests
         });
     }
 
+    [Fact]
+    public async Task Hu_registry_preview_is_populated_and_safe_without_services()
+    {
+        await OnUiThread(() =>
+        {
+            var hu = new HuRegistryWindow(new UiPreviewContext());
+            try
+            {
+                Assert.True(hu.IsUiPreview);
+                var registry = (DataGrid)hu.FindName("RegistryGrid");
+                var composition = (DataGrid)hu.FindName("CompositionGrid");
+                var state = (ComboBox)hu.FindName("StateFilter");
+                Assert.Equal(24, registry.Items.Count);
+                registry.SelectedIndex = 0;
+                Assert.NotEmpty(composition.Items);
+                state.SelectedIndex = 2; // ACTIVE
+                Assert.Equal(6, registry.Items.Count);
+                Assert.All(Descendants(hu).OfType<Button>(), button =>
+                {
+                    if (button.Content as string != "Закрыть")
+                        Assert.False(button.IsEnabled);
+                });
+                Assert.Null(typeof(HuRegistryWindow)
+                    .GetField("_liveRefreshSubscription", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .GetValue(hu));
+            }
+            finally { hu.Close(); }
+        });
+    }
+
     private static void AssertPreviewController(object controller)
     {
         Assert.True((bool)controller.GetType().GetProperty("IsUiPreview")!.GetValue(controller)!);
@@ -108,7 +153,7 @@ public sealed class UiPreviewTests
             if (element is DataGrid grid)
             {
                 Assert.True(grid.IsReadOnly);
-                Assert.Empty(grid.Items);
+                Assert.NotEmpty(grid.Items);
             }
         }
     }

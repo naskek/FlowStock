@@ -19,7 +19,7 @@ public sealed class UiPreviewContext
                 button.IsEnabled = false;
                 button.ToolTip = OperationUnavailable;
             }
-            if (element is MenuItem menu && !menu.HasItems && menu.Name != "OpenSettingsMenuItem")
+            if (element is MenuItem menu && !menu.HasItems && menu.Name != "OpenSettingsMenuItem" && menu.Name != "OpenHuRegistryMenuItem")
             {
                 menu.IsEnabled = false;
                 menu.ToolTip = OperationUnavailable;
@@ -27,7 +27,7 @@ public sealed class UiPreviewContext
             if (element is DataGrid grid)
             {
                 grid.IsReadOnly = true;
-                grid.ItemsSource ??= Array.Empty<object>();
+                grid.ItemsSource = UiPreviewDemoData.ForGrid(grid);
             }
         }
     }
