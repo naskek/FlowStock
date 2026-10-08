@@ -2,6 +2,7 @@ using System;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using WpfComboBox = System.Windows.Controls.ComboBox;
 
 namespace FlowStock.App;
 
@@ -88,7 +89,7 @@ public partial class TsdDeviceEditorWindow : Window
         };
     }
 
-    private static void SetSelectedTag(ComboBox box, string value)
+    private static void SetSelectedTag(WpfComboBox box, string value)
     {
         foreach (var entry in box.Items)
         {
@@ -102,7 +103,7 @@ public partial class TsdDeviceEditorWindow : Window
         box.SelectedIndex = 0;
     }
 
-    private static string SelectedTag(ComboBox box) =>
+    private static string SelectedTag(WpfComboBox box) =>
         (box.SelectedItem as ComboBoxItem)?.Tag as string ?? string.Empty;
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
