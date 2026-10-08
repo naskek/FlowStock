@@ -81,7 +81,7 @@ internal static class UiPreviewDemoData
 
         foreach (var column in grid.Columns.OfType<DataGridBoundColumn>())
         {
-            if (column.Binding is not Binding { Path.Path: { } path }) continue;
+            if (column.Binding is not System.Windows.Data.Binding { Path.Path: { } path }) continue;
             var property = path.Split('.')[0];
             if (string.IsNullOrWhiteSpace(property) || property == ".") continue;
             fields[property] = column is DataGridCheckBoxColumn ? typeof(bool) : FieldType(property);
