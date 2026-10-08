@@ -602,6 +602,9 @@ app.MapPost("/api/admin/tsd-devices", async (HttpRequest request, WpfMachineAuth
     var hash = HashPassword(password, salt, 100_000);
 
     using var connection = OpenConnection(postgresConnectionString);
+    using var transaction = connection.BeginTransaction();
+    // Prevent create/rename from racing across differently cased login values.
+    TsdAccountLifecycle.LockAccountMutations(connection, transaction);
     try
     {
         EnsureUniqueTsdDeviceLogin(connection, login, null);
@@ -613,6 +616,7 @@ app.MapPost("/api/admin/tsd-devices", async (HttpRequest request, WpfMachineAuth
 
     var deviceId = GenerateTsdDeviceId(connection);
     using var command = connection.CreateCommand();
+    command.Transaction = transaction;
     command.CommandText = @"
 INSERT INTO tsd_devices(device_id, login, password_salt, password_hash, password_iterations, platform, is_active, access_role, created_at)
 VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @access_role, @created_at);";
@@ -635,6 +639,7 @@ VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @ac
         return Results.Conflict(new ApiResult(false, "LOGIN_ALREADY_EXISTS"));
     }
 
+    transaction.Commit();
     return Results.Ok(new
     {
         ok = true,
