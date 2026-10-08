@@ -23,8 +23,17 @@ public partial class MainWindow
     protected override void OnContentRendered(EventArgs e)
     {
         base.OnContentRendered(e);
-        if (IsUiPreview) return;
         EnsureCommercialStatisticsAdvancedUi();
+        if (IsUiPreview)
+        {
+            // Use exactly the production presentation pipeline, without its data loading.
+            ApplyCommercialStatisticsAcceptanceFixes();
+            ApplyCommercialStatisticsModeDefaults();
+            ApplyCommercialStatisticsSelectorBlurFix();
+            ApplyCommercialStatisticsDrillDownEnhancements();
+            ApplyCommercialStatisticsContentLayout();
+            UiPreviewContext.Prepare(this);
+        }
     }
 
     private void EnsureCommercialStatisticsAdvancedUi()
