@@ -165,6 +165,110 @@ public sealed class UiPreviewTests
     }
 
     [Fact]
+    public async Task Account_preview_inline_edits_change_only_synthetic_rows()
+    {
+        await OnUiThread(() =>
+        {
+            var accounts = new TsdDeviceWindow(new UiPreviewContext());
+            try
+            {
+                var grid = (DataGrid)accounts.FindName("DevicesGrid");
+                Assert.False(grid.IsReadOnly);
+                Assert.True(((DataGridTextColumn)grid.Columns[0]).IsReadOnly);
+                Assert.True(((DataGridTextColumn)grid.Columns[4]).IsReadOnly);
+                Assert.IsType<DataGridTemplateColumn>(grid.Columns[1]);
+                Assert.IsType<DataGridTemplateColumn>(grid.Columns[2]);
+                Assert.IsType<DataGridTemplateColumn>(grid.Columns[3]);
+
+                var original = Assert.IsType<TsdDeviceInfo>(grid.Items[0]);
+                var reverted = 0;
+                var inline = typeof(TsdDeviceWindow)
+                    .GetMethod("SaveInlineAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                var task = (Task)inline.Invoke(accounts,
+                [
+                    original, "BOTH", false, "ADMIN", new Action(() => reverted++)
+                ])!;
+                Assert.True(task.IsCompletedSuccessfully);
+                var updated = Assert.IsType<TsdDeviceInfo>(grid.Items[0]);
+                Assert.Equal(original.Id, updated.Id);
+                Assert.Equal(original.Login, updated.Login);
+                Assert.Equal("BOTH", updated.Platform);
+                Assert.False(updated.IsActive);
+                Assert.Equal("ADMIN", updated.AccessRole);
+                Assert.Equal(0, reverted);
+            }
+            finally { accounts.Close(); }
+        });
+    }
+
+    [Fact]
+    public async Task Account_edit_dialog_preserves_original_login_and_can_submit_password()
+    {
+        await OnUiThread(() =>
+        {
+            var account = new TsdDeviceInfo
+            {
+                Id = 42,
+                DeviceId = "DEMO-DEVICE-042",
+                Login = "fixed_login",
+                Platform = "PC",
+                IsActive = true,
+                AccessRole = "OPERATOR"
+            };
+            AccountEditSubmission? received = null;
+            var dialog = new TsdDeviceEditorWindow(
+                AccountDialogMode.Edit, account, request =>
+                {
+                    received = request;
+                    return Task.CompletedTask;
+                });
+            var watchdog = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromSeconds(4)
+            };
+            var timedOut = false;
+            watchdog.Tick += (_, _) =>
+            {
+                timedOut = true;
+                watchdog.Stop();
+                dialog.Close();
+            };
+            dialog.Loaded += (_, _) =>
+            {
+                Dispatcher.CurrentDispatcher.BeginInvoke(
+                    DispatcherPriority.Background,
+                    new Action(() =>
+                    {
+                        var login = (TextBox)dialog.FindName("LoginBox");
+                        Assert.True(login.IsReadOnly);
+                        // Even programmatic manipulation must not rename this user.
+                        login.Text = "tampered_login";
+                        ((PasswordBox)dialog.FindName("NewPasswordBox")).Password = "new-password";
+                        ((PasswordBox)dialog.FindName("ConfirmPasswordBox")).Password = "new-password";
+                        ((Button)dialog.FindName("SaveButton")).RaiseEvent(
+                            new RoutedEventArgs(ButtonBase.ClickEvent));
+                    }));
+            };
+            try
+            {
+                watchdog.Start();
+                Assert.True(dialog.ShowDialog());
+                Assert.False(timedOut);
+                var submission = Assert.IsType<AccountEditSubmission>(received);
+                Assert.Equal("fixed_login", submission.Login);
+                Assert.Equal("new-password", submission.Password);
+                Assert.Equal("PC", submission.Platform);
+                Assert.True(submission.IsActive);
+            }
+            finally
+            {
+                watchdog.Stop();
+                if (dialog.IsVisible) dialog.Close();
+            }
+        });
+    }
+
+    [Fact]
     public async Task Account_modal_validation_does_not_submit_incomplete_credentials()
     {
         await OnUiThread(() =>
