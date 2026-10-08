@@ -61,7 +61,7 @@ FOR UPDATE;", connection, transaction))
             using var reader = lookup.ExecuteReader();
             if (!reader.Read())
             {
-                transaction.Rollback();
+                // Disposing the reader before the transaction rolls back is required.
                 return DeleteOutcome.NotFound;
             }
             isActive = reader.GetBoolean(0);
