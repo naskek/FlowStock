@@ -73,6 +73,15 @@ public sealed class TsdSessionPostgresTests
             Assert.True(called);
             Assert.Equal(StatusCodes.Status200OK, valid.Response.StatusCode);
 
+            var missingActor = NewRequest(token, "{\\"hu_code\\":\\"X\\"}");
+            await TsdSessionAuthorization.InvokeAsync(missingActor, () =>
+            {
+                using var reader = System.Text.Json.JsonDocument.Parse(missingActor.Request.Body);
+                Assert.Equal(account.DeviceId,
+                    reader.RootElement.GetProperty("device_id").GetString());
+                return Task.CompletedTask;
+            }, sessions);
+
             var withoutCookie = NewRequest(null, "{}");
             await TsdSessionAuthorization.InvokeAsync(withoutCookie,
                 () => throw new Exception("Unauthorized mutation reached handler"), sessions);
