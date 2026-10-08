@@ -106,8 +106,19 @@ internal static class UiPreviewDemoData
         for (var index = 0; index < RowCount; index++)
         {
             var row = table.NewRow();
-            foreach (var (name, _) in fields)
-                row[name] = Value(grid.Name, name, index) ?? DBNull.Value;
+            foreach (var (name, type) in fields)
+            {
+                var value = Value(grid.Name, name, index);
+                // A settings grid can declare a typed column unknown to DemoFields.
+                // Always honour its Binding column type instead of coercing "DEMO".
+                if (type == typeof(bool) && value is not bool)
+                    value = index % 3 != 0;
+                else if (type == typeof(decimal) && value is not decimal)
+                    value = (decimal)(index + 1) * 125;
+                else if (type == typeof(DateTime) && value is not DateTime && value is not null)
+                    value = new DateTime(2026, 9, 1).AddDays(index);
+                row[name] = value ?? DBNull.Value;
+            }
             table.Rows.Add(row);
         }
         return table.DefaultView;
