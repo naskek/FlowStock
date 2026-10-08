@@ -689,7 +689,7 @@ app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest requ
 
     using var connection = OpenConnection(postgresConnectionString);
     using var transaction = connection.BeginTransaction();
-    TsdAccountLifecycle.LockAccountMutations(connection, (NpgsqlTransaction)transaction);
+    TsdAccountLifecycle.LockAccountMutations(connection, transaction);
     string previousAccessRole;
     bool previousIsActive;
     string previousPlatform;
@@ -712,7 +712,7 @@ app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest requ
 
     if (TsdAccountLifecycle.IsActivePcAdmin(previousIsActive, previousPlatform, previousAccessRole)
         && !TsdAccountLifecycle.IsActivePcAdmin(upsertRequest.IsActive, normalizedPlatform, accessRole)
-        && !TsdAccountLifecycle.HasOtherActivePcAdmin(connection, (NpgsqlTransaction)transaction, id))
+        && !TsdAccountLifecycle.HasOtherActivePcAdmin(connection, transaction, id))
     {
         transaction.Rollback();
         return Results.Conflict(new ApiResult(false, "LAST_ACTIVE_PC_ADMIN"));
