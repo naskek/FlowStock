@@ -9,8 +9,7 @@ namespace FlowStock.App;
 public enum AccountDialogMode
 {
     Create,
-    Edit,
-    ChangePassword
+    Edit
 }
 
 public sealed record AccountEditSubmission(
@@ -35,37 +34,23 @@ public partial class TsdDeviceEditorWindow : Window
         TsdDeviceInfo? account,
         Func<AccountEditSubmission, Task>? saveAction)
     {
-        if (mode != AccountDialogMode.Create && account is null)
+        if (mode == AccountDialogMode.Edit && account is null)
             throw new ArgumentNullException(nameof(account));
         _mode = mode;
         _account = account;
         _saveAction = saveAction;
         InitializeComponent();
 
-        Title = mode switch
-        {
-            AccountDialogMode.Create => "Создать аккаунт",
-            AccountDialogMode.Edit => "Редактировать аккаунт",
-            _ => "Сменить пароль"
-        };
+        Title = mode == AccountDialogMode.Create ? "Создать аккаунт" : "Редактировать аккаунт";
         ModeHeader.Text = Title;
-        AccountNameText.Text = mode switch
-        {
-            AccountDialogMode.Create => "Новая учётная запись ПК Web / ТСД",
-            AccountDialogMode.Edit => "Изменение данных существующей учётной записи",
-            _ => $"Аккаунт: {account!.Login}"
-        };
-
-        ProfileFieldsPanel.Visibility = mode == AccountDialogMode.ChangePassword
-            ? Visibility.Collapsed : Visibility.Visible;
-        PasswordFieldsPanel.Visibility = mode == AccountDialogMode.Edit
-            ? Visibility.Collapsed : Visibility.Visible;
-        SaveButton.Content = mode switch
-        {
-            AccountDialogMode.Create => "Создать",
-            AccountDialogMode.Edit => "Сохранить",
-            _ => "Сменить пароль"
-        };
+        AccountNameText.Text = mode == AccountDialogMode.Create
+            ? "Новая учётная запись ПК Web / ТСД"
+            : $"Аккаунт: {account!.Login}. Логин изменить нельзя.";
+        SaveButton.Content = mode == AccountDialogMode.Create ? "Создать" : "Сохранить";
+        LoginBox.IsReadOnly = mode == AccountDialogMode.Edit;
+        PasswordHintText.Text = mode == AccountDialogMode.Create
+            ? "Укажите пароль для новой учётной записи."
+            : "Оставьте пароль и подтверждение пустыми, если менять пароль не нужно.";
 
         LoginBox.Text = account?.Login ?? string.Empty;
         IsActiveCheck.IsChecked = account?.IsActive ?? true;
@@ -88,10 +73,10 @@ public partial class TsdDeviceEditorWindow : Window
         };
         Loaded += (_, _) =>
         {
-            if (mode == AccountDialogMode.ChangePassword || mode == AccountDialogMode.Create)
-                NewPasswordBox.Focus();
-            else
+            if (mode == AccountDialogMode.Create)
                 LoginBox.Focus();
+            else
+                PlatformBox.Focus();
         };
     }
 
@@ -122,18 +107,16 @@ public partial class TsdDeviceEditorWindow : Window
         if (_saving || IsUiPreview) return;
 
         ErrorText.Visibility = Visibility.Collapsed;
-        var login = _mode == AccountDialogMode.Create ? LoginBox.Text.Trim()
-            : _mode == AccountDialogMode.ChangePassword ? _account!.Login : LoginBox.Text.Trim();
+        // Existing login is immutable in WPF, regardless of editor text state.
+        var login = _mode == AccountDialogMode.Create ? LoginBox.Text.Trim() : _account!.Login;
         if (string.IsNullOrWhiteSpace(login))
         {
             ShowError("Укажите логин.");
             return;
         }
 
-        var platform = _mode == AccountDialogMode.ChangePassword
-            ? _account!.Platform : SelectedTag(PlatformBox);
-        var role = _mode == AccountDialogMode.ChangePassword
-            ? _account!.AccessRole : SelectedTag(AccessRoleBox);
+        var platform = SelectedTag(PlatformBox);
+        var role = SelectedTag(AccessRoleBox);
         if (platform is not ("TSD" or "PC" or "BOTH")
             || role is not ("OPERATOR" or "ADMIN"))
         {
@@ -141,26 +124,28 @@ public partial class TsdDeviceEditorWindow : Window
             return;
         }
 
-        string? password = null;
-        if (_mode != AccountDialogMode.Edit)
+        var enteredPassword = NewPasswordBox.Password;
+        var confirm = ConfirmPasswordBox.Password;
+        if (_mode == AccountDialogMode.Create && string.IsNullOrWhiteSpace(enteredPassword))
         {
-            password = NewPasswordBox.Password;
-            if (string.IsNullOrWhiteSpace(password))
-            {
-                ShowError("Введите новый пароль.");
-                return;
-            }
-            if (!string.Equals(password, ConfirmPasswordBox.Password, StringComparison.Ordinal))
-            {
-                ShowError("Подтверждение пароля не совпадает.");
-                return;
-            }
+            ShowError("Введите новый пароль.");
+            return;
         }
-
+        if ((enteredPassword.Length > 0 || confirm.Length > 0)
+            && !string.Equals(enteredPassword, confirm, StringComparison.Ordinal))
+        {
+            ShowError("Подтверждение пароля не совпадает.");
+            return;
+        }
+        if (_mode == AccountDialogMode.Edit
+            && enteredPassword.Length > 0 && string.IsNullOrWhiteSpace(enteredPassword))
+        {
+            ShowError("Пароль не может состоять только из пробелов.");
+            return;
+        }
+        string? password = string.IsNullOrEmpty(enteredPassword) ? null : enteredPassword;
         var submission = new AccountEditSubmission(
-            login, password,
-            _mode == AccountDialogMode.ChangePassword ? _account!.IsActive : IsActiveCheck.IsChecked == true,
-            platform, role);
+            login, password, IsActiveCheck.IsChecked == true, platform, role);
 
         _saving = true;
         SaveButton.IsEnabled = false;
