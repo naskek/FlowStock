@@ -159,9 +159,37 @@ public partial class TsdDeviceWindow : Window
             {
                 Owner = Window.GetWindow(DevicesGrid)
             };
-            if (editor.ShowDialog() == true && !IsUiPreview)
+            if (editor.ShowDialog() == true)
             {
-                if (await LoadDevicesAsync())
+                if (IsUiPreview)
+                {
+                    // The modal returns no password; updates stay in this synthetic list.
+                    var submitted = editor.PreviewSubmission
+                        ?? throw new InvalidOperationException("Демо-форма не вернула изменения.");
+                    if (mode == AccountDialogMode.Create)
+                    {
+                        var nextId = _devices.Count == 0 ? 1 : _devices.Max(row => row.Id) + 1;
+                        var created = new TsdDeviceInfo
+                        {
+                            Id = nextId,
+                            DeviceId = $"DEMO-DEVICE-{nextId:000}",
+                            Login = submitted.Login,
+                            IsActive = submitted.IsActive,
+                            Platform = submitted.Platform,
+                            AccessRole = submitted.AccessRole
+                        };
+                        _devices.Add(created);
+                        SelectDevice(nextId);
+                    }
+                    else
+                    {
+                        ReplaceDevice(account!, CopyAccount(
+                            account!, submitted.Platform, submitted.IsActive, submitted.AccessRole));
+                    }
+                    AccountsStatusText.Text =
+                        "UI Preview / DEV · Изменения сохранены только в демоданных.";
+                }
+                else if (await LoadDevicesAsync())
                 {
                     if (mode == AccountDialogMode.Create)
                         SelectDeviceByLogin(savedLogin!);
