@@ -9,6 +9,9 @@ public partial class ItemEditWindow : Window
 {
     private readonly AppServices _services;
     private readonly Item? _item;
+    private readonly Item? _duplicateDraft;
+    private bool _syncDuplicateBarcodeToGtin;
+    private bool _updatingDuplicateBarcode;
     private readonly List<Uom> _uoms = new();
     private readonly List<TaraOption> _taras = new();
     private readonly List<ItemTypeOption> _itemTypes = new();
@@ -16,10 +19,16 @@ public partial class ItemEditWindow : Window
 
     public long? SavedItemId { get; private set; }
 
-    public ItemEditWindow(AppServices services, Item? item = null)
+    public ItemEditWindow(AppServices services, Item? item = null, bool duplicate = false)
     {
+        if (duplicate && item == null)
+        {
+            throw new ArgumentException("Для дублирования необходимо выбрать товар.", nameof(item));
+        }
+
         _services = services;
-        _item = item;
+        _item = duplicate ? null : item;
+        _duplicateDraft = duplicate ? CatalogItemDuplicate.CreateDraft(item!) : null;
 
         InitializeComponent();
         LoadLookups();
@@ -62,7 +71,7 @@ public partial class ItemEditWindow : Window
             ? apiVatRates
             : Array.Empty<VatRate>();
         foreach (var vatRate in vatRates.Where(vatRate =>
-                     vatRate.IsActive || vatRate.Id == _item?.DefaultSaleVatRateId))
+                     vatRate.IsActive || vatRate.Id == (_item ?? _duplicateDraft)?.DefaultSaleVatRateId))
         {
             _vatRates.Add(new VatRateOption(
                 vatRate.Id,
@@ -73,7 +82,8 @@ public partial class ItemEditWindow : Window
 
     private void FillData()
     {
-        if (_item == null)
+        var source = _item ?? _duplicateDraft;
+        if (source == null)
         {
             Title = "Добавление товара";
             StorageConditionsBox.Text = string.Empty;
@@ -90,32 +100,34 @@ public partial class ItemEditWindow : Window
             return;
         }
 
-        Title = "Редактирование товара";
-        NameBox.Text = _item.Name;
-        BarcodeBox.Text = _item.Barcode ?? string.Empty;
-        GtinBox.Text = _item.Gtin ?? string.Empty;
-        BrandBox.Text = _item.Brand ?? string.Empty;
-        VolumeBox.Text = _item.Volume ?? string.Empty;
-        ShelfLifeBox.Text = _item.ShelfLifeMonths.HasValue
-            ? _item.ShelfLifeMonths.Value.ToString(CultureInfo.InvariantCulture)
+        Title = _duplicateDraft != null ? "Дублирование — создание нового товара" : "Редактирование товара";
+        NameBox.Text = source.Name;
+        BarcodeBox.Text = source.Barcode ?? string.Empty;
+        GtinBox.Text = source.Gtin ?? string.Empty;
+        BrandBox.Text = source.Brand ?? string.Empty;
+        VolumeBox.Text = source.Volume ?? string.Empty;
+        ShelfLifeBox.Text = source.ShelfLifeMonths.HasValue
+            ? source.ShelfLifeMonths.Value.ToString(CultureInfo.InvariantCulture)
             : string.Empty;
-        StorageConditionsBox.Text = _item.StorageConditions ?? string.Empty;
-        MaxQtyPerHuBox.Text = _item.MaxQtyPerHu.HasValue
-            ? _item.MaxQtyPerHu.Value.ToString("0.###", CultureInfo.InvariantCulture)
+        StorageConditionsBox.Text = source.StorageConditions ?? string.Empty;
+        MaxQtyPerHuBox.Text = source.MaxQtyPerHu.HasValue
+            ? source.MaxQtyPerHu.Value.ToString("0.###", CultureInfo.InvariantCulture)
             : string.Empty;
-        UomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, _item.BaseUom, StringComparison.OrdinalIgnoreCase))
+        UomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, source.BaseUom, StringComparison.OrdinalIgnoreCase))
                                 ?? _uoms.FirstOrDefault();
-        TaraCombo.SelectedItem = _taras.FirstOrDefault(t => t.Id == _item.TaraId) ?? TaraOption.Empty;
-        ItemTypeCombo.SelectedItem = _itemTypes.FirstOrDefault(t => t.Id == _item.ItemTypeId) ?? _itemTypes.FirstOrDefault();
-        MinStockQtyBox.Text = _item.MinStockQty.HasValue
-            ? _item.MinStockQty.Value.ToString("0.###", CultureInfo.InvariantCulture)
+        TaraCombo.SelectedItem = _taras.FirstOrDefault(t => t.Id == source.TaraId) ?? TaraOption.Empty;
+        ItemTypeCombo.SelectedItem = _itemTypes.FirstOrDefault(t => t.Id == source.ItemTypeId) ?? _itemTypes.FirstOrDefault();
+        MinStockQtyBox.Text = source.MinStockQty.HasValue
+            ? source.MinStockQty.Value.ToString("0.###", CultureInfo.InvariantCulture)
             : string.Empty;
-        DefaultSalePriceGrossBox.Text = _item.DefaultSalePriceGross.HasValue
-            ? _item.DefaultSalePriceGross.Value.ToString("0.####", CultureInfo.CurrentCulture)
+        DefaultSalePriceGrossBox.Text = source.DefaultSalePriceGross.HasValue
+            ? source.DefaultSalePriceGross.Value.ToString("0.####", CultureInfo.CurrentCulture)
             : string.Empty;
-        DefaultSaleVatRateCombo.SelectedItem = _vatRates.FirstOrDefault(rate => rate.Id == _item.DefaultSaleVatRateId)
+        DefaultSaleVatRateCombo.SelectedItem = _vatRates.FirstOrDefault(rate => rate.Id == source.DefaultSaleVatRateId)
                                                        ?? VatRateOption.Empty;
-        IsActiveCheck.IsChecked = _item.IsActive;
+        IsActiveCheck.IsChecked = source.IsActive;
+        _syncDuplicateBarcodeToGtin = _duplicateDraft != null
+                                      && CatalogItemDuplicate.HasSynchronizedIdentifiers(_duplicateDraft);
         UpdateTypeDrivenControls();
     }
 
@@ -183,7 +195,7 @@ public partial class ItemEditWindow : Window
         }
         else
         {
-            maxQtyPerHu = _item?.MaxQtyPerHu;
+            maxQtyPerHu = _item?.MaxQtyPerHu ?? _duplicateDraft?.MaxQtyPerHu;
         }
 
         if (!TryValidateItemIdentifiers(barcode, gtin, _item?.Id))
@@ -454,8 +466,29 @@ public partial class ItemEditWindow : Window
         UpdateTypeDrivenControls();
     }
 
+    private void BarcodeBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        if (_syncDuplicateBarcodeToGtin && !_updatingDuplicateBarcode)
+        {
+            _syncDuplicateBarcodeToGtin = false;
+        }
+    }
+
     private void GtinBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
     {
+        if (_syncDuplicateBarcodeToGtin)
+        {
+            _updatingDuplicateBarcode = true;
+            try
+            {
+                BarcodeBox.Text = GtinBox.Text;
+            }
+            finally
+            {
+                _updatingDuplicateBarcode = false;
+            }
+        }
+
         UpdateMarkingStatusText();
     }
 
