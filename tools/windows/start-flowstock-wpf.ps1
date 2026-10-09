@@ -115,6 +115,9 @@ function Start-FlowStockRuntime(
         } else {
             $process = Start-Process -FilePath $FilePath -WorkingDirectory $WorkingDirectory -PassThru
         }
+    } catch {
+        Write-StartupStatus 'error' "Не удалось запустить FlowStock: $($_.Exception.Message)"
+        throw
     } finally {
         if ($null -eq $previousStatusPath) {
             Remove-Item Env:FLOWSTOCK_STARTUP_STATUS_FILE -ErrorAction SilentlyContinue
