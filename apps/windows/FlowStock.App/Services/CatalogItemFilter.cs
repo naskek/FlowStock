@@ -6,14 +6,7 @@ using FlowStock.Core.Models;
 
 namespace FlowStock.App.Services;
 
-internal enum CatalogItemActivityFilter
-{
-    All,
-    Active,
-    Inactive
-}
-
-internal static class CatalogItemFilter
+ internal static class CatalogItemFilter
 {
     public const string EmptyLabel = "(пусто)";
 
@@ -23,19 +16,14 @@ internal static class CatalogItemFilter
         IReadOnlyCollection<CatalogItemFilterOption> volume,
         IReadOnlyCollection<CatalogItemFilterOption> uom,
         string? query,
-        CatalogItemActivityFilter activity) =>
+        bool showInactive) =>
         MatchesGroup(item.Brand, brand)
         && MatchesGroup(item.Volume, volume)
         && MatchesGroup(item.BaseUom, uom)
         && MatchesSearch(item, query)
-        && MatchesActivity(item, activity);
+        && MatchesActivity(item, showInactive);
 
-    public static bool MatchesActivity(Item item, CatalogItemActivityFilter activity) => activity switch
-    {
-        CatalogItemActivityFilter.Active => item.IsActive,
-        CatalogItemActivityFilter.Inactive => !item.IsActive,
-        _ => true
-    };
+    public static bool MatchesActivity(Item item, bool showInactive) => showInactive || item.IsActive;
 
     public static bool MatchesSearch(Item item, string? query)
     {

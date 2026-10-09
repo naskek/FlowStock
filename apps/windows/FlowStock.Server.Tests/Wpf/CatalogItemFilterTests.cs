@@ -87,21 +87,19 @@ public sealed class CatalogItemFilterTests
     }
 
     [Theory]
-    [InlineData(true, 0, true)]
-    [InlineData(false, 0, true)]
-    [InlineData(true, 1, true)]
-    [InlineData(false, 1, false)]
-    [InlineData(true, 2, false)]
-    [InlineData(false, 2, true)]
-    public void ActivityFilter_RespectsActiveFlagAndAllDefault(
-        bool isActive, int mode, bool expected)
+    [InlineData(true, false, true)]
+    [InlineData(false, false, false)]
+    [InlineData(true, true, true)]
+    [InlineData(false, true, true)]
+    public void ShowInactive_CheckedShowsBoth_UncheckedShowsActiveOnly(
+        bool isActive, bool showInactive, bool expected)
     {
         Assert.Equal(expected, CatalogItemFilter.MatchesActivity(
-            new Item { IsActive = isActive }, (CatalogItemActivityFilter)mode));
+            new Item { IsActive = isActive }, showInactive));
     }
 
     [Fact]
-    public void ActivityAndExistingFilters_CombineWithAnd()
+    public void ShowInactive_CombinesWithExistingGroupsAndSearch()
     {
         var item = new Item
         {
@@ -117,22 +115,23 @@ public sealed class CatalogItemFilterTests
         var volume = Options(("200 г", "200 г", true));
         var uom = Options(("шт", "шт", true));
 
-        Assert.True(CatalogItemFilter.Matches(item, brand, volume, uom, "sku-100", CatalogItemActivityFilter.All));
-        Assert.True(CatalogItemFilter.Matches(item, brand, volume, uom, "хрен", CatalogItemActivityFilter.Inactive));
-        Assert.False(CatalogItemFilter.Matches(item, brand, volume, uom, "хрен", CatalogItemActivityFilter.Active));
-        Assert.False(CatalogItemFilter.Matches(item, brand, volume, uom, "unknown", CatalogItemActivityFilter.Inactive));
-        Assert.False(CatalogItemFilter.Matches(item, Options(("Acme", "Acme", false)), volume, uom, "хрен", CatalogItemActivityFilter.Inactive));
-        Assert.False(CatalogItemFilter.Matches(item, brand, Options(("200 г", "200 г", false)), uom, "хрен", CatalogItemActivityFilter.Inactive));
-        Assert.False(CatalogItemFilter.Matches(item, brand, volume, Options(("шт", "шт", false)), "хрен", CatalogItemActivityFilter.Inactive));
+        Assert.False(CatalogItemFilter.Matches(item, brand, volume, uom, "sku-100", showInactive: false));
+        Assert.True(CatalogItemFilter.Matches(item, brand, volume, uom, "sku-100", showInactive: true));
+        Assert.True(CatalogItemFilter.Matches(item, brand, volume, uom, "хрен", showInactive: true));
+        Assert.False(CatalogItemFilter.Matches(item, brand, volume, uom, "unknown", showInactive: true));
+        Assert.False(CatalogItemFilter.Matches(item, Options(("Acme", "Acme", false)), volume, uom, "хрен", showInactive: true));
+        Assert.False(CatalogItemFilter.Matches(item, brand, Options(("200 г", "200 г", false)), uom, "хрен", showInactive: true));
+        Assert.False(CatalogItemFilter.Matches(item, brand, volume, Options(("шт", "шт", false)), "хрен", showInactive: true));
     }
 
     [Fact]
-    public void ActivityFilter_EmptyResultAndResetDoNotMutateItems()
+    public void ShowInactive_OffCanYieldEmptyRows_AndResetHidesInactiveAgain()
     {
         var items = new[] { new Item { Id = 1, IsActive = false }, new Item { Id = 2, IsActive = false } };
 
-        Assert.Empty(items.Where(item => CatalogItemFilter.MatchesActivity(item, CatalogItemActivityFilter.Active)));
-        Assert.Equal(2, items.Count(item => CatalogItemFilter.MatchesActivity(item, CatalogItemActivityFilter.All)));
+        Assert.Empty(items.Where(item => CatalogItemFilter.MatchesActivity(item, showInactive: false)));
+        Assert.Equal(2, items.Count(item => CatalogItemFilter.MatchesActivity(item, showInactive: true)));
+        Assert.Empty(items.Where(item => CatalogItemFilter.MatchesActivity(item, showInactive: false)));
         Assert.All(items, item => Assert.False(item.IsActive));
     }
 

@@ -957,13 +957,9 @@
                                  KeyDown="ItemsSearchBox_KeyDown" />
                         <Button Content="Поиск" Click="ItemsSearch_Click" />
                         <Button Content="Сброс" Click="ItemsResetSearch_Click" Margin="8,0,0,0" />
-                        <TextBlock Text="Активность" VerticalAlignment="Center" Margin="16,0,6,0" />
-                        <ComboBox x:Name="ItemActivityFilter" Width="140" SelectedIndex="0"
-                                  SelectionChanged="ItemActivityFilter_SelectionChanged">
-                            <ComboBoxItem Content="Все" />
-                            <ComboBoxItem Content="Активные" />
-                            <ComboBoxItem Content="Неактивные" />
-                        </ComboBox>
+                        <CheckBox x:Name="ShowInactiveItemsCheckBox" Content="Показать неактивные"
+                                  Margin="16,0,0,0" VerticalAlignment="Center" IsChecked="False"
+                                  Checked="ShowInactiveItems_Changed" Unchecked="ShowInactiveItems_Changed" />
                     </StackPanel>
                     <Expander Grid.Row="2" Header="Фильтры" Margin="0,0,0,8">
                         <Border BorderBrush="#E1E8ED" BorderThickness="1" CornerRadius="6" Padding="8">
@@ -1044,7 +1040,31 @@
                         </DataGrid.RowStyle>
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="Auto" MaxWidth="320" />
-                            <DataGridTextColumn Header="Статус" Binding="{Binding IsActive, Converter={StaticResource CatalogItemActivityStatusConverter}}" Width="Auto" MinWidth="95" />
+                            <DataGridTemplateColumn Header="Статус" Width="Auto" MinWidth="95">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding IsActive, Converter={StaticResource CatalogItemActivityStatusConverter}}">
+                                            <TextBlock.Style>
+                                                <Style TargetType="{x:Type TextBlock}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsActive}" Value="False">
+                                                            <Setter Property="Foreground" Value="#C62828" />
+                                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                                        </DataTrigger>
+                                                        <MultiDataTrigger>
+                                                            <MultiDataTrigger.Conditions>
+                                                                <Condition Binding="{Binding IsActive}" Value="False" />
+                                                                <Condition Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType={x:Type DataGridRow}}}" Value="True" />
+                                                            </MultiDataTrigger.Conditions>
+                                                            <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}" />
+                                                        </MultiDataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Тип" Binding="{Binding ItemTypeName}" Width="Auto" MaxWidth="220" />
