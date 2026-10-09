@@ -51,7 +51,8 @@ internal static class LauncherTestHarness
                  {
                      "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script,
                      "-RepositoryRoot", repositoryRoot,
-                     "-DotnetExecutable", dotnetExecutable
+                     "-DotnetExecutable", dotnetExecutable,
+                     "-DisableStartupSplash"
                  })
         {
             info.ArgumentList.Add(argument);
