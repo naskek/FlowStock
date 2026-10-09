@@ -143,10 +143,29 @@ internal sealed class StartupSplashController
         {
             var directory = Path.GetDirectoryName(_statusPath)!;
             Directory.CreateDirectory(directory);
+
+            var effectiveLogPath = logPath;
+            if (string.IsNullOrWhiteSpace(effectiveLogPath) && File.Exists(_statusPath))
+            {
+                try
+                {
+                    using var current = JsonDocument.Parse(File.ReadAllText(_statusPath));
+                    if (current.RootElement.TryGetProperty("logPath", out var currentLogPath) &&
+                        currentLogPath.ValueKind == JsonValueKind.String)
+                    {
+                        effectiveLogPath = currentLogPath.GetString();
+                    }
+                }
+                catch
+                {
+                    // A concurrent atomic replace can make the previous diagnostic unreadable briefly.
+                }
+            }
+
             var payload = new StartupSplashStatus(
                 state,
                 string.IsNullOrWhiteSpace(message) ? "Идёт запуск…" : message.Trim(),
-                logPath,
+                effectiveLogPath,
                 DateTimeOffset.UtcNow);
             var temporary = Path.Combine(
                 directory,
