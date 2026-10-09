@@ -60,12 +60,11 @@ function Set-StartupProcessId([int] $ProcessId) {
         return
     }
 
-    $current = Read-JsonFile $startupStatusPath
-    if ($null -eq $current -or $current.state -ne 'starting') {
-        return
+    try {
+        [IO.File]::WriteAllText("$startupStatusPath.pid", $ProcessId.ToString(), [Text.Encoding]::ASCII)
+    } catch {
+        Write-EmergencyDiagnostic "Startup splash PID write failed: $($_.Exception.Message)"
     }
-
-    Write-StartupStatus 'starting' ([string]$current.message) $ProcessId
 }
 
 function Start-StartupSplash {
