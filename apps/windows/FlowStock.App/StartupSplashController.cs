@@ -72,7 +72,7 @@ internal sealed class StartupSplashController
         _finished = true;
         if (_window is not null)
         {
-            _window.Close();
+            _window.Complete();
             return;
         }
 
@@ -100,7 +100,7 @@ internal sealed class StartupSplashController
     {
         if (_window?.IsVisible == true)
         {
-            _window.Close();
+            _window.ForceClose();
         }
     }
 
