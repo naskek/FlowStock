@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string] $RepositoryRoot = (Join-Path $PSScriptRoot '..\..'),
     [string] $DotnetExecutable = 'dotnet',
