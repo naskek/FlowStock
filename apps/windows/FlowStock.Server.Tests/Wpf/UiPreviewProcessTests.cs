@@ -45,12 +45,19 @@ public sealed class UiPreviewProcessTests
         try
         {
             var deadline = DateTime.UtcNow.AddSeconds(20);
-            while (process.MainWindowHandle == IntPtr.Zero && !process.HasExited && DateTime.UtcNow < deadline)
+            while (!process.HasExited && DateTime.UtcNow < deadline)
             {
-                await Task.Delay(100);
                 process.Refresh();
+                if (process.MainWindowHandle != IntPtr.Zero &&
+                    process.MainWindowTitle.Contains("UI Preview / DEV", StringComparison.Ordinal))
+                {
+                    break;
+                }
+
+                await Task.Delay(100);
             }
             Assert.False(process.HasExited);
+            process.Refresh();
             Assert.NotEqual(IntPtr.Zero, process.MainWindowHandle);
             Assert.Contains("UI Preview / DEV", process.MainWindowTitle);
             await Task.Delay(500); // include ContentRendered and deferred dispatcher work
