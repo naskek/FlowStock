@@ -124,7 +124,7 @@ public sealed class StartupSplashTests
             timeoutSeconds: 1);
 
         Assert.Equal(3, result.ExitCode);
-        Assert.Contains("не сообщил о готовности", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("FLOWSTOCK_STARTUP_TIMEOUT:", result.StandardError, StringComparison.Ordinal);
     }
 
     private static void AssertStatus(string path, string expectedState, string expectedMessage)
