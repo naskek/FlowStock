@@ -97,12 +97,12 @@ if ($Headless) {
         }
 
         if ($outcome -in @('error', 'process-exited')) {
-            [Console]::Error.WriteLine((Get-FailureText $status $outcome))
+            [Console]::Error.WriteLine("FLOWSTOCK_STARTUP_ERROR: " + (Get-FailureText $status $outcome))
             exit 2
         }
 
         if ($outcome -eq 'timeout') {
-            [Console]::Error.WriteLine((Get-FailureText $status $outcome))
+            [Console]::Error.WriteLine("FLOWSTOCK_STARTUP_TIMEOUT: " + (Get-FailureText $status $outcome))
             exit 3
         }
 
