@@ -132,10 +132,16 @@ public sealed class UiPreviewTests
                 Assert.DoesNotContain(itemsGrid.Items.Cast<System.Data.DataRowView>(),
                     row => row.Row["IsActive"] is false);
 
-                main.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+                // With an unshown test window WPF IsLoaded stays false. Verify
+                // the preview filtering operation directly; live event wiring
+                // is exercised by the operator's exact-head visual smoke.
+                var applyPreviewFilter = typeof(MainWindow).GetMethod(
+                    "ApplyPreviewItemActivityFilter", BindingFlags.Instance | BindingFlags.NonPublic)!;
                 showInactive.IsChecked = true;
+                applyPreviewFilter.Invoke(main, null);
                 Assert.Equal(24, itemsGrid.Items.Count);
                 showInactive.IsChecked = false;
+                applyPreviewFilter.Invoke(main, null);
                 Assert.Equal(16, itemsGrid.Items.Count);
 
                 // A subsequent preview rebuild must also respect the checkbox.
