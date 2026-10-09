@@ -130,7 +130,7 @@ public sealed class UiPreviewTests
 
                 Assert.Equal(16, itemsGrid.Items.Count);
                 Assert.DoesNotContain(itemsGrid.Items.Cast<System.Data.DataRowView>(),
-                    row => row.Row.Field<bool>("IsActive") == false);
+                    row => row.Row["IsActive"] is false);
 
                 main.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
                 showInactive.IsChecked = true;
