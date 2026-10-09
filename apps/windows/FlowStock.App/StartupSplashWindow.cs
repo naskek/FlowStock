@@ -75,7 +75,7 @@ internal sealed class StartupSplashWindow : Window
             Content = "Закрыть",
             Width = 100,
             Height = 30,
-            HorizontalAlignment = HorizontalAlignment.Right,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
             Margin = new Thickness(0, 12, 0, 0),
             Visibility = Visibility.Collapsed
         };
