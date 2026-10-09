@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Windows;
+using FlowStock.App.Services;
 using FlowStock.Core.Models;
 using Npgsql;
 
