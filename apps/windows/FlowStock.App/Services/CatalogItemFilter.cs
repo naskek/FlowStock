@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Globalization;
+using System.Windows.Data;
 using FlowStock.Core.Models;
 
 namespace FlowStock.App.Services;
@@ -7,6 +9,21 @@ namespace FlowStock.App.Services;
 internal static class CatalogItemFilter
 {
     public const string EmptyLabel = "(пусто)";
+
+    public static bool Matches(
+        Item item,
+        IReadOnlyCollection<CatalogItemFilterOption> brand,
+        IReadOnlyCollection<CatalogItemFilterOption> volume,
+        IReadOnlyCollection<CatalogItemFilterOption> uom,
+        string? query,
+        bool showInactive) =>
+        MatchesGroup(item.Brand, brand)
+        && MatchesGroup(item.Volume, volume)
+        && MatchesGroup(item.BaseUom, uom)
+        && MatchesSearch(item, query)
+        && MatchesActivity(item, showInactive);
+
+    public static bool MatchesActivity(Item item, bool showInactive) => showInactive || item.IsActive;
 
     public static bool MatchesSearch(Item item, string? query)
     {
@@ -156,4 +173,13 @@ internal sealed class CatalogItemFilterOption : INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+}
+
+public sealed class CatalogItemActivityStatusConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture) =>
+        value is bool isActive && isActive ? "Активна" : "Неактивна";
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
 }
