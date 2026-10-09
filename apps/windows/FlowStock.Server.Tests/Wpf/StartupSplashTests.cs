@@ -127,6 +127,48 @@ public sealed class StartupSplashTests
         Assert.Contains("FLOWSTOCK_STARTUP_TIMEOUT:", result.StandardError, StringComparison.Ordinal);
     }
 
+
+    [Theory]
+    [InlineData("tools\\windows\\start-flowstock-ui-preview.ps1")]
+    [InlineData("tools\\windows\\start-flowstock-wpf.ps1")]
+    [InlineData("tools\\windows\\show-flowstock-startup-splash.ps1")]
+    public void Startup_scripts_parse_in_Windows_PowerShell_5_1(string relativePath)
+    {
+        var script = Path.Combine(DesktopUpdateConstants.DefaultRepositoryRoot, relativePath);
+        var command =
+            "$tokens=$null; $errors=$null; " +
+            "[System.Management.Automation.Language.Parser]::ParseFile('" +
+            script.Replace("'", "''", StringComparison.Ordinal) +
+            "', [ref]$tokens, [ref]$errors) > $null; " +
+            "if ($errors.Count -gt 0) { $errors | ForEach-Object { [Console]::Error.WriteLine($_.ToString()) }; exit 1 }";
+
+        var info = new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        foreach (var argument in new[]
+                 {
+                     "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                     "-Command", command
+                 })
+        {
+            info.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(info)!;
+        var stdout = process.StandardOutput.ReadToEnd();
+        var stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        Assert.True(
+            process.ExitCode == 0,
+            $"Windows PowerShell parser rejected {relativePath}.{Environment.NewLine}stdout={stdout}{Environment.NewLine}stderr={stderr}");
+    }
+
     private static void AssertStatus(string path, string expectedState, string expectedMessage)
     {
         using var document = JsonDocument.Parse(File.ReadAllText(path));
