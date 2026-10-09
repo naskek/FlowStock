@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media;
+using WpfButton = System.Windows.Controls.Button;
+using WpfProgressBar = System.Windows.Controls.ProgressBar;
 
 namespace FlowStock.App;
 
@@ -9,8 +10,8 @@ internal sealed class StartupSplashWindow : Window
     private bool _allowClose;
     private readonly TextBlock _statusText;
     private readonly TextBlock _detailsText;
-    private readonly ProgressBar _progress;
-    private readonly Button _closeButton;
+    private readonly WpfProgressBar _progress;
+    private readonly WpfButton _closeButton;
 
     public StartupSplashWindow()
     {
@@ -51,7 +52,7 @@ internal sealed class StartupSplashWindow : Window
         Grid.SetRow(_statusText, 1);
         root.Children.Add(_statusText);
 
-        _progress = new ProgressBar
+        _progress = new WpfProgressBar
         {
             IsIndeterminate = true,
             Height = 5,
@@ -69,7 +70,7 @@ internal sealed class StartupSplashWindow : Window
         Grid.SetRow(_detailsText, 3);
         root.Children.Add(_detailsText);
 
-        _closeButton = new Button
+        _closeButton = new WpfButton
         {
             Content = "Закрыть",
             Width = 100,
