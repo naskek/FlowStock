@@ -19,14 +19,21 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        _startupSplash = StartupSplashController.Start();
+        try
+        {
+            _startupSplash = StartupSplashController.Start();
+        }
+        catch (Exception ex)
+        {
+            LogException("StartupSplash", ex);
+        }
 
         try
         {
             if (UiPreviewStartup.TryStart(e.Args, preview =>
                 {
                     _logPath = Path.Combine(Path.GetTempPath(), "FlowStock-UiPreview", "app.log");
-                    _startupSplash.SetStage("Загрузка UI Preview / DEV…");
+                    _startupSplash?.SetStage("Загрузка UI Preview / DEV…");
                     DispatcherUnhandledException += OnDispatcherUnhandledException;
                     AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
                     ShutdownMode = ShutdownMode.OnMainWindowClose;
@@ -52,7 +59,7 @@ public partial class App : Application
         catch (Exception ex)
         {
             LogException("UiPreviewStartup", ex);
-            _startupSplash.Fail(DatabaseErrorFormatter.Format(ex), _logPath);
+            _startupSplash?.Fail(DatabaseErrorFormatter.Format(ex), _logPath);
             MessageBox.Show(
                 $"Startup error. See log: {_logPath}\n{DatabaseErrorFormatter.Format(ex)}",
                 "FlowStock",
@@ -66,7 +73,7 @@ public partial class App : Application
         if (!createdNew)
         {
             const string message = "FlowStock уже запущен для этого пользователя.";
-            _startupSplash.Fail(message, _logPath);
+            _startupSplash?.Fail(message, _logPath);
             MessageBox.Show(message, "FlowStock", MessageBoxButton.OK, MessageBoxImage.Information);
             Shutdown(2);
             return;
@@ -77,14 +84,14 @@ public partial class App : Application
 
         try
         {
-            _startupSplash.SetStage("Подготовка runtime…");
+            _startupSplash?.SetStage("Подготовка runtime…");
             var services = AppServices.CreateDefault();
             _services = services;
             _appLogger = services.AppLogger;
             _logPath = services.AppLogPath;
             if (!services.IsDatabaseAvailable)
             {
-                _startupSplash.SetStage("Открытие настройки подключения…");
+                _startupSplash?.SetStage("Открытие настройки подключения…");
                 var connectionWindow = new DbConnectionWindow(services, requireConnectionOnStartup: true);
                 var updateReadyHandled = false;
                 connectionWindow.ContentRendered += (_, _) =>
@@ -104,7 +111,7 @@ public partial class App : Application
             }
 
             TryRunAutoBackup(services);
-            _startupSplash.SetStage("Загрузка интерфейса…");
+            _startupSplash?.SetStage("Загрузка интерфейса…");
             var mainWindow = new MainWindow(services);
             MainWindow = mainWindow;
             var mainReadyHandled = false;
@@ -125,7 +132,7 @@ public partial class App : Application
         catch (Exception ex)
         {
             LogException("Startup", ex);
-            _startupSplash.Fail(DatabaseErrorFormatter.Format(ex), _logPath);
+            _startupSplash?.Fail(DatabaseErrorFormatter.Format(ex), _logPath);
             MessageBox.Show($"Startup error. See log: {_logPath}\n{DatabaseErrorFormatter.Format(ex)}", "FlowStock", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(-1);
         }
