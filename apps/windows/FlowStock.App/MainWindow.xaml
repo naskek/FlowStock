@@ -2,8 +2,12 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:FlowStock.App"
+        xmlns:catalog="clr-namespace:FlowStock.App.Services"
         Title="FlowStock" Height="720" Width="1100"
         PreviewKeyDown="MainWindow_PreviewKeyDown">
+    <Window.Resources>
+        <catalog:CatalogItemActivityStatusConverter x:Key="CatalogItemActivityStatusConverter" />
+    </Window.Resources>
     <DockPanel>
         <Border x:Name="UiPreviewBanner" DockPanel.Dock="Top" Visibility="Collapsed"
                 Background="#FFF2CC" Padding="12,8">
@@ -953,6 +957,13 @@
                                  KeyDown="ItemsSearchBox_KeyDown" />
                         <Button Content="Поиск" Click="ItemsSearch_Click" />
                         <Button Content="Сброс" Click="ItemsResetSearch_Click" Margin="8,0,0,0" />
+                        <TextBlock Text="Активность" VerticalAlignment="Center" Margin="16,0,6,0" />
+                        <ComboBox x:Name="ItemActivityFilter" Width="140" SelectedIndex="0"
+                                  SelectionChanged="ItemActivityFilter_SelectionChanged">
+                            <ComboBoxItem Content="Все" />
+                            <ComboBoxItem Content="Активные" />
+                            <ComboBoxItem Content="Неактивные" />
+                        </ComboBox>
                     </StackPanel>
                     <Expander Grid.Row="2" Header="Фильтры" Margin="0,0,0,8">
                         <Border BorderBrush="#E1E8ED" BorderThickness="1" CornerRadius="6" Padding="8">
@@ -1015,8 +1026,18 @@
                               SelectionChanged="ItemsGrid_SelectionChanged"
                               MouseDoubleClick="ItemsGrid_MouseDoubleClick"
                               KeyDown="ItemsGrid_KeyDown" TabIndex="20">
+                        <DataGrid.RowStyle>
+                            <Style TargetType="{x:Type DataGridRow}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsActive}" Value="False">
+                                        <Setter Property="Opacity" Value="0.8" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Статус" Binding="{Binding IsActive, Converter={StaticResource CatalogItemActivityStatusConverter}}" Width="Auto" MinWidth="95" />
                             <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Тип" Binding="{Binding ItemTypeName}" Width="Auto" MaxWidth="220" />
@@ -1027,8 +1048,7 @@
                             <DataGridTextColumn Header="Макс. шт/HU" Binding="{Binding MaxQtyPerHu, StringFormat={}{0:0.###}}" Width="Auto" MaxWidth="160" />
                             <DataGridTextColumn Header="Тара" Binding="{Binding TaraName}" Width="Auto" MaxWidth="200" />
                             <DataGridTextColumn Header="Базовая единица" Binding="{Binding BaseUom}" Width="Auto" MaxWidth="320" />
-                            <DataGridCheckBoxColumn Header="Активно" Binding="{Binding IsActive}" Width="Auto" MaxWidth="100" />
-                            <DataGridCheckBoxColumn Header="КМ" Binding="{Binding IsMarked}" Width="Auto" MaxWidth="80" Visibility="Collapsed" />
+                             <DataGridCheckBoxColumn Header="КМ" Binding="{Binding IsMarked}" Width="Auto" MaxWidth="80" Visibility="Collapsed" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>

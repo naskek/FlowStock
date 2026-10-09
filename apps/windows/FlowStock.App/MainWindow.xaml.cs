@@ -732,10 +732,15 @@ public partial class MainWindow : Window
             return false;
         }
 
-        return CatalogItemFilter.MatchesGroup(item.Brand, _itemBrandFilters)
-               && CatalogItemFilter.MatchesGroup(item.Volume, _itemVolumeFilters)
-               && CatalogItemFilter.MatchesGroup(item.BaseUom, _itemUomFilters)
-               && CatalogItemFilter.MatchesSearch(item, ItemsSearchBox?.Text);
+        var activity = ItemActivityFilter?.SelectedIndex switch
+        {
+            1 => CatalogItemActivityFilter.Active,
+            2 => CatalogItemActivityFilter.Inactive,
+            _ => CatalogItemActivityFilter.All
+        };
+        return CatalogItemFilter.Matches(
+            item, _itemBrandFilters, _itemVolumeFilters, _itemUomFilters,
+            ItemsSearchBox?.Text, activity);
     }
 
     private void RebuildItemFilters()
@@ -1675,11 +1680,19 @@ public partial class MainWindow : Window
             CatalogItemFilter.SetAll(_itemBrandFilters, true);
             CatalogItemFilter.SetAll(_itemVolumeFilters, true);
             CatalogItemFilter.SetAll(_itemUomFilters, true);
+            ItemActivityFilter.SelectedIndex = 0;
         }
         finally
         {
             _suppressItemFilterSelectionChanged = false;
         }
+
+        ApplyItemFilters();
+    }
+
+    private void ItemActivityFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (IsUiPreview || !IsLoaded || _suppressItemFilterSelectionChanged) return;
 
         ApplyItemFilters();
     }
