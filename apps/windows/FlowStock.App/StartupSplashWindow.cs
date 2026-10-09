@@ -6,6 +6,7 @@ namespace FlowStock.App;
 
 internal sealed class StartupSplashWindow : Window
 {
+    private bool _allowClose;
     private readonly TextBlock _statusText;
     private readonly TextBlock _detailsText;
     private readonly ProgressBar _progress;
@@ -81,6 +82,14 @@ internal sealed class StartupSplashWindow : Window
         Grid.SetRow(_closeButton, 4);
         root.Children.Add(_closeButton);
 
+        Closing += (_, e) =>
+        {
+            if (!_allowClose)
+            {
+                e.Cancel = true;
+            }
+        };
+
         Content = root;
     }
 
@@ -96,6 +105,7 @@ internal sealed class StartupSplashWindow : Window
 
     public void ShowFailure(string message, string? logPath)
     {
+        _allowClose = true;
         _statusText.Text = "Запуск не завершён";
         _progress.IsIndeterminate = false;
         _progress.Visibility = Visibility.Collapsed;
@@ -111,5 +121,16 @@ internal sealed class StartupSplashWindow : Window
         _detailsText.Text = details;
         _detailsText.Visibility = Visibility.Visible;
         _closeButton.Visibility = Visibility.Visible;
+    }
+    public void Complete()
+    {
+        _allowClose = true;
+        Close();
+    }
+
+    public void ForceClose()
+    {
+        _allowClose = true;
+        Close();
     }
 }
