@@ -23,18 +23,25 @@ function Read-StartupStatus {
     }
 }
 
-function Test-TrackedProcessExited($Status) {
-    if ($null -eq $Status -or $null -eq $Status.processId) {
+function Test-TrackedProcessExited {
+    $pidPath = "$StatusPath.pid"
+    if (-not (Test-Path -LiteralPath $pidPath -PathType Leaf)) {
         return $false
     }
 
-    $processId = 0
-    if (-not [int]::TryParse([string]$Status.processId, [ref]$processId) -or $processId -le 0) {
+    $trackedProcessId = 0
+    try {
+        $pidText = Get-Content -LiteralPath $pidPath -Raw
+    } catch {
+        return $false
+    }
+
+    if (-not [int]::TryParse($pidText.Trim(), [ref]$trackedProcessId) -or $trackedProcessId -le 0) {
         return $false
     }
 
     try {
-        Get-Process -Id $processId -ErrorAction Stop | Out-Null
+        Get-Process -Id $trackedProcessId -ErrorAction Stop | Out-Null
         return $false
     } catch {
         return $true
@@ -51,7 +58,7 @@ function Get-Outcome($Status, [Diagnostics.Stopwatch] $Stopwatch) {
             return 'error'
         }
 
-        if ($Status.state -eq 'starting' -and (Test-TrackedProcessExited $Status)) {
+        if ($Status.state -eq 'starting' -and (Test-TrackedProcessExited)) {
             return 'process-exited'
         }
     }
