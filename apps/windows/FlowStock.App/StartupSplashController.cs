@@ -27,10 +27,12 @@ internal sealed class StartupSplashController
     internal string? StatusPath => _statusPath;
     internal bool UsesExternalSplash => _statusPath is not null;
 
-    public static StartupSplashController Start()
+    public static StartupSplashController Start() =>
+        Start(Environment.GetEnvironmentVariable(StatusEnvironmentVariable));
+
+    internal static StartupSplashController Start(string? externalStatusCandidate)
     {
-        var externalPath = ResolveExternalStatusPath(
-            Environment.GetEnvironmentVariable(StatusEnvironmentVariable));
+        var externalPath = ResolveExternalStatusPath(externalStatusCandidate);
         if (externalPath is not null)
         {
             var external = new StartupSplashController(null, externalPath);
