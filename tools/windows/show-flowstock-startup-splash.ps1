@@ -118,7 +118,7 @@ $window.WindowStartupLocation = [Windows.WindowStartupLocation]::CenterScreen
 $window.ShowInTaskbar = $true
 
 $root = New-Object Windows.Controls.Grid
-$root.Margin = New-Object Windows.Thickness(28)
+$root.Margin = New-Object Windows.Thickness -ArgumentList 28
 
 0..4 | ForEach-Object {
     $row = New-Object Windows.Controls.RowDefinition
@@ -136,14 +136,14 @@ $root.Children.Add($title) | Out-Null
 $statusText = New-Object Windows.Controls.TextBlock
 $statusText.Text = 'Запуск FlowStock…'
 $statusText.FontSize = 15
-$statusText.Margin = New-Object Windows.Thickness(0, 12, 0, 12)
+$statusText.Margin = New-Object Windows.Thickness -ArgumentList 0, 12, 0, 12
 [Windows.Controls.Grid]::SetRow($statusText, 1)
 $root.Children.Add($statusText) | Out-Null
 
 $progress = New-Object Windows.Controls.ProgressBar
 $progress.IsIndeterminate = $true
 $progress.Height = 5
-$progress.Margin = New-Object Windows.Thickness(0, 0, 0, 12)
+$progress.Margin = New-Object Windows.Thickness -ArgumentList 0, 0, 0, 12
 [Windows.Controls.Grid]::SetRow($progress, 2)
 $root.Children.Add($progress) | Out-Null
 
@@ -159,7 +159,7 @@ $close.Content = 'Закрыть'
 $close.Width = 100
 $close.Height = 30
 $close.HorizontalAlignment = [Windows.HorizontalAlignment]::Right
-$close.Margin = New-Object Windows.Thickness(0, 12, 0, 0)
+$close.Margin = New-Object Windows.Thickness -ArgumentList 0, 12, 0, 0
 $close.Visibility = [Windows.Visibility]::Collapsed
 $close.Add_Click({ $window.Close() })
 [Windows.Controls.Grid]::SetRow($close, 4)
