@@ -159,6 +159,33 @@ public sealed class CatalogValidationTests
     }
 
     [Fact]
+    public void CreateItem_InactiveCatalogItemStillReservesSkuAndGtin()
+    {
+        var (service, store) = CreateService();
+        var historical = new Item
+        {
+            Id = 42,
+            Name = "Старый GTIN",
+            Barcode = "OLD-SKU",
+            Gtin = "04600000000001",
+            IsActive = false
+        };
+        store.Setup(data => data.GetItems(null)).Returns([historical]);
+
+        var barcodeError = Assert.Throws<CatalogIdentifierConflictException>(() =>
+            service.CreateItem("Дубль", "old-sku", "04600000000002", "шт", null, null, null, null, false));
+        Assert.Equal("ITEM_BARCODE_DUPLICATE", barcodeError.ErrorCode);
+
+        var gtinError = Assert.Throws<CatalogIdentifierConflictException>(() =>
+            service.CreateItem("Дубль", "NEW-SKU", "04600000000001", "шт", null, null, null, null, false));
+        Assert.Equal("ITEM_GTIN_DUPLICATE", gtinError.ErrorCode);
+
+        store.Verify(data => data.AddItem(It.IsAny<Item>()), Times.Never);
+        Assert.Equal("OLD-SKU", historical.Barcode);
+        Assert.False(historical.IsActive);
+    }
+
+    [Fact]
     public void PartnerInn_IsNullableOrDigitsOnly_AndRoleIsMandatory()
     {
         var (service, store) = CreateService();

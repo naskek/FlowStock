@@ -13,7 +13,8 @@ public sealed class CatalogTerminologySourceTests
         Assert.DoesNotContain("IdBox", itemXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("IdBox", itemCode, StringComparison.Ordinal);
         Assert.DoesNotContain("Редактирование товара #", itemCode, StringComparison.Ordinal);
-        Assert.Contains("Title = \"Редактирование товара\";", itemCode, StringComparison.Ordinal);
+        Assert.Contains("\"Дублирование — создание нового товара\"", itemCode, StringComparison.Ordinal);
+        Assert.Contains("\"Редактирование товара\"", itemCode, StringComparison.Ordinal);
         Assert.DoesNotContain("Header=\"ID\"", itemsGrid, StringComparison.Ordinal);
 
         Assert.Contains("Text=\"Фасовка / нетто\"", itemXaml, StringComparison.Ordinal);
@@ -47,7 +48,7 @@ public sealed class CatalogTerminologySourceTests
         var save = Slice(code, "private async void Save_Click", "private bool TryParseShelfLifeMonths");
 
         Assert.Contains("if (itemType?.EnableHuDistribution == true)", save, StringComparison.Ordinal);
-        Assert.Contains("maxQtyPerHu = _item?.MaxQtyPerHu;", save, StringComparison.Ordinal);
+        Assert.Contains("maxQtyPerHu = _item?.MaxQtyPerHu ?? _duplicateDraft?.MaxQtyPerHu;", save, StringComparison.Ordinal);
         Assert.Equal(1, Count(save, "TryParseMaxQtyPerHu("));
         Assert.Contains("MaxQtyPerHu = maxQtyPerHu,", save, StringComparison.Ordinal);
         Assert.Contains("MaxQtyPerHu = candidate.MaxQtyPerHu,", save, StringComparison.Ordinal);

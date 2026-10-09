@@ -229,6 +229,11 @@ public partial class MainWindow : Window
             ItemEditButton.IsEnabled = _selectedItem != null;
         }
 
+        if (ItemDuplicateButton != null)
+        {
+            ItemDuplicateButton.IsEnabled = !IsUiPreview && ItemsGrid?.SelectedItems?.Count == 1;
+        }
+
         if (ItemPackagingButton != null)
         {
             ItemPackagingButton.IsEnabled = _selectedItem != null;
@@ -2475,6 +2480,32 @@ public partial class MainWindow : Window
 
         LoadItems();
         RestoreItemSelection(window.SavedItemId ?? _selectedItem.Id);
+    }
+
+    private void DuplicateItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (IsUiPreview) return;
+
+        if (!CatalogItemDuplicate.CanDuplicate(ItemsGrid.SelectedItems.Count)
+            || ItemsGrid.SelectedItem is not Item selected)
+        {
+            return;
+        }
+
+        var current = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : Array.Empty<Item>())
+            .FirstOrDefault(item => item.Id == selected.Id) ?? selected;
+        var window = new ItemEditWindow(_services, current, duplicate: true)
+        {
+            Owner = this
+        };
+
+        if (window.ShowDialog() != true)
+        {
+            return;
+        }
+
+        LoadItems();
+        RestoreItemSelection(window.SavedItemId);
     }
 
     private void ImportItems_Click(object sender, RoutedEventArgs e)

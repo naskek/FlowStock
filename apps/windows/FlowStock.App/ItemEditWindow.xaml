@@ -40,7 +40,7 @@
             <TextBox x:Name="NameBox" Grid.Row="0" Grid.Column="1" Margin="8,0,0,8" />
 
             <TextBlock Grid.Row="1" Grid.Column="0" Text="SKU / штрихкод" VerticalAlignment="Center" />
-            <TextBox x:Name="BarcodeBox" Grid.Row="1" Grid.Column="1" Margin="8,0,0,8" />
+            <TextBox x:Name="BarcodeBox" Grid.Row="1" Grid.Column="1" Margin="8,0,0,8" TextChanged="BarcodeBox_TextChanged" />
 
             <TextBlock Grid.Row="2" Grid.Column="0" Text="GTIN" VerticalAlignment="Center" />
             <TextBox x:Name="GtinBox" Grid.Row="2" Grid.Column="1" Margin="8,0,0,8" TextChanged="GtinBox_TextChanged" />
