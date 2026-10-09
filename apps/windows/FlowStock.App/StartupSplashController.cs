@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Windows.Threading;
 
 namespace FlowStock.App;
 
@@ -43,6 +44,7 @@ internal sealed class StartupSplashController
         var window = new StartupSplashWindow();
         var controller = new StartupSplashController(window, null);
         window.Show();
+        window.Dispatcher.Invoke(DispatcherPriority.Render, new Action(() => { }));
         return controller;
     }
 
