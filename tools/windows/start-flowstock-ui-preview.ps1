@@ -72,24 +72,24 @@ try {
 
     if (-not [string]::IsNullOrWhiteSpace($startupStatusPath)) {
         try {
-            $current = Get-Content -LiteralPath $startupStatusPath -Raw | ConvertFrom-Json
-            if ($current.state -eq 'starting') {
-                Write-StartupStatus 'starting' ([string]$current.message) $process.Id
-            }
+            [IO.File]::WriteAllText(
+                "$startupStatusPath.pid",
+                $process.Id.ToString(),
+                [Text.Encoding]::ASCII)
         } catch {
-            # The application may already have atomically replaced the startup status.
+            # PID tracking is diagnostic-only and must not block preview startup.
         }
     }
 
     $process.WaitForExit()
-    if ($process.ExitCode -ne 0 -and -not [string]::IsNullOrWhiteSpace($startupStatusPath)) {
+    if (-not [string]::IsNullOrWhiteSpace($startupStatusPath)) {
         $current = $null
         try {
             $current = Get-Content -LiteralPath $startupStatusPath -Raw | ConvertFrom-Json
         } catch {
         }
         if ($null -eq $current -or $current.state -eq 'starting') {
-            Write-StartupStatus 'error' "UI Preview / DEV завершился с кодом $($process.ExitCode)."
+            Write-StartupStatus 'error' "UI Preview / DEV завершился до готовности интерфейса (код $($process.ExitCode))."
         }
     }
 
