@@ -142,6 +142,43 @@ public sealed class WpfAdminApiService
             .ConfigureAwait(false);
     }
 
+    public async Task<bool> TryDeleteTsdDeviceAsync(
+        long id, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+                return false;
+
+            using var handler = CreateHandler(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            using var request = new HttpRequestMessage(
+                HttpMethod.Delete, $"/api/admin/tsd-devices/{id}");
+            AddTrustedWpfHeaders(request, configuration);
+            using var response = await client.SendAsync(request, cancellationToken)
+                .ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+                return true;
+
+            throw new InvalidOperationException(
+                await TryReadApiErrorAsync(response).ConfigureAwait(false));
+        }
+        catch (InvalidOperationException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Unknown outcome (including timeout): caller reloads accounts to reconcile.
+            _logger.Error("Admin API failed for admin-delete-tsd-device", ex);
+            return false;
+        }
+    }
+
     private bool TryRead<T>(string relativePath, Func<JsonElement, T> map, string operationName, out T value)
     {
         value = default!;
@@ -336,6 +373,8 @@ public sealed class WpfAdminApiService
                 "MISSING_LOGIN" => "Логин не задан.",
                 "MISSING_PASSWORD" => "Пароль не задан.",
                 "DEVICE_NOT_FOUND" => "Аккаунт не найден на сервере.",
+                "LAST_ACTIVE_PC_ADMIN" => "Нельзя удалить или лишить прав последнего активного администратора ПК Web.",
+                "WPF_ADMIN_KEY_REQUIRED" => "Сервер отклонил ключ администратора WPF (401).",
                 "LOGIN_ALREADY_EXISTS" => "Логин уже используется другим аккаунтом ПК/ТСД.",
                 "CONFIRM_REQUIRED" => "Для apply нужно ввести подтверждение APPLY.",
                 "BACKFILL_ALREADY_RUNNING" => "Backfill резервов уже выполняется на сервере.",

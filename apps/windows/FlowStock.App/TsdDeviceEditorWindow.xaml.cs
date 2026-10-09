@@ -68,6 +68,7 @@ public partial class TsdDeviceEditorWindow : Window
             SaveButton.ToolTip = "Сохранить только в демонстрационных данных.";
         }
         LoginBox.TextChanged += (_, _) => UpdateSaveButton();
+        NewLoginBox.TextChanged += (_, _) => UpdateSaveButton();
         PlatformBox.SelectionChanged += (_, _) => UpdateSaveButton();
         AccessRoleBox.SelectionChanged += (_, _) => UpdateSaveButton();
         IsActiveCheck.Checked += (_, _) => UpdateSaveButton();
@@ -107,6 +108,27 @@ public partial class TsdDeviceEditorWindow : Window
     private static string SelectedTag(WpfComboBox box) =>
         (box.SelectedItem as ComboBoxItem)?.Tag as string ?? string.Empty;
 
+    private bool IsLoginChangeRequested =>
+        _mode == AccountDialogMode.Edit
+        && NewLoginPanel.Visibility == Visibility.Visible;
+
+    private void ChangeLogin_Click(object sender, RoutedEventArgs e)
+    {
+        if (_mode != AccountDialogMode.Edit || _saving) return;
+        var opening = !IsLoginChangeRequested;
+        NewLoginPanel.Visibility = opening ? Visibility.Visible : Visibility.Collapsed;
+        ChangeLoginButton.Content = opening ? "Отменить смену логина" : "Изменить логин";
+        if (opening)
+        {
+            NewLoginBox.Focus();
+        }
+        else
+        {
+            NewLoginBox.Clear();
+        }
+        UpdateSaveButton();
+    }
+
     private bool HasChanges()
     {
         var passwordChanged = NewPasswordBox.Password.Length > 0
@@ -122,6 +144,9 @@ public partial class TsdDeviceEditorWindow : Window
         }
 
         return passwordChanged
+            || (IsLoginChangeRequested
+                && !string.IsNullOrWhiteSpace(NewLoginBox.Text)
+                && !string.Equals(NewLoginBox.Text.Trim(), _account!.Login, StringComparison.Ordinal))
             || IsActiveCheck.IsChecked != _account!.IsActive
             || !string.Equals(SelectedTag(PlatformBox), _account.Platform, StringComparison.Ordinal)
             || !string.Equals(SelectedTag(AccessRoleBox), _account.AccessRole, StringComparison.Ordinal);
@@ -142,11 +167,13 @@ public partial class TsdDeviceEditorWindow : Window
         if (_saving || !HasChanges()) return;
 
         ErrorText.Visibility = Visibility.Collapsed;
-        // Existing login is immutable in WPF, regardless of editor text state.
-        var login = _mode == AccountDialogMode.Create ? LoginBox.Text.Trim() : _account!.Login;
+        // Rename requires an explicit button click. The old login is never edited in place.
+        var login = _mode == AccountDialogMode.Create
+            ? LoginBox.Text.Trim()
+            : IsLoginChangeRequested ? NewLoginBox.Text.Trim() : _account!.Login;
         if (string.IsNullOrWhiteSpace(login))
         {
-            ShowError("Укажите логин.");
+            ShowError(IsLoginChangeRequested ? "Введите новый логин." : "Укажите логин.");
             return;
         }
 
