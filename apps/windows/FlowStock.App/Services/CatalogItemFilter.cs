@@ -6,7 +6,7 @@ using FlowStock.Core.Models;
 
 namespace FlowStock.App.Services;
 
- internal static class CatalogItemFilter
+internal static class CatalogItemFilter
 {
     public const string EmptyLabel = "(пусто)";
 
