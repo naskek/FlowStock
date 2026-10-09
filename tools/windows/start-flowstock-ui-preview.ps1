@@ -42,23 +42,27 @@ function Write-StartupStatus(
 }
 
 if (-not $DisableStartupSplash) {
-    $splashScript = Join-Path $PSScriptRoot 'show-flowstock-startup-splash.ps1'
-    if (Test-Path -LiteralPath $splashScript -PathType Leaf) {
-        $startupDirectory = Join-Path ([IO.Path]::GetTempPath()) 'FlowStock-Startup'
-        New-Item -ItemType Directory -Path $startupDirectory -Force | Out-Null
-        $startupStatusPath = Join-Path $startupDirectory "$([Guid]::NewGuid().ToString('N')).json"
-        Write-StartupStatus 'starting' 'Сборка и запуск UI Preview / DEV…'
-        $splashArguments = @(
-            '-NoLogo',
-            '-NoProfile',
-            '-STA',
-            '-ExecutionPolicy', 'Bypass',
-            '-File', ('"' + $splashScript + '"'),
-            '-StatusPath', ('"' + $startupStatusPath + '"'),
-            '-TimeoutSeconds', '120'
-        )
-        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList $splashArguments | Out-Null
-        $env:FLOWSTOCK_STARTUP_STATUS_FILE = $startupStatusPath
+    try {
+        $splashScript = Join-Path $PSScriptRoot 'show-flowstock-startup-splash.ps1'
+        if (Test-Path -LiteralPath $splashScript -PathType Leaf) {
+            $startupDirectory = Join-Path ([IO.Path]::GetTempPath()) 'FlowStock-Startup'
+            New-Item -ItemType Directory -Path $startupDirectory -Force | Out-Null
+            $startupStatusPath = Join-Path $startupDirectory "$([Guid]::NewGuid().ToString('N')).json"
+            Write-StartupStatus 'starting' 'Сборка и запуск UI Preview / DEV…'
+            $splashArguments = @(
+                '-NoLogo',
+                '-NoProfile',
+                '-STA',
+                '-ExecutionPolicy', 'Bypass',
+                '-File', ('"' + $splashScript + '"'),
+                '-StatusPath', ('"' + $startupStatusPath + '"'),
+                '-TimeoutSeconds', '120'
+            )
+            Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList $splashArguments | Out-Null
+            $env:FLOWSTOCK_STARTUP_STATUS_FILE = $startupStatusPath
+        }
+    } catch {
+        $startupStatusPath = $null
     }
 }
 
