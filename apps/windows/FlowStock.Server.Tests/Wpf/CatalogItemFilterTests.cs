@@ -87,16 +87,17 @@ public sealed class CatalogItemFilterTests
     }
 
     [Theory]
-    [InlineData(true, CatalogItemActivityFilter.All, true)]
-    [InlineData(false, CatalogItemActivityFilter.All, true)]
-    [InlineData(true, CatalogItemActivityFilter.Active, true)]
-    [InlineData(false, CatalogItemActivityFilter.Active, false)]
-    [InlineData(true, CatalogItemActivityFilter.Inactive, false)]
-    [InlineData(false, CatalogItemActivityFilter.Inactive, true)]
+    [InlineData(true, 0, true)]
+    [InlineData(false, 0, true)]
+    [InlineData(true, 1, true)]
+    [InlineData(false, 1, false)]
+    [InlineData(true, 2, false)]
+    [InlineData(false, 2, true)]
     public void ActivityFilter_RespectsActiveFlagAndAllDefault(
-        bool isActive, CatalogItemActivityFilter mode, bool expected)
+        bool isActive, int mode, bool expected)
     {
-        Assert.Equal(expected, CatalogItemFilter.MatchesActivity(new Item { IsActive = isActive }, mode));
+        Assert.Equal(expected, CatalogItemFilter.MatchesActivity(
+            new Item { IsActive = isActive }, (CatalogItemActivityFilter)mode));
     }
 
     [Fact]
