@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string] $RepositoryRoot = 'D:\Projects\FlowStock',
     [string] $DotnetExecutable = 'dotnet',
