@@ -112,6 +112,51 @@ public sealed class UiPreviewTests
 
 
     [Fact]
+    public async Task Catalog_preview_hides_inactive_on_first_render_and_after_demo_reinitialization()
+    {
+        await OnUiThread(() =>
+        {
+            var main = new MainWindow(new UiPreviewContext());
+            try
+            {
+                var itemsGrid = (DataGrid)main.FindName("ItemsGrid");
+                var showInactive = (CheckBox)main.FindName("ShowInactiveItemsCheckBox");
+
+                Assert.False(showInactive.IsChecked ?? false);
+                // ContentRendered re-applies demo data to every grid, including
+                // ItemsGrid. Previously this overwrote its initial RowFilter.
+                typeof(MainWindow).GetMethod("OnContentRendered", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(main, [EventArgs.Empty]);
+
+                Assert.Equal(16, itemsGrid.Items.Count);
+                Assert.DoesNotContain(itemsGrid.Items.Cast<System.Data.DataRowView>(),
+                    row => row.Row["IsActive"] is false);
+
+                // With an unshown test window WPF IsLoaded stays false. Verify
+                // the preview filtering operation directly; live event wiring
+                // is exercised by the operator's exact-head visual smoke.
+                var applyPreviewFilter = typeof(MainWindow).GetMethod(
+                    "ApplyPreviewItemActivityFilter", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                showInactive.IsChecked = true;
+                applyPreviewFilter.Invoke(main, null);
+                Assert.Equal(24, itemsGrid.Items.Count);
+                showInactive.IsChecked = false;
+                applyPreviewFilter.Invoke(main, null);
+                Assert.Equal(16, itemsGrid.Items.Count);
+
+                // A subsequent preview rebuild must also respect the checkbox.
+                typeof(MainWindow).GetMethod("OnContentRendered", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(main, [EventArgs.Empty]);
+                Assert.Equal(16, itemsGrid.Items.Count);
+            }
+            finally
+            {
+                main.Close();
+            }
+        });
+    }
+
+    [Fact]
     public async Task Account_preview_shows_demo_rows_and_both_backend_free_dialogs()
     {
         await OnUiThread(() =>

@@ -732,10 +732,9 @@ public partial class MainWindow : Window
             return false;
         }
 
-        return CatalogItemFilter.MatchesGroup(item.Brand, _itemBrandFilters)
-               && CatalogItemFilter.MatchesGroup(item.Volume, _itemVolumeFilters)
-               && CatalogItemFilter.MatchesGroup(item.BaseUom, _itemUomFilters)
-               && CatalogItemFilter.MatchesSearch(item, ItemsSearchBox?.Text);
+        return CatalogItemFilter.Matches(
+            item, _itemBrandFilters, _itemVolumeFilters, _itemUomFilters,
+            ItemsSearchBox?.Text, ShowInactiveItemsCheckBox?.IsChecked == true);
     }
 
     private void RebuildItemFilters()
@@ -1675,6 +1674,7 @@ public partial class MainWindow : Window
             CatalogItemFilter.SetAll(_itemBrandFilters, true);
             CatalogItemFilter.SetAll(_itemVolumeFilters, true);
             CatalogItemFilter.SetAll(_itemUomFilters, true);
+            ShowInactiveItemsCheckBox.IsChecked = false;
         }
         finally
         {
@@ -1682,6 +1682,27 @@ public partial class MainWindow : Window
         }
 
         ApplyItemFilters();
+    }
+
+    private void ShowInactiveItems_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded || _suppressItemFilterSelectionChanged) return;
+
+        if (IsUiPreview)
+        {
+            ApplyPreviewItemActivityFilter();
+            return;
+        }
+
+        ApplyItemFilters();
+    }
+
+    private void ApplyPreviewItemActivityFilter()
+    {
+        if (ItemsGrid.ItemsSource is System.Data.DataView rows)
+        {
+            rows.RowFilter = ShowInactiveItemsCheckBox.IsChecked == true ? string.Empty : "IsActive = true";
+        }
     }
 
     private void ItemsSearchBox_KeyDown(object sender, KeyEventArgs e)

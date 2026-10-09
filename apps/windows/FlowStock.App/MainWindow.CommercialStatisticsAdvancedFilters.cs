@@ -39,6 +39,9 @@ public partial class MainWindow
             ApplyCommercialStatisticsDrillDownEnhancements();
             ApplyCommercialStatisticsContentLayout();
             UiPreviewContext.Prepare(this);
+            // Prepare replaces the preview DataGrid ItemsSource. Restore the
+            // catalog's initial activity filter after the final demo-data load.
+            ApplyPreviewItemActivityFilter();
         }
     }
 

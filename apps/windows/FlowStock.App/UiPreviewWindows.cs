@@ -12,6 +12,7 @@ public partial class MainWindow
         InitializeComponent();
         _itemsView = CollectionViewSource.GetDefaultView(_items);
         UiPreviewContext.Prepare(this);
+        ApplyPreviewItemActivityFilter();
         UiPreviewBanner.Visibility = Visibility.Visible;
         BuildIdentityText.Text = "UI Preview / DEV · " + AppRuntimeInfo.DisplayText;
         ApplyExperimentalTabVisibility();
