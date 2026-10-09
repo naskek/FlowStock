@@ -1,7 +1,8 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string] $RepositoryRoot = (Join-Path $PSScriptRoot '..\..'),
-    [string] $DotnetExecutable = 'dotnet'
+    [string] $DotnetExecutable = 'dotnet',
+    [switch] $DisableStartupSplash
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,6 +11,98 @@ if (-not (Test-Path -LiteralPath $project -PathType Leaf)) {
     throw "FlowStock.App project not found: $project"
 }
 
-# Source-only UI preview bypasses production launcher, recovery and runtime state.
-& $DotnetExecutable run --project $project -- --ui-preview
-exit $LASTEXITCODE
+$startupStatusPath = $null
+$previousStatusPath = $env:FLOWSTOCK_STARTUP_STATUS_FILE
+
+function Write-StartupStatus(
+    [string] $State,
+    [string] $Message,
+    [Nullable[int]] $ProcessId = $null
+) {
+    if ([string]::IsNullOrWhiteSpace($startupStatusPath)) {
+        return
+    }
+
+    $payload = [ordered]@{
+        state = $State
+        message = $Message
+        logPath = (Join-Path ([IO.Path]::GetTempPath()) 'FlowStock-UiPreview\app.log')
+        updatedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+    }
+    if ($null -ne $ProcessId) {
+        $payload.processId = $ProcessId.Value
+    }
+
+    $temporary = "$startupStatusPath.$([Guid]::NewGuid().ToString('N')).tmp"
+    [IO.File]::WriteAllText(
+        $temporary,
+        ($payload | ConvertTo-Json -Compress),
+        [Text.Encoding]::UTF8)
+    Move-Item -LiteralPath $temporary -Destination $startupStatusPath -Force
+}
+
+if (-not $DisableStartupSplash) {
+    try {
+        $splashScript = Join-Path $PSScriptRoot 'show-flowstock-startup-splash.ps1'
+        if (Test-Path -LiteralPath $splashScript -PathType Leaf) {
+            $startupDirectory = Join-Path ([IO.Path]::GetTempPath()) 'FlowStock-Startup'
+            New-Item -ItemType Directory -Path $startupDirectory -Force | Out-Null
+            $startupStatusPath = Join-Path $startupDirectory "$([Guid]::NewGuid().ToString('N')).json"
+            Write-StartupStatus 'starting' 'Сборка и запуск UI Preview / DEV…'
+            $splashArguments = @(
+                '-NoLogo',
+                '-NoProfile',
+                '-STA',
+                '-ExecutionPolicy', 'Bypass',
+                '-File', ('"' + $splashScript + '"'),
+                '-StatusPath', ('"' + $startupStatusPath + '"'),
+                '-TimeoutSeconds', '120'
+            )
+            Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList $splashArguments | Out-Null
+            $env:FLOWSTOCK_STARTUP_STATUS_FILE = $startupStatusPath
+        }
+    } catch {
+        $startupStatusPath = $null
+    }
+}
+
+try {
+    $arguments = @('run', '--project', $project, '--', '--ui-preview')
+    $process = Start-Process -FilePath $DotnetExecutable -WorkingDirectory $RepositoryRoot -ArgumentList $arguments -NoNewWindow -PassThru
+
+    if (-not [string]::IsNullOrWhiteSpace($startupStatusPath)) {
+        try {
+            [IO.File]::WriteAllText(
+                "$startupStatusPath.pid",
+                $process.Id.ToString(),
+                [Text.Encoding]::ASCII)
+        } catch {
+            # PID tracking is diagnostic-only and must not block preview startup.
+        }
+    }
+
+    $process.WaitForExit()
+    if (-not [string]::IsNullOrWhiteSpace($startupStatusPath)) {
+        $current = $null
+        try {
+            $current = Get-Content -LiteralPath $startupStatusPath -Raw | ConvertFrom-Json
+        } catch {
+        }
+        if ($null -eq $current -or $current.state -eq 'starting') {
+            Write-StartupStatus 'error' "UI Preview / DEV завершился до готовности интерфейса (код $($process.ExitCode))."
+        }
+    }
+
+    exit $process.ExitCode
+} catch {
+    if (-not [string]::IsNullOrWhiteSpace($startupStatusPath)) {
+        Write-StartupStatus 'error' "Не удалось запустить UI Preview / DEV: $($_.Exception.Message)"
+    }
+    throw
+} finally {
+    if ($null -eq $previousStatusPath) {
+        Remove-Item Env:FLOWSTOCK_STARTUP_STATUS_FILE -ErrorAction SilentlyContinue
+    } else {
+        $env:FLOWSTOCK_STARTUP_STATUS_FILE = $previousStatusPath
+    }
+}

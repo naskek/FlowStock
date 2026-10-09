@@ -8,6 +8,8 @@
 
 Без точного CLI-флага production startup остаётся прежним: недоступная БД открывает настройку подключения, а не пустое главное окно. Автоматического fallback в preview нет. Preview не является источником бизнес-данных и не моделирует серверную бизнес-логику.
 
+Startup feedback отделён от бизнес-логики и updater handshake. После фактического старта `FlowStock.App` сразу показывается лёгкий indeterminate splash; он закрывается только после первого `ContentRendered` основного окна либо startup-окна подключения. Для launcher-путей `FLOWSTOCK.cmd devui` и `tools/windows/start-flowstock-wpf.ps1` отдельный Windows splash запускается **до** `dotnet run`, recovery и загрузки runtime, чтобы визуальный feedback был виден и во время сборки. Launcher и приложение обмениваются только временным status JSON в `%TEMP%\\FlowStock-Startup` через `FLOWSTOCK_STARTUP_STATUS_FILE`; этот канал не является authority, startup ACK или источником состояния updater. Ошибка/ранний exit/таймаут переводят splash в диагностическое состояние вместо бесконечной анимации; UI Preview при этом остаётся backend-free.
+
 ## Самообновление операторского WPF
 
 Канонические термины:
