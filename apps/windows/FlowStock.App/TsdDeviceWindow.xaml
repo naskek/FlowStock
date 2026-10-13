@@ -18,6 +18,8 @@
                     Width="150" Margin="0,0,8,4" Click="Create_Click" />
             <Button x:Name="EditAccountButton" Content="Редактировать"
                     Width="140" Margin="0,0,8,4" Click="Edit_Click" IsEnabled="False" />
+            <Button x:Name="DeleteAccountButton" Content="Удалить"
+                    Width="100" Margin="0,0,8,4" Click="Delete_Click" IsEnabled="False" />
         </WrapPanel>
         <DataGrid x:Name="DevicesGrid"
                   Grid.Row="2"

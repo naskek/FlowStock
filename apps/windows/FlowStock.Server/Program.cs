@@ -602,6 +602,9 @@ app.MapPost("/api/admin/tsd-devices", async (HttpRequest request, WpfMachineAuth
     var hash = HashPassword(password, salt, 100_000);
 
     using var connection = OpenConnection(postgresConnectionString);
+    using var transaction = connection.BeginTransaction();
+    // Prevent create/rename from racing across differently cased login values.
+    TsdAccountLifecycle.LockAccountMutations(connection, transaction);
     try
     {
         EnsureUniqueTsdDeviceLogin(connection, login, null);
@@ -613,6 +616,7 @@ app.MapPost("/api/admin/tsd-devices", async (HttpRequest request, WpfMachineAuth
 
     var deviceId = GenerateTsdDeviceId(connection);
     using var command = connection.CreateCommand();
+    command.Transaction = transaction;
     command.CommandText = @"
 INSERT INTO tsd_devices(device_id, login, password_salt, password_hash, password_iterations, platform, is_active, access_role, created_at)
 VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @access_role, @created_at);";
@@ -635,12 +639,15 @@ VALUES(@device_id, @login, @salt, @hash, @iterations, @platform, @is_active, @ac
         return Results.Conflict(new ApiResult(false, "LOGIN_ALREADY_EXISTS"));
     }
 
+    transaction.Commit();
     return Results.Ok(new
     {
         ok = true,
         device_id = deviceId
     });
 });
+
+TsdAccountLifecycle.Map(app, postgresConnectionString);
 
 app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest request, WpfMachineAuthorization wpfAuthorization) =>
 {
@@ -687,20 +694,35 @@ app.MapPost("/api/admin/tsd-devices/{id:long}", async (long id, HttpRequest requ
 
     using var connection = OpenConnection(postgresConnectionString);
     using var transaction = connection.BeginTransaction();
+    TsdAccountLifecycle.LockAccountMutations(connection, transaction);
     string previousAccessRole;
+    bool previousIsActive;
+    string previousPlatform;
+    string previousLogin;
     using (var exists = connection.CreateCommand())
     {
         exists.Transaction = transaction;
-        exists.CommandText = "SELECT access_role FROM tsd_devices WHERE id = @id FOR UPDATE;";
+        exists.CommandText = "SELECT is_active, platform, access_role, login FROM tsd_devices WHERE id = @id FOR UPDATE;";
         AddParam(exists, "@id", id);
-        var currentAccessRole = exists.ExecuteScalar();
-        if (currentAccessRole == null)
+        using var reader = exists.ExecuteReader();
+        if (!reader.Read())
         {
+            reader.Close();
             transaction.Rollback();
             return Results.NotFound(new ApiResult(false, "DEVICE_NOT_FOUND"));
         }
+        previousIsActive = reader.GetBoolean(0);
+        previousPlatform = reader.GetString(1);
+        previousAccessRole = PcAccessRole.Normalize(reader.GetString(2));
+        previousLogin = reader.GetString(3);
+    }
 
-        previousAccessRole = PcAccessRole.Normalize(Convert.ToString(currentAccessRole, CultureInfo.InvariantCulture));
+    if (TsdAccountLifecycle.IsActivePcAdmin(previousIsActive, previousPlatform, previousAccessRole)
+        && !TsdAccountLifecycle.IsActivePcAdmin(upsertRequest.IsActive, normalizedPlatform, accessRole)
+        && !TsdAccountLifecycle.HasOtherActivePcAdmin(connection, transaction, id))
+    {
+        transaction.Rollback();
+        return Results.Conflict(new ApiResult(false, "LAST_ACTIVE_PC_ADMIN"));
     }
 
     try
@@ -773,9 +795,13 @@ WHERE id = @id;";
         }
     }
 
-    if (!string.Equals(previousAccessRole, PcAccessRole.Admin, StringComparison.Ordinal)
-        && string.Equals(accessRole, PcAccessRole.Admin, StringComparison.Ordinal))
+    if ((!string.Equals(previousAccessRole, PcAccessRole.Admin, StringComparison.Ordinal)
+            && string.Equals(accessRole, PcAccessRole.Admin, StringComparison.Ordinal))
+        || !string.Equals(previousLogin, login, StringComparison.Ordinal)
+        || (previousIsActive && !upsertRequest.IsActive)
+        || ((previousPlatform is "PC" or "BOTH") && normalizedPlatform == "TSD"))
     {
+        // Rename and disabled/restricted profiles cannot revive an older PC session.
         PcWebSessionStore.RevokeForAdminPromotion(connection, transaction, id, DateTimeOffset.UtcNow);
     }
 

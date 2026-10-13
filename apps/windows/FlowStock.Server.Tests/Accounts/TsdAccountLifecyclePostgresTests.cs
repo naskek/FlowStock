@@ -1,0 +1,413 @@
+using System.Security.Cryptography;
+using System.Text;
+using FlowStock.Server.Tests.Tsd;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
+
+namespace FlowStock.Server.Tests.Accounts;
+
+public sealed class TsdAccountLifecyclePostgresTests
+{
+    private static readonly string MachineKey = new('k', 40);
+    private static string FixturePassword(string login) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(login)));
+
+    [PostgresFact]
+    public async Task Account_delete_requires_machine_key_and_rejects_unknown_account()
+    {
+        var connectionString = TestConnection();
+        await using var app = await StartHost(connectionString);
+        using var client = app.GetTestClient();
+
+        using (var without = await client.DeleteAsync("/api/admin/tsd-devices/99999999"))
+            Assert.Equal(StatusCodes.Status401Unauthorized, (int)without.StatusCode);
+        client.DefaultRequestHeaders.Add(WpfMachineAuthorization.KeyHeader, "wrong-machine-key");
+        using (var invalid = await client.DeleteAsync("/api/admin/tsd-devices/99999999"))
+            Assert.Equal(StatusCodes.Status401Unauthorized, (int)invalid.StatusCode);
+        client.DefaultRequestHeaders.Remove(WpfMachineAuthorization.KeyHeader);
+        client.DefaultRequestHeaders.Add(WpfMachineAuthorization.KeyHeader, MachineKey);
+
+        using (var invalidId = await client.DeleteAsync("/api/admin/tsd-devices/0"))
+            Assert.Equal(StatusCodes.Status400BadRequest, (int)invalidId.StatusCode);
+        using var missing = await client.DeleteAsync("/api/admin/tsd-devices/99999999");
+        Assert.Equal(StatusCodes.Status404NotFound, (int)missing.StatusCode);
+    }
+
+    [PostgresFact]
+    public async Task Deletion_cascades_PC_sessions_but_preserves_operational_history()
+    {
+        var cs = TestConnection();
+        var suffix = Guid.NewGuid().ToString("N");
+        var owner = await CreateAccount(cs, "delete-admin-"+suffix, "PC", "ADMIN");
+        var target = await CreateAccount(cs, "delete-operator-"+suffix, "BOTH", "OPERATOR");
+        long requestId = 0;
+        try
+        {
+            var sessions = new PcWebSessionStore(cs);
+            var login = sessions.Login(target.Login, FixturePassword(target.Login), DateTimeOffset.UtcNow);
+            Assert.True(login.IsSuccess);
+            var http = new DefaultHttpContext();
+            http.Request.Headers.Cookie = $"{PcWebSessionStore.CookieName}={login.Token}";
+            Assert.NotNull(sessions.Resolve(http.Request));
+
+            requestId = await AddHistoricalRequest(cs, target.DeviceId, target.Login);
+            await using var app = await StartHost(cs);
+            using var client = app.GetTestClient();
+            client.DefaultRequestHeaders.Add(WpfMachineAuthorization.KeyHeader, MachineKey);
+            using var response = await client.DeleteAsync($"/api/admin/tsd-devices/{target.Id}");
+            Assert.Equal(StatusCodes.Status200OK, (int)response.StatusCode);
+
+            Assert.Equal(0, await Count(cs, "SELECT COUNT(*) FROM tsd_devices WHERE id = @id;", target.Id));
+            Assert.Equal(0, await Count(cs, "SELECT COUNT(*) FROM pc_web_sessions WHERE account_id = @id;", target.Id));
+            Assert.Null(sessions.Resolve(http.Request));
+            Assert.Equal(1, await Count(cs,
+                "SELECT COUNT(*) FROM item_requests WHERE id = @id;", requestId));
+            var actor = await GetActor(cs, requestId);
+            Assert.Equal(target.DeviceId, actor.DeviceId);
+            Assert.Equal(target.Login, actor.Login);
+
+            using var again = await client.DeleteAsync($"/api/admin/tsd-devices/{target.Id}");
+            Assert.Equal(StatusCodes.Status404NotFound, (int)again.StatusCode);
+            // Internal account ID and external device ID remain historically distinct.
+            Assert.NotEqual(owner.DeviceId, target.DeviceId);
+        }
+        finally
+        {
+            if (requestId != 0)
+                await Execute(cs, "DELETE FROM item_requests WHERE id = @id;", requestId);
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", target.Id);
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", owner.Id);
+        }
+    }
+
+    [PostgresFact]
+    public async Task Last_active_PC_admin_cannot_be_deleted_without_replacement()
+    {
+        var cs = TestConnection();
+        // CI runs on a fresh isolated database; do not alter unrelated accounts.
+        Assert.Equal(0, await Count(cs, @"
+SELECT COUNT(*) FROM tsd_devices
+WHERE is_active AND access_role = 'ADMIN' AND platform IN ('PC','BOTH');"));
+        var suffix = Guid.NewGuid().ToString("N");
+        var first = await CreateAccount(cs, "first-admin-"+suffix, "BOTH", "ADMIN");
+        var second = await CreateAccount(cs, "second-admin-"+suffix, "PC", "ADMIN");
+        try
+        {
+            Assert.Equal(TsdAccountLifecycle.DeleteOutcome.Deleted,
+                TsdAccountLifecycle.Delete(cs, first.Id));
+            Assert.Equal(TsdAccountLifecycle.DeleteOutcome.LastActivePcAdmin,
+                TsdAccountLifecycle.Delete(cs, second.Id));
+            Assert.Equal(1, await Count(cs,
+                "SELECT COUNT(*) FROM tsd_devices WHERE id = @id;", second.Id));
+            Assert.True(TsdAccountLifecycle.IsActivePcAdmin(true, "PC", "ADMIN"));
+            Assert.False(TsdAccountLifecycle.IsActivePcAdmin(false, "PC", "ADMIN"));
+            Assert.False(TsdAccountLifecycle.IsActivePcAdmin(true, "TSD", "ADMIN"));
+        }
+        finally
+        {
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", first.Id);
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", second.Id);
+        }
+    }
+
+    [PostgresFact]
+    public async Task Concurrent_deletion_of_two_administrators_leaves_one_active()
+    {
+        var cs = TestConnection();
+        Assert.Equal(0, await Count(cs, @"
+SELECT COUNT(*) FROM tsd_devices
+WHERE is_active AND access_role = 'ADMIN' AND platform IN ('PC','BOTH');"));
+        var suffix = Guid.NewGuid().ToString("N");
+        var first = await CreateAccount(cs, "concurrent-first-"+suffix, "PC", "ADMIN");
+        var second = await CreateAccount(cs, "concurrent-second-"+suffix, "BOTH", "ADMIN");
+        try
+        {
+            using var start = new ManualResetEventSlim();
+            var one = Task.Run(() => { start.Wait(); return TsdAccountLifecycle.Delete(cs, first.Id); });
+            var two = Task.Run(() => { start.Wait(); return TsdAccountLifecycle.Delete(cs, second.Id); });
+            start.Set();
+            var results = await Task.WhenAll(one, two);
+            Assert.Contains(TsdAccountLifecycle.DeleteOutcome.Deleted, results);
+            Assert.Contains(TsdAccountLifecycle.DeleteOutcome.LastActivePcAdmin, results);
+            Assert.Equal(1, await Count(cs, @"
+SELECT COUNT(*) FROM tsd_devices
+WHERE is_active AND access_role = 'ADMIN' AND platform IN ('PC','BOTH');"));
+        }
+        finally
+        {
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", first.Id);
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", second.Id);
+        }
+    }
+
+
+    [PostgresFact]
+    public async Task Account_mutation_lock_does_not_deadlock_with_existing_PC_login_row_lock_order()
+    {
+        var cs = TestConnection();
+        var target = await CreateAccount(cs, "lock-order-" + Guid.NewGuid().ToString("N"), "PC", "OPERATOR");
+        try
+        {
+            await using var writer = new NpgsqlConnection(cs);
+            await writer.OpenAsync();
+            await using var writerTx = await writer.BeginTransactionAsync();
+            await using (var lockRow = new NpgsqlCommand(
+                "SELECT id FROM tsd_devices WHERE id = @id FOR UPDATE;", writer, writerTx))
+            {
+                lockRow.Parameters.AddWithValue("@id", target.Id);
+                Assert.Equal(target.Id, Convert.ToInt64(await lockRow.ExecuteScalarAsync()));
+            }
+
+            using var mutationLockAcquired = new ManualResetEventSlim();
+            var concurrentMutation = Task.Run(() =>
+            {
+                using var other = new NpgsqlConnection(cs);
+                other.Open();
+                using var tx = other.BeginTransaction();
+                TsdAccountLifecycle.LockAccountMutations(other, tx);
+                mutationLockAcquired.Set();
+                using var read = new NpgsqlCommand(
+                    "SELECT id FROM tsd_devices WHERE id = @id FOR UPDATE;", other, tx);
+                read.Parameters.AddWithValue("@id", target.Id);
+                Assert.Equal(target.Id, Convert.ToInt64(read.ExecuteScalar()));
+                tx.Commit();
+            });
+
+            Assert.True(mutationLockAcquired.Wait(TimeSpan.FromSeconds(10)));
+            await using (var limit = new NpgsqlCommand("SET LOCAL lock_timeout = '1500ms';", writer, writerTx))
+                await limit.ExecuteNonQueryAsync();
+            await using (var update = new NpgsqlCommand(
+                "UPDATE tsd_devices SET last_seen = @last_seen WHERE id = @id;", writer, writerTx))
+            {
+                update.Parameters.AddWithValue("@last_seen", DateTime.UtcNow.ToString("s"));
+                update.Parameters.AddWithValue("@id", target.Id);
+                Assert.Equal(1, await update.ExecuteNonQueryAsync());
+            }
+
+            await writerTx.CommitAsync();
+            await concurrentMutation.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", target.Id);
+        }
+    }
+
+    [PostgresFact]
+    public async Task Concurrent_rename_must_not_issue_PC_session_for_old_login()
+    {
+        var cs = TestConnection();
+        var target = await CreateAccount(cs, "rename-race-" + Guid.NewGuid().ToString("N"), "PC", "OPERATOR");
+        var nextLogin = "renamed-" + Guid.NewGuid().ToString("N");
+        var appName = "rename-test-" + Guid.NewGuid().ToString("N");
+        var loginCs = new NpgsqlConnectionStringBuilder(cs) { ApplicationName = appName }.ConnectionString;
+        try
+        {
+            await using var renamer = new NpgsqlConnection(cs);
+            await renamer.OpenAsync();
+            await using var tx = await renamer.BeginTransactionAsync();
+            await using (var command = new NpgsqlCommand(
+                "UPDATE tsd_devices SET login = @login WHERE id = @id;", renamer, tx))
+            {
+                command.Parameters.AddWithValue("@login", nextLogin);
+                command.Parameters.AddWithValue("@id", target.Id);
+                Assert.Equal(1, await command.ExecuteNonQueryAsync());
+            }
+
+            // Login first sees the old committed login, then blocks on the
+            // account row while the rename is still uncommitted.
+            var attempt = Task.Run(() => new PcWebSessionStore(loginCs).Login(
+                target.Login, FixturePassword(target.Login), DateTimeOffset.UtcNow));
+            var blocked = false;
+            for (var i = 0; i < 100; i++)
+            {
+                await using var watcher = new NpgsqlConnection(cs);
+                await watcher.OpenAsync();
+                await using var command = new NpgsqlCommand(@"
+SELECT COUNT(*) FROM pg_stat_activity
+WHERE application_name = @name AND wait_event_type = 'Lock';", watcher);
+                command.Parameters.AddWithValue("@name", appName);
+                if (Convert.ToInt64(await command.ExecuteScalarAsync()) > 0)
+                {
+                    blocked = true;
+                    break;
+                }
+                await Task.Delay(50);
+            }
+            Assert.True(blocked, "PC login should be waiting on the renamed account row.");
+            await tx.CommitAsync();
+
+            var result = await attempt.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.False(result.IsSuccess);
+            Assert.Equal("INVALID_CREDENTIALS", result.Error);
+            Assert.Equal(0, await Count(cs,
+                "SELECT COUNT(*) FROM pc_web_sessions WHERE account_id = @id;", target.Id));
+            Assert.Equal(1, await Count(cs,
+                "SELECT COUNT(*) FROM tsd_devices WHERE id = @id;", target.Id));
+            Assert.Equal(target.DeviceId, await GetDeviceId(cs, target.Id));
+        }
+        finally
+        {
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", target.Id);
+        }
+    }
+
+    private static async Task<string> GetDeviceId(string cs, long id)
+    {
+        await using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT device_id FROM tsd_devices WHERE id = @id;", connection);
+        command.Parameters.AddWithValue("@id", id);
+        return (string)(await command.ExecuteScalarAsync() ?? string.Empty);
+    }
+
+    [PostgresFact]
+    public async Task Concurrent_delete_and_admin_demotion_leave_one_active_PC_admin()
+    {
+        var cs = TestConnection();
+        Assert.Equal(0, await Count(cs, @"
+SELECT COUNT(*) FROM tsd_devices
+WHERE is_active AND access_role = 'ADMIN' AND platform IN ('PC','BOTH');"));
+        var suffix = Guid.NewGuid().ToString("N");
+        var first = await CreateAccount(cs, "delete-vs-update-a-" + suffix, "PC", "ADMIN");
+        var second = await CreateAccount(cs, "delete-vs-update-b-" + suffix, "BOTH", "ADMIN");
+        try
+        {
+            using var start = new ManualResetEventSlim();
+            var deletion = Task.Run(() =>
+            {
+                start.Wait();
+                return TsdAccountLifecycle.Delete(cs, first.Id);
+            });
+            // Same serializing lock and last-admin guard as the production update route.
+            var demotion = Task.Run(() =>
+            {
+                start.Wait();
+                using var connection = new NpgsqlConnection(cs);
+                connection.Open();
+                using var transaction = connection.BeginTransaction();
+                TsdAccountLifecycle.LockAccountMutations(connection, transaction);
+                using (var row = new NpgsqlCommand(
+                    "SELECT id FROM tsd_devices WHERE id = @id FOR UPDATE;", connection, transaction))
+                {
+                    row.Parameters.AddWithValue("@id", second.Id);
+                    Assert.Equal(second.Id, Convert.ToInt64(row.ExecuteScalar()));
+                }
+                if (!TsdAccountLifecycle.HasOtherActivePcAdmin(connection, transaction, second.Id))
+                {
+                    transaction.Rollback();
+                    return false;
+                }
+                using var update = new NpgsqlCommand(
+                    "UPDATE tsd_devices SET access_role = 'OPERATOR' WHERE id = @id;",
+                    connection, transaction);
+                update.Parameters.AddWithValue("@id", second.Id);
+                Assert.Equal(1, update.ExecuteNonQuery());
+                transaction.Commit();
+                return true;
+            });
+            start.Set();
+            var deleteOutcome = await deletion.WaitAsync(TimeSpan.FromSeconds(15));
+            var demoted = await demotion.WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.Equal(1, (deleteOutcome == TsdAccountLifecycle.DeleteOutcome.Deleted ? 1 : 0)
+                + (demoted ? 1 : 0));
+            Assert.Equal(1, await Count(cs, @"
+SELECT COUNT(*) FROM tsd_devices
+WHERE is_active AND access_role = 'ADMIN' AND platform IN ('PC','BOTH');"));
+        }
+        finally
+        {
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", first.Id);
+            await Execute(cs, "DELETE FROM tsd_devices WHERE id = @id;", second.Id);
+        }
+    }
+
+    private static async Task<WebApplication> StartHost(string cs)
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddSingleton(new WpfMachineAuthorization(MachineKey));
+        var app = builder.Build();
+        TsdAccountLifecycle.Map(app, cs);
+        await app.StartAsync();
+        return app;
+    }
+
+    private static string TestConnection() =>
+        TsdOutboundEligibilityPostgresTests.ResolvePostgresTestConnectionString()
+        ?? throw new InvalidOperationException("PostgreSQL integration database not configured.");
+
+    private static async Task<(long Id, string Login, string DeviceId)> CreateAccount(
+        string cs, string login, string platform, string role)
+    {
+        var deviceId = "ACC-TEST-" + Guid.NewGuid().ToString("N");
+        var salt = RandomNumberGenerator.GetBytes(16);
+        using var passwordHash = new Rfc2898DeriveBytes(
+            FixturePassword(login), salt, 100_000, HashAlgorithmName.SHA256);
+        var hash = passwordHash.GetBytes(32);
+        await using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync();
+        await using var insert = new NpgsqlCommand(@"
+INSERT INTO tsd_devices(device_id, login, password_salt, password_hash,
+                        password_iterations, platform, is_active, access_role, created_at)
+VALUES (@device, @login, @salt, @hash, 100000, @platform, TRUE, @role, @now)
+RETURNING id;", connection);
+        insert.Parameters.AddWithValue("@device", deviceId);
+        insert.Parameters.AddWithValue("@login", login);
+        insert.Parameters.AddWithValue("@salt", Convert.ToBase64String(salt));
+        insert.Parameters.AddWithValue("@hash", Convert.ToBase64String(hash));
+        insert.Parameters.AddWithValue("@platform", platform);
+        insert.Parameters.AddWithValue("@role", role);
+        insert.Parameters.AddWithValue("@now", DateTime.UtcNow.ToString("s"));
+        return ((long)(await insert.ExecuteScalarAsync() ?? 0L), login, deviceId);
+    }
+
+    private static async Task<long> AddHistoricalRequest(string cs, string deviceId, string login)
+    {
+        await using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync();
+        await using var insert = new NpgsqlCommand(@"
+INSERT INTO item_requests(barcode, comment, device_id, login, created_at)
+VALUES ('fixture-code', 'historical audit fixture', @device, @login, @now)
+RETURNING id;", connection);
+        insert.Parameters.AddWithValue("@device", deviceId);
+        insert.Parameters.AddWithValue("@login", login);
+        insert.Parameters.AddWithValue("@now", DateTime.UtcNow.ToString("s"));
+        return (long)(await insert.ExecuteScalarAsync() ?? 0L);
+    }
+
+    private static async Task<(string DeviceId, string Login)> GetActor(string cs, long id)
+    {
+        await using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync();
+        await using var query = new NpgsqlCommand(
+            "SELECT device_id, login FROM item_requests WHERE id = @id;", connection);
+        query.Parameters.AddWithValue("@id", id);
+        await using var reader = await query.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        return (reader.GetString(0), reader.GetString(1));
+    }
+
+    private static async Task<long> Count(string cs, string sql, long? id = null)
+    {
+        await using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
+        if (id.HasValue) command.Parameters.AddWithValue("@id", id.Value);
+        return Convert.ToInt64(await command.ExecuteScalarAsync());
+    }
+
+    private static async Task Execute(string cs, string sql, long id)
+    {
+        await using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("@id", id);
+        await command.ExecuteNonQueryAsync();
+    }
+}
