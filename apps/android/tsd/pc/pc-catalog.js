@@ -769,9 +769,10 @@
           '<button class="btn btn-danger" type="button" data-item-delete-confirm>Удалить товар</button></div></div>';
         document.body.appendChild(confirmModal);
         disposeConfirmDismiss = deps.bindModalDismiss(confirmModal, closeConfirmation);
-        confirmModal.querySelector("[data-item-delete-cancel]").addEventListener("click", closeConfirmation);
+        var cancelButton = confirmModal.querySelector("[data-item-delete-cancel]");
+        cancelButton.addEventListener("click", closeConfirmation);
         var deleteButton = confirmModal.querySelector("[data-item-delete-confirm]");
-        deleteButton.focus();
+        cancelButton.focus();
         deleteButton.addEventListener("click", function () {
           if (deleteButton.disabled) return;
           deleting = true;
@@ -849,13 +850,17 @@
           requestJson("/api/items", "POST", payload).then(function (result) {
             snapshot = Object.assign({}, snapshot, payload, { id: Number(result && result.item_id) || 0 });
             if (!snapshot.id) throw new Error("Сервер не вернул ID созданного товара.");
-            draftDirty = false;
-            creating = false;
             if (openProductCardController && openProductCardController.modal === modal) {
               openProductCardController.itemId = snapshot.id;
             }
+            // Resolve server-side normalization (notably GTIN -> barcode) before
+            // initializing the autosave baseline for the newly created item.
+            return refreshAuthoritative().catch(function () {});
+          }).then(function () {
+            if (closed) return;
+            draftDirty = false;
+            creating = false;
             renderEditor();
-            refreshAuthoritative().catch(function () {});
             if (onSaved) onSaved();
           }).catch(function (error) {
             creating = false;
