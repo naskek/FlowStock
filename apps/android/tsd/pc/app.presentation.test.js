@@ -1883,6 +1883,52 @@ assert.match(catalogSource, /nestedItemSection\("Упаковки", "packaging"/
 assert.match(catalogSource, /nestedItemSection\("Индивидуальные цены клиентов", "customers"/);
 assert.doesNotMatch(adminItemFormHtml, /Автосохранение — без кнопки/);
 assert.match(styles, /\.pc-item-section-toggle:focus-visible\s*\{/);
+assert.match(styles, /\.pc-modal\.pc-item-editor-modal\s*\{[^}]*align-items:\s*flex-start/, "item modal must be anchored at the top");
+assert.match(styles, /\.pc-item-section-toggle::after\s*\{[^}]*border-right:\s*2px solid/, "accordion uses CSS chevron instead of V glyph");
+assert.doesNotMatch(styles, /content:\s*"⌄"/, "old V-like glyph must be removed");
+assert.match(styles, /\.pc-item-section::details-content\s*\{[^}]*block-size:\s*0/, "accordion has downward content transition");
+assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/, "animation respects reduced motion");
+assert.match(styles, /\.pc-catalog-save-status\.is-session-saved/, "save status turns green after a successful write");
+assert.match(styles, /\.pc-catalog-edit-form \.pc-session-changed \.form-input/, "only confirmed edits are accented");
+
+const sessionBase = {
+  name: "Оригинал", barcode: "SKU", gtin: "GTIN", default_sale_price_gross: null,
+  is_active: true, min_stock_qty: 0,
+};
+const afterSave = Object.assign({}, sessionBase, {
+  name: "Новое название", default_sale_price_gross: 0, is_active: false,
+});
+assert.deepStrictEqual(
+  Array.from(catalogHooks.changedItemFields(sessionBase, afterSave)),
+  ["name", "is_active", "default_sale_price_gross"],
+  "only persisted differences from the initial modal baseline are highlighted"
+);
+assert.deepStrictEqual(
+  Array.from(catalogHooks.changedItemFields(sessionBase, sessionBase)),
+  [],
+  "reopening with a fresh baseline must not inherit previous changes"
+);
+const highlightedControls = {};
+const markerForm = { elements: {} };
+["name", "barcode", "gtin", "is_active", "default_sale_price_gross"].forEach(function (name) {
+  const classes = new Set();
+  const wrapper = {
+    classList: {
+      toggle: function (label, enabled) {
+        if (enabled) classes.add(label);
+        else classes.delete(label);
+      },
+    },
+  };
+  markerForm.elements[name] = { closest: function () { return wrapper; } };
+  highlightedControls[name] = classes;
+});
+catalogHooks.highlightSavedItemFields(markerForm, sessionBase, afterSave);
+assert.strictEqual(highlightedControls.name.has("pc-session-changed"), true);
+assert.strictEqual(highlightedControls.is_active.has("pc-session-changed"), true);
+assert.strictEqual(highlightedControls.barcode.has("pc-session-changed"), false);
+catalogHooks.highlightSavedItemFields(markerForm, sessionBase, sessionBase);
+assert.strictEqual(highlightedControls.name.has("pc-session-changed"), false, "reverting to the baseline clears accent");
 const sectionValueForm = {
   elements: {
     base_uom: { value: "__flowstock_legacy_sht__" },
