@@ -582,6 +582,52 @@ $DC run --rm --no-deps --entrypoint dotnet discovery-relay FlowStock.DiscoveryRe
 - Операции — фиксированный enum; `payload` — закрытая типизированная схема с лимитом размера, обязательными bounds и запретом неизвестных полей. `CREATE_BACKUP` допускает только `origin=manual` и необязательную безопасную метку, а не target OS path или команду оболочки.
 - API чтения (контракт для будущей реализации): `GET /api/admin/backups/status`, `GET /api/admin/backups/config`, `PUT /api/admin/backups/config`, `POST /api/admin/backups/jobs`, `GET /api/admin/backups/jobs/{request_id}`, `GET /api/admin/backups/history`, `POST /api/admin/backups/remote/probe`, `POST /api/admin/backups/mirror/retry`. Все пути **зарезервированы для будущего API**, а не обещаны текущим сервером. Пагинация истории и status polling — bounded; ответы не возвращают raw paths, connection strings или секреты.
 - Catalog record содержит: `backup_id` (UUID), `origin` (`scheduled|manual|pre_deploy|pre_restore`), `created_at_utc`, `completed_at_utc`, `size_bytes`, `sha256`, `pg_major`, `schema_migrations_fingerprint`, `local_state`, `remote_state`, `destination_revision`, `restore_test_at_utc` (если выполнен). `pg_restore --list` обозначается только как `structural_validated`, не как `restorable`.
+Типизированные persisted records `v1` (примеры формы, не production payload; все timestamps только UTC):
+
+```json
+{
+  "schema_version": 1,
+  "revision": 12,
+  "scheduler": {"enabled": true, "interval_hours": 24},
+  "local": {"storage_root_alias": "managed_pgbackups", "keep_count": 30, "keep_days": 30},
+  "remote": {
+    "enabled": false,
+    "protocol": "sftp",
+    "destination_revision": 4,
+    "host": "preapproved-host",
+    "port": 22,
+    "account": "backup-only",
+    "root_alias": "preapproved-remote-root",
+    "credential_ref": "server-secret-reference",
+    "pinned_host_key_ref": "operator-approved-key-reference",
+    "keep_count": 30,
+    "keep_days": 30
+  }
+}
+```
+
+```json
+{
+  "schema_version": 1,
+  "backup_id": "uuid",
+  "origin": "scheduled",
+  "created_at_utc": "RFC3339 UTC",
+  "completed_at_utc": "RFC3339 UTC",
+  "local_state": "LOCAL_VALID",
+  "archive_key": "managed-archive-id",
+  "size_bytes": 88185241,
+  "sha256": "64 lowercase hex chars",
+  "pg_major": 16,
+  "schema_migrations_fingerprint": "64 lowercase hex chars",
+  "structural_validated": true,
+  "restore_test_at_utc": null,
+  "remote_state": "PENDING",
+  "destination_revision": 4
+}
+```
+
+API job response `v1` содержит `request_id`, `operation`, `job_state`, `backup_id` (если создан), `requested_at_utc`, `started_at_utc`, `finished_at_utc`, `error_code` и `next_retry_at_utc`. Поля времени/backup ID для ещё не выполненных фаз равны `null`. `archive_key` — opaque идентификатор внутри managed root, а не произвольный путь из клиента; SHA-256 проверяется на exact lowercase 64 hex. Fingerprint миграций вычисляется из упорядоченных применённых `schema_migrations(version, filename)`; при невозможности корректно прочитать список фиксируется явная `unknown` и причина, но не фальшивый hash. Token `RFC3339 UTC` в примерах обозначает тип, а не буквальное значение при сериализации.
+
 - Состояния local job: `QUEUED → RUNNING → VALIDATING → LOCAL_VALID` либо `LOCAL_FAILED`; crash в промежуточной фазе = `RECOVERING` с повторной сверкой staging/catalog, не фиктивный success. Для remote отдельно: `DISABLED|PENDING → UPLOADING → VERIFYING → VERIFIED` либо `RETRY_WAIT|REMOTE_FAILED`. `LOCAL_VALID` не превращается в `LOCAL_FAILED` из-за сетевой ошибки NAS; `VERIFIED` никогда не выставляется без сравнения прочитанных удалённых байтов.
 - Typed error codes (без секретов и raw connection strings): `UNAUTHORIZED`, `FORBIDDEN`, `INVALID_REQUEST`, `UNSUPPORTED_SCHEMA`, `REQUEST_ID_CONFLICT`, `CONFIG_CONFLICT`, `WORKER_UNAVAILABLE`, `MAINTENANCE_PAUSED`, `BACKUP_BUSY`, `DB_UNAVAILABLE`, `STORAGE_LOW`, `DUMP_FAILED`, `DUMP_INVALID`, `REMOTE_AUTH_FAILED`, `REMOTE_HOST_IDENTITY_MISMATCH`, `REMOTE_UNREACHABLE`, `REMOTE_HASH_MISMATCH`, `RESTORE_TEST_REQUIRED`. Ошибка с неопределённым результатом — `UNKNOWN_OUTCOME`, только lookup/reconciliation, не blind retry.
 
