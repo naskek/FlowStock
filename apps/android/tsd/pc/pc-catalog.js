@@ -493,6 +493,37 @@
     };
   }
 
+  // Only values committed by this card are highlighted. The baseline is
+  // captured when this modal opens; no state survives closing the modal.
+  function changedItemFields(baseline, savedPayload) {
+    var fields = [
+      "name", "barcode", "gtin", "brand", "volume", "item_type_id", "tara_id",
+      "is_active", "base_uom", "max_qty_per_hu", "min_stock_qty",
+      "default_sale_price_gross", "default_sale_vat_rate_id",
+      "shelf_life_months", "storage_conditions"
+    ];
+    return fields.filter(function (field) {
+      return JSON.stringify(baseline && baseline[field] == null ? null : baseline && baseline[field]) !==
+        JSON.stringify(savedPayload && savedPayload[field] == null ? null : savedPayload && savedPayload[field]);
+    });
+  }
+
+  function highlightSavedItemFields(form, baseline, savedPayload) {
+    var changed = changedItemFields(baseline, savedPayload);
+    if (!form || !form.elements) return changed;
+    [
+      "name", "barcode", "gtin", "brand", "volume", "item_type_id", "tara_id",
+      "is_active", "base_uom", "max_qty_per_hu", "min_stock_qty",
+      "default_sale_price_gross", "default_sale_vat_rate_id",
+      "shelf_life_months", "storage_conditions"
+    ].forEach(function (field) {
+      var input = form.elements[field];
+      var wrapper = input && input.closest && input.closest(".form-field, .pc-checkbox");
+      if (wrapper && wrapper.classList) wrapper.classList.toggle("pc-session-changed", changed.indexOf(field) !== -1);
+    });
+    return changed;
+  }
+
   function updateItemSectionSummaries(form, refs, original) {
     var texts = itemSectionSummaries(form, refs, original);
     Object.keys(texts).forEach(function (key) {
@@ -627,7 +658,7 @@
         savedGeneration = requestGeneration;
         active = null;
         if (disposed) return true;
-        if (options.onSaved) options.onSaved();
+        if (options.onSaved) options.onSaved(payload);
         if (generation > savedGeneration) return flush();
         status("saved");
         if (closeRequested) {
@@ -687,7 +718,7 @@
   function openAdminItemCard(item, onSaved) {
     var snapshot = item ? Object.assign({}, item) : {};
     var modal = document.createElement("div");
-    modal.className = "pc-modal";
+    modal.className = "pc-modal pc-item-editor-modal";
     modal.innerHTML =
       '<div class="pc-modal-card pc-catalog-admin-card" role="dialog" aria-modal="true" aria-label="' +
       (snapshot.id ? 'Карточка товара' : 'Новый товар') + '">' +
@@ -707,6 +738,7 @@
     var discardRequested = false;
     var refs = null;
     var autosave = null;
+    var hasSessionSave = false;
     var confirmModal = null;
     var deleting = false;
     var disposeDismiss = function () {};
@@ -743,7 +775,8 @@
 
     function showStatus(state, error) {
       if (closed) return;
-      status.className = "pc-status pc-catalog-save-status is-" + state;
+      status.className = "pc-status pc-catalog-save-status is-" + state +
+        (state === "saved" && hasSessionSave ? " is-session-saved" : "");
       var text = {
         saved: "✓ Все изменения сохранены",
         dirty: "Есть изменения",
@@ -859,6 +892,7 @@
       selectUomCode(form, refs, snapshot);
       wireItemTypeApplicability(form, refs);
       updateItemSectionSummaries(form, refs, snapshot);
+      var sessionBaseline = buildItemPayload(form, refs, snapshot);
       // Native constraint validation runs before a submit handler. Reveal a closed
       // details section during capture so the browser can focus its invalid field.
       form.addEventListener("invalid", function (event) {
@@ -881,7 +915,9 @@
           },
           save: function (payload) { return requestJson("/api/items/" + snapshot.id, "POST", payload); },
           onStatus: showStatus,
-          onSaved: function () {
+          onSaved: function (savedPayload) {
+            hasSessionSave = true;
+            highlightSavedItemFields(form, sessionBaseline, savedPayload);
             // Do not re-render the core form: preserve focus, scroll and edits typed mid-request.
             refreshAuthoritative().catch(function () {});
             if (onSaved) onSaved();
@@ -1681,6 +1717,8 @@
       renderPriceEditorForm: renderPriceEditorForm,
       renderAdminItemForm: renderAdminItemForm,
       itemSectionSummaries: itemSectionSummaries,
+      changedItemFields: changedItemFields,
+      highlightSavedItemFields: highlightSavedItemFields,
       revealInvalidItemSection: revealInvalidItemSection,
       createItemAutosaveController: createItemAutosaveController,
       buildItemPayload: buildItemPayload,
