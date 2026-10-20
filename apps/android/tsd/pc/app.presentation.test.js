@@ -1871,6 +1871,121 @@ const adminItemFormHtml = catalogHooks.renderAdminItemForm({ id: 1, name: "То�
   uoms: [{ id: 1, name: "Шт." }, { id: 2, name: "Кг." }], taras: [], itemTypes: [], vatRates: [],
 });
 assert.match(adminItemFormHtml, /class="pc-item-form-fields"/, "core item form uses a responsive two-column layout");
+
+const itemSectionKeys = Array.from(adminItemFormHtml.matchAll(/<details class="pc-item-section" data-item-section="([^"]+)"/g), function (match) {
+  return match[1];
+});
+assert.deepStrictEqual(itemSectionKeys, ["warehouse", "prices", "storage"], "only secondary core fields should collapse");
+assert.match(adminItemFormHtml, /<section class="pc-item-primary">[\s\S]*Основные сведения/);
+assert.match(adminItemFormHtml, /name="name"[\s\S]*name="barcode"[\s\S]*name="gtin"[\s\S]*name="item_type_id"[\s\S]*name="tara_id"[\s\S]*name="is_active"/);
+assert.doesNotMatch(adminItemFormHtml, /<details[^>]*\sopen(?:\s|=|>)/, "secondary sections are collapsed by default");
+assert.match(catalogSource, /nestedItemSection\("Упаковки", "packaging"/);
+assert.match(catalogSource, /nestedItemSection\("Индивидуальные цены клиентов", "customers"/);
+assert.doesNotMatch(adminItemFormHtml, /Автосохранение — без кнопки/);
+assert.match(styles, /\.pc-item-section-toggle:focus-visible\s*\{/);
+assert.match(styles, /\.pc-modal\.pc-item-editor-modal\s*\{[^}]*align-items:\s*flex-start/, "item modal must be anchored at the top");
+assert.match(styles, /\.pc-item-section-toggle::after\s*\{[^}]*border-right:\s*2px solid/, "accordion uses CSS chevron instead of V glyph");
+assert.doesNotMatch(styles, /content:\s*"⌄"/, "old V-like glyph must be removed");
+assert.match(styles, /\.pc-item-section::details-content\s*\{[^}]*block-size:\s*0/, "accordion has downward content transition");
+assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/, "animation respects reduced motion");
+assert.match(styles, /\.pc-catalog-save-status\.is-session-saved/, "save status turns green after a successful write");
+assert.match(styles, /\.pc-catalog-edit-form \.pc-session-changed \.form-input/, "only confirmed edits are accented");
+
+const sessionBase = {
+  name: "Оригинал", barcode: "SKU", gtin: "GTIN", default_sale_price_gross: null,
+  is_active: true, min_stock_qty: 0,
+};
+const afterSave = Object.assign({}, sessionBase, {
+  name: "Новое название", default_sale_price_gross: 0, is_active: false,
+});
+assert.deepStrictEqual(
+  Array.from(catalogHooks.changedItemFields(sessionBase, afterSave)),
+  ["name", "is_active", "default_sale_price_gross"],
+  "only persisted differences from the initial modal baseline are highlighted"
+);
+assert.deepStrictEqual(
+  Array.from(catalogHooks.changedItemFields(sessionBase, sessionBase)),
+  [],
+  "reopening with a fresh baseline must not inherit previous changes"
+);
+const highlightedControls = {};
+const sectionChangeClasses = { warehouse: new Set(), prices: new Set(), storage: new Set() };
+const markerForm = {
+  elements: {},
+  querySelector: function (selector) {
+    const match = selector.match(/^\[data-item-section="(warehouse|prices|storage)"\]$/);
+    if (!match) return null;
+    return { classList: {
+      toggle: function (name, on) {
+        if (on) sectionChangeClasses[match[1]].add(name);
+        else sectionChangeClasses[match[1]].delete(name);
+      },
+    } };
+  },
+};
+["name", "barcode", "gtin", "is_active", "default_sale_price_gross"].forEach(function (name) {
+  const classes = new Set();
+  const wrapper = {
+    classList: {
+      toggle: function (label, enabled) {
+        if (enabled) classes.add(label);
+        else classes.delete(label);
+      },
+    },
+  };
+  markerForm.elements[name] = { closest: function () { return wrapper; } };
+  highlightedControls[name] = classes;
+});
+catalogHooks.highlightSavedItemFields(markerForm, sessionBase, afterSave);
+assert.strictEqual(highlightedControls.name.has("pc-session-changed"), true);
+assert.strictEqual(highlightedControls.is_active.has("pc-session-changed"), true);
+assert.strictEqual(highlightedControls.barcode.has("pc-session-changed"), false);
+assert.strictEqual(sectionChangeClasses.prices.has("pc-session-section-changed"), true, "collapsed prices section indicates persisted change");
+assert.strictEqual(sectionChangeClasses.warehouse.has("pc-session-section-changed"), false);
+catalogHooks.highlightSavedItemFields(markerForm, sessionBase, sessionBase);
+assert.strictEqual(sectionChangeClasses.prices.has("pc-session-section-changed"), false, "reverted section returns to normal");
+assert.strictEqual(highlightedControls.name.has("pc-session-changed"), false, "reverting to the baseline clears accent");
+const sectionValueForm = {
+  elements: {
+    base_uom: { value: "__flowstock_legacy_sht__" },
+    item_type_id: { value: "11" },
+    max_qty_per_hu: { value: "1800" },
+    min_stock_qty: { value: "0" },
+    default_sale_price_gross: { value: "0" },
+    default_sale_vat_rate_id: { value: "22" },
+    shelf_life_months: { value: "12" },
+    storage_conditions: { value: "Хранить в сухом месте" },
+  },
+};
+const summaryRefs = {
+  uoms: [],
+  itemTypes: [{ id: 11, enable_hu_distribution: true, enable_min_stock_control: true }],
+  vatRates: [{ id: 22, name: "Базовая", rate: 22 }],
+};
+let summaries = catalogHooks.itemSectionSummaries(sectionValueForm, summaryRefs, { base_uom: "шт" });
+assert.match(summaries.warehouse, /шт \(legacy\).*Макс\. в HU: 1800.*Мин\. остаток: 0/);
+assert.match(summaries.prices, /0 · Базовая — 22%/, "zero is a configured gross price");
+assert.match(summaries.storage, /12 мес\. · Хранить в сухом месте/);
+sectionValueForm.elements.item_type_id.value = "";
+sectionValueForm.elements.default_sale_price_gross.value = "";
+sectionValueForm.elements.storage_conditions.value = "";
+summaries = catalogHooks.itemSectionSummaries(sectionValueForm, summaryRefs, { base_uom: "шт" });
+assert.doesNotMatch(summaries.warehouse, /Макс\. в HU|Мин\. остаток/, "inapplicable fields are absent from the summary");
+assert.match(summaries.prices, /Цена не задана/);
+assert.match(summaries.storage, /Условия не заданы/);
+const invalidSection = { open: false };
+catalogHooks.revealInvalidItemSection({
+  querySelector: function (selector) {
+    assert.strictEqual(selector, ":invalid");
+    return { closest: function (parent) {
+      assert.strictEqual(parent, "details[data-item-section]");
+      return invalidSection;
+    } };
+  },
+});
+assert.strictEqual(invalidSection.open, true, "hidden invalid field section opens before reportValidity");
+catalogHooks.revealInvalidItemSection({ querySelector: function () { return null; } });
+
 assert.doesNotMatch(adminItemFormHtml, /Маркировка|только чтение/, "admin catalog form must not show legacy marking status");
 assert.match(styles, /\.pc-item-form-fields\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
 assert.match(styles, /@media \(max-width: 820px\)\s*\{\s*\.pc-item-form-fields\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
@@ -2957,6 +3072,7 @@ async function runCatalogPackagingDirtyRegression() {
   }
   function createCoreForm() {
     const listeners = {};
+    const invalidSection = { open: false };
     const elements = {
       name: createControl("Серверное имя"),
       barcode: createControl("SKU-51"),
@@ -2978,8 +3094,21 @@ async function runCatalogPackagingDirtyRegression() {
     const maxField = { hidden: false, querySelector: function () { return elements.max_qty_per_hu; } };
     return {
       elements: elements,
+      invalidSection: invalidSection,
+      invalidListenerCaptures: false,
       checkValidity: function () { return true; },
-      addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+      addEventListener: function (type, handler, capture) {
+        addListener(listeners, type, handler);
+        if (type === "invalid") this.invalidListenerCaptures = capture === true;
+      },
+      dispatchInvalid: function () {
+        (listeners.invalid || []).slice().forEach(function (handler) {
+          handler({ target: { closest: function (selector) {
+            assert.strictEqual(selector, "details[data-item-section]");
+            return invalidSection;
+          } } });
+        });
+      },
       querySelector: function (selector) {
         if (selector === "[data-item-min-stock]") return minField;
         if (selector === "[data-item-max-qty-per-hu]") return maxField;
@@ -2987,6 +3116,11 @@ async function runCatalogPackagingDirtyRegression() {
       },
       dispatchInput: function () {
         (listeners.input || []).slice().forEach(function (handler) { handler({ type: "input", target: elements.name }); });
+      },
+      submit: function () {
+        (listeners.submit || []).slice().forEach(function (handler) {
+          handler({ preventDefault: function () {} });
+        });
       },
     };
   }
@@ -3176,6 +3310,9 @@ async function runCatalogPackagingDirtyRegression() {
   });
   await flushUi();
   const originalForm = body.coreForm;
+  assert.strictEqual(originalForm.invalidListenerCaptures, true, "native invalid listener must capture before browser validation");
+  originalForm.dispatchInvalid();
+  assert.strictEqual(originalForm.invalidSection.open, true, "invalid field inside collapsed section must open it");
   originalForm.elements.name.value = "Несохранённое имя";
   originalForm.dispatchInput();
   assert.strictEqual(controller.isDirty(), true);
@@ -3233,6 +3370,12 @@ async function runCatalogPackagingDirtyRegression() {
   assertCorePreserved(controller, originalForm, packagingRenders, "packaging deactivation");
   assert.strictEqual(requests.filter(function (call) { return call.options && call.options.method === "DELETE"; }).length, 1);
   assert.strictEqual(confirmResult, true);
+  assert.doesNotMatch(status.className || "", /is-session-saved/, "unsaved typing must not show a green saved status");
+  originalForm.submit();
+  await flushUi();
+  assert.match(status.className, /is-session-saved/, "successful persisted edit turns the saved status green");
+  assert.strictEqual(controller.isDirty(), false);
+  assert.strictEqual(body.coreForm, originalForm, "autosave preserves the same editor DOM");
   context.window.confirm = previousConfirm;
 }
 

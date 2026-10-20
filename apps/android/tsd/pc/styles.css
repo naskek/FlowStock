@@ -1673,6 +1673,23 @@ body.pc-modal-open {
   overflow: auto;
 }
 
+.pc-modal.pc-item-editor-modal {
+  /* Keep the card top fixed when details expand, instead of recentering it. */
+  align-items: flex-start;
+  overflow-y: auto;
+}
+
+.pc-item-editor-modal > .pc-catalog-admin-card {
+  margin-inline: auto;
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+}
+
+.pc-catalog-save-status.is-session-saved {
+  color: #18743a;
+  font-weight: 600;
+}
+
 .pc-item-header-actions {
   display: flex;
   align-items: center;
@@ -1780,6 +1797,126 @@ body.pc-modal-open {
   gap: 12px;
 }
 
+
+.pc-item-primary {
+  margin-bottom: 12px;
+}
+
+.pc-item-primary-heading {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text, #1d2936);
+}
+
+.pc-item-section {
+  min-width: 0;
+  border-top: 1px solid var(--border, #dce1e8);
+}
+
+.pc-item-section-toggle {
+  position: relative;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 28px 14px 0;
+  list-style: none;
+  border-radius: 4px;
+}
+
+.pc-item-section-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.pc-item-section-toggle::after {
+  position: absolute;
+  right: 7px;
+  top: 19px;
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--pc-muted);
+  border-bottom: 2px solid var(--pc-muted);
+  transform: rotate(45deg);
+  transition: transform 160ms ease;
+}
+
+.pc-item-section[open] > .pc-item-section-toggle::after {
+  transform: translateY(4px) rotate(225deg);
+}
+
+/* Chrome's details-content pseudo-element permits a native, DOM-preserving slide.
+   Older browsers retain the normal instant details behavior. */
+.pc-item-section {
+  interpolate-size: allow-keywords;
+}
+
+.pc-item-section::details-content {
+  block-size: 0;
+  overflow: clip;
+  transition: block-size 220ms ease, content-visibility 220ms allow-discrete;
+}
+
+.pc-item-section[open]::details-content {
+  block-size: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pc-item-section::details-content,
+  .pc-item-section-toggle::after {
+    transition: none;
+  }
+}
+
+.pc-item-section-toggle:focus-visible {
+  outline: 2px solid var(--pc-accent, #28719b);
+  outline-offset: 2px;
+}
+
+.pc-item-section-heading {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text, #1d2936);
+}
+
+/* Collapsed groups also reveal which saved values changed this session. */
+.pc-item-section.pc-session-section-changed > .pc-item-section-toggle .pc-item-section-heading,
+.pc-item-section.pc-session-section-changed > .pc-item-section-toggle .pc-item-section-summary {
+  color: #166534;
+}
+
+.pc-item-section-summary {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted, #657083);
+}
+
+.pc-item-section[open] > .pc-item-section-toggle .pc-item-section-summary {
+  display: none;
+}
+
+.pc-item-section-fields {
+  padding: 2px 0 16px;
+}
+
+.pc-item-nested-section > .pc-nested-editor {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 16px;
+}
+
+.pc-item-nested-section .pc-product-prices-title {
+  display: none;
+}
+
 .pc-item-form-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1788,6 +1925,21 @@ body.pc-modal-open {
 
 .pc-item-form-fields > * {
   min-width: 0;
+}
+
+/* Session-only: these accents appear after confirmed writes, not on mere typing. */
+.pc-catalog-edit-form .pc-session-changed .form-label,
+.pc-catalog-edit-form .pc-checkbox.pc-session-changed {
+  color: #166534;
+}
+
+.pc-catalog-edit-form .pc-session-changed .form-input {
+  border-color: #59ad79;
+  background: #f0fbf3;
+}
+
+.pc-catalog-edit-form .pc-session-changed .form-input:focus {
+  outline-color: #338a54;
 }
 
 .pc-item-form-fields .pc-form-wide {
