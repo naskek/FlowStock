@@ -1870,9 +1870,19 @@ assert.doesNotMatch(priceEditorHtml, /name="partner_id"|<select/);
 const adminItemFormHtml = catalogHooks.renderAdminItemForm({ id: 1, name: "Товар", barcode: "SKU", base_uom: "шт" }, {
   uoms: [{ id: 1, name: "Шт." }, { id: 2, name: "Кг." }], taras: [], itemTypes: [], vatRates: [],
 });
-assert.match(adminItemFormHtml, /class="pc-item-form-fields"/, "item core form must use one-column layout container");
-assert.doesNotMatch(adminItemFormHtml, /class="pc-form-grid"/);
-assert.match(adminItemFormHtml, /btn-danger[^>]*data-item-delete[^>]*>Удалить</);
+assert.match(adminItemFormHtml, /class="pc-item-form-fields"/, "core item form uses a responsive two-column layout");
+assert.doesNotMatch(adminItemFormHtml, /Маркировка|только чтение/, "admin catalog form must not show legacy marking status");
+assert.match(styles, /\.pc-item-form-fields\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+assert.match(styles, /@media \(max-width: 820px\)\s*\{\s*\.pc-item-form-fields\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+assert.doesNotMatch(adminItemFormHtml, /data-item-delete|>Сохранить</, "editing has no direct delete or save button");
+assert.match(catalogSource, /data-admin-item-menu-toggle/);
+assert.match(catalogSource, /data-admin-item-delete/);
+assert.match(catalogSource, /data-item-delete-confirm/);
+assert.doesNotMatch(catalogSource, /window\.confirm\("Удалить товар/);
+assert.match(catalogSource, /createItemAutosaveController/);
+assert.match(catalogHooks.renderAdminItemForm({ name: "", base_uom: "шт" }, {
+  uoms: [], taras: [], itemTypes: [], vatRates: []
+}), />Создать товар</);
 assert.match(adminItemFormHtml, /value="__flowstock_legacy_sht__"[^>]*>шт \(legacy\)</);
 assert.strictEqual(
   catalogHooks.formatVatRate({ default_sale_vat_rate_name: "Основная", default_sale_vat_rate: 20 }),
@@ -1972,7 +1982,7 @@ assert.match(productCardHtml, /Цена продажи с НДС[\s\S]*12,3457/)
 assert.match(productCardHtml, /Ставка НДС[\s\S]*Основная — 20% \(неактивна\)/);
 assert.match(productCardHtml, /Минимальный остаток[\s\S]*>0</);
 assert.match(productCardHtml, /Макс\. в 1 HU[\s\S]*48/);
-assert.match(productCardHtml, /Маркировка ЧЗ[\s\S]*Нет, GTIN не заполнен/);
+assert.doesNotMatch(productCardHtml, /Маркировка ЧЗ|Маркировка:/, "operator catalog card must not show marking status");
 assert.doesNotMatch(productCardHtml, /<input|<select|data-product-price-(?:save|edit)/);
 
 const plainProductCardHtml = catalogHooks.renderProductCardContent({ name: "Без настроек" }, {});
@@ -2968,6 +2978,7 @@ async function runCatalogPackagingDirtyRegression() {
     const maxField = { hidden: false, querySelector: function () { return elements.max_qty_per_hu; } };
     return {
       elements: elements,
+      checkValidity: function () { return true; },
       addEventListener: function (type, handler) { addListener(listeners, type, handler); },
       querySelector: function (selector) {
         if (selector === "[data-item-min-stock]") return minField;
@@ -2975,7 +2986,7 @@ async function runCatalogPackagingDirtyRegression() {
         return null;
       },
       dispatchInput: function () {
-        (listeners.input || []).slice().forEach(function (handler) { handler({ target: elements.name }); });
+        (listeners.input || []).slice().forEach(function (handler) { handler({ type: "input", target: elements.name }); });
       },
     };
   }
@@ -3080,6 +3091,7 @@ async function runCatalogPackagingDirtyRegression() {
     innerHTML: "",
     parentNode: null,
     isConnected: false,
+    addEventListener: function () {},
     querySelector: function (selector) {
       if (selector === "[data-admin-item-body]") return body;
       if (selector === "[data-admin-item-status]") return status;
