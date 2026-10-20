@@ -859,6 +859,13 @@
       selectUomCode(form, refs, snapshot);
       wireItemTypeApplicability(form, refs);
       updateItemSectionSummaries(form, refs, snapshot);
+      // Native constraint validation runs before a submit handler. Reveal a closed
+      // details section during capture so the browser can focus its invalid field.
+      form.addEventListener("invalid", function (event) {
+        var section = event.target && event.target.closest &&
+          event.target.closest("details[data-item-section]");
+        if (section) section.open = true;
+      }, true);
       if (autosave) autosave.dispose();
       autosave = null;
 
