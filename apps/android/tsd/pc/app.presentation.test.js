@@ -3010,6 +3010,7 @@ async function runCatalogPackagingDirtyRegression() {
   }
   function createCoreForm() {
     const listeners = {};
+    const invalidSection = { open: false };
     const elements = {
       name: createControl("Серверное имя"),
       barcode: createControl("SKU-51"),
@@ -3031,8 +3032,21 @@ async function runCatalogPackagingDirtyRegression() {
     const maxField = { hidden: false, querySelector: function () { return elements.max_qty_per_hu; } };
     return {
       elements: elements,
+      invalidSection: invalidSection,
+      invalidListenerCaptures: false,
       checkValidity: function () { return true; },
-      addEventListener: function (type, handler) { addListener(listeners, type, handler); },
+      addEventListener: function (type, handler, capture) {
+        addListener(listeners, type, handler);
+        if (type === "invalid") this.invalidListenerCaptures = capture === true;
+      },
+      dispatchInvalid: function () {
+        (listeners.invalid || []).slice().forEach(function (handler) {
+          handler({ target: { closest: function (selector) {
+            assert.strictEqual(selector, "details[data-item-section]");
+            return invalidSection;
+          } } });
+        });
+      },
       querySelector: function (selector) {
         if (selector === "[data-item-min-stock]") return minField;
         if (selector === "[data-item-max-qty-per-hu]") return maxField;
@@ -3229,6 +3243,9 @@ async function runCatalogPackagingDirtyRegression() {
   });
   await flushUi();
   const originalForm = body.coreForm;
+  assert.strictEqual(originalForm.invalidListenerCaptures, true, "native invalid listener must capture before browser validation");
+  originalForm.dispatchInvalid();
+  assert.strictEqual(originalForm.invalidSection.open, true, "invalid field inside collapsed section must open it");
   originalForm.elements.name.value = "Несохранённое имя";
   originalForm.dispatchInput();
   assert.strictEqual(controller.isDirty(), true);
