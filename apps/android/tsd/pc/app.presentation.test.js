@@ -1870,9 +1870,18 @@ assert.doesNotMatch(priceEditorHtml, /name="partner_id"|<select/);
 const adminItemFormHtml = catalogHooks.renderAdminItemForm({ id: 1, name: "Товар", barcode: "SKU", base_uom: "шт" }, {
   uoms: [{ id: 1, name: "Шт." }, { id: 2, name: "Кг." }], taras: [], itemTypes: [], vatRates: [],
 });
-assert.match(adminItemFormHtml, /class="pc-item-form-fields"/, "item core form must use one-column layout container");
-assert.doesNotMatch(adminItemFormHtml, /class="pc-form-grid"/);
-assert.match(adminItemFormHtml, /btn-danger[^>]*data-item-delete[^>]*>Удалить</);
+assert.match(adminItemFormHtml, /class="pc-item-form-fields"/, "core item form uses a responsive two-column layout");
+assert.match(styles, /\.pc-item-form-fields\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+assert.match(styles, /@media \(max-width: 820px\)\s*\{\s*\.pc-item-form-fields\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+assert.doesNotMatch(adminItemFormHtml, /data-item-delete|>Сохранить</, "editing has no direct delete or save button");
+assert.match(catalogSource, /data-admin-item-menu-toggle/);
+assert.match(catalogSource, /data-admin-item-delete/);
+assert.match(catalogSource, /data-item-delete-confirm/);
+assert.doesNotMatch(catalogSource, /window\.confirm\("Удалить товар/);
+assert.match(catalogSource, /createItemAutosaveController/);
+assert.match(catalogHooks.renderAdminItemForm({ name: "", base_uom: "шт" }, {
+  uoms: [], taras: [], itemTypes: [], vatRates: []
+}), />Создать товар</);
 assert.match(adminItemFormHtml, /value="__flowstock_legacy_sht__"[^>]*>шт \(legacy\)</);
 assert.strictEqual(
   catalogHooks.formatVatRate({ default_sale_vat_rate_name: "Основная", default_sale_vat_rate: 20 }),

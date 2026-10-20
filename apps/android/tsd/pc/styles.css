@@ -1667,9 +1667,69 @@ body.pc-modal-open {
 }
 
 .pc-catalog-admin-card {
-  width: min(1100px, calc(100vw - 32px));
+  width: min(900px, calc(100vw - 24px));
+  max-width: 900px;
   max-height: calc(100vh - 32px);
   overflow: auto;
+}
+
+.pc-item-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pc-item-icon-button {
+  min-width: 36px;
+  height: 34px;
+  padding: 4px 9px;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.pc-item-menu-wrap {
+  position: relative;
+}
+
+.pc-item-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 180px;
+  z-index: 3;
+  padding: 8px;
+  border: 1px solid var(--pc-border);
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: var(--pc-shadow);
+}
+
+.pc-item-menu[hidden] {
+  display: none;
+}
+
+.pc-catalog-save-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 24px;
+  margin: 4px 0 12px;
+  font-size: 12px;
+}
+
+.pc-catalog-save-status.is-error,
+.pc-catalog-save-status.is-invalid {
+  color: #a32424;
+}
+
+.pc-item-delete-dialog {
+  max-width: 460px;
+}
+
+.pc-item-delete-dialog p {
+  margin: 12px 0;
+  overflow-wrap: anywhere;
 }
 
 .pc-reference-editor-card {
@@ -1722,16 +1782,20 @@ body.pc-modal-open {
 
 .pc-item-form-fields {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.pc-item-form-fields > * {
+  min-width: 0;
 }
 
 .pc-item-form-fields .pc-form-wide {
-  grid-column: 1;
+  grid-column: 1 / -1;
 }
 
 .pc-item-form-fields textarea.form-input {
-  min-height: 96px;
+  min-height: 66px;
   resize: vertical;
 }
 
@@ -1793,6 +1857,9 @@ body.pc-modal-open {
 }
 
 @media (max-width: 820px) {
+  .pc-item-form-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .pc-form-grid,
   .pc-inline-form,
   .pc-reference-flags,

@@ -452,8 +452,7 @@
       '<div class="form-field pc-form-wide"><label class="form-label">Условия хранения</label><textarea class="form-input" name="storage_conditions">' + deps.escapeHtml(value.storage_conditions || "") + '</textarea></div>' +
       '<label class="pc-checkbox"><input name="is_active" type="checkbox"' + (value.is_active === false ? "" : " checked") + '> Активен</label>' +
       '<div class="pc-readonly-field">Маркировка: <strong>' + (value.is_marked ? "Да" : "Нет") + '</strong> (только чтение)</div>' +
-      '</div><div class="pc-modal-actions"><button class="btn ' + (value.id ? "btn-primary" : "btn-success") + '" type="submit">Сохранить</button>' +
-      (value.id ? '<button class="btn btn-danger" data-item-delete type="button">Удалить</button>' : '') + '</div></form>'
+      '</div>' + (value.id ? '' : '<div class="pc-modal-actions"><button class="btn btn-success" type="submit">Создать товар</button></div>') + '</form>'
     );
   }
 
@@ -515,85 +514,395 @@
     };
   }
 
+
+  // Single-flight, full-payload saves: this editor never races its own POST requests.
+  // Other clients still use the catalog's existing last-write-wins contract.
+  function createItemAutosaveController(options) {
+    var generation = 0;
+    var savedGeneration = 0;
+    var lastPayload = JSON.stringify(options.read());
+    var timer = null;
+    var active = null;
+    var closeRequested = false;
+    var disposed = false;
+    var setTimer = options.setTimeout || setTimeout;
+    var cancelTimer = options.clearTimeout || clearTimeout;
+
+    function clearTimer() {
+      if (timer !== null) cancelTimer(timer);
+      timer = null;
+    }
+
+    function status(state, error) {
+      if (!disposed && options.onStatus) options.onStatus(state, error);
+    }
+
+    function flush() {
+      clearTimer();
+      if (disposed) return Promise.resolve(false);
+      if (active) return active;
+      if (generation === savedGeneration) {
+        if (closeRequested) {
+          closeRequested = false;
+          options.onClose();
+        }
+        return Promise.resolve(true);
+      }
+
+      var payload = options.read();
+      if (!payload) {
+        status("invalid");
+        return Promise.resolve(false);
+      }
+      var key = JSON.stringify(payload);
+      if (key === lastPayload) {
+        savedGeneration = generation;
+        status("saved");
+        if (closeRequested) {
+          closeRequested = false;
+          options.onClose();
+        }
+        return Promise.resolve(true);
+      }
+
+      var requestGeneration = generation;
+      status("saving");
+      active = Promise.resolve().then(function () {
+        return options.save(payload);
+      }).then(function () {
+        lastPayload = key;
+        savedGeneration = requestGeneration;
+        active = null;
+        if (disposed) return true;
+        if (options.onSaved) options.onSaved();
+        if (generation > savedGeneration) return flush();
+        status("saved");
+        if (closeRequested) {
+          closeRequested = false;
+          options.onClose();
+        }
+        return true;
+      }, function (error) {
+        active = null;
+        closeRequested = false;
+        status("error", error);
+        return false;
+      });
+      return active;
+    }
+
+    function changed(delay) {
+      if (disposed) return;
+      generation += 1;
+      clearTimer();
+      status("dirty");
+      timer = setTimer(function () {
+        timer = null;
+        flush();
+      }, delay == null ? 700 : delay);
+    }
+
+    function requestClose() {
+      if (disposed) return Promise.resolve(false);
+      if (generation === savedGeneration && !active) {
+        options.onClose();
+        return Promise.resolve(true);
+      }
+      closeRequested = true;
+      return flush();
+    }
+
+    function dispose() {
+      disposed = true;
+      closeRequested = false;
+      clearTimer();
+    }
+
+    status("saved");
+    return {
+      changed: changed,
+      flush: flush,
+      requestClose: requestClose,
+      dispose: dispose,
+      isDirty: function () { return generation !== savedGeneration; },
+      isSaving: function () { return active !== null; }
+    };
+  }
+
   function openAdminItemCard(item, onSaved) {
     var snapshot = item ? Object.assign({}, item) : {};
     var modal = document.createElement("div");
     modal.className = "pc-modal";
-    modal.innerHTML = '<div class="pc-modal-card pc-catalog-admin-card"><div class="pc-modal-header"><div class="pc-modal-title">' +
-      (snapshot.id ? "Карточка товара" : "Новый товар") + '</div><button class="btn btn-outline" data-admin-item-close type="button">Закрыть</button></div>' +
-      '<div class="pc-status" data-admin-item-status>Загрузка...</div><div data-admin-item-body></div></div>';
+    modal.innerHTML =
+      '<div class="pc-modal-card pc-catalog-admin-card" role="dialog" aria-modal="true" aria-label="' +
+      (snapshot.id ? 'Карточка товара' : 'Новый товар') + '">' +
+      '<div class="pc-modal-header"><div class="pc-modal-title">' +
+      (snapshot.id ? 'Карточка товара' : 'Новый товар') + '</div>' +
+      '<div class="pc-item-header-actions">' +
+      (snapshot.id ? '<div class="pc-item-menu-wrap"><button class="btn btn-outline pc-item-icon-button" type="button" data-admin-item-menu-toggle aria-label="Действия с товаром" aria-haspopup="true" aria-expanded="false">⋯</button>' +
+        '<div class="pc-item-menu" data-admin-item-menu hidden><button class="btn btn-danger btn-sm" type="button" data-admin-item-delete>Удалить товар</button></div></div>' : '') +
+      '<button class="btn btn-outline pc-item-icon-button" data-admin-item-close type="button" aria-label="Закрыть карточку">×</button>' +
+      '</div></div><div class="pc-status pc-catalog-save-status" data-admin-item-status role="status" aria-live="polite">Загрузка...</div>' +
+      '<div data-admin-item-body></div></div>';
     document.body.appendChild(modal);
+
     var closed = false;
-    var dirty = false;
+    var draftDirty = false;
+    var creating = false;
+    var discardRequested = false;
     var refs = null;
+    var autosave = null;
+    var confirmModal = null;
+    var deleting = false;
+    var disposeDismiss = function () {};
+    var disposeConfirmDismiss = function () {};
     var body = modal.querySelector("[data-admin-item-body]");
     var status = modal.querySelector("[data-admin-item-status]");
-    var disposeDismiss = function () {};
+    var menu = modal.querySelector("[data-admin-item-menu]");
+    var menuToggle = modal.querySelector("[data-admin-item-menu-toggle]");
+
+    function closeMenu() {
+      if (!menu) return;
+      menu.hidden = true;
+      menuToggle.setAttribute("aria-expanded", "false");
+    }
+
+    function closeConfirmation(force) {
+      if (deleting && !force) return;
+      deleting = false;
+      disposeConfirmDismiss();
+      disposeConfirmDismiss = function () {};
+      if (confirmModal && confirmModal.parentNode) confirmModal.parentNode.removeChild(confirmModal);
+      confirmModal = null;
+    }
 
     function close() {
       if (closed) return;
       closed = true;
+      if (autosave) autosave.dispose();
+      closeConfirmation(true);
       disposeDismiss();
       if (openProductCardController && openProductCardController.modal === modal) openProductCardController = null;
       if (modal.parentNode) modal.parentNode.removeChild(modal);
+    }
+
+    function showStatus(state, error) {
+      if (closed) return;
+      status.className = "pc-status pc-catalog-save-status is-" + state;
+      var text = {
+        saved: "✓ Все изменения сохранены",
+        dirty: "Есть изменения",
+        saving: "Сохранение…",
+        invalid: "Проверьте обязательные поля и значения. Изменения не сохранены.",
+        error: "Не удалось сохранить: " + (error && error.message ? error.message : "Ошибка сервера или сети."),
+        creating: "Создание товара…"
+      };
+      status.textContent = text[state] || "";
+      if ((state === "error" || state === "invalid") && body.querySelector("[data-item-form]")) {
+        var retry = document.createElement("button");
+        retry.className = "btn btn-outline btn-sm";
+        retry.type = "button";
+        retry.textContent = state === "invalid" ? "Проверить поля" : "Повторить";
+        retry.addEventListener("click", function () {
+          var form = body.querySelector("[data-item-form]");
+          if (form && !form.checkValidity()) form.reportValidity();
+          if (autosave) autosave.flush();
+          else if (form && !snapshot.id && form.requestSubmit) form.requestSubmit();
+        });
+        status.appendChild(retry);
+      }
+      if (discardRequested && (state === "error" || state === "invalid" || state === "dirty")) {
+        var discard = document.createElement("button");
+        discard.className = "btn btn-outline btn-sm";
+        discard.type = "button";
+        discard.textContent = "Закрыть без сохранения";
+        discard.addEventListener("click", close);
+        status.appendChild(discard);
+      }
+    }
+
+    function requestClose() {
+      if (closed || confirmModal) return;
+      closeMenu();
+      if (!snapshot.id) {
+        if (creating) {
+          showStatus("creating");
+          return;
+        }
+        if (!draftDirty || !body.querySelector("[data-item-form]")) {
+          close();
+        } else {
+          discardRequested = true;
+          showStatus("dirty");
+        }
+        return;
+      }
+      discardRequested = true;
+      if (autosave) autosave.requestClose();
+      else close();
     }
 
     function refreshAuthoritative() {
       if (!snapshot.id) return Promise.resolve();
       return deps.fetchJson("/api/items?include_inactive=1").then(function (items) {
         var fresh = (items || []).find(function (row) { return Number(row.id) === Number(snapshot.id); });
-        if (fresh) snapshot = Object.assign({}, fresh);
+        if (fresh && !closed) Object.assign(snapshot, fresh);
+      });
+    }
+
+    function openDeleteConfirmation() {
+      if (closed || confirmModal || !snapshot.id) return;
+      var form = body.querySelector("[data-item-form]");
+      if (!form || !autosave) return;
+      // No delete while an item write or an invalid draft is outstanding.
+      autosave.flush().then(function (ok) {
+        if (!ok || closed || autosave.isDirty() || autosave.isSaving() || confirmModal) return;
+        confirmModal = document.createElement("div");
+        confirmModal.className = "pc-modal";
+        confirmModal.innerHTML =
+          '<div class="pc-modal-card pc-item-delete-dialog" role="alertdialog" aria-modal="true" aria-label="Удалить товар">' +
+          '<div class="pc-modal-title">Удалить товар?</div>' +
+          '<p>«' + deps.escapeHtml(fieldValue(form, "name") || snapshot.name || "") + '»</p>' +
+          '<p>Удаление необратимо. Сервер проверит использование товара и связанные записи.</p>' +
+          '<div class="pc-status" data-item-delete-status role="alert"></div>' +
+          '<div class="pc-modal-actions"><button class="btn btn-outline" type="button" data-item-delete-cancel>Отмена</button>' +
+          '<button class="btn btn-danger" type="button" data-item-delete-confirm>Удалить товар</button></div></div>';
+        document.body.appendChild(confirmModal);
+        disposeConfirmDismiss = deps.bindModalDismiss(confirmModal, closeConfirmation);
+        confirmModal.querySelector("[data-item-delete-cancel]").addEventListener("click", closeConfirmation);
+        var deleteButton = confirmModal.querySelector("[data-item-delete-confirm]");
+        deleteButton.focus();
+        deleteButton.addEventListener("click", function () {
+          if (deleteButton.disabled) return;
+          deleting = true;
+          deleteButton.disabled = true;
+          confirmModal.querySelector("[data-item-delete-status]").textContent = "Удаление…";
+          requestJson("/api/items/" + snapshot.id, "DELETE").then(function () {
+            close();
+            if (onSaved) onSaved();
+          }).catch(function (error) {
+            if (!confirmModal) return;
+            deleting = false;
+            deleteButton.disabled = false;
+            confirmModal.querySelector("[data-item-delete-status]").textContent =
+              error && error.message ? error.message : "Не удалось удалить товар.";
+          });
+        });
       });
     }
 
     function renderEditor() {
-      if (closed) return;
-      status.textContent = "";
+      if (closed || !refs) return;
       body.innerHTML = renderAdminItemForm(snapshot, refs) +
-        '<section class="pc-nested-editor" data-packaging-editor>' + (snapshot.id ? "Загрузка упаковок..." : "Сначала сохраните товар.") + '</section>' +
-        '<section class="pc-nested-editor" data-price-editor>' + (snapshot.id ? "Загрузка цен..." : "Сначала сохраните товар.") + '</section>';
+        '<section class="pc-nested-editor" data-packaging-editor>' + (snapshot.id ? "Загрузка упаковок..." : "Сначала создайте товар.") + '</section>' +
+        '<section class="pc-nested-editor" data-price-editor>' + (snapshot.id ? "Загрузка цен..." : "Сначала создайте товар.") + '</section>';
       var form = body.querySelector("[data-item-form]");
       selectUomCode(form, refs, snapshot);
       wireItemTypeApplicability(form, refs);
-      form.addEventListener("input", function () { dirty = true; });
-      form.addEventListener("change", function () { dirty = true; });
-      form.addEventListener("submit", function (event) {
-        event.preventDefault();
-        var payload = buildItemPayload(form, refs, snapshot);
-        status.textContent = "Сохранение...";
-        requestJson(snapshot.id ? "/api/items/" + snapshot.id : "/api/items", "POST", payload)
-          .then(function (result) {
-            if (!snapshot.id) snapshot.id = Number(result && result.item_id) || 0;
-            dirty = false;
-            return refreshAuthoritative();
-          })
-          .then(function () {
-            renderEditor();
-            if (onSaved) onSaved();
-          })
-          .catch(function (error) { status.textContent = ""; reportCatalogError(error, "Не удалось сохранить товар"); });
-      });
-      var deleteButton = body.querySelector("[data-item-delete]");
-      if (deleteButton) deleteButton.addEventListener("click", function () {
-        if (!window.confirm("Удалить товар? Сервер отклонит удаление, если товар используется.")) return;
-        requestJson("/api/items/" + snapshot.id, "DELETE").then(function () { close(); if (onSaved) onSaved(); })
-          .catch(function (error) { reportCatalogError(error, "Не удалось удалить товар"); });
-      });
+      if (autosave) autosave.dispose();
+      autosave = null;
+
       if (snapshot.id) {
+        autosave = createItemAutosaveController({
+          read: function () {
+            if (!form.checkValidity() || !fieldValue(form, "barcode") && !fieldValue(form, "gtin")) return null;
+            return buildItemPayload(form, refs, snapshot);
+          },
+          save: function (payload) { return requestJson("/api/items/" + snapshot.id, "POST", payload); },
+          onStatus: showStatus,
+          onSaved: function () {
+            // Do not re-render the core form: preserve focus, scroll and edits typed mid-request.
+            refreshAuthoritative().catch(function () {});
+            if (onSaved) onSaved();
+          },
+          onClose: close
+        });
+        function onEdit(event) {
+          draftDirty = true;
+          discardRequested = false;
+          autosave.changed(event.type === "input" ? 700 : 0);
+        }
+        form.addEventListener("input", onEdit);
+        form.addEventListener("change", onEdit);
+        form.addEventListener("submit", function (event) {
+          event.preventDefault();
+          autosave.flush();
+        });
         wirePackagingEditor(body.querySelector("[data-packaging-editor]"), snapshot);
         wirePriceEditor(body.querySelector("[data-price-editor]"), snapshot);
+      } else {
+        showStatus("saved");
+        form.addEventListener("input", function () { draftDirty = true; });
+        form.addEventListener("change", function () { draftDirty = true; });
+        form.addEventListener("submit", function (event) {
+          event.preventDefault();
+          if (creating || !form.checkValidity() || !fieldValue(form, "barcode") && !fieldValue(form, "gtin")) {
+            form.reportValidity();
+            if (!fieldValue(form, "barcode") && !fieldValue(form, "gtin")) showStatus("invalid");
+            return;
+          }
+          creating = true;
+          var payload = buildItemPayload(form, refs, snapshot);
+          var controls = form.querySelectorAll("input, select, textarea, button");
+          Array.prototype.forEach.call(controls, function (control) { control.disabled = true; });
+          showStatus("creating");
+          requestJson("/api/items", "POST", payload).then(function (result) {
+            snapshot = Object.assign({}, snapshot, payload, { id: Number(result && result.item_id) || 0 });
+            if (!snapshot.id) throw new Error("Сервер не вернул ID созданного товара.");
+            draftDirty = false;
+            creating = false;
+            if (openProductCardController && openProductCardController.modal === modal) {
+              openProductCardController.itemId = snapshot.id;
+            }
+            renderEditor();
+            refreshAuthoritative().catch(function () {});
+            if (onSaved) onSaved();
+          }).catch(function (error) {
+            creating = false;
+            Array.prototype.forEach.call(controls, function (control) { control.disabled = false; });
+            showStatus("error", error);
+          });
+        });
       }
     }
 
-    loadAdminItemReferences().then(function (loaded) { refs = loaded; renderEditor(); })
-      .catch(function (error) { status.textContent = "Ошибка загрузки справочников"; reportCatalogError(error); });
-    disposeDismiss = deps.bindModalDismiss(modal, function () {
-      if (!dirty || window.confirm("Закрыть карточку и потерять несохранённые изменения?")) close();
+    modal.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && menu && !menu.hidden) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeMenu();
+        menuToggle.focus();
+      }
     });
-    modal.querySelector("[data-admin-item-close]").addEventListener("click", function () {
-      if (!dirty || window.confirm("Закрыть карточку и потерять несохранённые изменения?")) close();
+    if (menuToggle) menuToggle.addEventListener("click", function (event) {
+      event.stopPropagation();
+      menu.hidden = !menu.hidden;
+      menuToggle.setAttribute("aria-expanded", menu.hidden ? "false" : "true");
     });
-    openProductCardController = { modal: modal, itemId: Number(snapshot.id) || 0, close: close, isDirty: function () { return dirty; } };
+    if (menu) {
+      menu.querySelector("[data-admin-item-delete]").addEventListener("click", function () {
+        closeMenu();
+        openDeleteConfirmation();
+      });
+      modal.addEventListener("click", function (event) {
+        if (!menu.hidden && !menu.contains(event.target) && event.target !== menuToggle) closeMenu();
+      });
+    }
+
+    loadAdminItemReferences().then(function (loaded) {
+      refs = loaded;
+      renderEditor();
+    }).catch(function (error) {
+      if (closed) return;
+      showStatus("error", error);
+      reportCatalogError(error, "Не удалось загрузить справочники");
+    });
+    disposeDismiss = deps.bindModalDismiss(modal, requestClose);
+    modal.querySelector("[data-admin-item-close]").addEventListener("click", requestClose);
+    openProductCardController = {
+      modal: modal, itemId: Number(snapshot.id) || 0, close: requestClose,
+      isDirty: function () { return autosave ? autosave.isDirty() : draftDirty; }
+    };
     return openProductCardController;
   }
 
@@ -1269,6 +1578,7 @@
       renderPackagingEditorForm: renderPackagingEditorForm,
       renderPriceEditorForm: renderPriceEditorForm,
       renderAdminItemForm: renderAdminItemForm,
+      createItemAutosaveController: createItemAutosaveController,
       buildItemPayload: buildItemPayload,
       selectUomCode: selectUomCode,
       wireItemTypeApplicability: wireItemTypeApplicability,
