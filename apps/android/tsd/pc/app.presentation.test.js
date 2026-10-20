@@ -2985,7 +2985,7 @@ async function runCatalogPackagingDirtyRegression() {
         return null;
       },
       dispatchInput: function () {
-        (listeners.input || []).slice().forEach(function (handler) { handler({ target: elements.name }); });
+        (listeners.input || []).slice().forEach(function (handler) { handler({ type: "input", target: elements.name }); });
       },
     };
   }
