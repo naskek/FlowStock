@@ -2977,6 +2977,7 @@ async function runCatalogPackagingDirtyRegression() {
     const maxField = { hidden: false, querySelector: function () { return elements.max_qty_per_hu; } };
     return {
       elements: elements,
+      checkValidity: function () { return true; },
       addEventListener: function (type, handler) { addListener(listeners, type, handler); },
       querySelector: function (selector) {
         if (selector === "[data-item-min-stock]") return minField;
@@ -3089,6 +3090,7 @@ async function runCatalogPackagingDirtyRegression() {
     innerHTML: "",
     parentNode: null,
     isConnected: false,
+    addEventListener: function () {},
     querySelector: function (selector) {
       if (selector === "[data-admin-item-body]") return body;
       if (selector === "[data-admin-item-status]") return status;
