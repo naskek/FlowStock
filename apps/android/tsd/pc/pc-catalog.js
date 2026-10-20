@@ -593,6 +593,8 @@
 
     function changed(delay) {
       if (disposed) return;
+      // Editing after a close attempt cancels the pending close intent.
+      closeRequested = false;
       generation += 1;
       clearTimer();
       status("dirty");
