@@ -166,8 +166,43 @@ async function testInvalidCloseAndDispose() {
   idle.dispose();
 }
 
+
+async function testContinuedTypingCancelsPendingClose() {
+  const form = { name: "Initial" };
+  const writes = [];
+  let closes = 0;
+  const controller = createController({
+    read: function () { return Object.assign({}, form); },
+    save: function () {
+      const next = deferred();
+      writes.push(next);
+      return next.promise;
+    },
+    onClose: function () { closes++; }
+  });
+  form.name = "First";
+  controller.changed(700);
+  const attemptedClose = controller.requestClose();
+  await settle();
+  assert.equal(writes.length, 1);
+
+  form.name = "Second";
+  controller.changed(700);
+  writes[0].resolve();
+  await settle();
+  assert.equal(writes.length, 2);
+  writes[1].resolve();
+  assert.equal(await attemptedClose, true);
+  assert.equal(closes, 0, "new editing cancels earlier close intent");
+  assert.equal(controller.isDirty(), false);
+  assert.equal(await controller.requestClose(), true);
+  assert.equal(closes, 1);
+  controller.dispose();
+}
+
 async function main() {
   await testSerialWritesAndCloseFlush();
+  await testContinuedTypingCancelsPendingClose();
   await testNoOpAndRetryAfterError();
   await testInvalidCloseAndDispose();
   console.log("pc-catalog autosave state tests passed");
