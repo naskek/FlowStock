@@ -425,28 +425,88 @@
     });
   }
 
+  function itemSection(title, key, fields) {
+    return '<details class="pc-item-section" data-item-section="' + key + '">' +
+      '<summary class="pc-item-section-toggle"><span class="pc-item-section-heading">' + title + '</span>' +
+      '<span class="pc-item-section-summary" data-section-summary="' + key + '">—</span></summary>' +
+      '<div class="pc-item-form-fields pc-item-section-fields">' + fields + '</div></details>';
+  }
+
+  function nestedItemSection(title, key, editorAttribute, placeholder) {
+    return '<details class="pc-item-section pc-item-nested-section" data-item-section="' + key + '">' +
+      '<summary class="pc-item-section-toggle"><span class="pc-item-section-heading">' + title + '</span>' +
+      '<span class="pc-item-section-summary" data-section-summary="' + key + '">' + placeholder + '</span></summary>' +
+      '<section class="pc-nested-editor" ' + editorAttribute + '>' + placeholder + '</section></details>';
+  }
+
   function renderAdminItemForm(item, refs) {
     var value = item || {};
     return (
       '<form class="pc-catalog-edit-form" data-item-form>' +
-      '<div class="pc-item-form-fields">' +
+      '<section class="pc-item-primary"><h3 class="pc-item-primary-heading">Основные сведения</h3><div class="pc-item-form-fields">' +
       '<div class="form-field pc-form-wide"><label class="form-label">Наименование *</label><input class="form-input" name="name" required value="' + deps.escapeHtml(value.name || "") + '"></div>' +
       '<div class="form-field"><label class="form-label">SKU / штрихкод</label><input class="form-input" name="barcode" value="' + deps.escapeHtml(value.barcode || "") + '"></div>' +
       '<div class="form-field"><label class="form-label">GTIN</label><input class="form-input" name="gtin" value="' + deps.escapeHtml(value.gtin || "") + '"></div>' +
       '<div class="form-field"><label class="form-label">Бренд</label><input class="form-input" name="brand" value="' + deps.escapeHtml(value.brand || "") + '"></div>' +
-      '<div class="form-field"><label class="form-label">Объём</label><input class="form-input" name="volume" value="' + deps.escapeHtml(value.volume || "") + '"></div>' +
-      '<div class="form-field"><label class="form-label">Срок годности, мес.</label><input class="form-input" name="shelf_life_months" type="number" min="1" step="1" value="' + (value.shelf_life_months == null ? "" : deps.escapeHtml(String(value.shelf_life_months))) + '"></div>' +
-      '<div class="form-field"><label class="form-label">Ед. учёта *</label><select class="form-input" name="base_uom" required>' + renderBaseUomOptions(value, refs) + '</select></div>' +
-      '<div class="form-field"><label class="form-label">Тара</label><select class="form-input" name="tara_id"><option value="">Не задана</option>' + optionRows(refs.taras, value.tara_id, function (row) { return row.name || ""; }) + '</select></div>' +
-      '<div class="form-field"><label class="form-label">Тип</label><select class="form-input" name="item_type_id"><option value="">Не задан</option>' + optionRows(refs.itemTypes, value.item_type_id, function (row) { return row.name || ""; }) + '</select></div>' +
-      '<div class="form-field"><label class="form-label">НДС</label><select class="form-input" name="default_sale_vat_rate_id"><option value="">Не задан</option>' + optionRows(refs.vatRates.filter(function (row) { return row.is_active !== false || Number(row.id) === Number(value.default_sale_vat_rate_id); }), value.default_sale_vat_rate_id, function (row) { return (row.name || "") + " — " + row.rate + "%"; }) + '</select></div>' +
-      '<div class="form-field" data-item-min-stock><label class="form-label">Мин. остаток</label><input class="form-input" name="min_stock_qty" type="number" min="0" step="0.001" value="' + (value.min_stock_qty == null ? "" : value.min_stock_qty) + '"></div>' +
-      '<div class="form-field" data-item-max-qty-per-hu><label class="form-label">Макс. в HU</label><input class="form-input" name="max_qty_per_hu" type="number" min="0.001" step="0.001" value="' + (value.max_qty_per_hu == null ? "" : value.max_qty_per_hu) + '"></div>' +
-      '<div class="form-field"><label class="form-label">Цена с НДС</label><input class="form-input" name="default_sale_price_gross" type="number" min="0" step="0.0001" value="' + (value.default_sale_price_gross == null ? "" : value.default_sale_price_gross) + '"></div>' +
-      '<div class="form-field pc-form-wide"><label class="form-label">Условия хранения</label><textarea class="form-input" name="storage_conditions">' + deps.escapeHtml(value.storage_conditions || "") + '</textarea></div>' +
-      '<label class="pc-checkbox"><input name="is_active" type="checkbox"' + (value.is_active === false ? "" : " checked") + '> Активен</label>' +
-      '</div>' + (value.id ? '' : '<div class="pc-modal-actions"><button class="btn btn-success" type="submit">Создать товар</button></div>') + '</form>'
+      '<div class="form-field"><label class="form-label">Объём / нетто</label><input class="form-input" name="volume" value="' + deps.escapeHtml(value.volume || "") + '"></div>' +
+      '<div class="form-field"><label class="form-label">Тип номенклатуры</label><select class="form-input" name="item_type_id"><option value="">Не задан</option>' + optionRows(refs.itemTypes, value.item_type_id, function (row) { return row.name || ""; }) + '</select></div>' +
+      '<div class="form-field"><label class="form-label">Потребительская тара</label><select class="form-input" name="tara_id"><option value="">Не задана</option>' + optionRows(refs.taras, value.tara_id, function (row) { return row.name || ""; }) + '</select></div>' +
+      '<label class="pc-checkbox pc-form-wide"><input name="is_active" type="checkbox"' + (value.is_active === false ? "" : " checked") + '> Активен</label>' +
+      '</div></section>' +
+      itemSection("Складской учёт", "warehouse",
+        '<div class="form-field"><label class="form-label">Ед. складского учёта *</label><select class="form-input" name="base_uom" required>' + renderBaseUomOptions(value, refs) + '</select></div>' +
+        '<div class="form-field" data-item-max-qty-per-hu><label class="form-label">Макс. в HU</label><input class="form-input" name="max_qty_per_hu" type="number" min="0.001" step="0.001" value="' + (value.max_qty_per_hu == null ? "" : value.max_qty_per_hu) + '"></div>' +
+        '<div class="form-field" data-item-min-stock><label class="form-label">Мин. остаток</label><input class="form-input" name="min_stock_qty" type="number" min="0" step="0.001" value="' + (value.min_stock_qty == null ? "" : value.min_stock_qty) + '"></div>') +
+      itemSection("Цены и налоги", "prices",
+        '<div class="form-field"><label class="form-label">Цена с НДС</label><input class="form-input" name="default_sale_price_gross" type="number" min="0" step="0.0001" value="' + (value.default_sale_price_gross == null ? "" : value.default_sale_price_gross) + '"></div>' +
+        '<div class="form-field"><label class="form-label">Ставка НДС</label><select class="form-input" name="default_sale_vat_rate_id"><option value="">Не задана</option>' + optionRows(refs.vatRates.filter(function (row) { return row.is_active !== false || Number(row.id) === Number(value.default_sale_vat_rate_id); }), value.default_sale_vat_rate_id, function (row) { return (row.name || "") + " — " + row.rate + "%"; }) + '</select></div>') +
+      itemSection("Сроки и условия хранения", "storage",
+        '<div class="form-field"><label class="form-label">Срок годности, мес.</label><input class="form-input" name="shelf_life_months" type="number" min="1" step="1" value="' + (value.shelf_life_months == null ? "" : deps.escapeHtml(String(value.shelf_life_months))) + '"></div>' +
+        '<div class="form-field pc-form-wide"><label class="form-label">Условия хранения</label><textarea class="form-input" name="storage_conditions">' + deps.escapeHtml(value.storage_conditions || "") + '</textarea></div>') +
+      (value.id ? '' : '<div class="pc-modal-actions"><button class="btn btn-success" type="submit">Создать товар</button></div>') + '</form>'
     );
+  }
+
+  function itemSectionSummaries(form, refs, original) {
+    var typeId = Number(fieldValue(form, "item_type_id")) || 0;
+    var type = (refs.itemTypes || []).find(function (row) { return Number(row.id) === typeId; }) || {};
+    var uomValue = fieldValue(form, "base_uom");
+    var uom = (refs.uoms || []).find(function (row) { return String(row.id) === uomValue; });
+    var uomName = uomValue === LEGACY_SHT_UOM_VALUE ? "шт (legacy)" :
+      uomValue === CURRENT_NON_MASTER_UOM_VALUE ? currentBaseUom(original) : (uom && uom.name) || "—";
+    var warehouse = [uomName];
+    if (type.enable_hu_distribution === true) {
+      warehouse.push("Макс. в HU: " + (fieldValue(form, "max_qty_per_hu") || "—"));
+    }
+    if (type.enable_min_stock_control === true) {
+      warehouse.push("Мин. остаток: " + (fieldValue(form, "min_stock_qty") || "—"));
+    }
+    var vatValue = fieldValue(form, "default_sale_vat_rate_id");
+    var vat = (refs.vatRates || []).find(function (row) { return String(row.id) === vatValue; });
+    var vatName = vat ? (vat.name || "") + " — " + vat.rate + "%" : "НДС не задан";
+    var shelf = fieldValue(form, "shelf_life_months");
+    var conditions = fieldValue(form, "storage_conditions");
+    return {
+      warehouse: warehouse.join(" · "),
+      prices: (fieldValue(form, "default_sale_price_gross") || "Цена не задана") + " · " + vatName,
+      storage: (shelf ? shelf + " мес." : "Срок не задан") + " · " + (conditions || "Условия не заданы")
+    };
+  }
+
+  function updateItemSectionSummaries(form, refs, original) {
+    var texts = itemSectionSummaries(form, refs, original);
+    Object.keys(texts).forEach(function (key) {
+      var node = form.querySelector('[data-section-summary="' + key + '"]');
+      if (node) node.textContent = texts[key];
+    });
+  }
+
+  function revealInvalidItemSection(form) {
+    if (!form || !form.querySelector) return;
+    var invalid = form.querySelector(":invalid");
+    if (!invalid || !invalid.closest) return;
+    var section = invalid.closest("details[data-item-section]");
+    if (section) section.open = true;
   }
 
   function selectUomCode(form, refs, item) {
@@ -700,7 +760,10 @@
         retry.textContent = state === "invalid" ? "Проверить поля" : "Повторить";
         retry.addEventListener("click", function () {
           var form = body.querySelector("[data-item-form]");
-          if (form && !form.checkValidity()) form.reportValidity();
+          if (form && !form.checkValidity()) {
+            revealInvalidItemSection(form);
+            form.reportValidity();
+          }
           if (autosave) autosave.flush();
           else if (form && !snapshot.id && form.requestSubmit) form.requestSubmit();
         });
@@ -790,18 +853,23 @@
     function renderEditor() {
       if (closed || !refs) return;
       body.innerHTML = renderAdminItemForm(snapshot, refs) +
-        '<section class="pc-nested-editor" data-packaging-editor>' + (snapshot.id ? "Загрузка упаковок..." : "Сначала создайте товар.") + '</section>' +
-        '<section class="pc-nested-editor" data-price-editor>' + (snapshot.id ? "Загрузка цен..." : "Сначала создайте товар.") + '</section>';
+        nestedItemSection("Упаковки", "packaging", "data-packaging-editor", snapshot.id ? "Загрузка упаковок…" : "Сначала создайте товар.") +
+        nestedItemSection("Индивидуальные цены клиентов", "customers", "data-price-editor", snapshot.id ? "Загрузка цен…" : "Сначала создайте товар.");
       var form = body.querySelector("[data-item-form]");
       selectUomCode(form, refs, snapshot);
       wireItemTypeApplicability(form, refs);
+      updateItemSectionSummaries(form, refs, snapshot);
       if (autosave) autosave.dispose();
       autosave = null;
 
       if (snapshot.id) {
         autosave = createItemAutosaveController({
           read: function () {
-            if (!form.checkValidity() || !fieldValue(form, "barcode") && !fieldValue(form, "gtin")) return null;
+            if (!form.checkValidity()) {
+              revealInvalidItemSection(form);
+              return null;
+            }
+            if (!fieldValue(form, "barcode") && !fieldValue(form, "gtin")) return null;
             return buildItemPayload(form, refs, snapshot);
           },
           save: function (payload) { return requestJson("/api/items/" + snapshot.id, "POST", payload); },
@@ -816,6 +884,7 @@
         function onEdit(event) {
           draftDirty = true;
           discardRequested = false;
+          updateItemSectionSummaries(form, refs, snapshot);
           autosave.changed(event.type === "input" ? 700 : 0);
         }
         form.addEventListener("input", onEdit);
@@ -824,15 +893,28 @@
           event.preventDefault();
           autosave.flush();
         });
-        wirePackagingEditor(body.querySelector("[data-packaging-editor]"), snapshot);
-        wirePriceEditor(body.querySelector("[data-price-editor]"), snapshot);
+        wirePackagingEditor(body.querySelector("[data-packaging-editor]"), snapshot, function (text) {
+          var node = body.querySelector('[data-section-summary="packaging"]');
+          if (node) node.textContent = text;
+        });
+        wirePriceEditor(body.querySelector("[data-price-editor]"), snapshot, function (text) {
+          var node = body.querySelector('[data-section-summary="customers"]');
+          if (node) node.textContent = text;
+        });
       } else {
         showStatus("saved");
-        form.addEventListener("input", function () { draftDirty = true; });
-        form.addEventListener("change", function () { draftDirty = true; });
+        form.addEventListener("input", function () {
+          draftDirty = true;
+          updateItemSectionSummaries(form, refs, snapshot);
+        });
+        form.addEventListener("change", function () {
+          draftDirty = true;
+          updateItemSectionSummaries(form, refs, snapshot);
+        });
         form.addEventListener("submit", function (event) {
           event.preventDefault();
           if (creating || !form.checkValidity() || !fieldValue(form, "barcode") && !fieldValue(form, "gtin")) {
+            if (!form.checkValidity()) revealInvalidItemSection(form);
             form.reportValidity();
             if (!fieldValue(form, "barcode") && !fieldValue(form, "gtin")) showStatus("invalid");
             return;
@@ -961,11 +1043,12 @@
     }, onSubmit, "Не удалось изменить упаковку");
   }
 
-  function wirePackagingEditor(container, item) {
+  function wirePackagingEditor(container, item, onSummary) {
     deps.fetchJson("/api/packagings?item_id=" + encodeURIComponent(item.id) + "&include_inactive=1").then(function (rows) {
       if (!container || container.isConnected === false) return;
       rows = Array.isArray(rows) ? rows : [];
-      function reload() { wirePackagingEditor(container, item); }
+      if (onSummary) onSummary(rows.length ? "Упаковок: " + rows.length : "Упаковки не заданы");
+      function reload() { wirePackagingEditor(container, item, onSummary); }
       function refreshDefaultPackaging() {
         return deps.fetchJson("/api/items?include_inactive=1").then(function (items) {
           var fresh = (items || []).find(function (row) { return Number(row.id) === Number(item.id); });
@@ -1009,7 +1092,12 @@
         }
         operation.then(reload).catch(function (error) { reportCatalogError(error, "Не удалось изменить упаковку"); });
       };
-    }).catch(function (error) { container.innerHTML = '<div class="pc-status">Не удалось загрузить упаковки.</div>'; reportCatalogError(error); });
+    }).catch(function (error) {
+      if (container && container.isConnected === false) return;
+      if (onSummary) onSummary("Не удалось загрузить упаковки");
+      container.innerHTML = '<div class="pc-status">Не удалось загрузить упаковки.</div>';
+      reportCatalogError(error);
+    });
   }
 
   function renderPriceEditorForm(row) {
@@ -1035,11 +1123,13 @@
     }, onSubmit, "Не удалось изменить цену");
   }
 
-  function wirePriceEditor(container, item) {
+  function wirePriceEditor(container, item, onSummary) {
     Promise.all([deps.fetchJson(buildCustomerPricesUrl(item.id, 0)), deps.fetchJson("/api/partners?role=customer")]).then(function (payloads) {
       if (!container || container.isConnected === false) return;
       var rows = (payloads[0] && payloads[0].items) || []; var partners = payloads[1] || [];
-      function reload() { wirePriceEditor(container, item); }
+      var total = payloads[0] && Number(payloads[0].total_count);
+      if (onSummary) onSummary(total > 0 ? "Цен клиентов: " + total : rows.length ? "Цен клиентов: " + rows.length : "Индивидуальные цены не заданы");
+      function reload() { wirePriceEditor(container, item, onSummary); }
       container.innerHTML = '<div class="pc-product-prices-title">Индивидуальные цены клиентов</div>' +
         '<form class="pc-inline-form" data-price-create><select class="form-input" name="partner_id" required><option value="">Клиент</option>' + optionRows(partners, 0, function (row) { return row.name || ""; }) + '</select>' +
         '<input class="form-input" name="price" type="number" min="0" step="0.0001" placeholder="Цена" required><label class="pc-checkbox"><input name="active" type="checkbox" checked> Активна</label><button class="btn btn-success" type="submit">Добавить</button></form>' +
@@ -1063,7 +1153,12 @@
           });
         }
       };
-    }).catch(function (error) { container.innerHTML = '<div class="pc-status">Не удалось загрузить цены.</div>'; reportCatalogError(error); });
+    }).catch(function (error) {
+      if (container && container.isConnected === false) return;
+      if (onSummary) onSummary("Не удалось загрузить цены");
+      container.innerHTML = '<div class="pc-status">Не удалось загрузить цены.</div>';
+      reportCatalogError(error);
+    });
   }
 
   function referenceEndpoint(kind) {
@@ -1578,6 +1673,8 @@
       renderPackagingEditorForm: renderPackagingEditorForm,
       renderPriceEditorForm: renderPriceEditorForm,
       renderAdminItemForm: renderAdminItemForm,
+      itemSectionSummaries: itemSectionSummaries,
+      revealInvalidItemSection: revealInvalidItemSection,
       createItemAutosaveController: createItemAutosaveController,
       buildItemPayload: buildItemPayload,
       selectUomCode: selectUomCode,
