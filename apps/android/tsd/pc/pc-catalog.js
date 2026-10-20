@@ -521,6 +521,19 @@
       var wrapper = input && input.closest && input.closest(".form-field, .pc-checkbox");
       if (wrapper && wrapper.classList) wrapper.classList.toggle("pc-session-changed", changed.indexOf(field) !== -1);
     });
+    var sectionFields = {
+      warehouse: ["base_uom", "max_qty_per_hu", "min_stock_qty"],
+      prices: ["default_sale_price_gross", "default_sale_vat_rate_id"],
+      storage: ["shelf_life_months", "storage_conditions"]
+    };
+    Object.keys(sectionFields).forEach(function (sectionKey) {
+      var section = form.querySelector && form.querySelector('[data-item-section="' + sectionKey + '"]');
+      if (section && section.classList) {
+        section.classList.toggle("pc-session-section-changed", sectionFields[sectionKey].some(function (field) {
+          return changed.indexOf(field) !== -1;
+        }));
+      }
+    });
     return changed;
   }
 
