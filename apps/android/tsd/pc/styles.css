@@ -1673,6 +1673,23 @@ body.pc-modal-open {
   overflow: auto;
 }
 
+.pc-modal.pc-item-editor-modal {
+  /* Keep the card top fixed when details expand, instead of recentering it. */
+  align-items: flex-start;
+  overflow-y: auto;
+}
+
+.pc-item-editor-modal > .pc-catalog-admin-card {
+  margin-inline: auto;
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+}
+
+.pc-catalog-save-status.is-session-saved {
+  color: #18743a;
+  font-weight: 600;
+}
+
 .pc-item-header-actions {
   display: flex;
   align-items: center;
@@ -1814,18 +1831,42 @@ body.pc-modal-open {
 
 .pc-item-section-toggle::after {
   position: absolute;
-  right: 5px;
-  top: 16px;
-  content: "⌄";
-  font-size: 20px;
-  line-height: 1;
-  color: var(--muted, #657083);
-  transform-origin: center;
-  transition: transform 120ms ease;
+  right: 7px;
+  top: 19px;
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--pc-muted);
+  border-bottom: 2px solid var(--pc-muted);
+  transform: rotate(45deg);
+  transition: transform 160ms ease;
 }
 
 .pc-item-section[open] > .pc-item-section-toggle::after {
-  transform: rotate(180deg);
+  transform: translateY(4px) rotate(225deg);
+}
+
+/* Chrome's details-content pseudo-element permits a native, DOM-preserving slide.
+   Older browsers retain the normal instant details behavior. */
+.pc-item-section {
+  interpolate-size: allow-keywords;
+}
+
+.pc-item-section::details-content {
+  block-size: 0;
+  overflow: clip;
+  transition: block-size 220ms ease, content-visibility 220ms allow-discrete;
+}
+
+.pc-item-section[open]::details-content {
+  block-size: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pc-item-section::details-content,
+  .pc-item-section-toggle::after {
+    transition: none;
+  }
 }
 
 .pc-item-section-toggle:focus-visible {
@@ -1878,6 +1919,21 @@ body.pc-modal-open {
 
 .pc-item-form-fields > * {
   min-width: 0;
+}
+
+/* Session-only: these accents appear after confirmed writes, not on mere typing. */
+.pc-catalog-edit-form .pc-session-changed .form-label,
+.pc-catalog-edit-form .pc-checkbox.pc-session-changed {
+  color: #166534;
+}
+
+.pc-catalog-edit-form .pc-session-changed .form-input {
+  border-color: #59ad79;
+  background: #f0fbf3;
+}
+
+.pc-catalog-edit-form .pc-session-changed .form-input:focus {
+  outline-color: #338a54;
 }
 
 .pc-item-form-fields .pc-form-wide {
