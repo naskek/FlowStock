@@ -3101,6 +3101,11 @@ async function runCatalogPackagingDirtyRegression() {
       dispatchInput: function () {
         (listeners.input || []).slice().forEach(function (handler) { handler({ type: "input", target: elements.name }); });
       },
+      submit: function () {
+        (listeners.submit || []).slice().forEach(function (handler) {
+          handler({ preventDefault: function () {} });
+        });
+      },
     };
   }
   function createPackagingForm() {
@@ -3349,6 +3354,12 @@ async function runCatalogPackagingDirtyRegression() {
   assertCorePreserved(controller, originalForm, packagingRenders, "packaging deactivation");
   assert.strictEqual(requests.filter(function (call) { return call.options && call.options.method === "DELETE"; }).length, 1);
   assert.strictEqual(confirmResult, true);
+  assert.doesNotMatch(status.className || "", /is-session-saved/, "unsaved typing must not show a green saved status");
+  originalForm.submit();
+  await flushUi();
+  assert.match(status.className, /is-session-saved/, "successful persisted edit turns the saved status green");
+  assert.strictEqual(controller.isDirty(), false);
+  assert.strictEqual(body.coreForm, originalForm, "autosave preserves the same editor DOM");
   context.window.confirm = previousConfirm;
 }
 
