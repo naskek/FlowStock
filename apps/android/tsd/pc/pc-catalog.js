@@ -270,12 +270,6 @@
     if (type.enable_hu_distribution === true) {
       details.push(renderDetail("Макс. в 1 HU", deps.escapeHtml(formatDecimal(item.max_qty_per_hu, 3))));
     }
-    if (item.item_type_enable_marking === true || type.enable_marking === true) {
-      details.push(renderDetail(
-        "Маркировка ЧЗ",
-        String(item.gtin || "").trim() ? "Да" : "Нет, GTIN не заполнен"
-      ));
-    }
 
     return (
       '<div class="pc-modal-card pc-product-card">' +
@@ -451,7 +445,6 @@
       '<div class="form-field"><label class="form-label">Цена с НДС</label><input class="form-input" name="default_sale_price_gross" type="number" min="0" step="0.0001" value="' + (value.default_sale_price_gross == null ? "" : value.default_sale_price_gross) + '"></div>' +
       '<div class="form-field pc-form-wide"><label class="form-label">Условия хранения</label><textarea class="form-input" name="storage_conditions">' + deps.escapeHtml(value.storage_conditions || "") + '</textarea></div>' +
       '<label class="pc-checkbox"><input name="is_active" type="checkbox"' + (value.is_active === false ? "" : " checked") + '> Активен</label>' +
-      '<div class="pc-readonly-field">Маркировка: <strong>' + (value.is_marked ? "Да" : "Нет") + '</strong> (только чтение)</div>' +
       '</div>' + (value.id ? '' : '<div class="pc-modal-actions"><button class="btn btn-success" type="submit">Создать товар</button></div>') + '</form>'
     );
   }
