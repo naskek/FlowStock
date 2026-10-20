@@ -1871,6 +1871,7 @@ const adminItemFormHtml = catalogHooks.renderAdminItemForm({ id: 1, name: "То�
   uoms: [{ id: 1, name: "Шт." }, { id: 2, name: "Кг." }], taras: [], itemTypes: [], vatRates: [],
 });
 assert.match(adminItemFormHtml, /class="pc-item-form-fields"/, "core item form uses a responsive two-column layout");
+assert.doesNotMatch(adminItemFormHtml, /Маркировка|только чтение/, "admin catalog form must not show legacy marking status");
 assert.match(styles, /\.pc-item-form-fields\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
 assert.match(styles, /@media \(max-width: 820px\)\s*\{\s*\.pc-item-form-fields\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
 assert.doesNotMatch(adminItemFormHtml, /data-item-delete|>Сохранить</, "editing has no direct delete or save button");
@@ -1981,7 +1982,7 @@ assert.match(productCardHtml, /Цена продажи с НДС[\s\S]*12,3457/)
 assert.match(productCardHtml, /Ставка НДС[\s\S]*Основная — 20% \(неактивна\)/);
 assert.match(productCardHtml, /Минимальный остаток[\s\S]*>0</);
 assert.match(productCardHtml, /Макс\. в 1 HU[\s\S]*48/);
-assert.match(productCardHtml, /Маркировка ЧЗ[\s\S]*Нет, GTIN не заполнен/);
+assert.doesNotMatch(productCardHtml, /Маркировка ЧЗ|Маркировка:/, "operator catalog card must not show marking status");
 assert.doesNotMatch(productCardHtml, /<input|<select|data-product-price-(?:save|edit)/);
 
 const plainProductCardHtml = catalogHooks.renderProductCardContent({ name: "Без настроек" }, {});
