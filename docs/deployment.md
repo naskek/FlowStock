@@ -547,6 +547,161 @@ $DC ps discovery-relay
 $DC run --rm --no-deps --entrypoint dotnet discovery-relay FlowStock.DiscoveryRelay.dll healthcheck
 ```
 
+## Целевой контракт серверного резервного копирования (проектирование)
+
+**Статус:** этот раздел задаёт **целевой контракт будущей реализации**, а не подтверждает наличие перечисленных функций в текущем runtime. Пока не выполнены отдельные реализация, CI, проверка восстановления и операторский cutover, действуют существующие `pgbackup`, `backup_now.sh`, `restore_dump.sh`, клиентский `BackupService` и канонический `deploy-production.ps1`. Новая конфигурация, API, репликация, каталог и протокол заданий **ещё не внедрены**. Никакой автоматической миграции данных или настройки production само появление этого раздела не запускает.
+
+**Согласованное направление:** автономный backup на Debian сохраняется; NAS в той же приватной Tailscale-сети служит отдельным хранилищем с более долгой собственной retention. WPF управляет серверными настройками и заданиями, показывает журналы и сохранённые копии на Debian/NAS через сервер. Это одобрение общей архитектуры, а не разрешение на production provisioning, изменение текущих backups, merge или deploy. Численные значения ниже — целевые параметры для проверки ёмкости и отдельного внедрения.
+
+### Границы ответственности и хранение
+
+- **`pgbackup`** остаётся одним автономным server-side worker, который владеет расписанием, `pg_dump`, валидацией, каталогом, состояниями заданий, очередью отправки и инвентаризацией NAS. Локальный backup работает без WPF, HTTP API и подключения к удалённому хранилищу. Второй backup daemon не создаётся.
+- **FlowStock Server** — только защищённый control plane: валидирует actor/permissions, заранее созданный клиентом `request_id` и схему запроса, присваивает внутренний `job_id`, публикует ограниченные команды и читает события/статусы. У него нет Docker socket, права запускать произвольные процессы/команды и доступа к произвольным host paths. WPF не получает PostgreSQL credentials и не запускает локальный `pg_dump` после отдельного cutover.
+- **Debian и NAS — два независимых места хранения.** Локальный валидный архив публикуется первым; NAS получает проверенную копию. Debian обеспечивает быстрое восстановление и pre-deploy/pre-restore safety, NAS — более долгую историю и восстановление при потере Debian. Локальный каталог не заменяется сетевым mount NAS; WPF не подключается к NAS напрямую. Приватная сеть не заменяет права, проверку SSH host key, checksum и шифрование хранения.
+- **Операторские pre-deploy / pre-restore backup** используют общий низкоуровневый dump/lock primitive, но не зависят от HTTP, remote, конфигурации расписания или живого нового worker. До обновления server checkout должны срабатывать на старой поддерживаемой версии. `deploy-production.ps1` сохраняет порядок: exact-tree attestation → SSH/healthy PostgreSQL → **свежий проверенный dump** → git update/exact HEAD → source/TSD/Compose gates → build/up → live/ready/identity/disk/backup path.
+- Persisted worker state, archive catalog, manifests, queue, applied config и maintenance barrier размещаются **в устойчивом server-owned хранилище вне Git checkout и вне самой резервируемой business PostgreSQL**. Сохранённая DB-копия не считается backup этих внешних метаданных, TLS/SSH credentials, PostgreSQL roles или инфраструктуры.
+- Базовая совместимость: сохраняется существующий Docker volume `pgbackups` и его legacy `/backups/FlowStock_*.dump`. Новые managed subdirectories: `/backups/managed/archives`, `/backups/managed/staging`, `/backups/managed/catalog`, `/backups/managed/jobs`, `/backups/managed/config`, `/backups/managed/maintenance`. Control-plane inbox/outbox — отдельный подготовленный ограниченный persistent mount, **не** произвольный общий writable mount с архивами. Конкретные volume/UID/GID/ACL в Compose устанавливаются только отдельным implementation PR и operator gate.
+- Каталоги доступны только отдельным service identities; каталоги `0700`, архивы/manifest/credentials `0600`, где разрешает FS/владелец. Managed paths проверяются относительно заранее разрешённого root через canonical open/no-follow semantics, directory ownership и запрет traversal, symlink и hardlink alias при публикации/удалении. WPF не принимает абсолютные пути ОС к произвольным файлам. Старые архивы и rollback metadata нельзя молча перемещать, переименовывать, удалять или считать managed.
+
+### Контракт control transport, commands и наблюдения
+
+Запрос клиента `POST` возвращает `202 Accepted` **только после durable enqueue**, но это не успех backup. Server и worker общаются через версионированные JSON-записи ограниченного файлового spool: сервер атомарно публикует `request_id.json` (unique temp → flush/fsync → no-replace rename), worker публикует durable ack/result аналогично. Worker признаёт запрос обработанным только после durable записи статуса; после crash/restart тот же `request_id` возобновляется без второй операции. API возвращает только состояние уже записанного задания, а не оценивает его по HTTP timeout. WPF **до отправки POST** генерирует UUID `request_id`, сохраняет его в локальном pending-action state и использует для последующего lookup. Неизвестный исход POST проверяется чтением этого `request_id`; автоматического повторного POST нет.
+
+Минимальная версия `v1` command envelope (пример схемы, не действующий endpoint):
+
+```json
+{
+  "schema_version": 1,
+  "request_id": "uuid",
+  "operation": "CREATE_BACKUP|APPLY_CONFIG|PROBE_REMOTE|RETRY_MIRROR|REFRESH_REMOTE_INVENTORY",
+  "actor_id": "server-verified-principal",
+  "expected_config_revision": 12,
+  "created_at_utc": "RFC3339 UTC",
+  "payload": {}
+}
+```
+
+- `request_id` — клиентский UUID/idempotency key, заранее известный WPF и проверенный сервером (формат, ownership и срок хранения mapping); сервер назначает отдельный внутренний `job_id`. Повтор с тем же actor, operation и canonical payload возвращает существующее задание; повтор с другим содержимым — `409 REQUEST_ID_CONFLICT`. Пользовательский `device_id`, role и произвольные shell args никогда не становятся авторизацией.
+- Операции — фиксированный enum; `payload` — закрытая типизированная схема с лимитом размера, обязательными bounds и запретом неизвестных полей. `CREATE_BACKUP` допускает только `origin=manual` и необязательную безопасную метку, а не target OS path или команду оболочки.
+- API управления и чтения (контракт для будущей реализации): `GET /api/admin/backups/status`, `GET /api/admin/backups/config`, `PUT /api/admin/backups/config`, `POST /api/admin/backups/jobs`, `GET /api/admin/backups/jobs/{request_id}`, `GET /api/admin/backups/history`, `GET /api/admin/backups/events`, `GET /api/admin/backups/remote/inventory`, `POST /api/admin/backups/remote/inventory/refresh`, `POST /api/admin/backups/remote/probe`, `POST /api/admin/backups/mirror/retry`. Все пути **зарезервированы для будущего API**, а не обещаны текущим сервером. История, события и inventory имеют cursor pagination (до 200 записей на страницу); status polling — bounded; ответы не возвращают raw paths, connection strings или секреты. `GET` читает durable snapshot, а не открывает SFTP-соединение из HTTP handler.
+- Catalog record содержит: `backup_id` (UUID), `origin` (`scheduled|manual|pre_deploy|pre_restore`), `created_at_utc`, `completed_at_utc`, `size_bytes`, `sha256`, `pg_major`, `schema_migrations_fingerprint`, `local_state`, `local_presence`, `remote_state`, `destination_revision`, `restore_test_at_utc` (если выполнен). `local_state`/`remote_state` — результаты создания/доставки, не доказательство текущего наличия файла; `local_presence=PRESENT|PRUNED|MISSING|UNKNOWN`, а remote presence описана ниже. `pg_restore --list` обозначается только как `structural_validated`, не как `restorable`.
+Типизированные persisted records `v1` (примеры формы, не production payload; все timestamps только UTC):
+
+```json
+{
+  "schema_version": 1,
+  "revision": 12,
+  "scheduler": {"enabled": true, "interval_hours": 24},
+  "local": {"storage_root_alias": "managed_pgbackups", "keep_count": 30, "keep_days": 30},
+  "remote": {
+    "enabled": false,
+    "protocol": "sftp",
+    "destination_revision": 4,
+    "host": "preapproved-nas-tailnet-name",
+    "port": 22,
+    "account": "backup-only",
+    "root_alias": "preapproved-remote-root",
+    "credential_ref": "server-secret-reference",
+    "pinned_host_key_ref": "operator-approved-key-reference",
+    "keep_count": 180,
+    "keep_days": 180
+  }
+}
+```
+
+```json
+{
+  "schema_version": 1,
+  "backup_id": "uuid",
+  "origin": "scheduled",
+  "created_at_utc": "RFC3339 UTC",
+  "completed_at_utc": "RFC3339 UTC",
+  "local_state": "LOCAL_VALID",
+  "local_presence": "PRESENT",
+  "archive_key": "managed-archive-id",
+  "size_bytes": 88185241,
+  "sha256": "64 lowercase hex chars",
+  "pg_major": 16,
+  "schema_migrations_fingerprint": "64 lowercase hex chars or null",
+  "schema_migrations_state": "KNOWN|UNKNOWN",
+  "structural_validated": true,
+  "restore_test_at_utc": null,
+  "remote_state": "PENDING",
+  "destination_revision": 4
+}
+```
+
+API job response `v1` содержит `request_id`, `job_id`, `operation`, `job_state`, `backup_id` (если создан), `requested_at_utc`, `started_at_utc`, `finished_at_utc`, `error_code` и `next_retry_at_utc`. Поля времени/backup ID для ещё не выполненных фаз равны `null`. `archive_key` — opaque идентификатор внутри managed root, а не произвольный путь из клиента; SHA-256 проверяется на exact lowercase 64 hex. Fingerprint миграций вычисляется из упорядоченных применённых `schema_migrations(version, filename)`; при невозможности корректно прочитать список сохраняются `schema_migrations_fingerprint=null`, `schema_migrations_state=UNKNOWN` и безопасная причина, но не фальшивый hash. Token `RFC3339 UTC` в примерах обозначает тип, а не буквальное значение при сериализации.
+
+- Состояния local job: `QUEUED → RUNNING → VALIDATING → LOCAL_VALID` либо `LOCAL_FAILED`; crash в промежуточной фазе = `RECOVERING` с повторной сверкой staging/catalog, не фиктивный success. Для remote отдельно: `DISABLED|PENDING → UPLOADING → VERIFYING → VERIFIED` либо `RETRY_WAIT|REMOTE_FAILED`. `LOCAL_VALID` не превращается в `LOCAL_FAILED` из-за сетевой ошибки NAS; `VERIFIED` никогда не выставляется без сравнения прочитанных удалённых байтов.
+- Typed error codes (без секретов и raw connection strings): `UNAUTHORIZED`, `FORBIDDEN`, `INVALID_REQUEST`, `UNSUPPORTED_SCHEMA`, `REQUEST_ID_CONFLICT`, `CONFIG_CONFLICT`, `WORKER_UNAVAILABLE`, `MAINTENANCE_PAUSED`, `BACKUP_BUSY`, `DB_UNAVAILABLE`, `STORAGE_LOW`, `DUMP_FAILED`, `DUMP_INVALID`, `REMOTE_AUTH_FAILED`, `REMOTE_HOST_IDENTITY_MISMATCH`, `REMOTE_UNREACHABLE`, `REMOTE_HASH_MISMATCH`, `REMOTE_INVENTORY_INCOMPLETE`, `REMOTE_ARCHIVE_MISSING`, `RESTORE_TEST_REQUIRED`. Ошибка с неопределённым результатом — `UNKNOWN_OUTCOME`, только lookup/reconciliation, не blind retry.
+
+### Config/revisions, расписание, retry и retention
+
+- Configuration хранится отдельно от business DB и не привязана к жизненному циклу WPF. Единственный authoritative **`applied_revision`** подтверждается worker после успешной атомарной проверки и применения. API выдаёт отдельно `requested_revision`, `applied_revision`, `apply_state` (`PENDING|APPLIED|REJECTED`) и фактическую конфигурацию. После `PUT` с `If-Match`/expected revision конкурентная правка возвращает `409 CONFIG_CONFLICT`; readback до worker ack не объявляет настройки применёнными. Нельзя тихо заменить старую работающую конфигурацию частично ошибочной.
+- `schema_version=1` для config/catalog/commands. Неизвестная major schema или запись, которую старый worker не умеет безопасно читать, отклоняется fail-closed. Состояние мигрируется copy → validate → atomic publish с сохранением старого файла/архивов; rollback до версии, не понимающей новую схему, разрешён только по протестированной compatibility matrix или с явно восстановленным совместимым состоянием. Никакой silent downgrade.
+- `enabled=true` по умолчанию только после отдельного операторского включения нового scheduler; целевой `interval_hours=24`, допустимо **6–168 часов**. Срок следующей плановой попытки считается от **последнего успешного `scheduled`** (UTC); `manual`, `pre_deploy`, `pre_restore` не сдвигают его. При restart до deadline — пропуск; после deadline — один catch-up, не цикл за все пропущенные интервалы.
+- Failed dump не меняет `last_scheduled_success_at_utc`. Повторы scheduled failure с экспоненциальными интервалами **5, 15, 60 минут**, затем не чаще раза в **60 минут** до success/operator pause; никогда не ждать 24 часа только потому, что попытка провалилась. Каждая ошибка и `next_retry_at_utc` persisted. Одновременно разрешён только **один** dump/restore-critical operation для данного PostgreSQL/backup root.
+- При утере или порче state scheduler **не выводит success из mtime/имени**. Разрешена reconciliation из уже проверенных manifests/catalog; без непротиворечивых доказательств — `DEGRADED / OPERATOR_ACTION_REQUIRED` и безопасный ограниченный fresh attempt только после проверки lock/barrier/free space. Не удалять файлы «для исправления каталога».
+- Локальное хранение: `keep_count` **7–90** (по умолчанию 30), `keep_days` **7–365** (по умолчанию 30); удалять только managed `LOCAL_VALID` при превышении **хотя бы одного** ограничения (count или age), но только если архив не защищён pin/remote backlog/recovery и не является последней успешно проверенной копией. Поэтому ограничения являются целями, а сохранение защищённых копий имеет приоритет; показывать превышение квоты как degraded, а не удалять их. Сохранять **последнюю успешно проверенную** копию и явно pinned recovery/pre-deploy/pre-restore файлы. При удалённой очереди/pending archive не удалять единственный источник для отправки или восстановления. Legacy файлы вне managed catalog не подпадают под автоматическое удаление.
+- **NAS retention независима:** отдельные `remote.keep_count` **7–3650** и `remote.keep_days` **7–3650**, предлагаемые начальные значения **180 копий / 180 дней** против локальных 30/30. Ограничения count/age также работают по «хотя бы одному»; частые manual dumps могут исчерпать count раньше срока age, поэтому WPF показывает оба лимита. Срок считается от `created_at_utc` архива, count — по собственным опубликованным архивам в конкретном destination, не по числу попыток. Изменение local retention и локальное удаление **не** удаляют NAS-копию; remote retention не удаляет Debian-копию. Уменьшение лимитов требует preview кандидатов и явного подтверждения настройки уполномоченным пользователем; это не запускает немедленный cleanup в HTTP-запросе.
+- NAS cleanup выполняет worker только по применённой конфигурации и полному свежему inventory текущего destination. Удаляются только собственные managed, checksum-verified final archives, вышедшие за лимит; сохраняются pins и **последняя подтверждённая копия на NAS независимо от наличия локальной**. Перед удалением повторно проверяются ownership, identity/hash, отсутствие активного upload/restore/recovery pin и maintenance barrier; ошибка или неизвестный результат блокируют дальнейшее удаление до reconciliation. Нельзя удалять foreign/unmanaged, partial, missing/unknown или конфликтующие файлы. Недоступный NAS, неполный/stale inventory либо потерянный catalog запрещают remote cleanup, а не означают пустое хранилище.
+- После local prune catalog/manifest и remote inventory сохраняют запись NAS-копии (`local_presence=PRUNED`), даже если ей больше не соответствует локальный файл. После штатного remote prune остаётся audit/tombstone `PRUNED` с причиной/временем; неожиданный `MISSING` не маскируется под retention. Каталог и сведения о pins не очищаются вместе с очередью завершённых jobs; их восстановление — часть DR.
+- До dump вычислять ожидаемое рабочее место по максимальному размеру последних трёх валидных архивов (при отсутствии истории — отдельная operator-configured capacity gate). Если свободно менее **2 × ожидаемый архив** или менее **10%** тома, отказ `STORAGE_LOW` с диагностикой; нельзя пытаться исправлять это уничтожением safety/unknown backups. При длительной remote outage local backup продолжает работать, пока есть ёмкость, очередь bounded по действующей retention/disk policy; при исчерпании ёмкости — `DEGRADED` с алертом, не silent data loss.
+- Отдельная remote retry-очередь повторяет **тот же** `backup_id`, не новый dump: 5 минут → 15 минут → 1 час → 6 часов → максимум раз в 24 часа (плюс bounded jitter). После успешной доставки `remote_state=VERIFIED`, `completed_at_utc` не меняется. Manual «повторить» не обходит проверку прав, дедупликацию или maintenance barrier.
+
+### Архив, atomic publication, maintenance и restore
+
+- Dump (`pg_dump -Fc` PostgreSQL 16) пишется в уникальный private staging file. Проверить exit code, размер >0, читаемый TOC (`pg_restore --list`), поддерживаемую проверку payload, вычислить SHA-256 по **закрытому** staging файлу, записать manifest и recoverable двухфазную публикацию. Только после flush/durable atomic rename и согласованного catalog commit можно выдавать `LOCAL_VALID`; при crash reconcile staging/archive/manifest без перезаписи другого backup ID. Имя с точностью до секунды **не** является уникальным идентификатором.
+- Хеш и TOC не доказывают восстановимость: регулярно выполнять PostgreSQL 16 restore в отдельную disposable DB с проверкой данных, constraints, sequences, `schema_migrations` и ключевых invariants (`ledger`, закрытые документы, заказы/HU/ЧЗ). Результат такой проверки записывается **отдельно** от структурной валидации. На production для проверки нельзя делать `DROP DATABASE`.
+- Shared exclusion: dump (scheduled/manual/operator), restore и потенциальные maintenance-записи используют единый storage-backed lock с owner/lease/fencing и durable `maintenance_state` (`NORMAL|PAUSED|RECOVERING`). Lock должен иметь безопасную crash recovery; тайм-аут/неизвестный владелец блокирует опасное продолжение. Restore переводит state в `PAUSED` **до** stop/DB mutation; failed restore остаётся `PAUSED`; возобновление — только после операторской проверки целостности, источника и целевой версии.
+- Входной и pre-restore safety dump должны быть проверены **до** удаления БД; `pg_restore` fail-fast; приложения остаются остановленными до validation. До реализации этих guards применять действующий restore runbook только с отдельной операторской оценкой/backup; улучшение restore — отдельный PR.
+- Канонический deploy всегда создаёт **новый** pre-deploy dump, даже если scheduled backup свежий, worker остановлен, удалённый сервер недоступен или расписание выключено. Перед code rollback проверять совместимость state/schema и точное соответствие target commit ↔ backup; metadata `latest_success/previous_success` legacy rollback helper нельзя предполагать обновлёнными каноническим PowerShell deploy.
+
+### Первое remote destination: NAS через Tailscale и SFTP/SSH
+
+- Сетевой маршрут — **Debian worker → NAS в общей приватной Tailscale-сети**, по заранее разрешённому tailnet IP/DNS и порту SFTP. Наличие сети на Debian host само по себе не доказывает доступность из `pgbackup`: до включения проверить именно worker → NAS, DNS/маршрутизацию и ограничение доступа этой service identity к нужному NAS/порту. Публичный SSH/SMB endpoint, fallback через публичный адрес и проброс портов не требуются. Фактические addresses, ACL, mounts и secrets задаются отдельным operator provisioning, а не этим документом или WPF.
+- Для первого adapter выбирается **SFTP поверх SSH с pinned host public-key fingerprint** (operator provisioning). Создаётся отдельная учётная запись с доступом только в подготовленный каталог. Host key unknown/changed, неподдерживаемый алгоритм, недостаточные права или недоступный путь = fail-closed без `StrictHostKeyChecking=no` / silent TOFU. Host/port/account/relative allowed root — WPF-editable только в пределах operator-allowlist; выбранное имя и разрешённые адреса повторно проверяются при подключении, произвольные public targets, path traversal, symlink и wildcard destination запрещены. Tailscale обеспечивает приватный маршрут, но не заменяет SSH host authentication и ограничения учётной записи NAS.
+- Credentials (private key/пароль, passphrase и key recovery) provision/rotate **только на сервере** через одобренный secret provider, вне Git, business DB, spool payload, WPF и логов. WPF видит `configured`/`missing`/`expired` и credential reference, но никогда secret value. Изменение destination/host key/credentials увеличивает `destination_revision`: pending jobs остаются привязаны к старой ревизии, пока оператор явно не выберет drain/cancel/rebind; нельзя молча отправлять старые архивы на новый host.
+- SFTP upload: уникальный staging файл с exclusive create, закрытие, **обратное чтение всех байтов из удалённого staging через SFTP и локальный SHA-256** + сравнение размера с source; только после этого publish через поддерживаемое безопасное no-overwrite rename. Если выбранный SFTP сервер не обеспечивает требуемые readback/rename/permission semantics, endpoint считается **unsupported**. Одного SFTP ack, длины файла или `pg_restore --list` недостаточно для удалённой checksum-проверки.
+- Remote final никогда не перезаписывает чужой или конфликтующий объект. Повтор по `backup_id + sha256 + destination_revision` идемпотентен; совпадающий уже verified объект распознаётся после readback, конфликт блокируется. Probe — server-initiated уникальный тестовый файл с проверкой read/write/delete **только собственного** тестового объекта, без проверки на production data. Отказ сети не останавливает local dump; retry без повторного `pg_dump`.
+- SFTP шифрует **передачу, не хранение**. Перед включением remote replication оператор документально подтверждает encrypted destination volume/dataset, управление ключами/их независимую recovery copy, защищённые backup rights и тест восстановления после потери основного сервера. Невозможно доказать at-rest protection — не включать mirror, не объявлять полный DR-ready. Дополнительный формат encrypted archive — отдельное согласованное расширение; не обещать его в первом adapter.
+
+### Серверная инвентаризация NAS и наблюдение из WPF
+
+Журнал отправок отвечает на вопрос «что worker отправлял», inventory — «что сервер наблюдал на NAS и когда». Одного `remote_state=VERIFIED` в завершённом job недостаточно для списка сохранённых удалённых копий. Инвентаризация — обязательная server-side функция первого NAS/WPF этапа, а не необязательное открытие сетевой папки.
+
+- Worker перечисляет только разрешённый destination root через adapter, без обхода symlink/чужих каталогов; сопоставляет final objects и manifests с durable catalog по `backup_id`, `archive_key`, size/hash и destination identity. Remote manifest публикуется recoverably вместе с архивом; отсутствие/конфликт manifest даёт `UNVERIFIED`, не право на удаление. Неизвестные/legacy объекты показываются как `UNMANAGED` без автоматического импорта, удаления или признания восстановимыми.
+- Полное сканирование активного операторски подготовленного destination выполняется после включения/перезапуска, раз в **30 минут** и по `REFRESH_REMOTE_INVENTORY`; после publish/prune обновляется соответствующая запись. Refresh payload содержит только `destination_revision`, сверяемую с применённой конфигурацией, без host/path из запроса. Job проходит `QUEUED → RUNNING → SUCCEEDED|FAILED`, при crash — `RECOVERING` и повторное чтение; `SUCCEEDED` требует durable публикации полного snapshot и возвращает его `generation`. Запросы refresh объединяются для одного destination с сохранением lookup каждого `request_id`, не чаще одного запуска в **60 секунд**; один scan имеет deadline **10 минут**, ошибки используют remote backoff. Долгие сетевые операции не удерживают dump-critical lock и не задерживают local schedule/pre-deploy. Публикация generation и cleanup согласуются с upload: незавершённые пары archive/manifest и изменённые после начала scan записи нельзя признать `MISSING`.
+- Snapshot содержит `schema_version=1`, `destination_revision`, `generation`, `scan_state=IDLE|RUNNING|COMPLETE|FAILED`, `last_attempt_at_utc`, `last_success_at_utc`, `error_code`, `is_stale` и записи. Freshness считается от последнего **полного успешного** scan; старше **1 часа**, после смены destination или последней ошибки результат stale. Первый неуспешный scan возвращает неизвестное состояние, а не подтверждённый пустой список. Успешный scan не равен checksum-проверке всех архивов.
+- Inventory entry содержит opaque `archive_key`, nullable `backup_id` для unmanaged, `created_at_utc` (из проверенного manifest, иначе `null`), наблюдаемый `size_bytes`, ожидаемый `sha256` (если известен), `local_presence`, `remote_presence=PRESENT|MISSING|PRUNED|UNKNOWN`, `verification=VERIFIED|UNVERIFIED|MISMATCH|UNMANAGED`, `last_seen_at_utc`, `last_verified_at_utc` и `destination_revision`. `VERIFIED` требует фактического полного readback SHA-256; listing/mtime/size не обновляют `last_verified_at_utc`. Изменённый размер/identity сбрасывает verification до повторной проверки; несовпавший hash = `MISMATCH`. UI различает «наблюдался» и «checksum проверен тогда-то»; это не обещание текущей восстановимости.
+- Только полный успешный scan может признать ранее известный final отсутствующим (`MISSING`, alert `REMOTE_ARCHIVE_MISSING`), с учётом согласования publish/prune. При outage/тайм-ауте/ошибке прав сохраняется последний успешный snapshot с stale/error и временем наблюдения; отсутствие ответа не превращает все файлы в missing и не разрешает очистку. При потере catalog содержимое NAS остаётся unmanaged до отдельного восстановления ownership/manifests/pins и readback-проверки.
+- Смена `destination_revision` сохраняет старые inventory/jobs как историю с их destination; старые сведения не выдаются за содержимое нового NAS/root. Если сменились только credentials/host key для того же физического root, ownership и pins явно reconciled до включения cleanup: нельзя забыть старые копии или считать каждую ревизию независимым пустым каталогом. Retention считает все managed copies этого destination, а не только отправленные последней ревизией.
+
+Целевой WPF раздел резервных копий включает:
+
+| Возможность | Серверный контракт и отображение |
+|---|---|
+| Настройки | Расписание, разрешённые Debian/NAS roots и параметры подключения, отдельные local/NAS count/age; сохранить/отменить, requested/applied revision и ошибка применения. Secrets не вводятся и не возвращаются через WPF. |
+| Сохранённые копии | Отдельные представления «Debian» и **«Копии на NAS»** с фильтром destination, датой, размером, наличием local/remote, verification и временем проверки. NAS-only запись остаётся после local prune. |
+| Обновить список NAS | Защищённая серверная inventory job; показываются progress/result, last successful scan, stale/недоступность NAS. Это чтение remote, без probe-файла, нового dump, upload или retention cleanup. |
+| Журнал | Durable события dump, mirror/retry, probe, inventory, config и retention: UTC-время, actor, request/job/backup ID, destination revision, исход и безопасная причина. История операций отделена от списка существующих копий; нет dump contents, credentials или raw paths. |
+| Действия | «Создать сейчас», «Отправить несинхронизированные», «Проверить соединение» выполняются server-side; `202` означает принятие, закрытие WPF не отменяет job, неизвестный POST outcome разрешается lookup по `request_id`. |
+| Состояние | Отдельно local success, remote delivery/backlog, inventory freshness, next run/retry, ошибки и доступное место. Если NAS не предоставляет capacity через поддерживаемый adapter, показывается «неизвестно», не выдуманное значение. |
+
+«Копии на NAS» открывает представление API, а не Explorer/SMB/SFTP с credentials клиента. Read и refresh требуют `backup.read` с server-side rate limit/audit; остальные действия используют отдельные capabilities ниже. Restore, произвольное удаление архивов и скачивание не включаются в эту обязательную UI-часть; download требует отдельного sensitive permission/этапа. DEV preview использует только in-memory fixtures, включая NAS offline, stale, missing и NAS-only, без обращения к NAS/API/DB.
+
+Проверки будущей реализации: реальный изолированный SFTP endpoint через согласованный сетевой маршрут; offline/resume, no permission/changed host key, partial scan, публикация во время scan, mismatch и неизвестные файлы; независимое удаление по local/NAS retention и сохранение pins/последней NAS-копии; NAS-only после local prune; restart/потеря catalog/смена destination; WPF refresh/unknown outcome/reconnect и прямые API permission checks. CI проверяет автоматизируемые сценарии; фактическая доступность production tailnet, at-rest/key recovery и isolated restore остаются отдельными operator gates, **не выполняемыми в docs-only PR**.
+
+### Права, эксплуатация, rollout и DR
+
+- Будущий API требует **реального server-side enforcement** персонального субъекта и capability `backup.read`, `backup.create`, `backup.configure`, `backup.probe`, `backup.replicate`; `backup.download` — отдельное sensitive право вне первого обязательного этапа. `backup.restore` через WPF/API не вводится. Проверять actor, active session/revocation и роли на каждом mutation, аудировать без credentials и dump contents. Пока безопасная модель для WPF/PC и её enforcement не внедрены, **нельзя публиковать новый backup control API на production**. Существующий WPF machine key не считать автоматически эквивалентом персональной роли.
+- Operator-only подготовка volumes/permissions, SSH secrets, remote host identity, encrypted destination, firewall и аварийных средств восстановления **не выполняется** при сохранении настроек WPF. Downlevel server/client показывает `UNSUPPORTED`, а не скрытый local `pg_dump` fallback. Старые WPF copies/settings сохраняются; removal client startup dump только после работающего server-backed manual flow, CI, production-copy smoke и отдельного rollout с проверкой downlevel compatibility.
+- Operator read-only pre-rollout inventory: actual deployed SHA и source identity; enabled/running `pgbackup` и effective Compose overrides; точный persistent volume/mount и владельцы; последние успешные/ошибочные worker logs; число/размер/последний timestamp копий; `pg_restore --list` последних файлов (read-only); disk capacity/free space; наличие отдельного pre-deploy dump; независимый isolated restore; version/permissions совместимость. Не читать и не публиковать production secrets или содержимое dump; никакого создания/удаления backup во время одного лишь аудита.
+- Disaster recovery восстанавливает отдельно: PostgreSQL database dump, внешний worker catalog/config/jobs/maintenance state, PostgreSQL roles/cluster globals/extensions, infrastructure/TLS/SSH credentials и удалённые encryption keys. Заранее записать точные target source commit + backup provenance; не полагаться на неактуальные legacy rollback pointers. При потере remote key доступ к архивам может быть необратимо утрачен, поэтому key recovery проверяется отдельно.
+- **Целевые операционные показатели до внедрения**: при `interval=24h` RPO ≤24 часа в штатном режиме; RTO ≤4 часа после доступной валидной копии и готовой инфраструктуры. Это **цели, не подтверждённые production SLO**: замерить на полном изолированном restore и повторять не реже одного раза в **90 дней**. Пропуск двух ожидаемых backup slots, последний валидный архив старше 1,5 × interval или remote backlog старше 24 часов выводит явный alert/degraded status; отсутствие успешного restore rehearsal — `RESTORE_TEST_REQUIRED`.
+- Последовательность rollout: documentation → isolated dump/catalog/lock implementation → restore safety/coordination → durable scheduler → protected API → remote adapter + durable queue → WPF → legacy cutover → E2E isolated restore/rollback → **отдельно разрешённый** production acceptance/deploy. Не менять старый `pgbackup`, retention, `pgbackups`, pre-deploy/restore gates, NAS credentials или firewall одним docs-only изменением.
+
 ## Ручной backup
 
 ```bash
