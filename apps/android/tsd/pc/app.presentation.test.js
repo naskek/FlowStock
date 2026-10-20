@@ -1909,7 +1909,20 @@ assert.deepStrictEqual(
   "reopening with a fresh baseline must not inherit previous changes"
 );
 const highlightedControls = {};
-const markerForm = { elements: {} };
+const sectionChangeClasses = { warehouse: new Set(), prices: new Set(), storage: new Set() };
+const markerForm = {
+  elements: {},
+  querySelector: function (selector) {
+    const match = selector.match(/^\[data-item-section="(warehouse|prices|storage)"\]$/);
+    if (!match) return null;
+    return { classList: {
+      toggle: function (name, on) {
+        if (on) sectionChangeClasses[match[1]].add(name);
+        else sectionChangeClasses[match[1]].delete(name);
+      },
+    } };
+  },
+};
 ["name", "barcode", "gtin", "is_active", "default_sale_price_gross"].forEach(function (name) {
   const classes = new Set();
   const wrapper = {
@@ -1927,7 +1940,10 @@ catalogHooks.highlightSavedItemFields(markerForm, sessionBase, afterSave);
 assert.strictEqual(highlightedControls.name.has("pc-session-changed"), true);
 assert.strictEqual(highlightedControls.is_active.has("pc-session-changed"), true);
 assert.strictEqual(highlightedControls.barcode.has("pc-session-changed"), false);
+assert.strictEqual(sectionChangeClasses.prices.has("pc-session-section-changed"), true, "collapsed prices section indicates persisted change");
+assert.strictEqual(sectionChangeClasses.warehouse.has("pc-session-section-changed"), false);
 catalogHooks.highlightSavedItemFields(markerForm, sessionBase, sessionBase);
+assert.strictEqual(sectionChangeClasses.prices.has("pc-session-section-changed"), false, "reverted section returns to normal");
 assert.strictEqual(highlightedControls.name.has("pc-session-changed"), false, "reverting to the baseline clears accent");
 const sectionValueForm = {
   elements: {
