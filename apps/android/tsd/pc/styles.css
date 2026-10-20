@@ -1880,6 +1880,12 @@ body.pc-modal-open {
   color: var(--text, #1d2936);
 }
 
+/* Collapsed groups also reveal which saved values changed this session. */
+.pc-item-section.pc-session-section-changed > .pc-item-section-toggle .pc-item-section-heading,
+.pc-item-section.pc-session-section-changed > .pc-item-section-toggle .pc-item-section-summary {
+  color: #166534;
+}
+
 .pc-item-section-summary {
   display: block;
   max-width: 100%;
