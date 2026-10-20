@@ -1871,6 +1871,59 @@ const adminItemFormHtml = catalogHooks.renderAdminItemForm({ id: 1, name: "То�
   uoms: [{ id: 1, name: "Шт." }, { id: 2, name: "Кг." }], taras: [], itemTypes: [], vatRates: [],
 });
 assert.match(adminItemFormHtml, /class="pc-item-form-fields"/, "core item form uses a responsive two-column layout");
+
+const itemSectionKeys = Array.from(adminItemFormHtml.matchAll(/<details class="pc-item-section" data-item-section="([^"]+)"/g), function (match) {
+  return match[1];
+});
+assert.deepStrictEqual(itemSectionKeys, ["warehouse", "prices", "storage"], "only secondary core fields should collapse");
+assert.match(adminItemFormHtml, /<section class="pc-item-primary">[\s\S]*Основные сведения/);
+assert.match(adminItemFormHtml, /name="name"[\s\S]*name="barcode"[\s\S]*name="gtin"[\s\S]*name="item_type_id"[\s\S]*name="tara_id"[\s\S]*name="is_active"/);
+assert.doesNotMatch(adminItemFormHtml, /<details[^>]*\sopen(?:\s|=|>)/, "secondary sections are collapsed by default");
+assert.match(catalogSource, /nestedItemSection\("Упаковки", "packaging"/);
+assert.match(catalogSource, /nestedItemSection\("Индивидуальные цены клиентов", "customers"/);
+assert.doesNotMatch(adminItemFormHtml, /Автосохранение — без кнопки/);
+assert.match(styles, /\.pc-item-section-toggle:focus-visible\s*\{/);
+const sectionValueForm = {
+  elements: {
+    base_uom: { value: "__flowstock_legacy_sht__" },
+    item_type_id: { value: "11" },
+    max_qty_per_hu: { value: "1800" },
+    min_stock_qty: { value: "0" },
+    default_sale_price_gross: { value: "0" },
+    default_sale_vat_rate_id: { value: "22" },
+    shelf_life_months: { value: "12" },
+    storage_conditions: { value: "Хранить в сухом месте" },
+  },
+};
+const summaryRefs = {
+  uoms: [],
+  itemTypes: [{ id: 11, enable_hu_distribution: true, enable_min_stock_control: true }],
+  vatRates: [{ id: 22, name: "Базовая", rate: 22 }],
+};
+let summaries = catalogHooks.itemSectionSummaries(sectionValueForm, summaryRefs, { base_uom: "шт" });
+assert.match(summaries.warehouse, /шт \(legacy\).*Макс\. в HU: 1800.*Мин\. остаток: 0/);
+assert.match(summaries.prices, /0 · Базовая — 22%/, "zero is a configured gross price");
+assert.match(summaries.storage, /12 мес\. · Хранить в сухом месте/);
+sectionValueForm.elements.item_type_id.value = "";
+sectionValueForm.elements.default_sale_price_gross.value = "";
+sectionValueForm.elements.storage_conditions.value = "";
+summaries = catalogHooks.itemSectionSummaries(sectionValueForm, summaryRefs, { base_uom: "шт" });
+assert.doesNotMatch(summaries.warehouse, /Макс\. в HU|Мин\. остаток/, "inapplicable fields are absent from the summary");
+assert.match(summaries.prices, /Цена не задана/);
+assert.match(summaries.storage, /Условия не заданы/);
+const invalidSection = { open: false };
+catalogHooks.revealInvalidItemSection({
+  querySelector: function (selector) {
+    assert.strictEqual(selector, ":invalid");
+    return { closest: function (parent) {
+      assert.strictEqual(parent, "details[data-item-section]");
+      return invalidSection;
+    } };
+  },
+});
+assert.strictEqual(invalidSection.open, true, "hidden invalid field section opens before reportValidity");
+catalogHooks.revealInvalidItemSection({ querySelector: function () { return null; } });
+
 assert.doesNotMatch(adminItemFormHtml, /Маркировка|только чтение/, "admin catalog form must not show legacy marking status");
 assert.match(styles, /\.pc-item-form-fields\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
 assert.match(styles, /@media \(max-width: 820px\)\s*\{\s*\.pc-item-form-fields\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
