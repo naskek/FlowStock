@@ -83,6 +83,20 @@ UPDATE items
         Assert.Null(includingMissing.Items[0].EffectivePriceGross);
         Assert.Equal("NONE", includingMissing.Items[0].PriceSource);
 
+        // Legacy partner rows can have NULL role; the report must not drop them.
+        using (var conn = new NpgsqlConnection(connectionString))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "UPDATE partners SET partner_role = NULL WHERE id = @partner_id";
+            cmd.Parameters.AddWithValue("partner_id", partnerB);
+            Assert.Equal(1, cmd.ExecuteNonQuery());
+        }
+        var legacy = reader.Get(new CommercialPriceListQuery(
+            "partner", PartnerId: partnerB, ItemId: baseItem));
+        Assert.Single(legacy.Items);
+        Assert.Equal(150m, legacy.Items[0].EffectivePriceGross);
+
         var filter = reader.Get(new CommercialPriceListQuery(
             "item", ItemId: baseItem, Brand: $"brand-{id}", Volume: "200 Г"));
         Assert.Equal(2, filter.TotalCount);
