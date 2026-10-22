@@ -47,8 +47,14 @@ public partial class PartnerItemSalePriceWindow : Window
 
     private void PriceLists_Click(object sender, RoutedEventArgs e)
     {
-        if (IsUiPreview) return;
-        new CommercialPriceListWindow(_services) { Owner = this }.ShowDialog();
+        // UI Preview opens an entirely presentation-only window; no AppServices or DB.
+        var window = IsUiPreview
+            ? new CommercialPriceListWindow(new UiPreviewContext())
+            : new CommercialPriceListWindow(_services);
+        var owner = Window.GetWindow(PriceListsButton);
+        if (owner != null)
+            window.Owner = owner;
+        window.ShowDialog();
     }
 
     private Task LoadLookupsAsync() => _loading.RunAsync(async () =>
