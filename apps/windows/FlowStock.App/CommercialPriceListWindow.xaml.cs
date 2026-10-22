@@ -8,19 +8,23 @@ namespace FlowStock.App;
 
 public partial class CommercialPriceListWindow : Window
 {
-    private readonly AppServices _services;
+    private readonly AppServices? _productionServices;
+    public bool IsUiPreview => _productionServices is null;
+    private AppServices _services => _productionServices
+        ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
     private WpfCommercialPriceListReport? _snapshot;
     private bool _busy;
     private long _filterGeneration;
 
     public CommercialPriceListWindow(AppServices services)
     {
-        _services = services ?? throw new ArgumentNullException(nameof(services));
+        _productionServices = services ?? throw new ArgumentNullException(nameof(services));
         InitializeComponent();
     }
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
+        if (IsUiPreview) return;
         try
         {
             var result = await Task.Run(() =>
@@ -115,6 +119,13 @@ public partial class CommercialPriceListWindow : Window
         }
 
         Invalidate();
+        if (IsUiPreview)
+        {
+            var preview = BuildPreviewReport(query);
+            ReportGrid.ItemsSource = preview.Items;
+            StatusText.Text = $"UI Preview / DEV — {preview.TotalCount} демонстрационных строк. Экспорт отключён.";
+            return;
+        }
         var generation = _filterGeneration;
         var selectedPartner = PartnerCombo.SelectedItem as Partner;
         var selectedItem = ItemCombo.SelectedItem as Item;
@@ -162,7 +173,7 @@ public partial class CommercialPriceListWindow : Window
 
     private async Task ExportAsync(bool pdf)
     {
-        if (_busy || _snapshot is null)
+        if (IsUiPreview || _busy || _snapshot is null)
             return;
         var dialog = new SaveFileDialog
         {
