@@ -117,14 +117,25 @@ def _archive_info(path: Path, *, strict: bool = True) -> tuple[int, str]:
     return before.st_size, digest.hexdigest()
 
 
-def _run(args: list[str], timeout: int = 3600):
+def _run(args: list[str], timeout: int = 3600, failure: str = "DUMP_INVALID"):
     try:
         subprocess.run(args, check=True, stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
         if isinstance(exc, subprocess.TimeoutExpired):
             raise BackupError("DUMP_FAILED: command timed out") from None
-        raise BackupError("DUMP_INVALID: PostgreSQL command failed") from None
+        raise BackupError(f"{failure}: PostgreSQL command failed") from None
+
+
+def _require_pg16():
+    for program in ("pg_dump", "pg_restore"):
+        try:
+            info = subprocess.run([program, "--version"], capture_output=True,
+                                  text=True, check=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            raise BackupError("UNSUPPORTED_SCHEMA: PostgreSQL client unavailable") from None
+        if not re.search(r"\b16\.[0-9]+\b", info):
+            raise BackupError("UNSUPPORTED_SCHEMA: PostgreSQL 16 client required")
 
 
 def _validate(path: Path):
@@ -214,8 +225,9 @@ class Store:
         for path in completed:
             record = _read(path)
             if record.get("local_state") == "LOCAL_VALID":
-                sizes.append(int(record["size_bytes"]))
-        expected = max(sizes[-3:]) if sizes else estimate
+                sizes.append((record.get("completed_at_utc", ""), int(record["size_bytes"])))
+        sizes.sort(key=lambda pair: pair[0])
+        expected = max(s for _, s in sizes[-3:]) if sizes else estimate
         if expected is None or expected < 1:
             raise BackupError("STORAGE_LOW: first backup requires --expected-bytes")
         usage = shutil.disk_usage(self.root)
@@ -291,13 +303,14 @@ class Store:
             raise BackupError("INVALID_REQUEST: origin")
         if self.paused() and not (origin == "pre_restore" and during_maintenance):
             raise BackupError("MAINTENANCE_PAUSED: dump disabled")
+        _require_pg16()
         self._space(estimate)
         item = self._pending(origin)
         stage = self.staging / (item["backup_id"] + ".part")
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         os.close(os.open(stage, flags, 0o600))
         try:
-            _run(["pg_dump", "--format=custom", "--no-owner", "--no-acl", "-f", str(stage)])
+            _run(["pg_dump", "--format=custom", "--no-owner", "--no-acl", "-f", str(stage)], failure="DUMP_FAILED")
             # pg_dump inherits PG* environment. Never pass credentials on argv.
             _file(stage)
             with os.fdopen(os.open(stage, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)), "rb") as fp:
@@ -314,6 +327,7 @@ class Store:
         if not PREFIX.fullmatch(name):
             raise BackupError("INVALID_PATH: only legacy dump basename accepted")
         source = self.root / name
+        _require_pg16()
         source_size, source_hash = _archive_info(source, strict=False)  # preserve legacy source
         self._space(estimate)
         item = self._pending("legacy_import", name)
