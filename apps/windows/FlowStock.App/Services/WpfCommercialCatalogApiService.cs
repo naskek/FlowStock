@@ -106,6 +106,8 @@ public sealed class WpfCommercialCatalogApiService
         }
 
         using var client = CreateClient();
+        // Large but bounded reports can take longer than the 15s CRUD timeout.
+        client.Timeout = TimeSpan.FromSeconds(120);
         using var response = await client.GetAsync(
             $"/api/commercial-pricing/report?{string.Join("&", query)}",
             cancellationToken).ConfigureAwait(false);
