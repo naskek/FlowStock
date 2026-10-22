@@ -149,7 +149,7 @@ def _validate(path: Path):
 def _migrations():
     try:
         out = subprocess.run(
-            ["psql", "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1",
+            ["psql", "--no-password", "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1",
              "-c", "SELECT version, filename FROM schema_migrations ORDER BY version"],
             check=True, capture_output=True, timeout=15)
         return hashlib.sha256(out.stdout).hexdigest(), "KNOWN"
@@ -313,7 +313,7 @@ class Store:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         os.close(os.open(stage, flags, 0o600))
         try:
-            _run(["pg_dump", "--format=custom", "--no-owner", "--no-acl", "-f", str(stage)], failure="DUMP_FAILED")
+            _run(["pg_dump", "--no-password", "--format=custom", "--no-owner", "--no-acl", "-f", str(stage)], failure="DUMP_FAILED")
             # pg_dump inherits PG* environment. Never pass credentials on argv.
             _file(stage)
             with os.fdopen(os.open(stage, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)), "rb") as fp:
