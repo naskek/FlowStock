@@ -54,8 +54,8 @@ public sealed class CommercialPriceListExportTests
         Assert.Contains("_snapshot = result", priceWindow, StringComparison.Ordinal);
         Assert.Contains("CommercialPriceListExcelExporter.Create(report)", priceWindow, StringComparison.Ordinal);
         Assert.Contains("CommercialPriceListPdfExporter.Create(report)", priceWindow, StringComparison.Ordinal);
-        Assert.Contains("PartnerItemSalePriceWindow", entry.Replace("Прайс-листы…", "PartnerItemSalePriceWindow"),
-            StringComparison.Ordinal); // Window remains the original entry surface.
+        Assert.Contains("Click=\"PriceLists_Click\"", entry, StringComparison.Ordinal);
+        Assert.Contains("generation != _filterGeneration", priceWindow, StringComparison.Ordinal);
         Assert.Contains("Прайс-листы…", entry, StringComparison.Ordinal);
         Assert.Contains("RequireManageCatalog(request)", endpoint, StringComparison.Ordinal);
         Assert.DoesNotContain("order_lines", server, StringComparison.OrdinalIgnoreCase);
