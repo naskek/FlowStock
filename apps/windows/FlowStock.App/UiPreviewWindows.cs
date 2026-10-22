@@ -210,9 +210,6 @@ public partial class PartnerItemSalePriceWindow
         ArgumentNullException.ThrowIfNull(preview);
         InitializeComponent();
         UiPreviewContext.Prepare(this);
-        // Presentation-only navigation to the demo price lists is safe.
-        PriceListsButton.IsEnabled = true;
-        PriceListsButton.ToolTip = "Открыть демонстрационный прайс-лист без БД и API";
     }
 }
 
