@@ -53,6 +53,13 @@ UPDATE items
         Assert.Equal("PARTNER_ITEM", zero.PriceSource);
         Assert.DoesNotContain(product.Items, r => r.PartnerId == partnerB);
 
+        // A 1-row bounded preview cannot silently truncate the two real rows.
+        Assert.Throws<CommercialPriceListTooLargeException>(() =>
+            reader.Get(new CommercialPriceListQuery("item", ItemId: baseItem), maxRows: 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            reader.Get(new CommercialPriceListQuery("item", ItemId: baseItem),
+                maxRows: CommercialPriceListReader.MaxReportRows + 1));
+
         var audited = reader.Get(new CommercialPriceListQuery(
             "item", ItemId: baseItem, IncludeInactiveOverrides: true));
         Assert.Equal(3, audited.TotalCount);
