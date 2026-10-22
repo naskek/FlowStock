@@ -181,6 +181,7 @@ OrderMarkingExportEndpoint.Map(app);
 MarkingCutoverEndpoints.Map(app);
 OrderLinesEndpoint.Map(app);
 PartnerItemSalePriceEndpoints.Map(app);
+CommercialPriceListEndpoint.Map(app);
 CommercialTermsPreviewEndpoint.Map(app);
 CommercialStatisticsEndpoint.Map(app);
 OrderHuReservationCandidatesEndpoint.Map(app);
