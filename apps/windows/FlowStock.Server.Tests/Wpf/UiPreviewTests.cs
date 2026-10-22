@@ -560,12 +560,12 @@ public sealed class UiPreviewTests
     {
         await OnUiThread(() =>
         {
-            var settingsPage = new PartnerItemSalePriceWindow(new UiPreviewContext());
+            var main = new MainWindow(new UiPreviewContext());
             var window = new CommercialPriceListWindow(new UiPreviewContext());
             try
             {
-                Assert.True(settingsPage.IsUiPreview);
-                Assert.True(((Button)settingsPage.FindName("PriceListsButton")).IsEnabled);
+                Assert.True(main.IsUiPreview);
+                Assert.True(((Button)main.FindName("CatalogPriceListsButton")).IsEnabled);
                 Assert.True(window.IsUiPreview);
                 Assert.Null(typeof(CommercialPriceListWindow)
                     .GetField("_productionServices", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -598,7 +598,7 @@ public sealed class UiPreviewTests
             finally
             {
                 window.Close();
-                settingsPage.Close();
+                main.Close();
             }
         });
     }
@@ -622,7 +622,7 @@ public sealed class UiPreviewTests
                 // Account preview buttons open presentation-only dialogs. They
                 // deliberately cannot persist data; don't invoke a modal from
                 // this generic event-probing loop.
-                if (button.Name is "CreateAccountButton" or "EditAccountButton" or "PriceListsButton")
+                if (button.Name is "CreateAccountButton" or "EditAccountButton" or "CatalogPriceListsButton")
                 {
                     // These only navigate to local, non-persisting demo dialogs.
                     // Their enabled state depends on the currently selected row.
