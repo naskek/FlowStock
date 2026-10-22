@@ -2508,6 +2508,17 @@ public partial class MainWindow : Window
         RestoreItemSelection(window.SavedItemId);
     }
 
+    private void CatalogPriceListsButton_Loaded(object sender, RoutedEventArgs e)
+    {
+        // Catalog TabItem content can be realized after UiPreviewContext.Prepare.
+        // Re-assert the one approved read-only demo navigation on visual load.
+        if (IsUiPreview && ReferenceEquals(sender, CatalogPriceListsButton))
+        {
+            CatalogPriceListsButton.IsEnabled = true;
+            CatalogPriceListsButton.ToolTip = "Демо-прайс-листы без БД и API";
+        }
+    }
+
     private void CatalogPriceLists_Click(object sender, RoutedEventArgs e)
     {
         // The catalog report is an operational view, not a commercial setting.
