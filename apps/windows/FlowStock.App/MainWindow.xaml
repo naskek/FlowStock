@@ -951,7 +951,7 @@
                         <Button x:Name="ItemPackagingButton" Content="Упаковочные единицы / кратности..." Margin="8,0,0,0"
                                 Width="250" Click="ItemPackaging_Click" TabIndex="5" />
                         <Button Content="Импорт Excel..." Click="ImportItems_Click" Width="140" Margin="8,0,0,0" TabIndex="6" />
-                        <Button x:Name="CatalogPriceListsButton" Content="Прайс-листы…" Click="CatalogPriceLists_Click"
+                        <Button x:Name="CatalogPriceListsButton" Content="Прайс-листы…" Click="CatalogPriceLists_Click" Loaded="CatalogPriceListsButton_Loaded"
                                 MinWidth="130" Margin="16,0,0,0" TabIndex="7" />
                     </StackPanel>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
