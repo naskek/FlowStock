@@ -49,8 +49,9 @@ public partial class CommercialPriceListWindow : Window
     private WpfCommercialPriceListQuery BuildQuery()
     {
         var mode = (ModeCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "all";
-        var partner = (PartnerCombo.SelectedItem as Partner)?.Id;
-        var item = (ItemCombo.SelectedItem as Item)?.Id;
+        var selectedPartner = (PartnerCombo.SelectedItem as Partner)?.Id;
+        var selectedItem = (ItemCombo.SelectedItem as Item)?.Id;
+        var (partner, item) = CommercialPriceListSelection.ForMode(mode, selectedPartner, selectedItem);
         if (mode == "partner" && !partner.HasValue)
             throw new InvalidOperationException("Выберите клиента для его прайс-листа.");
         if (mode == "item" && !item.HasValue)
@@ -73,6 +74,16 @@ public partial class CommercialPriceListWindow : Window
         ExportPdfButton.IsEnabled = false;
         if (IsLoaded && !_busy)
             StatusText.Text = "Фильтры изменены. Нажмите «Сформировать».";
+    }
+
+    private void Mode_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded)
+            return;
+        // A selection in another mode is not an implicit cross-filter.
+        PartnerCombo.SelectedIndex = -1;
+        ItemCombo.SelectedIndex = -1;
+        Invalidate();
     }
 
     private void Filters_Changed(object sender, RoutedEventArgs e)
@@ -105,6 +116,11 @@ public partial class CommercialPriceListWindow : Window
 
         Invalidate();
         var generation = _filterGeneration;
+        var selectedPartner = PartnerCombo.SelectedItem as Partner;
+        var selectedItem = ItemCombo.SelectedItem as Item;
+        var selectionDescription = CommercialPriceListSelection.Describe(
+            query, selectedPartner?.DisplayName, selectedPartner?.Code,
+            selectedItem?.Name, selectedItem?.Gtin);
         _busy = true;
         RefreshButton.IsEnabled = false;
         StatusText.Text = "Загрузка актуального прайс-листа...";
@@ -118,6 +134,7 @@ public partial class CommercialPriceListWindow : Window
                 StatusText.Text = "Фильтры изменены во время загрузки. Сформируйте отчёт заново.";
                 return;
             }
+            result.SelectionDescription = selectionDescription;
             _snapshot = result;
             ReportGrid.ItemsSource = result.Items;
             ExportExcelButton.IsEnabled = true;
