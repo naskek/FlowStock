@@ -169,7 +169,7 @@ if "--list" not in sys.argv and (os.environ.get("PAYLOAD_FAIL") or not data.ends
 
     def test_lock_timeout_and_release(self):
         store = core.Store(str(self.root))
-        fd = os.open(store.maintenance / "lock", os.O_RDWR)
+        fd = os.open(store.maintenance / "lock", os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             denied = self.call("--lock-timeout", "0.2", "create", "--origin",
