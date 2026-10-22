@@ -41,8 +41,17 @@ public sealed record CommercialPriceListResult(
     IReadOnlyList<CommercialPriceListRow> Items,
     int TotalCount);
 
+public sealed class CommercialPriceListTooLargeException : Exception
+{
+    public CommercialPriceListTooLargeException()
+        : base("Слишком много строк прайса. Уточните фильтры (максимум 10 000 строк).")
+    {
+    }
+}
+
 public sealed class CommercialPriceListReader
 {
+    public const int MaxReportRows = 10_000;
     private readonly string _connectionString;
 
     public CommercialPriceListReader(string connectionString)
@@ -143,6 +152,7 @@ SELECT row_kind, partner_id, partner_name, partner_code, item_id, item_name,
  ORDER BY item_name COLLATE "C", item_id,
           CASE WHEN row_kind = 'BASE' THEN 0 ELSE 1 END,
           partner_name COLLATE "C" NULLS FIRST, partner_id NULLS FIRST
+ LIMIT @max_rows_plus_one
 """;
         command.Parameters.Add("mode", NpgsqlDbType.Text).Value = query.Mode;
         AddNullable(command, "partner_id", NpgsqlDbType.Bigint, query.PartnerId);
@@ -154,10 +164,13 @@ SELECT row_kind, partner_id, partner_name, partner_code, item_id, item_name,
         command.Parameters.Add("active_items_only", NpgsqlDbType.Boolean).Value = query.ActiveItemsOnly;
         command.Parameters.Add("include_inactive", NpgsqlDbType.Boolean).Value = query.IncludeInactiveOverrides;
         command.Parameters.Add("include_unpriced", NpgsqlDbType.Boolean).Value = query.IncludeUnpriced;
+        command.Parameters.Add("max_rows_plus_one", NpgsqlDbType.Integer).Value = MaxReportRows + 1;
         using var reader = command.ExecuteReader();
         var rows = new List<CommercialPriceListRow>();
         while (reader.Read())
         {
+            if (rows.Count == MaxReportRows)
+                throw new CommercialPriceListTooLargeException();
             rows.Add(new CommercialPriceListRow(
                 reader.GetString(0),
                 NullableLong(reader, 1),
