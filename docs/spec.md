@@ -1,5 +1,9 @@
 # Спецификация FlowStock Server
 
+## Операторское восстановление PostgreSQL
+
+`restore_dump.sh` восстанавливает только проверенный PostgreSQL 16 custom-format dump. До остановки сервисов проверяется закрытый snapshot входного архива; до любых destructive SQL проверяется свежий safety backup после остановки writers. Ошибка SQL останавливает restore и откатывает его транзакцию; автоматического rollback или запуска app/pgbackup нет. Durable maintenance сохраняется до явной проверки оператором. Recovery использует исходный проверенный safety archive, не меняет бизнес-данные отдельными repair-командами. Полный preflight, ограничения barrier, recovery и условия возобновления описаны в [`deployment.md`](deployment.md#восстановление-из-dump).
+
 ## WPF UI/UX preview без инфраструктуры
 
 Явный флаг `--ui-preview` открывает обычный `MainWindow` и Settings Center без PostgreSQL и FlowStock Server. Для локального checkout доступны `FLOWSTOCK.cmd devui`, `tools/windows/start-flowstock-ui-preview.ps1` и `dotnet run --project apps/windows/FlowStock.App -- --ui-preview`. Launcher использует исходники текущего checkout, не installed runtime и не updater recovery.

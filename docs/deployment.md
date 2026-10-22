@@ -752,14 +752,26 @@ bash deploy/scripts/restore_dump.sh <REMOTE_BACKUP_DIR>/pre_release.dump
 
 Что делает restore-скрипт:
 
-- валидирует compose config;
-- дожидается healthy Postgres;
-- создаёт pre-restore safety backup;
-- останавливает `discovery-relay`, `flowstock`, `nginx`, `pgbackup`, если эти сервисы есть в текущей revision;
-- пересоздаёт целевую базу;
-- восстанавливает dump через `pg_restore`;
-- снова запускает `pgbackup`;
-- намеренно оставляет `flowstock`/`nginx` остановленными для явной валидации.
+- Требует Python 3 на **операторском Linux-хосте**, Docker Compose и уже работающий healthy PostgreSQL 16. Ничего автоматически не запускает и не пересоздаёт во время preflight. Использует canonical base-only Compose, проверяет единственный PostgreSQL container, версию клиента/сервера, административную роль и доступность целевой БД. Системные БД и имена вне `[A-Za-z_][A-Za-z0-9_]*` отклоняются. SQL подключается к локальному socket выбранного контейнера.
+- Копирует обычный непустой input в уникальный закрытый snapshot; symlink input отклоняется, hardlink input безопасно копируется. Проверяет custom-format header, размер, SHA-256, `pg_restore --list` и чтение всего SQL/payload через `--file=/dev/null`. Legacy custom-format dumps без manifest поддержаны. Обнаруженная ошибка блокирует остановку сервисов и любые DDL. Snapshot сохраняется и используется для restore; замена исходного пути после копирования не меняет восстанавливаемые байты. Каталог snapshot — 0700, файлы — 0600; доступ того же privileged process owner считается доверенным.
+- Отвергает **любой существующий** safety output, включая тот же путь, hardlink/symlink alias; ничего не перезаписывает. `FLOWSTOCK_PRE_RESTORE_BACKUP_PATH_OVERRIDE` сохраняет смысл явного нового файла, существующий путь — ошибка. Default — UUID-файл в `${FLOWSTOCK_BACKUP_OUTPUT_DIR}/pre_restore/`.
+- Берёт `flock` для restore и публикует durable maintenance marker `${FLOWSTOCK_RUNTIME_DIR}/restore/active.json` с append-only журналом фаз. До остановки контейнеров marker уже сохранён. Повторный обычный запуск при marker запрещён, в том числе после SIGKILL. Ошибки Compose/inspect/stop не игнорируются.
+- Останавливает `discovery-relay`, `flowstock`, `nginx`, `pgbackup` и проверяет фактическую остановку. Затем создаёт **свежий** safety dump текущей БД, проверяет размер, TOC, payload и SHA-256; публикует atomic no-replace rename с fsync. Safety snapshot создаётся после остановки application writers. Ошибка/пустой/невалидный safety блокирует `ALTER`, termination и DROP; partial-файлы и existing archives сохраняются для расследования.
+- Повторно проверяет остановленные сервисы и оба архива; только затем блокирует новые connections, завершает существующие sessions и выполняет DROP/CREATE с `ON_ERROR_STOP`. Восстанавливает snapshot через `pg_restore --exit-on-error --single-transaction --no-owner --no-privileges`. SQL-ошибка откатывает транзакцию restore; исходная БД после DROP автоматически не возвращается.
+- После SQL success пишет `RESTORED_AWAITING_VALIDATION`. Все application containers **и pgbackup остаются остановленными**, marker сохраняется. При ошибке выводит последнюю фазу, exact safety path, validation status и путь private diagnostics; автоматических retry, rollback или старта нет. Raw SQL diagnostics могут содержать данные и хранятся только в закрытом каталоге операции.
+
+TOC проверяет каталог архива, SHA-256 фиксирует проверенные байты, чтение payload обнаруживает, например, truncation compressed data. Эти проверки **не доказывают** корректность SQL, наличие нужных roles/extensions или бизнес-инварианты: обязательна отдельная проверка реального isolated PostgreSQL 16 restore. CI содержит отдельно invalid header и truncated payload с читаемым TOC, реальную SQL-ошибку и проверку rows/PK/FK/CHECK/sequences/schema_migrations.
+
+### Recovery и завершение maintenance
+
+Прочитайте `${FLOWSTOCK_RUNTIME_DIR}/restore/<operation_id>/NNNN.json` и private diagnostics. `safety_validated=true` вместе с `safety_info` фиксирует проверенный safety archive; `CREATING_SAFETY`/partial **не** означает наличие валидного backup. Никакие файлы журнала или архива не удалять для обхода barrier.
+
+- До destructive-фазы БД сохранена: исправьте причину, проверьте БД и остановленные services; после явного подтверждения проверки можно завершить marker командой ниже и отдельно решить, запускать ли новую попытку.
+- После SQL/DDL failure восстановление safety выполняется только явной командой `bash deploy/scripts/restore_dump.sh --recover <operation_id>`. Проверяются identity PostgreSQL cluster/имя БД/Compose project, исходный safety hash и payload. Создаётся новый snapshot и **новый** fresh guard текущей БД до следующего DROP; прежние guards сохраняются. Неудавшийся recovery сохраняет ссылку на **исходный** good safety, не подменяя rollback source архивом частичной БД.
+- Если сбой оставил БД без connections либо между DROP и CREATE, `--recover` откажет в preflight и сохранит старый marker. Сначала администратор должен проверить exact cluster, последнее durable состояние и доступный safety. Только после этого явно разрешить connections существующей БД (`ALTER DATABASE <quoted_target> ALLOW_CONNECTIONS true`) либо **создать отсутствующую пустую БД** (`CREATE DATABASE <quoted_target> TEMPLATE template0`) через `postgres`. Не выполнять повторный DROP для подготовки. Затем явный `--recover` создаст fresh guard текущей БД и восстановит исходный safety. При недоступном storage/cluster или сомнении в outcome — остановиться для ручного расследования.
+- После успешного restore/recovery вручную проверить schema/migrations, данные, constraints, sequences и инварианты `ledger`, документов, заказов, паллет и ЧЗ. Затем `bash deploy/scripts/restore_dump.sh --complete <operation_id> --confirm-validated` атомарно архивирует marker, проверяя тот же target и остановленные сервисы. Failed destructive phase нельзя отметить completed. Команда не запускает контейнеры; запуск согласованной app revision и pgbackup — отдельное операторское действие.
+
+Barrier этого restore защищает его повторный запуск и обслуживаемый Compose stack. Общая координация с operator/deploy/scheduler, общий worker maintenance state и resume относятся к #122 и здесь ещё не подключены. Во время restore/recovery оператор обязан исключить сторонние DB writers, ручной запуск app/pgbackup и параллельный deploy/backup; marker сам не блокирует внешние команды и Docker daemon. `rollback_release.sh` пока сохраняет прежнюю caller-логику и не считается обновлённой координированной recovery-процедурой; canonical deploy также не пишет его legacy release pointers. Для recovery выбирать exact target/dump с проверенным provenance.
 
 ## Статус релиза
 
