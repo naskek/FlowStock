@@ -2508,6 +2508,17 @@ public partial class MainWindow : Window
         RestoreItemSelection(window.SavedItemId);
     }
 
+    private void CatalogPriceLists_Click(object sender, RoutedEventArgs e)
+    {
+        // The catalog report is an operational view, not a commercial setting.
+        // The UI-preview variant uses only synthetic data and never accesses the server.
+        var dialog = IsUiPreview
+            ? new CommercialPriceListWindow(new UiPreviewContext())
+            : new CommercialPriceListWindow(_services);
+        dialog.Owner = this;
+        dialog.ShowDialog();
+    }
+
     private void ImportItems_Click(object sender, RoutedEventArgs e)
     {
         if (IsUiPreview) return;
