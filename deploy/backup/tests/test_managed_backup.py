@@ -193,6 +193,31 @@ if "--list" not in sys.argv and (os.environ.get("PAYLOAD_FAIL") or not data.ends
             os.close(fd)
         self.make()
 
+    def test_kernel_lock_releases_after_sigkill(self):
+        store = core.Store(str(self.root))
+        lock = store.maintenance / "lock"
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        os.close(fd)
+        child = subprocess.Popen(
+            [sys.executable, "-c",
+             "import fcntl,sys,time; "
+             "f=open(sys.argv[1], 'r+'); "
+             "fcntl.flock(f,fcntl.LOCK_EX); "
+             "print('locked',flush=True); time.sleep(30)",
+             str(lock)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "locked")
+            denied = self.call("--lock-timeout", "0.2", "status")
+            self.assertIn("BACKUP_BUSY", denied.stderr)
+        finally:
+            child.kill()
+            child.wait(timeout=5)
+            child.stdout.close()
+            child.stderr.close()
+        result = self.call("status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_symlink_traversal_and_legacy_import_without_source_deletion(self):
         original = self.root / "FlowStock_20261019_135003.dump"
         original.write_bytes(b"VALID:BEGIN:ROWS:END")
