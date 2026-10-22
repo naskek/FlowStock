@@ -9,7 +9,8 @@ public static class CommercialPriceListEndpoint
         app.MapGet("/api/commercial-pricing/report", (
             HttpRequest request,
             IConfiguration configuration,
-            CatalogAuthorization authorization) =>
+            CatalogAuthorization authorization,
+            PartnerRoleResolver roleResolver) =>
         {
             if (authorization.RequireManageCatalog(request) is { } rejection)
             {
@@ -33,6 +34,12 @@ public static class CommercialPriceListEndpoint
             {
                 return Results.BadRequest(new ApiErrorResult(
                     false, "INVALID_PRICING_FILTER", "Выберите корректный режим и фильтры прайс-листа."));
+            }
+
+            if (mode == "partner" && !roleResolver.IsCustomer(partnerId!.Value))
+            {
+                return Results.BadRequest(new ApiErrorResult(
+                    false, "PARTNER_IS_SUPPLIER", "Выбранный контрагент не является клиентом."));
             }
 
             var query = new CommercialPriceListQuery(
