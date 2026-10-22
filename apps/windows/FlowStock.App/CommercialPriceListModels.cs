@@ -23,6 +23,8 @@ public sealed class WpfCommercialPriceListReport
     public int TotalCount { get; set; }
     [JsonPropertyName("items")]
     public List<WpfCommercialPriceListRow> Items { get; set; } = [];
+    [JsonIgnore]
+    public string SelectionDescription { get; set; } = string.Empty;
 }
 
 public sealed class WpfCommercialPriceListRow
@@ -70,4 +72,45 @@ public sealed class WpfCommercialPriceListRow
     };
 
     public string RowKindDisplay => RowKind == "BASE" ? "Каталог" : "Клиент";
+}
+
+internal static class CommercialPriceListSelection
+{
+    // Normalize the mode-specific filter, even if UI state is stale.
+    public static (long? PartnerId, long? ItemId) ForMode(
+        string mode, long? partnerId, long? itemId) => mode switch
+    {
+        "item" => (null, itemId),
+        "partner" => (partnerId, itemId),
+        "all" => (partnerId, itemId),
+        _ => throw new ArgumentException("Неизвестный режим прайс-листа.", nameof(mode))
+    };
+
+    public static string Describe(
+        WpfCommercialPriceListQuery query,
+        string? partnerName,
+        string? partnerCode,
+        string? itemName,
+        string? itemGtin)
+    {
+        var filters = new List<string>();
+        if (query.PartnerId.HasValue)
+            filters.Add($"Клиент: {partnerName ?? "(не указан)"} ({partnerCode ?? "без ИНН"}; ID {query.PartnerId})");
+        if (query.ItemId.HasValue)
+            filters.Add($"Товар: {itemName ?? "(не указан)"}; GTIN {itemGtin ?? "—"}; ID {query.ItemId}");
+        if (!string.IsNullOrWhiteSpace(query.Search))
+            filters.Add($"Поиск: {query.Search.Trim()}");
+        if (!string.IsNullOrWhiteSpace(query.Gtin))
+            filters.Add($"GTIN: {query.Gtin.Trim()}");
+        if (!string.IsNullOrWhiteSpace(query.Brand))
+            filters.Add($"Бренд: {query.Brand.Trim()}");
+        if (!string.IsNullOrWhiteSpace(query.Volume))
+            filters.Add($"Фасовка: {query.Volume.Trim()}");
+        filters.Add(query.ActiveItemsOnly ? "Только активные товары" : "Все товары");
+        if (query.IncludeInactiveOverrides)
+            filters.Add("Включены неактивные цены");
+        if (query.IncludeUnpriced)
+            filters.Add("Включены товары без цены");
+        return string.Join(" | ", filters);
+    }
 }
