@@ -33,6 +33,9 @@ class ManagedBackupFaultTests(unittest.TestCase):
         dump.write_text("""#!/usr/bin/env python3
 import os,sys,time
 args=sys.argv[1:]
+if "--version" in args:
+    print("pg_dump (PostgreSQL) 16.10")
+    sys.exit(0)
 if os.environ.get("DUMP_FAIL") == "1":
     sys.exit(1)
 if os.environ.get("SLEEP_DUMP"):
@@ -46,6 +49,9 @@ with open(dest,"wb") as f:
         restore = self.bin / "pg_restore"
         restore.write_text("""#!/usr/bin/env python3
 import os,sys
+if "--version" in sys.argv:
+    print("pg_restore (PostgreSQL) 16.10")
+    sys.exit(0)
 p=sys.argv[-1]
 try:
     data=open(p,"rb").read()
@@ -112,12 +118,14 @@ if "--list" not in sys.argv and (os.environ.get("PAYLOAD_FAIL") or not data.ends
 
     def test_recovery_after_crash_before_publication(self):
         s = core.Store(str(self.root))
-        with mock.patch.object(s, "_publish", side_effect=RuntimeError("simulated kill")):
-            with self.assertRaises(RuntimeError):
-                s.create("manual", 1024)
+        with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+            with mock.patch.object(s, "_publish", side_effect=RuntimeError("simulated kill")):
+                with self.assertRaises(RuntimeError):
+                    s.create("manual", 1024)
         self.assertEqual(self.paths(), ([], []))
-        with s.lock(1):
-            out = s.recover()
+        with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+            with s.lock(1):
+                out = s.recover()
         self.assertEqual(len(out["recovered"]), 1)
         self.assertEqual(len(self.paths()[0]), 1)
 
@@ -129,11 +137,13 @@ if "--list" not in sys.argv and (os.environ.get("PAYLOAD_FAIL") or not data.ends
             os.link(stage, target)
             # Mimic kill immediately after archive link; two hardlinks remain.
             raise RuntimeError("crash")
-        with mock.patch.object(s, "_publish", side_effect=interrupted):
-            with self.assertRaises(RuntimeError):
-                s.create("manual", 1024)
-        with s.lock(1):
-            self.assertEqual(len(s.recover()["recovered"]), 1)
+        with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+            with mock.patch.object(s, "_publish", side_effect=interrupted):
+                with self.assertRaises(RuntimeError):
+                    s.create("manual", 1024)
+        with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+            with s.lock(1):
+                self.assertEqual(len(s.recover()["recovered"]), 1)
         self.assertEqual(len(self.paths()[1]), 1)
         self.assertEqual(len(list(s.staging.glob("*.part"))), 0)
 
