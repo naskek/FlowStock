@@ -16,7 +16,7 @@
                 <WrapPanel Margin="0,0,0,8">
                     <TextBlock Text="Режим" VerticalAlignment="Center" Margin="0,0,6,0" />
                     <ComboBox x:Name="ModeCombo" Width="165" SelectedIndex="0"
-                              SelectionChanged="Filters_Changed">
+                              SelectionChanged="Mode_Changed">
                         <ComboBoxItem Content="Все назначения" Tag="all"/>
                         <ComboBoxItem Content="Прайс клиента" Tag="partner"/>
                         <ComboBoxItem Content="Цены товара" Tag="item"/>
