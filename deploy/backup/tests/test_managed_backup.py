@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -95,6 +96,53 @@ if "--list" not in sys.argv and (os.environ.get("PAYLOAD_FAIL") or not data.ends
         self.assertEqual(stat.S_IMODE(dumps[0].stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(catalog[0].stat().st_mode), 0o600)
         self.assertEqual(item["sha256"], core.hashlib.sha256(dumps[0].read_bytes()).hexdigest())
+
+    def test_json_publication_survives_sigkill_at_each_boundary(self):
+        for phase in ("before_rename", "after_rename", "after_directory_fsync"):
+            for kind in ("pause", "job", "ready", "catalog"):
+                with self.subTest(phase=phase, kind=kind):
+                    folder = self.root / (phase + "-" + kind)
+                    folder.mkdir(mode=0o700)
+                    target = folder / "record.json"
+                    pid = os.fork()
+                    if pid == 0:
+                        original_rename = core._rename_new
+                        original_fsync = core._fsync_dir
+                        def rename(source, destination):
+                            if phase == "before_rename":
+                                os.kill(os.getpid(), signal.SIGKILL)
+                            original_rename(source, destination)
+                            if phase == "after_rename":
+                                os.kill(os.getpid(), signal.SIGKILL)
+                        def sync(directory):
+                            original_fsync(directory)
+                            if phase == "after_directory_fsync":
+                                os.kill(os.getpid(), signal.SIGKILL)
+                        core._rename_new = rename
+                        core._fsync_dir = sync
+                        core._write_new(target, {"kind": kind})
+                        os._exit(0)
+                    _, status = os.waitpid(pid, 0)
+                    self.assertTrue(os.WIFSIGNALED(status))
+                    self.assertEqual(os.WTERMSIG(status), signal.SIGKILL)
+                    if phase == "before_rename":
+                        self.assertFalse(target.exists())
+                    else:
+                        self.assertEqual(core._read(target), {"kind": kind})
+                        self.assertEqual(target.stat().st_nlink, 1)
+
+    def test_json_publication_never_replaces_existing_path(self):
+        target = self.root / "record.json"
+        core._write_new(target, {"saved": True})
+        with self.assertRaises(FileExistsError):
+            core._write_new(target, {"saved": False})
+        self.assertEqual(core._read(target), {"saved": True})
+        alias = self.root / "alias.json"
+        alias.symlink_to(target)
+        with self.assertRaises(FileExistsError):
+            core._write_new(alias, {"saved": False})
+        self.assertTrue(alias.is_symlink())
+        self.assertEqual(core._read(target), {"saved": True})
 
     def test_repeated_requests_have_unique_ids_and_never_overwrite(self):
         a, b = self.make(), self.make()
@@ -225,7 +273,10 @@ if "--list" not in sys.argv and (os.environ.get("PAYLOAD_FAIL") or not data.ends
                              "--expected-bytes", "1024")
         self.assertEqual(imported.returncode, 0, imported.stderr)
         self.assertTrue(original.exists())
-        self.assertEqual(json.loads(imported.stdout)["origin"], "legacy_import")
+        record = json.loads(imported.stdout)
+        self.assertEqual(record["origin"], "legacy_import")
+        self.assertEqual(record["schema_migrations_state"], "UNKNOWN")
+        self.assertIsNone(record["schema_migrations_fingerprint"])
         self.assertEqual(len(self.paths()[0]), 1)
         traversal = self.call("import-legacy", "--name", "../outside.dump",
                               "--expected-bytes", "1024")

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
 import datetime as dt
 import fcntl
 import hashlib
@@ -75,6 +76,21 @@ def _fsync_dir(path: Path):
         os.close(fd)
 
 
+def _rename_new(source: Path, target: Path):
+    # Linux renameat2 publishes atomically without replacing an existing path.
+    # A link/unlink pair leaves st_nlink=2 if killed and breaks strict recovery.
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(libc, "renameat2", None)
+    if rename is None:
+        raise BackupError("STORAGE_UNSAFE: atomic no-replace rename unavailable")
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                       ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(source), -100, os.fsencode(target), 1) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
 def _write_new(path: Path, value: dict):
     data = (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
     temp = path.parent / (".tmp-" + uuid.uuid4().hex)
@@ -85,7 +101,7 @@ def _write_new(path: Path, value: dict):
             fp.write(data)
             fp.flush()
             os.fsync(fp.fileno())
-        os.link(temp, path, follow_symlinks=False)  # publish without overwrite
+        _rename_new(temp, path)
         _fsync_dir(path.parent)
     finally:
         temp.unlink(missing_ok=True)
@@ -243,7 +259,9 @@ class Store:
         return item
 
     def _ready(self, item, stage: Path, info):
-        fingerprint, state = _migrations()
+        # The current connection does not establish a legacy archive's schema.
+        fingerprint, state = ((None, "UNKNOWN") if item.get("origin") == "legacy_import"
+                              else _migrations())
         _write_new(self.jobs / (item["backup_id"] + ".ready"), {
             "schema_version": VERSION, "backup_id": item["backup_id"],
             "size_bytes": info[0], "sha256": info[1],
