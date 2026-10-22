@@ -147,6 +147,20 @@ if "--list" not in sys.argv and (os.environ.get("PAYLOAD_FAIL") or not data.ends
         self.assertEqual(len(self.paths()[1]), 1)
         self.assertEqual(len(list(s.staging.glob("*.part"))), 0)
 
+    def test_recovery_rejects_modified_ready_stage_before_final_publish(self):
+        s = core.Store(str(self.root))
+        with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+            with mock.patch.object(s, "_publish", side_effect=RuntimeError("simulated kill")):
+                with self.assertRaises(RuntimeError):
+                    s.create("manual", 1024)
+        stage = next(s.staging.glob("*.part"))
+        stage.write_bytes(b"VALID:MODIFIED:ROWS:END")
+        with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+            with s.lock(1):
+                state = s.recover()
+        self.assertTrue(state["operator_review_required"])
+        self.assertEqual(self.paths(), ([], []))
+
     def test_recovery_never_calls_corrupt_staging_success(self):
         r = self.call("create", "--origin", "manual", "--expected-bytes", "1024",
                       extra={"DUMP_BAD": "1"})
