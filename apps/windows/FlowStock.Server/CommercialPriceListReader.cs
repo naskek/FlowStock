@@ -119,7 +119,8 @@ WITH price_rows AS (
            vr.rate, vr.name, COALESCE(i.is_active, TRUE), pi.is_active
       FROM items i
       JOIN partners p ON p.id = @partner_id
-         AND UPPER(COALESCE(p.partner_role, '')) IN ('CLIENT', 'BOTH')
+      -- The HTTP boundary validates the authoritative PartnerRoleResolver,
+      -- including legacy roles; NULL here must not silently hide clients.
       LEFT JOIN partner_item_sale_prices pi
              ON pi.item_id = i.id AND pi.partner_id = p.id
             AND (pi.is_active OR @include_inactive)
