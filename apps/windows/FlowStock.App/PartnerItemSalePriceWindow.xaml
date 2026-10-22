@@ -46,7 +46,6 @@
                     <Button x:Name="DeleteButton" Content="Удалить" Width="85" Margin="8,0,0,0"
                             IsEnabled="False" Click="Delete_Click" />
                     <Button Content="Обновить" Width="90" Margin="8,0,0,0" Click="Refresh_Click" />
-                    <Button x:Name="PriceListsButton" Content="Прайс-листы…" MinWidth="120" Margin="8,0,0,0" Click="PriceLists_Click" />
                 </StackPanel>
             </Grid>
         </Border>
