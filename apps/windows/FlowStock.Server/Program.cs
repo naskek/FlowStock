@@ -106,6 +106,7 @@ builder.Services.AddSingleton<PostgresDataStore>(sp =>
 });
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton(new PcWebSessionStore(postgresConnectionString));
+builder.Services.AddSingleton(new TsdSessionStore(postgresConnectionString));
 builder.Services.AddSingleton<IPcWebSessionResolver>(sp => sp.GetRequiredService<PcWebSessionStore>());
 builder.Services.AddSingleton(new WpfMachineAuthorization(wpfAdminApiKey));
 builder.Services.AddSingleton<CatalogAuthorization>();
@@ -225,6 +226,10 @@ FROM schema_migrations;";
 });
 
 LogDbInfo(app.Logger, postgresConnectionString);
+
+app.Use(async (context, next) =>
+    await TsdSessionAuthorization.InvokeAsync(
+        context, next, context.RequestServices.GetRequiredService<TsdSessionStore>()));
 
 app.Use(async (context, next) =>
 {
@@ -784,7 +789,7 @@ WHERE id = @id;";
     return Results.Ok(new ApiResult(true));
 });
 
-app.MapPost("/api/tsd/login", async (HttpRequest request, IDataStore store) =>
+app.MapPost("/api/tsd/login", async (HttpRequest request, IDataStore store, TsdSessionStore tsdSessions) =>
 {
     var rawJson = await ReadBody(request);
     if (string.IsNullOrWhiteSpace(rawJson))
@@ -850,6 +855,28 @@ WHERE login = @login;";
     AddParam(update, "@last_seen", DateTime.Now.ToString("s", CultureInfo.InvariantCulture));
     AddParam(update, "@id", id);
     update.ExecuteNonQuery();
+
+    if (TsdSessionStore.AllowsTsd(platformNormalized))
+    {
+        // Token is issued only after rechecking account credentials under row lock.
+        var token = tsdSessions.Issue(
+            id, loginRequest.Login.Trim(), salt, hash, iterations, DateTimeOffset.UtcNow);
+        if (token == null)
+            return Results.Json(new ApiResult(false, "INVALID_CREDENTIALS"),
+                statusCode: StatusCodes.Status401Unauthorized);
+
+        request.HttpContext.Response.Cookies.Append(TsdSessionStore.CookieName, token,
+            new CookieOptions
+            {
+                HttpOnly = true, Secure = true, SameSite = SameSiteMode.Strict,
+                Path = "/api", MaxAge = TsdSessionStore.Lifetime
+            });
+    }
+    else
+    {
+        request.HttpContext.Response.Cookies.Delete(TsdSessionStore.CookieName,
+            new CookieOptions { Path = "/api", Secure = true });
+    }
 
     return Results.Ok(new
     {
