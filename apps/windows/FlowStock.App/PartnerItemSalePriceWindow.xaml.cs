@@ -45,6 +45,12 @@ public partial class PartnerItemSalePriceWindow : Window
         });
     }
 
+    private void PriceLists_Click(object sender, RoutedEventArgs e)
+    {
+        if (IsUiPreview) return;
+        new CommercialPriceListWindow(_services) { Owner = this }.ShowDialog();
+    }
+
     private Task LoadLookupsAsync() => _loading.RunAsync(async () =>
     {
         var lookups = await Task.Run(() =>
