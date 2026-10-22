@@ -14,8 +14,8 @@ public sealed class CommercialPriceListPostgresTests
         var store = new PostgresDataStore(connectionString);
         var catalog = new CatalogService(store);
         var prices = new PartnerItemSalePriceService(store);
-        var partnerA = catalog.CreatePartner($"Прайс клиент А {id}", $"PL-A-{id}", "CLIENT");
-        var partnerB = catalog.CreatePartner($"Прайс клиент Б {id}", $"PL-B-{id}", "CLIENT");
+        var partnerA = catalog.CreatePartner($"Прайс клиент А {id}", null, "CLIENT");
+        var partnerB = catalog.CreatePartner($"Прайс клиент Б {id}", null, "CLIENT");
         var baseItem = catalog.CreateItem(
             $"Прайс товар А {id}", $"PL-ITEM-A-{id}", null, "шт",
             null, null, null, null, false);
