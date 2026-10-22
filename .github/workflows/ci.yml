@@ -358,6 +358,24 @@ jobs:
           diff -u "$RUNNER_TEMP/applied-migrations-first.txt" "$RUNNER_TEMP/applied-migrations-second.txt"
 
           "${compose[@]}" run --rm migrator-test sh /scripts/migration-history-compat.test.sh
+      - name: Verify atomic PostgreSQL backup primitive
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s deploy/backup/tests -p 'test_managed_backup.py' -v
+          # Disposable PostgreSQL 16 container with the canonical migrations.
+          compose=(docker compose --project-name flowstock-ci-migrations -f deploy/docker-compose.test-postgres.yml)
+          container_id="$("${compose[@]}" ps -q postgres-test)"
+          test -n "$container_id"
+          docker cp deploy/backup/managed_backup.py "$container_id:/tmp/flowstock-managed-backup.py"
+          docker cp deploy/backup/tests/integration_pg16.py "$container_id:/tmp/integration_pg16.py"
+          "${compose[@]}" exec -T -u root postgres-test sh -ec 'apk add --no-cache python3 >/dev/null'
+          "${compose[@]}" exec -T postgres-test sh -ec '
+            export PGHOST=127.0.0.1 PGPORT=5432
+            export PGUSER="$POSTGRES_USER" PGPASSWORD="$POSTGRES_PASSWORD" PGDATABASE="$POSTGRES_DB"
+            python3 /tmp/integration_pg16.py
+          '
       - name: Validate production Compose and build images
         shell: bash
         run: |
