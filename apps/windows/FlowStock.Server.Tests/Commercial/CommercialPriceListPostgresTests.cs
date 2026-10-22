@@ -107,7 +107,7 @@ UPDATE items
         using var priceCmd = verify.CreateCommand();
         priceCmd.CommandText = """
 SELECT (SELECT count(*) FROM partner_item_sale_prices WHERE item_id=@item_id),
-       (SELECT unit_price_gross FROM items WHERE id=@item_id)
+       (SELECT default_sale_price_gross FROM items WHERE id=@item_id)
 """;
         priceCmd.Parameters.AddWithValue("item_id", baseItem);
         using var row = priceCmd.ExecuteReader();
