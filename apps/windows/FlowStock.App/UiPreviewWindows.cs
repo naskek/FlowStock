@@ -12,6 +12,9 @@ public partial class MainWindow
         InitializeComponent();
         _itemsView = CollectionViewSource.GetDefaultView(_items);
         UiPreviewContext.Prepare(this);
+        // This action only opens a synthetic read-only window in UI Preview.
+        CatalogPriceListsButton.IsEnabled = true;
+        CatalogPriceListsButton.ToolTip = "Демо-прайс-листы без БД и API";
         ApplyPreviewItemActivityFilter();
         UiPreviewBanner.Visibility = Visibility.Visible;
         BuildIdentityText.Text = "UI Preview / DEV · " + AppRuntimeInfo.DisplayText;
