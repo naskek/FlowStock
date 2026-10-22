@@ -46,8 +46,17 @@ public static class CommercialPriceListEndpoint
                 mode, partnerId, itemId,
                 request.Query["gtin"], request.Query["q"], request.Query["brand"], request.Query["volume"],
                 activeOnly, inactive, unpriced);
-            var result = new CommercialPriceListReader(
-                CommercialStatisticsAdvancedReader.BuildConnectionString(configuration)).Get(query);
+            CommercialPriceListResult result;
+            try
+            {
+                result = new CommercialPriceListReader(
+                    CommercialStatisticsAdvancedReader.BuildConnectionString(configuration)).Get(query);
+            }
+            catch (CommercialPriceListTooLargeException ex)
+            {
+                return Results.Json(new ApiErrorResult(
+                    false, "PRICE_LIST_TOO_LARGE", ex.Message), statusCode: 422);
+            }
 
             return Results.Ok(new
             {
