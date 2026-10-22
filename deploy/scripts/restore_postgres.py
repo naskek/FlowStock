@@ -129,10 +129,15 @@ class DockerPostgres:
         before = _archive_info(path)
         with path.open("rb") as fp:
             require(fp.read(5) == b"PGDMP", "custom-format PostgreSQL dump required")
-        self.pg("pg_restore", "--no-password", "--format=custom", "--list", source=path,
-                output=subprocess.DEVNULL)
-        self.pg("pg_restore", "--no-password", "--format=custom", "--exit-on-error",
-                "--file=/dev/null", source=path, output=subprocess.DEVNULL)
+        # --list exits after TOC; drain remaining stdin before docker exec closes.
+        # Otherwise a large valid archive can cause Docker's attach stream to reset.
+        for options in (("--list",), ("--exit-on-error", "--file=/dev/null")):
+            self.pg("sh", "-c", '''
+status=0
+pg_restore --no-password --format=custom "$@" >/dev/null || status=$?
+cat >/dev/null || exit 1
+exit "$status"
+''', "restore-validation", *options, source=path, output=subprocess.DEVNULL)
         require(_archive_info(path) == before, "archive changed during validation")
         return {"size_bytes": before[0], "sha256": before[1]}
 

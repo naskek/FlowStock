@@ -77,9 +77,13 @@ class PostgreSQLRestoreTests(unittest.TestCase):
             CREATE TABLE schema_migrations(version int PRIMARY KEY, filename text NOT NULL);
             INSERT INTO schema_migrations VALUES(1,'fixture.sql');
             INSERT INTO records(value) SELECT md5(g::text) FROM generate_series(1,5000) g;
-            INSERT INTO refs VALUES(1,1);''', database="restore_fixture")
+            INSERT INTO refs VALUES(1,1);
+            CREATE TABLE payload(value text NOT NULL);
+            INSERT INTO payload SELECT string_agg(md5(g::text),'') FROM generate_series(1,500000) g;
+            ''', database="restore_fixture")
         self.source = self.case / "legacy.dump"
         self.backend.backup(self.source)
+        self.assertGreater(self.source.stat().st_size, 4 * 1024 * 1024)
         self.backend.run([*self.backend.compose, "up", "-d", *self.backend.stopped_services])
 
     def entrypoint(self, *args, expect_success=True):
@@ -100,6 +104,7 @@ class PostgreSQLRestoreTests(unittest.TestCase):
         self.assertEqual(self.backend.sql("SELECT count(*) FROM records", database="restore_fixture"), str(expected))
         self.assertEqual(self.backend.sql("SELECT count(*) FROM refs", database="restore_fixture"), "1")
         self.assertEqual(self.backend.sql("SELECT filename FROM schema_migrations", database="restore_fixture"), "fixture.sql")
+        self.assertEqual(self.backend.sql("SELECT length(value) FROM payload", database="restore_fixture"), "16000000")
         self.backend.sql('''DO $$ BEGIN
             BEGIN INSERT INTO refs VALUES(2,9999999); RAISE EXCEPTION 'missing FK';
             EXCEPTION WHEN foreign_key_violation THEN NULL; END;
@@ -133,7 +138,8 @@ class PostgreSQLRestoreTests(unittest.TestCase):
         truncated = self.case / "truncated.dump"
         truncated.write_bytes(content[:-100])
         truncated.chmod(0o600)
-        self.backend.pg("pg_restore", "--list", source=truncated, output=subprocess.DEVNULL)
+        self.backend.pg("sh", "-c", 'status=0; pg_restore --list >/dev/null || status=$?; '
+                        'cat >/dev/null || exit 1; exit "$status"', source=truncated, output=subprocess.DEVNULL)
         with self.assertRaises(RestoreError):
             self.backend.validate(truncated)
         for name, data in (("header", b"bad header"), ("empty", b""), ("payload", truncated.read_bytes())):
