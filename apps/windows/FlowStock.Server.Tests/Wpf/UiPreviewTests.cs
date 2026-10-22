@@ -555,6 +555,94 @@ public sealed class UiPreviewTests
         });
     }
 
+    [Fact]
+    public async Task Price_list_catalog_button_remains_enabled_after_repeated_preview_preparation_and_tab_render()
+    {
+        await OnUiThread(() =>
+        {
+            var main = new MainWindow(new UiPreviewContext());
+            try
+            {
+                var button = (Button)main.FindName("CatalogPriceListsButton");
+                Assert.True(button.IsEnabled);
+                UiPreviewContext.Prepare(main);
+                UiPreviewContext.Prepare(main);
+                Assert.Equal(1, main.Title.Split("[UI Preview / DEV]").Length - 1);
+                Assert.True(button.IsEnabled);
+                Assert.Contains("Демо-прайс-листы", button.ToolTip?.ToString());
+
+                // Show the real WPF window, as the regression was only visible
+                // after Catalog became the selected tab in an actual devui run.
+                main.Show();
+                var tabs = (TabControl)main.FindName("MainTabs");
+                var catalog = tabs.Items.Cast<TabItem>().Single(t => Equals(t.Header, "Каталог"));
+                tabs.SelectedItem = catalog;
+                main.UpdateLayout();
+                // No Dispatcher.Run in the test STA thread, so Loaded need not
+                // fire automatically; exercise the real Loaded route directly.
+                button.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent, button));
+                Assert.True(button.IsEnabled);
+                Assert.True(button.IsHitTestVisible);
+                Assert.Contains("Демо-прайс-листы", button.ToolTip?.ToString());
+
+                // Other mutating Catalog actions remain disabled.
+                Assert.False(((Button)main.FindName("ItemEditButton")).IsEnabled);
+            }
+            finally
+            {
+                main.Close();
+            }
+        });
+    }
+
+    [Fact]
+    public async Task Price_list_ui_preview_uses_only_demo_data_and_can_switch_modes_without_backend()
+    {
+        await OnUiThread(() =>
+        {
+            var main = new MainWindow(new UiPreviewContext());
+            var window = new CommercialPriceListWindow(new UiPreviewContext());
+            try
+            {
+                Assert.True(main.IsUiPreview);
+                Assert.True(((Button)main.FindName("CatalogPriceListsButton")).IsEnabled);
+                Assert.True(window.IsUiPreview);
+                Assert.Null(typeof(CommercialPriceListWindow)
+                    .GetField("_productionServices", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .GetValue(window));
+                Assert.Contains("UI Preview / DEV", window.Title);
+                var grid = (DataGrid)window.FindName("ReportGrid");
+                Assert.NotEmpty(grid.Items);
+                Assert.True(grid.IsReadOnly);
+                Assert.True(((Button)window.FindName("RefreshButton")).IsEnabled);
+                Assert.False(((Button)window.FindName("ExportExcelButton")).IsEnabled);
+                Assert.False(((Button)window.FindName("ExportPdfButton")).IsEnabled);
+                Assert.All(grid.Items.OfType<WpfCommercialPriceListRow>(), row =>
+                    Assert.True(row.ItemId is >= 11 and <= 16));
+
+                var product = CommercialPriceListWindow.BuildPreviewReport(
+                    new WpfCommercialPriceListQuery("item", null, 11, null, null, null, null,
+                        true, false, false));
+                Assert.Equal(3, product.TotalCount); // base + 2 active explicit prices
+                Assert.Equal(2, product.Items.Count(row => row.RowKind == "PARTNER"));
+                Assert.Contains(product.Items, row => row.PartnerPriceGross == 0m
+                    && row.EffectivePriceGross == 0m);
+
+                var partner = CommercialPriceListWindow.BuildPreviewReport(
+                    new WpfCommercialPriceListQuery("partner", 103, null, null, null, null, null,
+                        true, true, false));
+                Assert.Contains(partner.Items, row => row.PartnerPriceIsActive == false
+                    && row.PriceSource == "ITEM_DEFAULT");
+                Assert.DoesNotContain(partner.Items, row => row.PartnerId != 103);
+            }
+            finally
+            {
+                window.Close();
+                main.Close();
+            }
+        });
+    }
+
     private static void AssertPreviewController(object controller)
     {
         Assert.True((bool)controller.GetType().GetProperty("IsUiPreview")!.GetValue(controller)!);
@@ -574,7 +662,7 @@ public sealed class UiPreviewTests
                 // Account preview buttons open presentation-only dialogs. They
                 // deliberately cannot persist data; don't invoke a modal from
                 // this generic event-probing loop.
-                if (button.Name is "CreateAccountButton" or "EditAccountButton")
+                if (button.Name is "CreateAccountButton" or "EditAccountButton" or "CatalogPriceListsButton")
                 {
                     // These only navigate to local, non-persisting demo dialogs.
                     // Their enabled state depends on the currently selected row.

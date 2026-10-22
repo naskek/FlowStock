@@ -11,13 +11,26 @@ public sealed class UiPreviewContext
 
     internal static void Prepare(FrameworkElement root)
     {
-        if (root is Window window) window.Title += " [UI Preview / DEV]";
+        const string suffix = " [UI Preview / DEV]";
+        if (root is Window window && !window.Title.EndsWith(suffix, StringComparison.Ordinal))
+            window.Title += suffix;
+
         foreach (var element in Descendants(root))
         {
             if (element is WpfButton button && button.Content as string != "Закрыть")
             {
-                button.IsEnabled = false;
-                button.ToolTip = OperationUnavailable;
+                // This single action opens an isolated, synthetic price-list window.
+                // Repeated preparation must not disable its safe preview navigation.
+                if (root is MainWindow && button.Name == "CatalogPriceListsButton")
+                {
+                    button.IsEnabled = true;
+                    button.ToolTip = "Демо-прайс-листы без БД и API";
+                }
+                else
+                {
+                    button.IsEnabled = false;
+                    button.ToolTip = OperationUnavailable;
+                }
             }
             if (element is MenuItem menu && !menu.HasItems && menu.Name != "OpenSettingsMenuItem" && menu.Name != "OpenHuRegistryMenuItem")
             {

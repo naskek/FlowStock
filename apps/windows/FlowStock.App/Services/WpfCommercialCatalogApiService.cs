@@ -80,6 +80,43 @@ public sealed class WpfCommercialCatalogApiService
             payload.Offset);
     }
 
+    public async Task<WpfCommercialPriceListReport> GetPriceListAsync(
+        WpfCommercialPriceListQuery request,
+        CancellationToken cancellationToken = default)
+    {
+        var query = new List<string>
+        {
+            $"mode={Uri.EscapeDataString(request.Mode)}",
+            $"active_items_only={request.ActiveItemsOnly.ToString().ToLowerInvariant()}",
+            $"include_inactive_overrides={request.IncludeInactiveOverrides.ToString().ToLowerInvariant()}",
+            $"include_unpriced={request.IncludeUnpriced.ToString().ToLowerInvariant()}"
+        };
+        if (request.PartnerId.HasValue)
+            query.Add($"partner_id={request.PartnerId.Value.ToString(CultureInfo.InvariantCulture)}");
+        if (request.ItemId.HasValue)
+            query.Add($"item_id={request.ItemId.Value.ToString(CultureInfo.InvariantCulture)}");
+        foreach (var (key, value) in new[]
+        {
+            ("gtin", request.Gtin), ("q", request.Search),
+            ("brand", request.Brand), ("volume", request.Volume)
+        })
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                query.Add($"{key}={Uri.EscapeDataString(value.Trim())}");
+        }
+
+        using var client = CreateClient();
+        // Large but bounded reports can take longer than the 15s CRUD timeout.
+        client.Timeout = TimeSpan.FromSeconds(120);
+        using var response = await client.GetAsync(
+            $"/api/commercial-pricing/report?{string.Join("&", query)}",
+            cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response).ConfigureAwait(false);
+        return await response.Content.ReadFromJsonAsync<WpfCommercialPriceListReport>(
+            JsonOptions, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("Сервер вернул пустой прайс-лист.");
+    }
+
     public async Task SavePriceAsync(
         long? id,
         long partnerId,
