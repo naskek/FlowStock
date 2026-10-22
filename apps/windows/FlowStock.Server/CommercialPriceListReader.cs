@@ -63,8 +63,9 @@ public sealed class CommercialPriceListReader
 
     // One read-only SQL statement gives one consistent PostgreSQL statement snapshot
     // for preview and export. The WPF exports the very same downloaded result.
-    public CommercialPriceListResult Get(CommercialPriceListQuery query)
+    public CommercialPriceListResult Get(CommercialPriceListQuery query, int maxRows = MaxReportRows)
     {
+        if (maxRows < 1 || maxRows > MaxReportRows) throw new ArgumentOutOfRangeException(nameof(maxRows));
         if (query.Mode is not ("all" or "item" or "partner"))
         {
             throw new ArgumentException("Invalid pricing report mode.", nameof(query));
@@ -164,12 +165,12 @@ SELECT row_kind, partner_id, partner_name, partner_code, item_id, item_name,
         command.Parameters.Add("active_items_only", NpgsqlDbType.Boolean).Value = query.ActiveItemsOnly;
         command.Parameters.Add("include_inactive", NpgsqlDbType.Boolean).Value = query.IncludeInactiveOverrides;
         command.Parameters.Add("include_unpriced", NpgsqlDbType.Boolean).Value = query.IncludeUnpriced;
-        command.Parameters.Add("max_rows_plus_one", NpgsqlDbType.Integer).Value = MaxReportRows + 1;
+        command.Parameters.Add("max_rows_plus_one", NpgsqlDbType.Integer).Value = maxRows + 1;
         using var reader = command.ExecuteReader();
         var rows = new List<CommercialPriceListRow>();
         while (reader.Read())
         {
-            if (rows.Count == MaxReportRows)
+            if (rows.Count == maxRows)
                 throw new CommercialPriceListTooLargeException();
             rows.Add(new CommercialPriceListRow(
                 reader.GetString(0),
