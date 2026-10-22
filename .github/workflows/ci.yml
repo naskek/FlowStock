@@ -376,6 +376,13 @@ jobs:
             export PGUSER="$POSTGRES_USER" PGPASSWORD="$POSTGRES_PASSWORD" PGDATABASE="$POSTGRES_DB"
             python3 /tmp/integration_pg16.py
           '
+      - name: Verify fail-closed restore and PostgreSQL 16 recovery
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s deploy/scripts/tests -p 'test_restore_faults.py' -v
+          python3 deploy/scripts/tests/integration_restore_pg16.py
       - name: Validate production Compose and build images
         shell: bash
         run: |
