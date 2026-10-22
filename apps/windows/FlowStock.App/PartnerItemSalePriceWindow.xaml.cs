@@ -45,18 +45,6 @@ public partial class PartnerItemSalePriceWindow : Window
         });
     }
 
-    private void PriceLists_Click(object sender, RoutedEventArgs e)
-    {
-        // UI Preview opens an entirely presentation-only window; no AppServices or DB.
-        var window = IsUiPreview
-            ? new CommercialPriceListWindow(new UiPreviewContext())
-            : new CommercialPriceListWindow(_services);
-        var owner = Window.GetWindow(PriceListsButton);
-        if (owner != null)
-            window.Owner = owner;
-        window.ShowDialog();
-    }
-
     private Task LoadLookupsAsync() => _loading.RunAsync(async () =>
     {
         var lookups = await Task.Run(() =>
