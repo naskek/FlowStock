@@ -268,7 +268,10 @@ class Store:
                 stage.unlink()
                 _fsync_dir(self.staging)
         else:
-            _file(stage)
+            # Re-verify durable success evidence *before* exposing the final path.
+            size_before, hash_before = _validate(stage)
+            if ready.get("size_bytes") != size_before or ready.get("sha256") != hash_before:
+                raise BackupError("DUMP_INVALID: staged archive changed before publication")
             os.link(stage, target, follow_symlinks=False)
             _fsync_dir(self.archives)
             stage.unlink()
