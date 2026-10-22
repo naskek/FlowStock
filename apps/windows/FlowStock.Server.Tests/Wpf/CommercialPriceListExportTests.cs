@@ -39,6 +39,36 @@ public sealed class CommercialPriceListExportTests
     }
 
     [Fact]
+    public void Switching_to_product_mode_cannot_retain_previous_client_filter()
+    {
+        var filters = CommercialPriceListSelection.ForMode("item", partnerId: 123, itemId: 456);
+        Assert.Null(filters.PartnerId);
+        Assert.Equal(456, filters.ItemId);
+
+        var customer = CommercialPriceListSelection.ForMode("partner", partnerId: 123, itemId: 456);
+        Assert.Equal(123, customer.PartnerId);
+        Assert.Equal(456, customer.ItemId);
+    }
+
+    [Fact]
+    public void Empty_pdf_still_identifies_the_selected_customer_and_filters()
+    {
+        var query = new WpfCommercialPriceListQuery(
+            "partner", 42, null, null, null, null, null, true, false, false);
+        var report = new WpfCommercialPriceListReport
+        {
+            Mode = "partner",
+            TotalCount = 0,
+            SelectionDescription = CommercialPriceListSelection.Describe(
+                query, "Клиент без цены", "1234567890", null, null)
+        };
+        Assert.Contains("Клиент без цены", report.SelectionDescription);
+        var bytes = CommercialPriceListPdfExporter.Create(report);
+        Assert.True(bytes.Length > 1_000);
+        Assert.Equal("%PDF-", Encoding.ASCII.GetString(bytes, 0, 5));
+    }
+
+    [Fact]
     public void Pricing_ui_uses_server_report_and_same_loaded_snapshot_for_export()
     {
         var root = LocateRepositoryRoot();
@@ -56,6 +86,7 @@ public sealed class CommercialPriceListExportTests
         Assert.Contains("CommercialPriceListPdfExporter.Create(report)", priceWindow, StringComparison.Ordinal);
         Assert.Contains("Click=\"PriceLists_Click\"", entry, StringComparison.Ordinal);
         Assert.Contains("generation != _filterGeneration", priceWindow, StringComparison.Ordinal);
+        Assert.Contains("Mode_Changed", priceWindow, StringComparison.Ordinal);
         Assert.Contains("Прайс-листы…", entry, StringComparison.Ordinal);
         Assert.Contains("RequireManageCatalog(request)", endpoint, StringComparison.Ordinal);
         Assert.Contains("roleResolver.IsCustomer", endpoint, StringComparison.Ordinal);
