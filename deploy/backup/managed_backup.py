@@ -230,8 +230,19 @@ class Store:
         _write_new(self.jobs / (ident + ".json"), item)
         return item
 
+    def _ready(self, item, stage: Path, info):
+        fingerprint, state = _migrations()
+        _write_new(self.jobs / (item["backup_id"] + ".ready"), {
+            "schema_version": VERSION, "backup_id": item["backup_id"],
+            "size_bytes": info[0], "sha256": info[1],
+            "schema_migrations_fingerprint": fingerprint,
+            "schema_migrations_state": state})
+
     def _publish(self, item, stage: Path):
         ident = item["backup_id"]
+        ready = _read(self.jobs / (ident + ".ready"))
+        if ready.get("backup_id") != ident or ready.get("schema_version") != VERSION:
+            raise BackupError("DUMP_INVALID: unverified job phase")
         target = self.archives / (ident + ".dump")
         record_path = self.catalog / (ident + ".json")
         if target.exists() or target.is_symlink():
@@ -252,25 +263,27 @@ class Store:
             _fsync_dir(self.staging)
 
         size, digest = _validate(target)
+        if ready.get("size_bytes") != size or ready.get("sha256") != digest:
+            raise BackupError("DUMP_INVALID: archive changed since validated dump")
         if record_path.exists() or record_path.is_symlink():
             saved = _read(record_path)
             if saved.get("sha256") != digest or saved.get("size_bytes") != size:
                 raise BackupError("STORAGE_UNSAFE: catalog/archive mismatch")
         else:
-            pg_fingerprint, pg_state = _migrations()
             record = {
                 "schema_version": VERSION, "backup_id": ident,
                 "origin": item["origin"], "created_at_utc": item["created_at_utc"],
                 "completed_at_utc": utc_now(), "archive_key": ident,
                 "size_bytes": size, "sha256": digest,
-                "pg_major": 16, "schema_migrations_fingerprint": pg_fingerprint,
-                "schema_migrations_state": pg_state,
+                "pg_major": 16, "schema_migrations_fingerprint": ready["schema_migrations_fingerprint"],
+                "schema_migrations_state": ready["schema_migrations_state"],
                 "structural_validated": True, "restore_test_at_utc": None,
                 "local_state": "LOCAL_VALID", "remote_state": "DISABLED",
                 "destination_revision": None,
                 "legacy_source": item.get("legacy_source")}
             _write_new(record_path, record)
         _remove_own(self.jobs / (ident + ".json"))
+        _remove_own(self.jobs / (ident + ".ready"))
         return _read(record_path)
 
     def create(self, origin, estimate, during_maintenance=False):
@@ -281,11 +294,17 @@ class Store:
         self._space(estimate)
         item = self._pending(origin)
         stage = self.staging / (item["backup_id"] + ".part")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        os.close(os.open(stage, flags, 0o600))
         try:
             _run(["pg_dump", "--format=custom", "--no-owner", "--no-acl", "-f", str(stage)])
             # pg_dump inherits PG* environment. Never pass credentials on argv.
-            os.chmod(stage, 0o600)
-            _validate(stage)
+            _file(stage)
+            with os.fdopen(os.open(stage, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)), "rb") as fp:
+                os.fsync(fp.fileno())
+            _fsync_dir(self.staging)
+            info = _validate(stage)
+            self._ready(item, stage, info)
             return self._publish(item, stage)
         except Exception:
             # Do not delete staging or overwrite catalog; recover inspects them.
@@ -311,6 +330,7 @@ class Store:
         size, digest = _validate(stage)
         if size != source_size or digest != source_hash or _archive_info(source, strict=False) != (source_size, source_hash):
             raise BackupError("STORAGE_UNSAFE: legacy source changed during import")
+        self._ready(item, stage, (size, digest))
         return self._publish(item, stage)
 
     def recover(self):
@@ -322,7 +342,8 @@ class Store:
                 raise BackupError("STORAGE_UNSAFE: invalid pending job")
             stage = self.staging / (ident + ".part")
             target = self.archives / (ident + ".dump")
-            if stage.exists() or stage.is_symlink() or target.exists() or target.is_symlink():
+            phase = self.jobs / (ident + ".ready")
+            if (stage.exists() or stage.is_symlink() or target.exists() or target.is_symlink()) and phase.exists():
                 try:
                     fixed.append(self._publish(item, stage)["backup_id"])
                 except BackupError:
