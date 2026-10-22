@@ -578,9 +578,12 @@ public sealed class UiPreviewTests
                 var catalog = tabs.Items.Cast<TabItem>().Single(t => Equals(t.Header, "Каталог"));
                 tabs.SelectedItem = catalog;
                 main.UpdateLayout();
-                Assert.True(button.IsLoaded);
+                // No Dispatcher.Run in the test STA thread, so Loaded need not
+                // fire automatically; exercise the real Loaded route directly.
+                button.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent, button));
                 Assert.True(button.IsEnabled);
                 Assert.True(button.IsHitTestVisible);
+                Assert.Contains("Демо-прайс-листы", button.ToolTip?.ToString());
 
                 // Other mutating Catalog actions remain disabled.
                 Assert.False(((Button)main.FindName("ItemEditButton")).IsEnabled);
