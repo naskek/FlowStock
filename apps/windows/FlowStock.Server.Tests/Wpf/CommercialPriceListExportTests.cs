@@ -79,12 +79,16 @@ public sealed class CommercialPriceListExportTests
         var endpoint = File.ReadAllText(Path.Combine(root, "apps", "windows",
             "FlowStock.Server", "CommercialPriceListEndpoint.cs"));
         var entry = File.ReadAllText(Path.Combine(root, "apps", "windows",
+            "FlowStock.App", "MainWindow.xaml"));
+        var settings = File.ReadAllText(Path.Combine(root, "apps", "windows",
             "FlowStock.App", "PartnerItemSalePriceWindow.xaml"));
         Assert.Contains("GetPriceListAsync(query)", priceWindow, StringComparison.Ordinal);
         Assert.Contains("_snapshot = result", priceWindow, StringComparison.Ordinal);
         Assert.Contains("CommercialPriceListExcelExporter.Create(report)", priceWindow, StringComparison.Ordinal);
         Assert.Contains("CommercialPriceListPdfExporter.Create(report)", priceWindow, StringComparison.Ordinal);
-        Assert.Contains("Click=\"PriceLists_Click\"", entry, StringComparison.Ordinal);
+        Assert.Contains("Click=\"CatalogPriceLists_Click\"", entry, StringComparison.Ordinal);
+        Assert.Contains("CatalogPriceListsButton", entry, StringComparison.Ordinal);
+        Assert.DoesNotContain("Прайс-листы", settings, StringComparison.Ordinal);
         Assert.Contains("generation != _filterGeneration", priceWindow, StringComparison.Ordinal);
         Assert.Contains("Mode_Changed", priceWindow, StringComparison.Ordinal);
         Assert.Contains("Прайс-листы…", entry, StringComparison.Ordinal);
