@@ -97,8 +97,8 @@ def _remove_own(path: Path):
     _fsync_dir(path.parent)
 
 
-def _archive_info(path: Path) -> tuple[int, str]:
-    before = _file(path)
+def _archive_info(path: Path, *, strict: bool = True) -> tuple[int, str]:
+    before = _file(path, strict=strict)
     digest = hashlib.sha256()
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     with os.fdopen(os.open(path, flags), "rb") as fp:
@@ -109,7 +109,7 @@ def _archive_info(path: Path) -> tuple[int, str]:
             if not block:
                 break
             digest.update(block)
-    after = _file(path)
+    after = _file(path, strict=strict)
     if before.st_ino != after.st_ino or before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
         raise BackupError("STORAGE_UNSAFE: archive changed during hashing")
     if before.st_size <= 0:
@@ -295,17 +295,22 @@ class Store:
         if not PREFIX.fullmatch(name):
             raise BackupError("INVALID_PATH: only legacy dump basename accepted")
         source = self.root / name
-        _archive_info(source)  # reject symlinks/hardlinks, preserve source
+        source_size, source_hash = _archive_info(source, strict=False)  # preserve legacy source
         self._space(estimate)
         item = self._pending("legacy_import", name)
         stage = self.staging / (item["backup_id"] + ".part")
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         with os.fdopen(os.open(stage, flags, 0o600), "wb") as dest:
-            with open(source, "rb") as src:
+            fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(fd, "rb") as src:
+                if os.fstat(src.fileno()).st_ino != os.lstat(source).st_ino:
+                    raise BackupError("STORAGE_UNSAFE: legacy source changed")
                 shutil.copyfileobj(src, dest, CHUNK)
             dest.flush()
             os.fsync(dest.fileno())
-        _validate(stage)
+        size, digest = _validate(stage)
+        if size != source_size or digest != source_hash or _archive_info(source, strict=False) != (source_size, source_hash):
+            raise BackupError("STORAGE_UNSAFE: legacy source changed during import")
         return self._publish(item, stage)
 
     def recover(self):
