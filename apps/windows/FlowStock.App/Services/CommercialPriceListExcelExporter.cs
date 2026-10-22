@@ -29,7 +29,7 @@ internal static class CommercialPriceListExcelExporter
                     Number(item.PartnerId),
                     Text(item.PartnerName),
                     Text(item.PartnerCode),
-                    Number(item.ItemId),
+                    Number((decimal)item.ItemId),
                     Text(item.ItemName),
                     Text(item.Gtin), // Must stay text (GTIN leading zeros).
                     Text(item.Brand),
