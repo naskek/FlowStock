@@ -21,7 +21,7 @@ def run(*cmd, db=None, env=None, check=True):
         proc_env.update(env)
     result = subprocess.run(cmd, env=proc_env, text=True, capture_output=True)
     if check and result.returncode != 0:
-        raise AssertionError(f"command {cmd[0]} failed (exit {result.returncode})")
+        raise AssertionError(f"command {cmd[0]} failed (exit {result.returncode}): {result.stderr[-1000:]}")
     return result
 
 
@@ -90,7 +90,7 @@ def main():
         sql("""DO $$
             BEGIN
               BEGIN
-                INSERT INTO backup_fixture.records(value)
+                INSERT INTO backup_fixture.records(id,value)
                   OVERRIDING SYSTEM VALUE VALUES (1, 'duplicate-pk');
                 RAISE EXCEPTION 'PK was not restored';
               EXCEPTION WHEN unique_violation THEN
