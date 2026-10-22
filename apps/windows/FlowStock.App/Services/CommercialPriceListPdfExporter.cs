@@ -36,11 +36,10 @@ internal static class CommercialPriceListPdfExporter
         title.Format.Font.Size = 15;
         title.Format.SpaceAfter = Unit.FromCentimeter(0.3);
 
-        var info = report.Items.FirstOrDefault();
-        if (report.Mode == "partner" && info != null)
-            section.AddParagraph($"Клиент: {info.PartnerName} ({info.PartnerCode})");
-        if (report.Mode == "item" && info != null)
-            section.AddParagraph($"Товар: {info.ItemName} / GTIN {info.Gtin}");
+        // Selection metadata comes from the applied request, not the first row:
+        // an empty filtered report must still identify its client or item.
+        if (!string.IsNullOrWhiteSpace(report.SelectionDescription))
+            section.AddParagraph(report.SelectionDescription);
         section.AddParagraph($"Строк: {report.TotalCount}. Цены указаны с НДС.");
         section.AddParagraph($"Сформировано: {DateTime.Now.ToString("dd.MM.yyyy HH:mm", Ru)}");
         section.AddParagraph().Format.SpaceAfter = Unit.FromCentimeter(0.2);
