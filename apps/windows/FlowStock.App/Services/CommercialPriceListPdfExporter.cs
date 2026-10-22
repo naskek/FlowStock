@@ -20,7 +20,7 @@ internal static class CommercialPriceListPdfExporter
 
         var section = document.AddSection();
         section.PageSetup.PageFormat = PageFormat.A4;
-        section.PageSetup.Orientation = Orientation.Landscape;
+        section.PageSetup.Orientation = MigraDoc.DocumentObjectModel.Orientation.Landscape;
         section.PageSetup.TopMargin = Unit.FromCentimeter(1);
         section.PageSetup.BottomMargin = Unit.FromCentimeter(1);
         section.PageSetup.LeftMargin = Unit.FromCentimeter(0.8);
