@@ -11,6 +11,7 @@ public partial class CommercialPriceListWindow : Window
     private readonly AppServices _services;
     private WpfCommercialPriceListReport? _snapshot;
     private bool _busy;
+    private long _filterGeneration;
 
     public CommercialPriceListWindow(AppServices services)
     {
@@ -65,6 +66,7 @@ public partial class CommercialPriceListWindow : Window
 
     private void Invalidate()
     {
+        _filterGeneration++;
         _snapshot = null;
         ReportGrid.ItemsSource = null;
         ExportExcelButton.IsEnabled = false;
@@ -75,7 +77,7 @@ public partial class CommercialPriceListWindow : Window
 
     private void Filters_Changed(object sender, RoutedEventArgs e)
     {
-        if (IsLoaded && !_busy)
+        if (IsLoaded)
             Invalidate();
     }
 
@@ -102,6 +104,7 @@ public partial class CommercialPriceListWindow : Window
         }
 
         Invalidate();
+        var generation = _filterGeneration;
         _busy = true;
         RefreshButton.IsEnabled = false;
         StatusText.Text = "Загрузка актуального прайс-листа...";
@@ -110,6 +113,11 @@ public partial class CommercialPriceListWindow : Window
             var result = await _services.WpfCommercialCatalogApi.GetPriceListAsync(query);
             if (result.TotalCount != result.Items.Count)
                 throw new InvalidOperationException("Неполный ответ сервера прайс-листов.");
+            if (generation != _filterGeneration)
+            {
+                StatusText.Text = "Фильтры изменены во время загрузки. Сформируйте отчёт заново.";
+                return;
+            }
             _snapshot = result;
             ReportGrid.ItemsSource = result.Items;
             ExportExcelButton.IsEnabled = true;
