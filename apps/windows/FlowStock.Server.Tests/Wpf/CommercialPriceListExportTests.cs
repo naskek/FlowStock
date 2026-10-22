@@ -58,6 +58,7 @@ public sealed class CommercialPriceListExportTests
         Assert.Contains("generation != _filterGeneration", priceWindow, StringComparison.Ordinal);
         Assert.Contains("Прайс-листы…", entry, StringComparison.Ordinal);
         Assert.Contains("RequireManageCatalog(request)", endpoint, StringComparison.Ordinal);
+        Assert.Contains("roleResolver.IsCustomer", endpoint, StringComparison.Ordinal);
         Assert.DoesNotContain("order_lines", server, StringComparison.OrdinalIgnoreCase);
     }
 
