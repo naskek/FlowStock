@@ -556,6 +556,43 @@ public sealed class UiPreviewTests
     }
 
     [Fact]
+    public async Task Price_list_catalog_button_remains_enabled_after_repeated_preview_preparation_and_tab_render()
+    {
+        await OnUiThread(() =>
+        {
+            var main = new MainWindow(new UiPreviewContext());
+            try
+            {
+                var button = (Button)main.FindName("CatalogPriceListsButton");
+                Assert.True(button.IsEnabled);
+                UiPreviewContext.Prepare(main);
+                UiPreviewContext.Prepare(main);
+                Assert.Equal(1, main.Title.Split("[UI Preview / DEV]").Length - 1);
+                Assert.True(button.IsEnabled);
+                Assert.Contains("Демо-прайс-листы", button.ToolTip?.ToString());
+
+                // Show the real WPF window, as the regression was only visible
+                // after Catalog became the selected tab in an actual devui run.
+                main.Show();
+                var tabs = (TabControl)main.FindName("MainTabs");
+                var catalog = tabs.Items.Cast<TabItem>().Single(t => Equals(t.Header, "Каталог"));
+                tabs.SelectedItem = catalog;
+                main.UpdateLayout();
+                Assert.True(button.IsLoaded);
+                Assert.True(button.IsEnabled);
+                Assert.True(button.IsHitTestVisible);
+
+                // Other mutating Catalog actions remain disabled.
+                Assert.False(((Button)main.FindName("ItemEditButton")).IsEnabled);
+            }
+            finally
+            {
+                main.Close();
+            }
+        });
+    }
+
+    [Fact]
     public async Task Price_list_ui_preview_uses_only_demo_data_and_can_switch_modes_without_backend()
     {
         await OnUiThread(() =>
