@@ -344,12 +344,8 @@ test "$deployed_tsd" = "$expected_tsd_version" || fail 'deployed TSD version dif
 log "deployed TSD version: $deployed_tsd"
 df -h "$repo" "$backup_path"
 log "verified backup path: $backup_path"
-# Explicit release gate only after all server-side identity and health checks.
-# Failure before this point preserves the durable pause for operator recovery.
-"${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
-    /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 \
-    resume --operator-confirmed >/dev/null || fail 'managed backup resume failed'
-log 'managed backup pause released after validated deploy'
+# Keep the durable pause through the external operator HTTPS gates executed
+# by PowerShell. Their failure must not silently resume the worker.
 log "deployed source commit: $expected_commit"
 printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
 '@
@@ -386,6 +382,41 @@ printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
     if (-not $deployedTsdMatch.Success -or $deployedTsdMatch.Groups[1].Value -ne $expectedTsdVersion) {
         throw 'External deployed TSD version gate failed'
     }
+
+    # A second SSH invocation is allowed only after all external HTTPS identity
+    # gates passed; failed external gates deliberately leave maintenance paused.
+    $resumeScript = @'
+set -Eeuo pipefail
+expected="$1"
+repo="$2"
+cd "$repo"
+test "$(git rev-parse --verify 'HEAD^{commit}')" = "$expected"
+test ! -e deploy/runtime/restore/active.json
+compose=(docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml)
+"${compose[@]}" config -q
+pause_reason="pre_deploy:$expected"
+state="$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
+    /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 status)"
+printf '%s' "$state" | python3 -c '
+import json,sys
+v=json.load(sys.stdin)
+raise SystemExit(0 if v.get("paused") is True and v.get("pause_reason")==sys.argv[1] else 1)
+' "$pause_reason"
+"${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
+    /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 \
+    resume --operator-confirmed >/dev/null
+printf 'FLOWSTOCK_RESUME_OK=%s\n' "$expected"
+'@
+    $resumeScript = $resumeScript.Replace("`r`n", "`n").Replace("`r", "`n")
+    $resumeBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($resumeScript)
+    $resumeResult = Invoke-RemoteBashScriptViaSsh -SshTarget $sshTarget -ScriptBytes $resumeBytes -RemoteArgumentList @($ExpectedCommit, $RemoteRepoPath)
+    if ($resumeResult.ExitCode -ne 0) {
+        throw "Remote backup resume failed; maintenance remains pending operator review"
+    }
+    if (@($resumeResult.StdOut -split '\r?\n') -notcontains "FLOWSTOCK_RESUME_OK=$ExpectedCommit") {
+        throw "Remote backup resume did not return exact success marker"
+    }
+
     Write-Host "Production deploy verified: commit=$ExpectedCommit, TSD=$expectedTsdVersion"
 }
 finally {
