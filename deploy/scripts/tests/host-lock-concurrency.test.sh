@@ -36,6 +36,8 @@ if bash -c 'source "$SCRIPTS/common.sh"; acquire_host_backup_lock' 2>/dev/null; 
   echo "unsafe symlink lock accepted" >&2
   exit 1
 fi
+# Remove only the intentionally planted test symlink before the next scenario.
+rm "$FLOWSTOCK_COORDINATION_DIR/operator.lock"
 # Restore uses 'exec python3': the host-level flock must survive that exec.
 (
   source "$SCRIPTS/common.sh"
