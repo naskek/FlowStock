@@ -90,6 +90,17 @@ if ! target_commit="$(git_in_repo rev-parse --verify "${target_ref}^{commit}" 2>
     fail "git ref not found: $target_ref"
 fi
 
+# A pre-#122 target would restart the old unsynchronised pgbackup worker,
+# ignoring persisted maintenance state. Deny that helper path; a downlevel
+# rollback needs explicit operator planning with pgbackup kept stopped.
+if ! git_in_repo cat-file -e "$target_commit:deploy/backup/Dockerfile" 2>/dev/null; then
+    fail "rollback target lacks managed backup coordination; use staged operator rollback"
+fi
+target_compose="$(git_in_repo show "$target_commit:deploy/docker-compose.yml")" ||
+    fail "rollback target Compose unavailable"
+printf '%s\n' "$target_compose" | grep -q 'dockerfile: deploy/backup/Dockerfile' ||
+    fail "rollback target would start legacy uncoordinated pgbackup"
+
 current_commit="$(git_in_repo rev-parse HEAD)"
 current_branch="$(git_in_repo symbolic-ref --short -q HEAD || printf 'detached')"
 
