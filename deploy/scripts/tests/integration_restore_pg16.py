@@ -62,7 +62,8 @@ networks:
     internal: true
 ''')
         os.environ.update(FLOWSTOCK_PROJECT_NAME="flowstock-restore-test-" + uuid.uuid4().hex[:10],
-                          FLOWSTOCK_ENV_FILE=str(cls.envfile), FLOWSTOCK_COMPOSE_FILE=str(cls.composefile))
+                          FLOWSTOCK_ENV_FILE=str(cls.envfile), FLOWSTOCK_COMPOSE_FILE=str(cls.composefile),
+                          FLOWSTOCK_COORDINATION_DIR=str(cls.base / "host-coordination"))
         cls.backend = DockerPostgres()
         try:
             cls.backend.run([*cls.backend.compose, "up", "-d", "--wait"])
