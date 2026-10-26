@@ -219,7 +219,7 @@ status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}
 test "$status" = healthy || fail 'production postgres is not healthy; refusing to mutate the stack before backup'
 # This host lock is shared with operator backup_now/restore/rollback wrappers.
 # It remains held through the old-checkout pre-deploy safety backup.
-coordination_dir="${compose_env[FLOWSTOCK_COORDINATION_DIR]:-/opt/flowstock-backups/coordination}"
+coordination_dir="${compose_env[FLOWSTOCK_COORDINATION_DIR]:-}"
 case "$coordination_dir" in
     /*) ;;
     *) fail 'FLOWSTOCK_COORDINATION_DIR must be absolute' ;;
