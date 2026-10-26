@@ -217,11 +217,48 @@ postgres_id="$("${compose[@]}" ps -q postgres)"
 test -n "$postgres_id" || fail 'running production postgres container is missing; refusing to mutate the stack before backup'
 status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$postgres_id")"
 test "$status" = healthy || fail 'production postgres is not healthy; refusing to mutate the stack before backup'
+# The current worker may be a downlevel postgres:16 image without Python.
+# Once the managed worker is deployed, pause uses the shared persistent flock.
+# Until then STOP the legacy worker before the fresh pre-deploy backup.
+test ! -e deploy/runtime/restore/active.json && test ! -L deploy/runtime/restore/active.json ||
+    fail 'restore maintenance is active; operator investigation required'
+pause_reason="pre_deploy:$expected_commit"
+pause_before_checkout=0
+old_pgbackup_id="$("${compose[@]}" ps -q pgbackup)"
+if test -n "$old_pgbackup_id"; then
+    if docker exec "$old_pgbackup_id" test -f /usr/local/bin/managed_backup.py; then
+        docker exec "$old_pgbackup_id" python3 /usr/local/bin/managed_backup.py \
+            --root /backups --lock-timeout 60 pause --reason "$pause_reason" >/dev/null ||
+            fail 'cannot acquire managed backup pause before deploy'
+        pause_before_checkout=1
+    else
+        log 'legacy worker detected; it will be stopped before fresh backup'
+    fi
+    "${compose[@]}" stop pgbackup || fail 'cannot stop backup worker'
+    stopped_state="$(docker inspect -f '{{.State.Status}}' "$old_pgbackup_id")"
+    test "$stopped_state" = exited || fail 'backup worker did not stop; refusing backup'
+fi
 mkdir -p "$backup_dir"
-backup_path="$backup_dir/flowstock-before-${expected_commit:0:12}-$(date -u +%Y%m%dT%H%M%SZ).dump"
-"${compose[@]}" exec -T postgres sh -eu -c 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"$backup_path"
-test -s "$backup_path" || fail 'backup is empty'
-"${compose[@]}" exec -T postgres pg_restore --list <"$backup_path" >/dev/null
+backup_path="$backup_dir/flowstock-before-${expected_commit:0:12}-$(date -u +%Y%m%dT%H%M%SZ)-$.dump"
+test ! -e "$backup_path" && test ! -L "$backup_path" || fail 'backup target exists'
+umask 077
+backup_partial="$(mktemp "${backup_path}.partial.XXXXXX")" || fail 'cannot reserve fresh backup output'
+if ! "${compose[@]}" exec -T postgres sh -eu -c 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"$backup_partial"; then
+    fail "pre-deploy pg_dump failed; private staging retained: $backup_partial"
+fi
+test -s "$backup_partial" || fail "pre-deploy dump empty; staging retained: $backup_partial"
+# List validation alone does not read every payload block. Drain stdin to
+# avoid a false transport failure on large valid archives.
+"${compose[@]}" exec -T postgres sh -c '
+status=0
+pg_restore --list >/dev/null || status=$?
+cat >/dev/null || exit 1
+exit "$status"
+' <"$backup_partial" || fail "pre-deploy TOC invalid; staging retained: $backup_partial"
+"${compose[@]}" exec -T postgres pg_restore --file=/dev/null <"$backup_partial" ||
+    fail "pre-deploy dump payload invalid; staging retained: $backup_partial"
+ln -- "$backup_partial" "$backup_path" || fail 'cannot atomically publish verified backup'
+rm -f -- "$backup_partial"
 log "fresh PostgreSQL backup verified: $backup_path"
 
 # Update the server clone to exactly the caller-verified origin/main commit.
@@ -250,6 +287,23 @@ log 'secret-safe resolved Compose validation passed'
 
 "${compose[@]}" pull postgres nginx
 "${compose[@]}" build flowstock discovery-relay pgbackup
+# No worker may start a scheduled dump during migrator/deploy or failure gates.
+# This is after the old-checkout backup, so the newly built helper may run.
+if test "$pause_before_checkout" = 0; then
+    "${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
+        /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 \
+        pause --reason "$pause_reason" >/dev/null ||
+        fail 'managed backup pause failed before new stack startup'
+else
+    marker="$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
+        /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 status)" ||
+        fail 'managed pause status unavailable after image build'
+    printf '%s' "$marker" | python3 -c '
+import json,sys
+v=json.load(sys.stdin)
+raise SystemExit(0 if v.get("paused") is True and v.get("pause_reason")==sys.argv[1] else 1)
+' "$pause_reason" || fail 'managed pause owner changed across checkout'
+fi
 "${compose[@]}" up -d --remove-orphans
 "${compose[@]}" ps
 
@@ -290,6 +344,12 @@ test "$deployed_tsd" = "$expected_tsd_version" || fail 'deployed TSD version dif
 log "deployed TSD version: $deployed_tsd"
 df -h "$repo" "$backup_path"
 log "verified backup path: $backup_path"
+# Explicit release gate only after all server-side identity and health checks.
+# Failure before this point preserves the durable pause for operator recovery.
+"${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
+    /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 \
+    resume --operator-confirmed >/dev/null || fail 'managed backup resume failed'
+log 'managed backup pause released after validated deploy'
 log "deployed source commit: $expected_commit"
 printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
 '@
