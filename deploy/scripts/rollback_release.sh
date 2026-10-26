@@ -71,6 +71,7 @@ on_error() {
 
 trap on_error ERR
 
+acquire_host_backup_lock
 ensure_docker
 ensure_git_repo
 ensure_git_clean_worktree

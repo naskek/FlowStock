@@ -217,6 +217,29 @@ postgres_id="$("${compose[@]}" ps -q postgres)"
 test -n "$postgres_id" || fail 'running production postgres container is missing; refusing to mutate the stack before backup'
 status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$postgres_id")"
 test "$status" = healthy || fail 'production postgres is not healthy; refusing to mutate the stack before backup'
+# This host lock is shared with operator backup_now/restore/rollback wrappers.
+# It remains held through the old-checkout pre-deploy safety backup.
+coordination_dir="${compose_env[FLOWSTOCK_COORDINATION_DIR]:-/opt/flowstock-backups/coordination}"
+case "$coordination_dir" in
+    /*) ;;
+    *) fail 'FLOWSTOCK_COORDINATION_DIR must be absolute' ;;
+esac
+case "$coordination_dir" in
+    */../*|*/./*|*/..|*/.) fail 'unsafe coordination directory path' ;;
+esac
+command -v flock >/dev/null || fail 'flock is required for operator exclusion'
+umask 077
+mkdir -p -m 700 "$coordination_dir" || fail 'cannot create host coordination directory'
+test -d "$coordination_dir" && test ! -L "$coordination_dir" ||
+    fail 'unsafe host coordination directory'
+test "$(stat -c %u "$coordination_dir")" = "$(id -u)" &&
+    test "$(stat -c %a "$coordination_dir")" = 700 ||
+    fail 'host coordination directory owner or mode mismatch'
+test ! -L "$coordination_dir/operator.lock" || fail 'unsafe host lock symlink'
+exec {host_backup_fd}>"$coordination_dir/operator.lock"
+chmod 600 "$coordination_dir/operator.lock"
+flock -w 60 "$host_backup_fd" || fail 'BACKUP_BUSY: operator/deploy/restore lock timed out'
+
 # The current worker may be a downlevel postgres:16 image without Python.
 # Once the managed worker is deployed, pause uses the shared persistent flock.
 # Until then STOP the legacy worker before the fresh pre-deploy backup.

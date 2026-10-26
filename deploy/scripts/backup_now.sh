@@ -3,6 +3,7 @@ set -euo pipefail
 
 source "$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
+acquire_host_backup_lock
 ensure_docker
 ensure_compose_config
 # Never start PostgreSQL during an active destructive restore.

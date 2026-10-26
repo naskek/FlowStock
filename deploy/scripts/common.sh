@@ -17,6 +17,7 @@ FLOWSTOCK_TELEGRAM_COMPOSE_FILE="${FLOWSTOCK_TELEGRAM_COMPOSE_FILE:-${DEPLOY_DIR
 FLOWSTOCK_PROJECT_NAME="${FLOWSTOCK_PROJECT_NAME:-flowstock}"
 FLOWSTOCK_RUNTIME_DIR="${FLOWSTOCK_RUNTIME_DIR:-${DEPLOY_DIR}/runtime}"
 FLOWSTOCK_BACKUP_OUTPUT_DIR="${FLOWSTOCK_BACKUP_OUTPUT_DIR:-${FLOWSTOCK_RUNTIME_DIR}/backups}"
+FLOWSTOCK_COORDINATION_DIR="${FLOWSTOCK_COORDINATION_DIR:-/opt/flowstock-backups/coordination}"
 FLOWSTOCK_RELEASES_DIR="${FLOWSTOCK_RELEASES_DIR:-${FLOWSTOCK_RUNTIME_DIR}/releases}"
 FLOWSTOCK_HEALTH_TIMEOUT_SECONDS="${FLOWSTOCK_HEALTH_TIMEOUT_SECONDS:-120}"
 POSTGRES_WAIT_TIMEOUT_SECONDS="${POSTGRES_WAIT_TIMEOUT_SECONDS:-120}"
@@ -600,6 +601,26 @@ resolve_backup_path() {
 # Manual/legacy operator callers use the same managed flock and catalog as pgbackup.
 # Export a verified copy to the historical operator path without touching the
 # original managed archive or overwriting an existing destination.
+# Host-level exclusion for operator callers and canonical deployment.
+# Worker still uses its separate shared volume flock; deploy additionally stops
+# legacy worker and establishes durable pause before mutating the stack.
+acquire_host_backup_lock() {
+    local root="$FLOWSTOCK_COORDINATION_DIR"
+    [[ "$root" == /* && "$root" != *"/../"* && "$root" != *"/./"* &&
+       "$root" != *"/.." && "$root" != *"/." ]] || fail "invalid host coordination root"
+    require_command flock
+    umask 077
+    mkdir -p -m 700 -- "$root" || fail "cannot create host coordination root"
+    [[ -d "$root" && ! -L "$root" ]] || fail "host coordination root is unsafe"
+    [[ "$(stat -c %u "$root")" = "$(id -u)" ]] || fail "host coordination root owner mismatch"
+    [[ "$(stat -c %a "$root")" = 700 ]] || fail "host coordination root permissions mismatch"
+    [[ ! -L "$root/operator.lock" ]] || fail "host coordination lock is a symlink"
+    exec {FLOWSTOCK_HOST_BACKUP_LOCK_FD}>"$root/operator.lock" || fail "host coordination lock unavailable"
+    chmod 600 "$root/operator.lock"
+    flock -w 60 "$FLOWSTOCK_HOST_BACKUP_LOCK_FD" ||
+        fail "BACKUP_BUSY: host operator/deploy/restore lock timeout"
+}
+
 create_backup() {
     local target="$1"
     local origin="${2:-manual}"

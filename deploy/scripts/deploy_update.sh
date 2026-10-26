@@ -24,6 +24,7 @@ export_source_commit_from_checkout
 ensure_tls_assets
 ensure_compose_config
 discovery_network_preflight
+acquire_host_backup_lock
 ensure_postgres_healthy
 
 backup_path="$(resolve_backup_path "${FLOWSTOCK_BACKUP_PATH_OVERRIDE:-}")"
