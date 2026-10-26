@@ -22,6 +22,7 @@ reject "exactly one explicit target" --no-restore
 reject "40-character lowercase" --no-restore not-a-commit
 reject "automatic SQL restore/restart is unsafe" "$sha"
 reject "exactly one explicit target" --no-restore "$sha" extra
+reject "automatic SQL restore/restart is unsafe" --allow-downlevel-app-only "$sha"
 
 python3 - "$script" <<'PY'
 import pathlib,sys

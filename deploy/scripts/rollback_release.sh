@@ -7,6 +7,7 @@ usage() {
     cat <<EOF
 Usage:
   bash deploy/scripts/rollback_release.sh --no-restore <exact-git-commit>
+  bash deploy/scripts/rollback_release.sh --no-restore --allow-downlevel-app-only <exact-git-commit>
 
 Behavior:
   - requires an explicit exact target commit; stale latest_success/previous_success
@@ -17,6 +18,7 @@ EOF
 }
 
 do_restore="true"
+allow_downlevel="false"
 positionals=()
 
 while [[ $# -gt 0 ]]; do
@@ -27,6 +29,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-restore)
             do_restore="false"
+            shift
+            ;;
+        --allow-downlevel-app-only)
+            allow_downlevel="true"
             shift
             ;;
         *)
@@ -91,16 +97,22 @@ if ! target_commit="$(git_in_repo rev-parse --verify "${target_ref}^{commit}" 2>
     fail "git ref not found: $target_ref"
 fi
 
-# A pre-#122 target would restart the old unsynchronised pgbackup worker,
-# ignoring persisted maintenance state. Deny that helper path; a downlevel
-# rollback needs explicit operator planning with pgbackup kept stopped.
-if ! git_in_repo cat-file -e "$target_commit:deploy/backup/Dockerfile" 2>/dev/null; then
-    fail "rollback target lacks managed backup coordination; use staged operator rollback"
-fi
+# Downlevel source cannot honour managed pause. Explicitly allow only
+# app-only switch after external schema/data compatibility qualification.
+# The legacy backup worker is NEVER started by this rollback workflow.
 target_compose="$(git_in_repo show "$target_commit:deploy/docker-compose.yml")" ||
     fail "rollback target Compose unavailable"
-printf '%s\n' "$target_compose" | grep -q 'dockerfile: deploy/backup/Dockerfile' ||
-    fail "rollback target would start legacy uncoordinated pgbackup"
+legacy_worker_target="false"
+if ! git_in_repo cat-file -e "$target_commit:deploy/backup/Dockerfile" 2>/dev/null ||
+    ! printf '%s\n' "$target_compose" | grep -q 'dockerfile: deploy/backup/Dockerfile'; then
+    legacy_worker_target="true"
+    [[ "$allow_downlevel" == true ]] ||
+        fail "downlevel worker unsafe; explicit --allow-downlevel-app-only and operator compatibility review required"
+    log "downlevel app-only target; legacy pgbackup must remain stopped"
+else
+    [[ "$allow_downlevel" == false ]] ||
+        fail "downlevel override is forbidden for managed backup target"
+fi
 
 current_commit="$(git_in_repo rev-parse HEAD)"
 current_branch="$(git_in_repo symbolic-ref --short -q HEAD || printf 'detached')"
@@ -118,6 +130,18 @@ fi
 
 if [[ "$do_restore" == "true" ]]; then
     pre_restore_backup="$(resolve_backup_path "${FLOWSTOCK_BACKUP_OUTPUT_DIR}/rollback_guard/FlowStock_${rollback_stamp}_${current_commit:0:12}.dump")"
+fi
+
+if [[ "$legacy_worker_target" == true ]]; then
+    old_backup_id="$(compose ps -q pgbackup)"
+    if [[ -n "$old_backup_id" ]]; then
+        # prevent Docker engine restart from reviving an old worker that does
+        # not understand the paused managed catalog.
+        docker update --restart=no "$old_backup_id" >/dev/null
+        compose stop pgbackup
+        [[ "$(docker inspect -f '{{.State.Status}}' "$old_backup_id")" == exited ]] ||
+            fail "downlevel pgbackup cannot be proven stopped"
+    fi
 fi
 
 remove_discovery_relay_containers
@@ -183,7 +207,11 @@ fi
 rollback_tail_services=()
 while IFS= read -r service; do
     rollback_tail_services+=("$service")
-done < <(existing_services nginx pgbackup)
+done < <(if [[ "$legacy_worker_target" == true ]]; then
+    existing_services nginx
+else
+    existing_services nginx pgbackup
+fi)
 if (( ${#rollback_tail_services[@]} > 0 )); then
     compose up -d --build --no-deps --force-recreate "${rollback_tail_services[@]}"
 fi
@@ -216,6 +244,9 @@ write_release_state "$history_file" \
 
 cp "$history_file" "$latest_success_file"
 
+if [[ "$legacy_worker_target" == true ]]; then
+    log "WARNING: downlevel pgbackup stopped with restart=no; manual restore compatibility/recovery gate required"
+fi
 log "rollback completed successfully"
 log "active revision: $target_commit"
 if [[ "$do_restore" == "true" ]]; then
