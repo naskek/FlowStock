@@ -38,6 +38,11 @@ done
 
 target_input="${positionals[0]:-}"
 dump_path="${positionals[1]:-}"
+# Validate caller intent BEFORE Docker, git or checkout access. Canonical
+# production deploy never updates historical latest_success/previous_success.
+(( ${#positionals[@]} == 1 )) || fail "rollback requires exactly one explicit target commit"
+[[ "$target_input" =~ ^[0-9a-f]{40}$ ]] || fail "rollback target must be an exact 40-character lowercase commit SHA"
+[[ "$do_restore" == "false" ]] || fail "automatic SQL restore/restart is unsafe; use explicit restore_dump.sh, validate recovery, then a separate app restart"
 rollback_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 latest_success_file="$(release_state_file latest_success)"
 previous_success_file="$(release_state_file previous_success)"
@@ -73,9 +78,6 @@ ensure_compose_config
 
 # Canonical deploy does not update legacy release pointers. They can refer
 # to a different checkout/database and must not imply rollback provenance.
-(( ${#positionals[@]} == 1 )) || fail "rollback requires exactly one explicit target commit"
-[[ "$target_input" =~ ^[0-9a-f]{40}$ ]] || fail "rollback target must be an exact 40-character lowercase commit SHA"
-[[ "$do_restore" == "false" ]] || fail "automatic SQL restore/restart is unsafe; use explicit restore_dump.sh, validate recovery, then a separate app restart"
 target_ref="$target_input"
 if [[ -e "${FLOWSTOCK_RUNTIME_DIR}/restore/active.json" || -L "${FLOWSTOCK_RUNTIME_DIR}/restore/active.json" ]]; then
     fail "restore maintenance active; app-only rollback forbidden"
