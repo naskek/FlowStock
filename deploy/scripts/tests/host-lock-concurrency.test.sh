@@ -36,4 +36,21 @@ if bash -c 'source "$SCRIPTS/common.sh"; acquire_host_backup_lock' 2>/dev/null; 
   echo "unsafe symlink lock accepted" >&2
   exit 1
 fi
+# Restore uses 'exec python3': the host-level flock must survive that exec.
+(
+  source "$SCRIPTS/common.sh"
+  acquire_host_backup_lock
+  exec python3 -c 'import os,time; open(os.environ["FLOWSTOCK_COORDINATION_DIR"]+"/exec.ready","w").close(); time.sleep(3)'
+) &
+second=$!
+for _ in $(seq 1 60); do
+  [[ -f "$FLOWSTOCK_COORDINATION_DIR/exec.ready" ]] && break
+  sleep 0.05
+done
+[[ -f "$FLOWSTOCK_COORDINATION_DIR/exec.ready" ]] || { echo "restore exec test did not start" >&2; exit 1; }
+if timeout 1 bash -c 'source "$SCRIPTS/common.sh"; acquire_host_backup_lock' 2>/dev/null; then
+  echo "flock lost across exec python3" >&2
+  exit 1
+fi
+wait "$second"
 echo "host operator/deploy/restore flock concurrency regression PASS"
