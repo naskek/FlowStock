@@ -333,6 +333,7 @@ jobs:
           python3 deploy/scripts/deploy-production.static.test.py
           bash deploy/scripts/deploy-script-file.test.sh
           bash deploy/scripts/tests/operator-backup.test.sh
+          bash deploy/scripts/tests/rollback-safety.test.sh
       - name: Validate and apply disposable migrations
         shell: bash
         run: |
