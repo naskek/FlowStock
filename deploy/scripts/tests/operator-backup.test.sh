@@ -3,6 +3,7 @@ set -euo pipefail
 
 source "$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/common.sh"
 fixture="$(mktemp -d)"
+export FLOWSTOCK_COORDINATION_DIR="$fixture/operator-lock"
 trap 'rm -rf -- "$fixture"' EXIT
 data="$fixture/managed.dump"
 printf 'PGDMPmanaged-test-archive' >"$data"

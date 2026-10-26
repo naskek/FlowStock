@@ -716,6 +716,10 @@ API job response `v1` содержит `request_id`, `job_id`, `operation`, `job
 
 ### Операторский backup и durable maintenance (#122)
 
+Все host operator entrypoints и canonical deploy требуют одинаковый `FLOWSTOCK_COORDINATION_DIR` — заранее подготовленный абсолютный защищённый каталог **вне Git checkout** (владелец оператор, права `0700`). Значение задаётся оператором в `deploy/.env`; его отсутствие блокирует операции до открытия БД и не приводит к созданию небезопасного отдельного lock. Файл `operator.lock` (`0600`) использует host `flock`, timeout 60 секунд; worker параллельно использует durable volume-level lock. На первом переходе со старого worker canonical deploy останавливает его **до** fresh backup. Перед production cutover проверить фактические UID, mounts и пути всех operator callers.
+
+
+
 - Новый образ `pgbackup` содержит Python3 и PostgreSQL 16 clients, использует прежний named volume `pgbackups`; scheduled и manual dumps публикуются через managed primitive. Старые `FlowStock_*.dump` не удаляются. Новый durable scheduler/retention — отдельный #123.
 - `backup_now.sh` создаёт managed `origin=manual`, затем экспортирует архив в прежний операторский путь через приватный staging, проверяет SHA-256/size и отказывает при collision; fallback на непроверенный `pg_dump` запрещён.
 - Restore до остановки сервисов резервирует `pause.json` в том же volume. После failed restore/recovery worker не должен создавать новые dumps. `--complete --confirm-validated` подтверждает проверку БД, но не возобновляет worker автоматически.

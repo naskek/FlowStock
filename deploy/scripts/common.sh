@@ -605,6 +605,7 @@ resolve_backup_path() {
 # Worker still uses its separate shared volume flock; deploy additionally stops
 # legacy worker and establishes durable pause before mutating the stack.
 acquire_host_backup_lock() {
+    [[ -n "${FLOWSTOCK_HOST_BACKUP_LOCK_FD:-}" ]] && return 0
     local root="$FLOWSTOCK_COORDINATION_DIR"
     [[ "$root" == /* && "$root" != *"/../"* && "$root" != *"/./"* &&
        "$root" != *"/.." && "$root" != *"/." ]] || fail "invalid host coordination root"
@@ -622,6 +623,7 @@ acquire_host_backup_lock() {
 }
 
 create_backup() {
+    acquire_host_backup_lock
     local target="$1"
     local origin="${2:-manual}"
     local estimate="${BACKUP_EXPECTED_BYTES:-1073741824}"
