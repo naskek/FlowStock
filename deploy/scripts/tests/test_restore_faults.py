@@ -57,6 +57,27 @@ class Backend:
         self.current = self.restored
 
 
+
+class Coordinator:
+    def __init__(self, fail=False):
+        self.reason = None
+        self.fail = fail
+        self.calls = []
+
+    def pause(self, reason):
+        self.calls.append("pause")
+        if self.fail:
+            raise RestoreError("injected pause failure")
+        if self.reason is not None:
+            raise RestoreError("already paused")
+        self.reason = reason
+
+    def assert_paused(self, reason):
+        self.calls.append("assert_paused")
+        if self.reason != reason:
+            raise RestoreError("foreign pause reason")
+
+
 class RestoreFaultTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -71,6 +92,50 @@ class RestoreFaultTests(unittest.TestCase):
     def execute(self, **kwargs):
         with self.restore.lock(), contextlib.redirect_stdout(sys.stdout):
             self.restore.execute(self.source, **kwargs)
+
+    def test_shared_pause_failure_blocks_stop_without_local_barrier(self):
+        backend = Backend()
+        coord = Coordinator(fail=True)
+        restore = Restore(backend, self.base / "pause-fail", coordinator=coord)
+        with restore.lock(), self.assertRaises(RestoreError):
+            restore.execute(self.source)
+        self.assertNotIn("stop", backend.calls)
+        self.assertNotIn("recreate", backend.calls)
+        self.assertFalse(restore.active.exists())
+
+    def test_shared_pause_survives_failure_and_recovery(self):
+        backend = Backend("restore")
+        coord = Coordinator()
+        restore = Restore(backend, self.base / "pause-recovery", coordinator=coord)
+        with restore.lock(), self.assertRaises(RestoreError):
+            restore.execute(self.source)
+        first = restore.state["operation_id"]
+        self.assertEqual(coord.reason, "restore:" + first)
+        backend.fault = None
+        with restore.lock():
+            restore.execute(None, recover=first)
+        self.assertEqual(restore.state["backup_pause_reason"], "restore:" + first)
+        self.assertEqual(coord.calls.count("pause"), 1)
+        with restore.lock():
+            restore.complete(restore.state["operation_id"])
+        # Explicit operator resume is separate from restore completion.
+        self.assertEqual(coord.reason, "restore:" + first)
+
+    def test_foreign_pause_blocks_recovery_before_sql(self):
+        backend = Backend("restore")
+        coord = Coordinator()
+        restore = Restore(backend, self.base / "foreign-pause", coordinator=coord)
+        with restore.lock(), self.assertRaises(RestoreError):
+            restore.execute(self.source)
+        original_active = restore.active.read_bytes()
+        first = restore.state["operation_id"]
+        coord.reason = "migration-maintenance"
+        backend.fault = None
+        count = backend.calls.count("recreate")
+        with restore.lock(), self.assertRaises(RestoreError):
+            restore.execute(None, recover=first)
+        self.assertEqual(backend.calls.count("recreate"), count)
+        self.assertEqual(restore.active.read_bytes(), original_active)
 
     def test_missing_empty_invalid_and_corrupt_input_never_stops(self):
         for payload in (None, b"", b"invalid header", b"PGDMPcorrupt"):
