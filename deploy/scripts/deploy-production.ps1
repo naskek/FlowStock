@@ -266,8 +266,37 @@ backup_path="$backup_dir/flowstock-before-${expected_commit:0:12}-$(date -u +%Y%
 test ! -e "$backup_path" && test ! -L "$backup_path" || fail 'backup target exists'
 umask 077
 backup_partial="$(mktemp "${backup_path}.partial.XXXXXX")" || fail 'cannot reserve fresh backup output'
-if ! "${compose[@]}" exec -T postgres sh -eu -c 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"$backup_partial"; then
-    fail "pre-deploy pg_dump failed; private staging retained: $backup_partial"
+if test "$pause_before_checkout" = 1; then
+    # Already-deployed managed worker: create a fresh catalog-backed pre_deploy
+    # archive under the same durable flock/pause as scheduled/manual calls.
+    managed_record="$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
+        /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 \
+        create --origin pre_deploy --during-maintenance \
+        --expected-bytes "${compose_env[BACKUP_EXPECTED_BYTES]:-1073741824}")" ||
+        fail 'managed pre-deploy archive failed'
+    managed_meta="$(printf '%s' "$managed_record" | python3 -c '
+import json,re,sys
+v=json.load(sys.stdin)
+i,h,s=v.get("backup_id"),v.get("sha256"),v.get("size_bytes")
+if not isinstance(i,str) or not re.fullmatch("[0-9a-f]{32}",i) or not isinstance(h,str) or not re.fullmatch("[0-9a-f]{64}",h) or type(s) is not int or s<1 or v.get("origin")!="pre_deploy" or v.get("local_state")!="LOCAL_VALID":
+    raise SystemExit(1)
+print(i,h,s)
+')" || fail 'invalid managed pre-deploy catalog record'
+    read -r managed_id managed_sha managed_size <<<"$managed_meta"
+    if ! "${compose[@]}" run --rm --no-deps -T --entrypoint cat pgbackup \
+        "/backups/managed/archives/${managed_id}.dump" >"$backup_partial"; then
+        fail "managed pre-deploy export failed; staging retained: $backup_partial"
+    fi
+    test "$(stat -c %s "$backup_partial")" = "$managed_size" &&
+        test "$(sha256sum "$backup_partial" | cut -d' ' -f1)" = "$managed_sha" ||
+        fail 'managed pre-deploy export hash or size mismatch'
+else
+    # First rollout from a supported legacy postgres:16 image has no Python
+    # primitive. Its worker is already stopped and host callers are excluded.
+    # Preserve the old-host verified independent pre-deploy safety archive.
+    if ! "${compose[@]}" exec -T postgres sh -eu -c 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"$backup_partial"; then
+        fail "pre-deploy pg_dump failed; private staging retained: $backup_partial"
+    fi
 fi
 test -s "$backup_partial" || fail "pre-deploy dump empty; staging retained: $backup_partial"
 # List validation alone does not read every payload block. Drain stdin to
