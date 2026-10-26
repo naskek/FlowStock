@@ -174,8 +174,38 @@ exit "$status"
                 "-U", self.user, "-d", self.database, source=path, output=subprocess.DEVNULL)
 
 
+
+class BackupCoordinator:
+    """Shared durable pause on the existing pgbackups volume.
+
+    One-shot helper: does not start scheduler, PostgreSQL or HTTP API.
+    """
+    def __init__(self, backend):
+        self.backend = backend
+
+    def invoke(self, *args):
+        result = self.backend.run([*self.backend.compose, "run", "--rm", "--no-deps",
+                                   "-T", "--entrypoint", "python3", "pgbackup",
+                                   "/usr/local/bin/managed_backup.py", "--root", "/backups",
+                                   "--lock-timeout", "60", *args])
+        try:
+            return json.loads(result)
+        except (ValueError, TypeError):
+            raise RestoreError("managed maintenance response invalid") from None
+
+    def pause(self, reason):
+        result = self.invoke("pause", "--reason", reason)
+        require(result.get("paused") is True, "backup pause not confirmed")
+
+    def assert_paused(self, reason):
+        result = self.invoke("status")
+        require(result.get("paused") is True and result.get("pause_reason") == reason,
+                "backup pause reason changed; operator review required")
+
+
 class Restore:
-    def __init__(self, backend, root):
+    def __init__(self, backend, root, coordinator=None):
+        self.coordinator = coordinator
         self.backend = backend
         self.root = directory(root)
         self.active = self.root / "active.json"
@@ -220,6 +250,8 @@ class Restore:
         state = self.previous(operation_id)
         require(self.backend.preflight() == state["target"], "recovery target changed")
         self.backend.assert_stopped()
+        if self.coordinator and state.get("backup_pause_reason"):
+            self.coordinator.assert_paused(state["backup_pause_reason"])
         require(state["phase"] == "RESTORED_AWAITING_VALIDATION" or
                 (not state.get("destructive_started") and state.get("recovery_source") is None),
                 "failed destructive restore must be recovered before completion")
@@ -257,9 +289,11 @@ class Restore:
         require(not os.path.lexists(safety), "safety output already exists; archives are never overwritten")
         require(safety != source.absolute() and safety != staged, "input/safety path collision")
         directory(safety.parent, private=False)
+        pause_reason = (previous or {}).get("backup_pause_reason") or ("restore:" + operation_id)
         self.state = {"schema_version": 1, "operation_id": operation_id, "target": target,
                       "input_info": input_info, "safety_path": str(safety), "safety_validated": False,
-                      "destructive_started": False, "recovery_source": recovery_source}
+                      "destructive_started": False, "recovery_source": recovery_source,
+                      "backup_pause_reason": pause_reason}
         self.record("PREFLIGHT_VALIDATED")
         marker = {"schema_version": 1, "operation_id": operation_id}
         if previous:
@@ -270,6 +304,12 @@ class Restore:
         else:
             _write_new(self.active, marker)
         try:
+            if self.coordinator:
+                if previous and previous.get("backup_pause_reason"):
+                    self.coordinator.assert_paused(pause_reason)
+                else:
+                    self.coordinator.pause(pause_reason)
+            self.record("BACKUP_MAINTENANCE_PAUSED")
             self.record("STOPPING_SERVICES")
             self.backend.stop()
             self.record("CREATING_SAFETY")
@@ -307,7 +347,9 @@ def main():
     require(bool(args.dump) + bool(args.recover) + bool(args.complete) == 1, "select dump, --recover or --complete")
     require(args.confirm_validated == bool(args.complete), "--complete requires --confirm-validated")
     os.umask(0o077)
-    restore = Restore(DockerPostgres(), Path(os.environ["FLOWSTOCK_RUNTIME_DIR"]) / "restore")
+    backend = DockerPostgres()
+    restore = Restore(backend, Path(os.environ["FLOWSTOCK_RUNTIME_DIR"]) / "restore",
+                      coordinator=BackupCoordinator(backend))
     with restore.lock():
         if args.complete:
             restore.complete(args.complete)
