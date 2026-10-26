@@ -295,6 +295,11 @@ class Restore:
                       "destructive_started": False, "recovery_source": recovery_source,
                       "backup_pause_reason": pause_reason}
         self.record("PREFLIGHT_VALIDATED")
+        if self.coordinator:
+            if previous and previous.get("backup_pause_reason"):
+                self.coordinator.assert_paused(pause_reason)
+            else:
+                self.coordinator.pause(pause_reason)
         marker = {"schema_version": 1, "operation_id": operation_id}
         if previous:
             replacement = self.root / (operation_id + ".active")
@@ -304,11 +309,6 @@ class Restore:
         else:
             _write_new(self.active, marker)
         try:
-            if self.coordinator:
-                if previous and previous.get("backup_pause_reason"):
-                    self.coordinator.assert_paused(pause_reason)
-                else:
-                    self.coordinator.pause(pause_reason)
             self.record("BACKUP_MAINTENANCE_PAUSED")
             self.record("STOPPING_SERVICES")
             self.backend.stop()
