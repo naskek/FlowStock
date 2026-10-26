@@ -779,7 +779,7 @@ TOC проверяет каталог архива, SHA-256 фиксирует �
 - Если сбой оставил БД без connections либо между DROP и CREATE, `--recover` откажет в preflight и сохранит старый marker. Сначала администратор должен проверить exact cluster, последнее durable состояние и доступный safety. Только после этого явно разрешить connections существующей БД (`ALTER DATABASE <quoted_target> ALLOW_CONNECTIONS true`) либо **создать отсутствующую пустую БД** (`CREATE DATABASE <quoted_target> TEMPLATE template0`) через `postgres`. Не выполнять повторный DROP для подготовки. Затем явный `--recover` создаст fresh guard текущей БД и восстановит исходный safety. При недоступном storage/cluster или сомнении в outcome — остановиться для ручного расследования.
 - После успешного restore/recovery вручную проверить schema/migrations, данные, constraints, sequences и инварианты `ledger`, документов, заказов, паллет и ЧЗ. Затем `bash deploy/scripts/restore_dump.sh --complete <operation_id> --confirm-validated` атомарно архивирует marker, проверяя тот же target и остановленные сервисы. Failed destructive phase нельзя отметить completed. Команда не запускает контейнеры; запуск согласованной app revision и pgbackup — отдельное операторское действие.
 
-Barrier этого restore защищает его повторный запуск и обслуживаемый Compose stack. Общая координация с operator/deploy/scheduler, общий worker maintenance state и resume относятся к #122 и здесь ещё не подключены. Во время restore/recovery оператор обязан исключить сторонние DB writers, ручной запуск app/pgbackup и параллельный deploy/backup; marker сам не блокирует внешние команды и Docker daemon. `rollback_release.sh` пока сохраняет прежнюю caller-логику и не считается обновлённой координированной recovery-процедурой; canonical deploy также не пишет его legacy release pointers. Для recovery выбирать exact target/dump с проверенным provenance.
+Restore барьер защищает повторный запуск, а durable `pgbackups/managed/maintenance/pause.json` блокирует managed worker и операторский managed backup до явного resume. Контракт проверяется в #122; production rollout до его CI/smoke не разрешён. Во время restore/recovery оператор обязан исключить сторонние DB writers, ручной запуск app/pgbackup и параллельный deploy/backup; marker сам не блокирует внешние команды и Docker daemon. `rollback_release.sh` пока сохраняет прежнюю caller-логику и не считается обновлённой координированной recovery-процедурой; canonical deploy также не пишет его legacy release pointers. Для recovery выбирать exact target/dump с проверенным provenance.
 
 ## Статус релиза
 
@@ -792,71 +792,20 @@ bash deploy/scripts/release_status.sh
 
 ## Путь rollback
 
-Если обновление сломалось после backup или после пересоздания приложения:
+Rollback — отдельная операторская процедура, не автоматическое продолжение failed deploy. Canonical `deploy-production.ps1` **не обновляет** `latest_success` / `previous_success`; эти legacy pointers не доказывают target/dump provenance и не используются для выбора target.
 
-1. Статус и логи:
-
-```bash
-$DC ps
-$DC logs --tail=100 migrator flowstock nginx postgres
-```
-
-Если текущая revision содержит `discovery-relay`, добавьте его в список логов:
+1. Проверить текущее состояние `docker compose ... ps`, журналы сервисов, commit `HEAD`, exact target SHA, совместимость схемы и архив, записанный каноническим pre-deploy gate. Не выполнять rollback наугад.
+2. Если требуется только возврат кода **без восстановления БД**, оператор может использовать helper с явно выбранным полным lowercase SHA (40 символов), после проверки schema/data compatibility:
 
 ```bash
-$DC logs --tail=100 discovery-relay
+bash deploy/scripts/rollback_release.sh --no-restore <exact-target-commit-sha>
 ```
 
-2. При несовместимости схемы и приложения вернитесь на предыдущую рабочую ревизию:
+3. Если нужно восстановление БД, **не** использовать автоматический rollback/restart. Сначала, пока текущие SQL tools и рабочий restore contract доступны, запустить `bash deploy/scripts/restore_dump.sh <exact-provenance-dump>`. Его результат `RESTORED_AWAITING_VALIDATION` не является разрешением запуска приложения.
+4. Оператор проверяет DB/constraints/sequences/ledger и после успешной проверки выполняет `bash deploy/scripts/restore_dump.sh --complete <operation_id> --confirm-validated`. Только после этого отдельно выбрать/проверить exact target checkout и выполнить допустимый app-only rollout. Если был создан durable shared pause, снять его отдельно после проверок командой `resume --operator-confirmed` из раздела выше.
+5. При ошибке SQL использовать только явный `--recover <operation_id>` и доказанный исходный safety archive. Сервисы и backup worker остаются остановленными/paused до завершения восстановления и ручного подтверждения. Не запускать старую revision, если она не понимает текущие schema/managed state или допускает запись поверх восстановленной БД.
 
-```bash
-git checkout <previous-good-commit-or-tag>
-```
-
-3. Восстановите свежий pre-deploy dump, путь которого сообщил канонический PowerShell deploy-процесс:
-
-```bash
-bash deploy/scripts/restore_dump.sh <backup-path-reported-by-PowerShell-process>
-```
-
-4. Поднимите предыдущую рабочую ревизию приложения. Для старой revision без `discovery-relay` запускайте только существующие сервисы; для новой revision с relay используйте `discovery-relay` между `flowstock` и `nginx`:
-
-```bash
-$DC up -d --build flowstock nginx pgbackup
-# или, если target revision содержит discovery-relay:
-$DC up -d --build flowstock discovery-relay nginx pgbackup
-```
-
-Для типового сценария есть rollback helper:
-
-```bash
-cd <REMOTE_REPO_PATH>
-bash deploy/scripts/rollback_release.sh
-```
-
-По умолчанию `rollback_release.sh`:
-
-- перед checkout останавливает и удаляет `discovery-relay`, если он есть в текущем compose project;
-- делает checkout предыдущей записанной успешной ревизии релиза;
-- проверяет target Compose: старая revision без relay должна публиковать `flowstock` на `7155/udp`, новая revision с relay должна использовать host-network `discovery-relay` и loopback backend publish;
-- по exact target Git tree определяет source-identity capability: modern target проходит строгую сверку SHA/manifest, legacy target — проверку доступности и legacy payload `/api/version` с явным warning о невозможности подтвердить running SHA;
-- восстанавливает последний записанный pre-deploy dump текущего релиза;
-- запускает сервисы, существующие в target revision: `flowstock`, при наличии `discovery-relay`, затем `nginx` и `pgbackup`;
-- записывает rollback как новый последний успешный релиз.
-
-Откатить только код приложения без восстановления БД:
-
-```bash
-bash deploy/scripts/rollback_release.sh --no-restore
-```
-
-Для rollback только сетевого изменения UDP discovery relay используйте `rollback_release.sh --no-restore`: PostgreSQL restore для этого не требуется.
-
-Откатиться на конкретную ревизию и конкретный dump:
-
-```bash
-bash deploy/scripts/rollback_release.sh <git-ref> <REMOTE_BACKUP_DIR>/pre_release.dump
-```
+Это fail-closed runbook. Полная квалификация rollback exact-tree/production-copy rehearsal и старого target-image — отдельный обязательный gate перед merge/deploy.
 
 ## Health checks
 
