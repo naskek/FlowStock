@@ -248,8 +248,8 @@ test "$telegram_enabled" = 0 || validator+=(--telegram-enabled)
 "${compose[@]}" config --format json | "${validator[@]}" >/dev/null
 log 'secret-safe resolved Compose validation passed'
 
-"${compose[@]}" pull postgres nginx pgbackup
-"${compose[@]}" build flowstock discovery-relay
+"${compose[@]}" pull postgres nginx
+"${compose[@]}" build flowstock discovery-relay pgbackup
 "${compose[@]}" up -d --remove-orphans
 "${compose[@]}" ps
 

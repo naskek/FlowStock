@@ -37,6 +37,7 @@ checks = {
     ),
     "config": require(r'"\$\{compose\[@\]\}" config -q', "Compose config gate is missing"),
     "resolved validator": require(r"validate_resolved_compose\.py", "resolved Compose validator is missing"),
+    "managed worker build": require(r'"\$\{compose\[@\]\}" build flowstock discovery-relay pgbackup', "pgbackup must be built before startup"),
     "deploy": require(r'"\$\{compose\[@\]\}" up -d --remove-orphans', "Compose deploy is missing"),
     "loopback port": require(r'flowstock_port="\$\{compose_env\[FLOWSTOCK_PORT\]:-8080\}"', "loopback port must come from resolved Compose environment"),
     "loopback URL": require(r'loopback_url="http://127\.0\.0\.1:\$flowstock_port"', "canonical loopback URL is missing"),
@@ -115,7 +116,7 @@ if remote_match is None:
 if "$PublicUrl" in remote_match.group("body"):
     raise AssertionError("server-side post-deploy gates must not depend on operator external HTTPS")
 
-if not checks["production-copy gate"] < checks["transport preflight script file"] < checks["backup verification"] < checks["exact server update"] < checks["deploy"]:
+if not checks["production-copy gate"] < checks["transport preflight script file"] < checks["backup verification"] < checks["exact server update"] < checks["managed worker build"] < checks["deploy"]:
     raise AssertionError("production-copy gate, transport preflight, backup, exact update and deploy order is unsafe")
 
 pre_backup = source[: checks["backup verification"]]
