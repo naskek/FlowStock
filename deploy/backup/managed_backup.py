@@ -428,6 +428,7 @@ def main():
                 value = {"paused": False}
             else:
                 value = {"paused": bool(store.paused()),
+                         "pause_reason": (store.paused() or {}).get("reason"),
                          "archives": len(list(store.catalog.glob("*.json"))),
                          "pending": len(list(store.jobs.glob("*.json")))}
         print(json.dumps(value, sort_keys=True))
