@@ -10,7 +10,7 @@ import unittest
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from restore_postgres import DockerPostgres, Restore, RestoreError, BackupError
+from restore_postgres import DockerPostgres, Restore, RestoreError, BackupError, BackupCoordinator
 
 SCRIPT = Path(__file__).resolve().parents[1] / "restore_dump.sh"
 
@@ -216,7 +216,8 @@ networks:
                 runtime = self.case / boundary
                 os.environ["FLOWSTOCK_RUNTIME_DIR"] = str(runtime)
                 backend = BoundaryFault()
-                restore = Restore(backend, runtime / "restore")
+                restore = Restore(backend, runtime / "restore",
+                                  coordinator=BackupCoordinator(backend))
                 with restore.lock(), self.assertRaises(RestoreError):
                     restore.execute(self.source)
                 state = restore.state.copy()
@@ -231,6 +232,16 @@ networks:
                 self.verify_data()
                 self.backend.assert_stopped()
                 self.assertTrue(Path(state["safety_path"]).exists())
+                completed = self.active()
+                self.entrypoint("--complete", completed["operation_id"], "--confirm-validated")
+                args = [*self.backend.compose, "run", "--rm", "--no-deps",
+                        "-T", "--entrypoint", "python3", "pgbackup",
+                        "/usr/local/bin/managed_backup.py", "--root", "/backups"]
+                paused = json.loads(self.backend.run([*args, "status"]))
+                self.assertEqual(paused["pause_reason"], "restore:" + state["operation_id"])
+                # Deliberate operator-style resume between the two isolated
+                # DDL boundary scenarios; never resume on failed recovery.
+                self.backend.run([*args, "resume", "--operator-confirmed"])
 
 
 if __name__ == "__main__":
