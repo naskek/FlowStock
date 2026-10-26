@@ -46,6 +46,12 @@ class PostgreSQLRestoreTests(unittest.TestCase):
 ''' + dummy + '  nginx:\n' + dummy + '  discovery-relay:\n' + dummy + '''  pgbackup:
     image: flowstock-pgbackup:local
     entrypoint: ["sh", "-c", "exec sleep infinity"]
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: restore_fixture
+      PGUSER: postgres
+      PGPASSWORD: isolated_ci_only
     volumes:
       - pgbackups:/backups
     restart: "no"

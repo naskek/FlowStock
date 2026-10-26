@@ -76,6 +76,12 @@ class Coordinator:
         self.calls.append("assert_paused")
         if self.reason != reason:
             raise RestoreError("foreign pause reason")
+    def backup(self, path):
+        self.calls.append("managed_backup")
+        path.write_bytes(b"PGDMPoriginal")
+        path.chmod(0o600)
+        return "fixture-managed-safety"
+
 
 
 class RestoreFaultTests(unittest.TestCase):

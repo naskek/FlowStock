@@ -201,6 +201,31 @@ class BackupCoordinator:
         result = self.invoke("status")
         require(result.get("paused") is True and result.get("pause_reason") == reason,
                 "backup pause reason changed; operator review required")
+    def backup(self, pending):
+        # This backup is created under the same persistent flock/catalog as
+        # scheduled/manual dumps, despite the durable maintenance pause.
+        record = self.invoke("create", "--origin", "pre_restore",
+                             "--during-maintenance", "--expected-bytes",
+                             os.environ.get("BACKUP_EXPECTED_BYTES", "1073741824"))
+        ident, sha, size = record.get("backup_id"), record.get("sha256"), record.get("size_bytes")
+        require(bool(re.fullmatch(r"[0-9a-f]{32}", ident or "")) and
+                bool(re.fullmatch(r"[0-9a-f]{64}", sha or "")) and
+                type(size) is int and size > 0 and record.get("local_state") == "LOCAL_VALID",
+                "invalid managed pre-restore catalog result")
+        # Stream bytes rather than buffering a full production database in RAM.
+        # Host safety output remains independent for operator/legacy recovery.
+        with pending.open("xb") as out:
+            os.chmod(pending, 0o600)
+            self.backend.run([*self.backend.compose, "run", "--rm", "--no-deps",
+                              "-T", "--entrypoint", "cat", "pgbackup",
+                              "/backups/managed/archives/" + ident + ".dump"], output=out)
+            out.flush()
+            os.fsync(out.fileno())
+        require(_archive_info(pending) == (size, sha),
+                "managed pre-restore safety export changed")
+        _fsync_dir(pending.parent)
+        return ident
+
 
 
 class Restore:
@@ -314,11 +339,14 @@ class Restore:
             self.backend.stop()
             self.record("CREATING_SAFETY")
             pending = safety.parent / (".restore-" + operation_id + ".partial")
-            self.backend.backup(pending)
+            managed_id = self.coordinator.backup(pending) if self.coordinator else None
+            if not self.coordinator:
+                self.backend.backup(pending)
             safety_info = self.backend.validate(pending)
             _rename_new(pending, safety)
             _fsync_dir(safety.parent)
-            self.record("SAFETY_VALIDATED", safety_validated=True, safety_info=safety_info)
+            self.record("SAFETY_VALIDATED", safety_validated=True, safety_info=safety_info,
+                        managed_safety_backup_id=managed_id)
             print(f"[restore] validated safety backup: {safety}", flush=True)
             self.backend.assert_stopped()
             require(self.backend.validate(staged) == input_info, "staged input changed")
