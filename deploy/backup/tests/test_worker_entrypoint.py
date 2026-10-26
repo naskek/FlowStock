@@ -25,6 +25,10 @@ class ManagedWorkerTests(unittest.TestCase):
         self.assertIn("dockerfile: deploy/backup/Dockerfile", worker)
         self.assertIn("pgbackups:/backups", worker)
         self.assertIn("BACKUP_EXPECTED_BYTES:", worker)
+        self.assertIn("migrator:", worker)
+        self.assertIn("condition: service_completed_successfully", worker)
+        migrator = compose.split("\n  migrator:\n", 1)[1].split("\n  flowstock:\n", 1)[0]
+        self.assertNotIn("\n      migrator:", migrator)
         self.assertNotIn("image: postgres:16-alpine", worker)
 
     def test_legacy_retention_never_deletes_existing_archives(self):
