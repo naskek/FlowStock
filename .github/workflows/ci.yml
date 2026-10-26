@@ -334,6 +334,7 @@ jobs:
           bash deploy/scripts/deploy-script-file.test.sh
           bash deploy/scripts/tests/operator-backup.test.sh
           bash deploy/scripts/tests/rollback-safety.test.sh
+          bash deploy/scripts/tests/host-lock-concurrency.test.sh
       - name: Validate and apply disposable migrations
         shell: bash
         run: |
