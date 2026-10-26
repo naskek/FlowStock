@@ -597,13 +597,60 @@ resolve_backup_path() {
     printf '%s\n' "$requested"
 }
 
+# Manual/legacy operator callers use the same managed flock and catalog as pgbackup.
+# Export a verified copy to the historical operator path without touching the
+# original managed archive or overwriting an existing destination.
 create_backup() {
     local target="$1"
-    log "creating backup at $target"
-    if ! compose exec -T postgres sh -eu -c 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"$target"; then
-        rm -f "$target" || true
-        fail "pg_dump failed"
+    local origin="${2:-manual}"
+    local estimate="${BACKUP_EXPECTED_BYTES:-1073741824}"
+    local lock_timeout="${BACKUP_LOCK_TIMEOUT_SECONDS:-10}"
+    local result meta backup_id backup_hash backup_size tmp copied_hash copied_size
+    [[ "$estimate" =~ ^[1-9][0-9]*$ ]] || fail "invalid BACKUP_EXPECTED_BYTES"
+    [[ "$origin" == "manual" || "$origin" == "pre_restore" ]] || fail "unsupported operator backup origin"
+    [[ ! -e "$target" && ! -L "$target" ]] || fail "backup destination already exists: $target"
+    require_command python3
+    require_command sha256sum
+
+    log "creating managed backup for operator export ($origin)"
+    result="$(compose run --rm --no-deps -T --entrypoint python3 pgbackup \
+        /usr/local/bin/managed_backup.py --root /backups \
+        --lock-timeout "$lock_timeout" create --origin "$origin" --expected-bytes "$estimate")" \
+        || fail "managed PostgreSQL backup failed"
+    meta="$(printf '%s\n' "$result" | python3 -c '
+import json,re,sys
+v=json.load(sys.stdin)
+b=v["backup_id"]
+h=v["sha256"]
+s=v["size_bytes"]
+if not re.fullmatch(r"[0-9a-f]{32}",b) or not re.fullmatch(r"[0-9a-f]{64}",h) or type(s) is not int or s<=0 or v["local_state"]!="LOCAL_VALID":
+    raise SystemExit(1)
+print(b,h,s)
+')" || fail "invalid managed backup result"
+    read -r backup_id backup_hash backup_size <<<"$meta"
+
+    tmp="$(mktemp "${target}.part.XXXXXXXX")" || fail "unable to create temporary operator backup"
+    chmod 600 "$tmp"
+    if ! compose run --rm --no-deps -T --entrypoint cat pgbackup \
+        "/backups/managed/archives/${backup_id}.dump" >"$tmp"; then
+        rm -f -- "$tmp"
+        fail "managed backup export failed"
     fi
+    copied_hash="$(sha256sum "$tmp")"
+    copied_hash="${copied_hash%% *}"
+    copied_size="$(stat -c %s "$tmp")"
+    if [[ "$copied_hash" != "$backup_hash" || "$copied_size" != "$backup_size" ]]; then
+        rm -f -- "$tmp"
+        fail "managed backup export integrity mismatch"
+    fi
+    # Hardlink publish fails if target already exists; no replacement and no
+    # success-shaped partial archive. Staging resides in the same directory.
+    if ! ln -- "$tmp" "$target"; then
+        rm -f -- "$tmp"
+        fail "backup destination occupied during export"
+    fi
+    rm -f -- "$tmp"
+    log "verified operator backup saved to $target (managed ID $backup_id)"
 }
 
 run_migrator() {
