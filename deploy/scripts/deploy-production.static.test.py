@@ -119,6 +119,17 @@ if "$PublicUrl" in remote_match.group("body"):
 if not checks["production-copy gate"] < checks["transport preflight script file"] < checks["backup verification"] < checks["exact server update"] < checks["managed worker build"] < checks["deploy"]:
     raise AssertionError("production-copy gate, transport preflight, backup, exact update and deploy order is unsafe")
 
+pause_gate = require(r'pause --reason "\$pause_reason"', "managed shared pause acquisition is missing")
+legacy_stop_gate = require(r'"\$\{compose\[@\]\}" stop pgbackup', "legacy worker stop is missing")
+full_payload_gate = require(r'pg_restore --file=/dev/null', "pre-deploy must inspect full backup payload")
+unique_publish_gate = require(r'ln -- "\$backup_partial" "\$backup_path"', "verified dump must publish without replacement")
+new_image_pause_gate = require(r'pause --reason "\$pause_reason" >/dev/null', "new worker pause is missing")
+resume_gate = require(r'resume --operator-confirmed', "explicit validated resume is missing")
+if not (legacy_stop_gate < full_payload_gate < unique_publish_gate <
+        checks["exact server update"] < new_image_pause_gate <
+        checks["deploy"] < checks["internal ready"] < resume_gate):
+    raise AssertionError("backup pause, validation and resume order is unsafe")
+
 pre_backup = source[: checks["backup verification"]]
 if re.search(r'"\$\{compose\[@\]\}" (?:up|build|pull|restart|create)', pre_backup):
     raise AssertionError("mutating Compose command is forbidden before verified backup")
