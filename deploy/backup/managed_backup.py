@@ -322,7 +322,13 @@ class Store:
     def create(self, origin, estimate, during_maintenance=False):
         if origin not in ORIGINS:
             raise BackupError("INVALID_REQUEST: origin")
-        if self.paused() and not (origin == "pre_restore" and during_maintenance):
+        pause = self.paused()
+        # A stopped worker has a durable barrier. Only the matching operator
+        # safety origin may deliberately create a guarded archive within it.
+        allowed = (during_maintenance and pause and
+                   ((origin == "pre_restore" and str(pause.get("reason", "")).startswith("restore:")) or
+                    (origin == "pre_deploy" and str(pause.get("reason", "")).startswith("pre_deploy:"))))
+        if pause and not allowed:
             raise BackupError("MAINTENANCE_PAUSED: dump disabled")
         _require_pg16()
         self._space(estimate)
