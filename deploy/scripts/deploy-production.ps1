@@ -219,7 +219,10 @@ status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}
 test "$status" = healthy || fail 'production postgres is not healthy; refusing to mutate the stack before backup'
 # This host lock is shared with operator backup_now/restore/rollback wrappers.
 # It remains held through the old-checkout pre-deploy safety backup.
-coordination_dir="${compose_env[FLOWSTOCK_COORDINATION_DIR]:-}"
+# Must also work on the OLD checkout whose Compose file does not reference
+# FLOWSTOCK_COORDINATION_DIR. Derive deterministically from the canonical
+# operator backup parent and validate the same value after the Git update.
+coordination_dir="$(dirname "$backup_dir")/coordination"
 case "$coordination_dir" in
     /*) ;;
     *) fail 'FLOWSTOCK_COORDINATION_DIR must be absolute' ;;
@@ -329,6 +332,12 @@ test "$source_tsd_version" = "$expected_tsd_version" || fail 'server TSD source 
 test "$worker_tsd_version" = "$expected_tsd_version" || fail 'server TSD source versions are inconsistent'
 
 "${compose[@]}" config -q
+# Post-checkout contract: generic operator helpers read this exact setting
+# from .env. A mismatch must not produce two independent host locks.
+resolved_coordination="$("${compose[@]}" config --environment |
+    sed -n 's/^FLOWSTOCK_COORDINATION_DIR=//p')"
+test "$resolved_coordination" = "$coordination_dir" ||
+    fail 'FLOWSTOCK_COORDINATION_DIR must match canonical backup-parent coordination path'
 postgres_bind_host="${compose_env[FLOWSTOCK_PG_BIND_HOST]:-127.0.0.1}"
 postgres_second_bind_host="${compose_env[FLOWSTOCK_PG_SECOND_BIND_HOST]:-}"
 validator=(python3 deploy/scripts/validate_resolved_compose.py --postgres-host "$postgres_bind_host")

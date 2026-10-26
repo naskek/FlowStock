@@ -124,13 +124,15 @@ legacy_stop_gate = require(r'"\$\{compose\[@\]\}" stop pgbackup', "legacy worker
 full_payload_gate = require(r'pg_restore --file=/dev/null', "pre-deploy must inspect full backup payload")
 managed_origin_gate = require(r'create --origin pre_deploy --during-maintenance', "pre-deploy managed origin missing")
 host_exclusion_gate = require(r'flock -w 60 "\$host_backup_fd"', "pre-deploy must acquire host-level operator lock")
+downlevel_host_gate = require(r'coordination_dir="\$\(dirname "\$backup_dir"\)/coordination"', "old-checkout host lock must not depend on future Compose interpolation")
+mismatch_gate = require(r'FLOWSTOCK_COORDINATION_DIR must match canonical backup-parent coordination path', "new-checkout operator lock identity gate missing")
 
 unique_filename_gate = require(r'flowstock-before-.*?\$\{BASHPID\}\.dump', "pre-deploy filename must include process-unique suffix")
 unique_publish_gate = require(r'ln -- "\$backup_partial" "\$backup_path"', "verified dump must publish without replacement")
 new_image_pause_gate = require(r'"\$\{compose\[@\]\}" build flowstock discovery-relay pgbackup.*?pause --reason "\$pause_reason" >/dev/null', "new worker pause is missing")
 external_gate = require(r'Invoke-RestMethod -Uri "\$PublicUrl/api/version"', "external identity missing")
 resume_gate = require(r'resume --operator-confirmed', "explicit validated resume is missing")
-if not host_exclusion_gate < legacy_stop_gate < managed_origin_gate < full_payload_gate:
+if not downlevel_host_gate < host_exclusion_gate < legacy_stop_gate < managed_origin_gate < full_payload_gate:
     raise AssertionError("host exclusion, legacy stop and managed pre-deploy origin are out of order")
 if not (legacy_stop_gate < full_payload_gate < unique_publish_gate <
         checks["exact server update"] < new_image_pause_gate <
