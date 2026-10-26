@@ -383,6 +383,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s deploy/scripts/tests -p 'test_restore_faults.py' -v
+          docker build -f deploy/backup/Dockerfile -t flowstock-pgbackup:local .
           python3 deploy/scripts/tests/integration_restore_pg16.py
       - name: Validate production Compose and build images
         shell: bash

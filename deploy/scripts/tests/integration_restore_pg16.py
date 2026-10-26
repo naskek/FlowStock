@@ -43,7 +43,15 @@ class PostgreSQLRestoreTests(unittest.TestCase):
       retries: 60
     restart: "no"
   flowstock:
-''' + dummy + '  nginx:\n' + dummy + '  discovery-relay:\n' + dummy + '  pgbackup:\n' + dummy + '''networks:
+''' + dummy + '  nginx:\n' + dummy + '  discovery-relay:\n' + dummy + '''  pgbackup:
+    image: flowstock-pgbackup:local
+    entrypoint: ["sh", "-c", "exec sleep infinity"]
+    volumes:
+      - pgbackups:/backups
+    restart: "no"
+volumes:
+  pgbackups:
+networks:
   default:
     internal: true
 ''')
@@ -85,6 +93,16 @@ class PostgreSQLRestoreTests(unittest.TestCase):
         self.backend.backup(self.source)
         self.assertGreater(self.source.stat().st_size, 4 * 1024 * 1024)
         self.backend.run([*self.backend.compose, "up", "-d", *self.backend.stopped_services])
+
+    def tearDown(self):
+        # Every disposable test case must explicitly release its own shared
+        # maintenance pause. Production never auto-resumes after restore.
+        args = [*self.backend.compose, "run", "--rm", "--no-deps",
+                "-T", "--entrypoint", "python3", "pgbackup",
+                "/usr/local/bin/managed_backup.py", "--root", "/backups"]
+        check = self.backend.run([*args, "status"])
+        if json.loads(check).get("paused"):
+            self.backend.run([*args, "resume", "--operator-confirmed"])
 
     def entrypoint(self, *args, expect_success=True):
         process = subprocess.run(["bash", str(SCRIPT), *map(str, args)], capture_output=True, text=True)
