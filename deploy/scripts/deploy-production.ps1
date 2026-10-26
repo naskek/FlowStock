@@ -239,7 +239,7 @@ if test -n "$old_pgbackup_id"; then
     test "$stopped_state" = exited || fail 'backup worker did not stop; refusing backup'
 fi
 mkdir -p "$backup_dir"
-backup_path="$backup_dir/flowstock-before-${expected_commit:0:12}-$(date -u +%Y%m%dT%H%M%SZ)-$.dump"
+backup_path="$backup_dir/flowstock-before-${expected_commit:0:12}-$(date -u +%Y%m%dT%H%M%SZ)-${BASHPID}.dump"
 test ! -e "$backup_path" && test ! -L "$backup_path" || fail 'backup target exists'
 umask 077
 backup_partial="$(mktemp "${backup_path}.partial.XXXXXX")" || fail 'cannot reserve fresh backup output'

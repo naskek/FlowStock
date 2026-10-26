@@ -122,6 +122,7 @@ if not checks["production-copy gate"] < checks["transport preflight script file"
 pause_gate = require(r'pause --reason "\$pause_reason"', "managed shared pause acquisition is missing")
 legacy_stop_gate = require(r'"\$\{compose\[@\]\}" stop pgbackup', "legacy worker stop is missing")
 full_payload_gate = require(r'pg_restore --file=/dev/null', "pre-deploy must inspect full backup payload")
+unique_filename_gate = require(r'flowstock-before-.*?\$\{BASHPID\}\.dump', "pre-deploy filename must include process-unique suffix")
 unique_publish_gate = require(r'ln -- "\$backup_partial" "\$backup_path"', "verified dump must publish without replacement")
 new_image_pause_gate = require(r'"\$\{compose\[@\]\}" build flowstock discovery-relay pgbackup.*?pause --reason "\$pause_reason" >/dev/null', "new worker pause is missing")
 resume_gate = require(r'resume --operator-confirmed', "explicit validated resume is missing")
