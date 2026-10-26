@@ -128,13 +128,15 @@ downlevel_host_gate = require(r'coordination_dir="\$\(dirname "\$backup_dir"\)/c
 mismatch_gate = require(r'FLOWSTOCK_COORDINATION_DIR must match canonical backup-parent coordination path', "new-checkout operator lock identity gate missing")
 
 unique_filename_gate = require(r'flowstock-before-.*?\$\{BASHPID\}\.dump', "pre-deploy filename must include process-unique suffix")
+fsync_backup_gate = require(r'FSYNC_BACKUP', "validated pre-deploy backup must be fsynced")
+fsync_directory_gate = require(r'FSYNC_DIRECTORY', "final pre-deploy archive directory must be fsynced")
 unique_publish_gate = require(r'ln -- "\$backup_partial" "\$backup_path"', "verified dump must publish without replacement")
 new_image_pause_gate = require(r'"\$\{compose\[@\]\}" build flowstock discovery-relay pgbackup.*?pause --reason "\$pause_reason" >/dev/null', "new worker pause is missing")
 external_gate = require(r'Invoke-RestMethod -Uri "\$PublicUrl/api/version"', "external identity missing")
 resume_gate = require(r'resume --operator-confirmed', "explicit validated resume is missing")
 if not downlevel_host_gate < host_exclusion_gate < legacy_stop_gate < managed_origin_gate < full_payload_gate:
     raise AssertionError("host exclusion, legacy stop and managed pre-deploy origin are out of order")
-if not (legacy_stop_gate < full_payload_gate < unique_publish_gate <
+if not (legacy_stop_gate < full_payload_gate < fsync_backup_gate < unique_publish_gate < fsync_directory_gate <
         checks["exact server update"] < new_image_pause_gate <
         checks["deploy"] < checks["internal ready"] < external_gate < resume_gate):
     raise AssertionError("backup pause, validation and resume order is unsafe")

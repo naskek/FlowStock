@@ -312,8 +312,24 @@ exit "$status"
 ' <"$backup_partial" || fail "pre-deploy TOC invalid; staging retained: $backup_partial"
 "${compose[@]}" exec -T postgres pg_restore --file=/dev/null <"$backup_partial" ||
     fail "pre-deploy dump payload invalid; staging retained: $backup_partial"
+# Make the validated bytes durable before atomically exposing the
+# operator recovery path; make final link/unlink directory metadata durable.
+python3 - "$backup_partial" <<'FSYNC_BACKUP'
+import os,sys
+with open(sys.argv[1], "rb") as fp:
+    os.fsync(fp.fileno())
+FSYNC_BACKUP
 ln -- "$backup_partial" "$backup_path" || fail 'cannot atomically publish verified backup'
 rm -f -- "$backup_partial"
+python3 - "$backup_path" <<'FSYNC_DIRECTORY'
+import os,sys
+folder=os.path.dirname(sys.argv[1])
+fd=os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+FSYNC_DIRECTORY
 log "fresh PostgreSQL backup verified: $backup_path"
 
 # Update the server clone to exactly the caller-verified origin/main commit.
