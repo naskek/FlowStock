@@ -363,7 +363,7 @@ jobs:
         timeout-minutes: 10
         run: |
           set -euo pipefail
-          python3 -m unittest discover -s deploy/backup/tests -p 'test_managed_backup.py' -v
+          python3 -m unittest discover -s deploy/backup/tests -p 'test_*.py' -v
           # Disposable PostgreSQL 16 container with the canonical migrations.
           compose=(docker compose --project-name flowstock-ci-migrations -f deploy/docker-compose.test-postgres.yml)
           container_id="$("${compose[@]}" ps -q postgres-test)"
@@ -449,7 +449,7 @@ jobs:
               --telegram-enabled \
               --forbidden-environment-value ci-synthetic-token-file-content
 
-          FLOWSTOCK_SOURCE_COMMIT="$GITHUB_SHA" "${compose[@]}" build flowstock discovery-relay
+          FLOWSTOCK_SOURCE_COMMIT="$GITHUB_SHA" "${compose[@]}" build flowstock discovery-relay pgbackup
       - name: Clean up disposable PostgreSQL
         if: always()
         shell: bash

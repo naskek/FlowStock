@@ -1,34 +1,37 @@
 #!/bin/sh
 set -eu
 
+# Preserve legacy FlowStock_*.dump archives. Managed retention is Issue #123.
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
-BACKUP_PREFIX="${BACKUP_PREFIX:-FlowStock}"
-BACKUP_KEEP="${BACKUP_KEEP:-30}"
 BACKUP_INTERVAL_SECONDS="${BACKUP_INTERVAL_SECONDS:-86400}"
+BACKUP_EXPECTED_BYTES="${BACKUP_EXPECTED_BYTES:-1073741824}"
+BACKUP_LOCK_TIMEOUT_SECONDS="${BACKUP_LOCK_TIMEOUT_SECONDS:-10}"
+MANAGER="/usr/local/bin/managed_backup.py"
 
-mkdir -p "$BACKUP_DIR"
+case "$BACKUP_INTERVAL_SECONDS" in
+  ''|*[!0-9]*) echo "[backup] invalid BACKUP_INTERVAL_SECONDS" >&2; exit 1 ;;
+esac
+case "$BACKUP_EXPECTED_BYTES" in
+  ''|*[!0-9]*) echo "[backup] invalid BACKUP_EXPECTED_BYTES" >&2; exit 1 ;;
+esac
+[ "$BACKUP_INTERVAL_SECONDS" -gt 0 ] || { echo "[backup] interval must be positive" >&2; exit 1; }
+[ "$BACKUP_EXPECTED_BYTES" -gt 0 ] || { echo "[backup] estimate must be positive" >&2; exit 1; }
+[ -d "$BACKUP_DIR" ] || { echo "[backup] backup root missing" >&2; exit 1; }
 
-echo "[backup] start: dir=$BACKUP_DIR keep=$BACKUP_KEEP interval=${BACKUP_INTERVAL_SECONDS}s"
-
-while true; do
-  ts="$(date +%Y%m%d_%H%M%S)"
-  target="$BACKUP_DIR/${BACKUP_PREFIX}_${ts}.dump"
-  echo "[backup] running pg_dump -> $target"
-
-  if pg_dump -Fc -f "$target"; then
-    echo "[backup] ok $target"
-    if [ "$BACKUP_KEEP" -gt 0 ] 2>/dev/null; then
-      backups="$(ls -1t "$BACKUP_DIR/${BACKUP_PREFIX}_"*.dump 2>/dev/null || true)"
-      if [ -n "$backups" ]; then
-        echo "$backups" | tail -n +"$((BACKUP_KEEP + 1))" | while read -r old; do
-          [ -n "$old" ] && rm -f "$old"
-        done
-      fi
+echo "[backup] managed worker: root=$BACKUP_DIR interval=${BACKUP_INTERVAL_SECONDS}s"
+while :; do
+  # Pause can race the read: create checks it again under the same shared flock.
+  if status="$(python3 "$MANAGER" --root "$BACKUP_DIR" \
+      --lock-timeout "$BACKUP_LOCK_TIMEOUT_SECONDS" status)"; then
+    if printf '%s\n' "$status" | grep -Eq '"paused"[[:space:]]*:[[:space:]]*true'; then
+      echo "[backup] maintenance paused; scheduled dump skipped"
+    elif ! python3 "$MANAGER" --root "$BACKUP_DIR" \
+        --lock-timeout "$BACKUP_LOCK_TIMEOUT_SECONDS" create \
+        --origin scheduled --expected-bytes "$BACKUP_EXPECTED_BYTES"; then
+      echo "[backup] managed scheduled dump failed; existing archives preserved" >&2
     fi
   else
-    echo "[backup] pg_dump failed"
-    rm -f "$target" || true
+    echo "[backup] unable to read shared maintenance state; refusing unsafe dump" >&2
   fi
-
   sleep "$BACKUP_INTERVAL_SECONDS"
 done
