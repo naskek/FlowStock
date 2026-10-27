@@ -104,9 +104,7 @@ public sealed class PalletLabelPrinterSettingsTests
             ]
         });
 
-        var current = service.Load();
-        current.PalletLabels.PrinterName = "New printer";
-        service.Save(current);
+        Assert.True(service.SavePalletLabelPrinterName("New printer"));
 
         var saved = service.Load();
         Assert.False(saved.BackupsEnabled);
@@ -137,6 +135,40 @@ public sealed class PalletLabelPrinterSettingsTests
         Assert.Equal("recent", recent.Database);
         Assert.Equal("recent-user", recent.Username);
         Assert.Equal("recent-password", recent.Password);
+    }
+
+    [Fact]
+    public void AutoSavePrinterSelection_UsesMostRecentSelectionAndSkipsUnchangedValue()
+    {
+        using var temp = new TempSettings();
+        var service = new SettingsService(temp.SettingsPath);
+        service.Save(BackupSettings.Default());
+
+        Assert.True(service.SavePalletLabelPrinterName("Printer A"));
+        Assert.True(service.SavePalletLabelPrinterName("Printer B"));
+        Assert.False(service.SavePalletLabelPrinterName("Printer B"));
+        Assert.Equal("Printer B", service.Load().PalletLabels.PrinterName);
+    }
+
+    [Fact]
+    public void AutoSavePrinterSelection_ManualNameAndClearPreserveOtherLabelSettings()
+    {
+        using var temp = new TempSettings();
+        var service = new SettingsService(temp.SettingsPath);
+        var initial = BackupSettings.Default();
+        initial.PalletLabels.TemplatePath = @"templates\custom.btw";
+        initial.PalletLabels.Copies = 3;
+        service.Save(initial);
+
+        Assert.True(service.SavePalletLabelPrinterName(@"  \\server\printer  "));
+        Assert.Equal(@"\\server\printer", service.Load().PalletLabels.PrinterName);
+
+        Assert.True(service.SavePalletLabelPrinterName("  "));
+        var saved = service.Load();
+        Assert.Null(saved.PalletLabels.PrinterName);
+        Assert.Equal(@"templates\custom.btw", saved.PalletLabels.TemplatePath);
+        Assert.Equal(3, saved.PalletLabels.Copies);
+        Assert.False(service.SavePalletLabelPrinterName(null));
     }
 
     [Fact]

@@ -40,6 +40,22 @@ public sealed class SettingsService
         }
     }
 
+    // Only write when the effective local selection changes; preserve other settings.
+    public bool SavePalletLabelPrinterName(string? printerName)
+    {
+        var normalized = PalletLabelPrinterNameResolver.NormalizePrinterName(printerName);
+        var settings = Load();
+        if (string.Equals(settings.PalletLabels?.PrinterName, normalized, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        settings.PalletLabels ??= new PalletLabelSettings();
+        settings.PalletLabels.PrinterName = normalized;
+        Save(settings);
+        return true;
+    }
+
     public void Save(BackupSettings settings)
     {
         var dir = Path.GetDirectoryName(_settingsPath);
