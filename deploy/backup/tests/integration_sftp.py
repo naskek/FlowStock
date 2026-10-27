@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Disposable PG16 + OpenSSH and wire-level SFTP fault integration suite."""
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -147,6 +148,17 @@ ForceCommand internal-sftp
         self.addCleanup(peer.close)
         return peer, self.config(port=peer.port, root="/destination")
 
+    @contextlib.contextmanager
+    def scenario(self, fault):
+        previous_case, previous_config = self.case, self.config_path
+        try:
+            self.case = previous_case / fault
+            self.case.mkdir()
+            self.config_path = self.case / "destination.json"
+            yield self.peer(fault)
+        finally:
+            self.case, self.config_path = previous_case, previous_config
+
     def expect_failure(self, config, codes=None, **kwargs):
         with self.assertRaises(adapter.RemoteError) as raised:
             self.call(config, **kwargs)
@@ -199,16 +211,10 @@ ForceCommand internal-sftp
 
     def test_connect_and_auth_deadlines(self):
         for fault, code in (("connect_timeout", "CONNECT_TIMEOUT"), ("auth_timeout", "AUTH_TIMEOUT")):
-            with self.subTest(fault=fault):
-                case = self.case
-                self.case = case / fault
-                self.case.mkdir()
-                self.config_path = self.case / "destination.json"
-                _, config = self.peer(fault)
+            with self.subTest(fault=fault), self.scenario(fault) as (_, config):
                 started = time.monotonic()
                 self.expect_failure(config, {code})
                 self.assertLess(time.monotonic() - started, 3.5)
-                self.case = case
 
     def test_allowlist_rejection_before_connect(self):
         config = self.config(allowed_addresses=["127.0.0.2"])
@@ -271,34 +277,35 @@ ForceCommand internal-sftp
         error = self.expect_failure(config, {"PROBE_CLEANUP_FAILED"})
         self.assertEqual(error.cleanup, "failed")
 
+    def test_lost_probe_ack_never_claims_complete_cleanup(self):
+        for fault in ("open_lost_ack", "hardlink_lost_ack", "probe_rename_lost_ack"):
+            with self.subTest(fault=fault), self.scenario(fault) as (peer, config):
+                error = self.expect_failure(config, {"PROBE_CLEANUP_FAILED"}, operation="probe")
+                self.assertEqual(error.cleanup, "failed")
+                self.assertTrue(list((peer.root / "destination").iterdir()))
+
+    def test_rename_deadline_is_unknown_even_when_final_exists(self):
+        peer, config = self.peer("rename_delayed_ack")
+        self.expect_failure(config, {"REMOTE_UNKNOWN"})
+        self.assertEqual((peer.root / "destination" / (self.ident + "-r7.dump")).read_bytes(), self.original)
+        self.assertEqual(list((peer.root / "destination").glob("*.json")), [])
+
     def test_wire_faults_never_report_replication(self):
         for fault in ("write_interrupt", "read_interrupt", "read_failure", "corrupt", "corrupt_final",
                       "rename_failure", "rename_lost_ack", "race_conflict", "slow_read"):
-            with self.subTest(fault=fault):
-                case = self.case
-                self.case = case / fault
-                self.case.mkdir()
-                self.config_path = self.case / "destination.json"
-                peer, config = self.peer(fault)
+            with self.subTest(fault=fault), self.scenario(fault) as (peer, config):
                 error = self.expect_failure(config)
                 self.assertNotEqual(error.code, "INVALID_CONFIG")
                 objects = list((peer.root / "destination").glob("*.json"))
                 self.assertEqual(objects, [])
                 if fault == "race_conflict":
                     self.assertEqual((peer.root / "destination" / (self.ident + "-r7.dump")).read_bytes(), b"foreign-race")
-                self.case = case
 
     def test_rename_capability_rejected(self):
         for fault in ("rename_unsupported", "overwrite_rename", "no_hardlink"):
-            with self.subTest(fault=fault):
-                case = self.case
-                self.case = case / fault
-                self.case.mkdir()
-                self.config_path = self.case / "destination.json"
-                peer, config = self.peer(fault)
+            with self.subTest(fault=fault), self.scenario(fault) as (peer, config):
                 self.expect_failure(config)
                 self.assertEqual(list((peer.root / "destination").iterdir()), [])
-                self.case = case
 
     def test_local_metadata_mutation_and_symlink_rejected(self):
         config = self.config()

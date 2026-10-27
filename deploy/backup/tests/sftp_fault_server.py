@@ -95,7 +95,12 @@ class Files(paramiko.SFTPServerInterface):
         if self.peer.fault == "permission":
             return paramiko.SFTP_PERMISSION_DENIED
         try:
-            return Handle(self.peer, path, os.open(self.local(path), flags, 0o600), flags)
+            handle = Handle(self.peer, path, os.open(self.local(path), flags, 0o600), flags)
+            if self.peer.fault == "open_lost_ack" and flags & os.O_CREAT:
+                handle.close()
+                self.peer.transport.close()
+                return paramiko.SFTP_FAILURE
+            return handle
         except OSError as exc:
             return paramiko.SFTPServer.convert_errno(exc.errno)
 
@@ -122,8 +127,10 @@ class Files(paramiko.SFTPServerInterface):
             else:
                 os.link(self.local(source), self.local(target))
                 os.unlink(self.local(source))
-            if "stage-" in source and self.peer.fault == "rename_lost_ack":
+            if ("stage-" in source and self.peer.fault == "rename_lost_ack") or self.peer.fault == "probe_rename_lost_ack":
                 self.peer.transport.close()
+            if "stage-" in source and self.peer.fault == "rename_delayed_ack":
+                self.peer.stop.wait(8)
             if "stage-" in source and self.peer.fault == "corrupt_final":
                 Path(self.local(target)).write_bytes(b"corrupt-final")
             return paramiko.SFTP_OK
@@ -141,6 +148,9 @@ class Extensions(paramiko.SFTPServer):
                     return
                 try:
                     os.link(self.server.local(message.get_text()), self.server.local(message.get_text()))
+                    if self.server.peer.fault == "hardlink_lost_ack":
+                        self.server.peer.transport.close()
+                        return
                     self._send_status(number, paramiko.SFTP_OK)
                 except OSError as exc:
                     self._send_status(number, paramiko.SFTPServer.convert_errno(exc.errno))

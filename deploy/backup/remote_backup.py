@@ -217,7 +217,7 @@ class Session:
         self.config = destination
         self.sftp = self.transport = self.sock = None
         self.owned = set()
-        self.uncertain = False
+        self.pending = set()
 
     def __enter__(self):
         d = self.config.data
@@ -315,8 +315,16 @@ class Session:
     def write(self, name, source, size, digest):
         path = self.path(name)
         # Paramiko's x alone doesn't set WRITE; wx maps to WRITE|CREAT|EXCL.
-        with self.sftp.open(path, "wx", bufsize=0) as fp:
-            self.owned.add(name)
+        self.pending.add(name)
+        try:
+            fp = self.sftp.open(path, "wx", bufsize=0)
+        except OSError as exc:
+            if exc.errno in {errno.EEXIST, errno.EACCES, errno.ENOENT}:
+                self.pending.discard(name)  # definite refusal, no ownership
+            raise
+        self.pending.remove(name)
+        self.owned.add(name)
+        with fp:
             fp.chmod(0o600)
             count, actual = 0, hashlib.sha256()
             while block := source.read(CHUNK):
@@ -330,11 +338,16 @@ class Session:
 
     def rename(self, source, target):
         # SSH_FXP_RENAME only. Never posix_rename (which replaces targets).
+        source_path, target_path = self.path(source), self.path(target)
+        self.pending.add(target)
         try:
-            self.sftp.rename(self.path(source), self.path(target))
-        except (OSError, EOFError, paramiko.SSHException):
-            self.uncertain = True
+            self.sftp.rename(source_path, target_path)
+        except (OSError, EOFError, paramiko.SSHException, RemoteError):
+            # A wall-clock deadline after dispatch can hide a successful
+            # rename just like EOF or a lost response. Never classify it as
+            # a definite transfer failure that is safe to blindly repeat.
             raise RemoteError("REMOTE_UNKNOWN", "retained") from None
+        self.pending.remove(target)
         self.owned.discard(source)
 
     def cleanup(self):
@@ -344,7 +357,9 @@ class Session:
                     if self.exists(name):
                         self.sftp.remove(self.path(name))
                     self.owned.discard(name)
-            return "complete"
+            # Lost ACK may hide a successful create/link/rename. Do not delete
+            # objects whose ownership was never confirmed, or claim cleanup.
+            return "failed" if self.pending else "complete"
         except Exception:
             return "failed"
 
@@ -358,7 +373,9 @@ class Session:
                 self.write(name, io.BytesIO(data), len(data), hashlib.sha256(data).hexdigest())
             # Paramiko 4.x has no public hardlink wrapper. Keep the OpenSSH
             # extension in one place; integration tests exercise real OpenSSH.
+            self.pending.add(c)
             self.sftp._request(CMD_EXTENDED, "hardlink@openssh.com", self.path(a), self.path(c))
+            self.pending.remove(c)
             self.owned.add(c)
             self.verify(c, 6, hashlib.sha256(b"source").hexdigest())
             self.sftp.remove(self.path(c))
@@ -375,8 +392,11 @@ class Session:
             self.owned.add(c)
             require(not self.exists(a), "RENAME_UNSUPPORTED")
             self.verify(c, 6, hashlib.sha256(b"source").hexdigest())
+        except RemoteError as exc:
+            exc.cleanup = "complete"
+            raise
         except (OSError, paramiko.SSHException, EOFError):
-            raise RemoteError("RENAME_UNSUPPORTED") from None
+            raise RemoteError("RENAME_UNSUPPORTED", "complete") from None
         finally:
             cleanup = self.cleanup()
             if cleanup != "complete":
@@ -433,7 +453,7 @@ def execute(config, operation, revision, identity, *, root=None, backup_id=None,
                 archive.verify()
                 return result | {"state": "VERIFIED", "backup_id": backup_id}
     except RemoteError as exc:
-        if remote and remote.owned and exc.cleanup == "not_needed":
+        if remote and (remote.owned or remote.pending) and exc.cleanup == "not_needed":
             exc.cleanup = "retained"
         raise
     except paramiko.AuthenticationException:
