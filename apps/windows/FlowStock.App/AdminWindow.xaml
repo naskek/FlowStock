@@ -209,7 +209,6 @@
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
@@ -228,7 +227,10 @@
                                       MinWidth="280"
                                       IsEditable="True"
                                       IsTextSearchEnabled="True"
-                                      StaysOpenOnEdit="True" />
+                                      StaysOpenOnEdit="True"
+                                      DropDownClosed="PalletLabelPrinterComboBox_DropDownClosed"
+                                      LostKeyboardFocus="PalletLabelPrinterComboBox_LostKeyboardFocus"
+                                      PreviewKeyDown="PalletLabelPrinterComboBox_PreviewKeyDown" />
                             <Button Grid.Row="0"
                                     Grid.Column="2"
                                     Content="Обновить список"
@@ -248,14 +250,6 @@
                                        Margin="0,8,0,0"
                                        TextWrapping="Wrap" />
 
-                            <Button x:Name="SavePalletLabelPrinterButton"
-                                    Grid.Row="3"
-                                    Grid.ColumnSpan="3"
-                                    Content="Сохранить"
-                                    Width="140"
-                                    Margin="0,10,0,0"
-                                    HorizontalAlignment="Left"
-                                    Click="SavePalletLabelPrinter_Click" />
                         </Grid>
                     </GroupBox>
                 </StackPanel>

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
+using System.Windows.Input;
 using FlowStock.DesktopUpdate;
 using FlowStock.Core.Models;
 using WpfCheckBox = System.Windows.Controls.CheckBox;
@@ -22,6 +23,9 @@ public partial class AdminWindow : Window
     private readonly Dictionary<string, WpfCheckBox> _clientBlockBoxes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, HostedSettingsPage> _embeddedPages = new(StringComparer.OrdinalIgnoreCase);
     private string? _palletLabelPrinterEnvironmentOverride;
+    private IReadOnlyList<string> _installedPalletLabelPrinterNames = Array.Empty<string>();
+    private bool _palletLabelPrinterUiLoaded;
+    private bool _updatingPalletLabelPrinterUi;
     private CancellationTokenSource? _updateCheckCancellation;
     private int _updateCheckGeneration;
     private DesktopUpdateCheckResult? _updateCheckResult;
@@ -38,6 +42,7 @@ public partial class AdminWindow : Window
         _printersLoading = new SettingsPageLoading(PrintingCategoryPanel, _services.AppLogger);
         _clientBlocksLoading.InitializeOnLoaded(LoadClientBlocksUiAsync);
         _printersLoading.InitializeOnLoaded(LoadPalletLabelPrinterUiAsync);
+        Closing += AdminWindow_Closing;
         InstalledBuildText.Text = $"Установлено: {AppRuntimeInfo.Current.ProductVersion}\n{AppRuntimeInfo.Current.SourceCommit}"
             + (AppRuntimeInfo.IsSourceRun ? "\nРежим: запуск из исходного checkout" : string.Empty);
         Loaded += async (_, _) => await CheckForUpdateAsync();
@@ -359,8 +364,8 @@ public partial class AdminWindow : Window
 
         var localSettingEnabled = _palletLabelPrinterEnvironmentOverride == null;
         PalletLabelPrinterComboBox.IsEnabled = localSettingEnabled;
-        SavePalletLabelPrinterButton.IsEnabled = localSettingEnabled;
         await RefreshPalletLabelPrintersCoreAsync(savedPrinterName, statusPrefix: null);
+        _palletLabelPrinterUiLoaded = true;
     });
 
     private async void RefreshPalletLabelPrinters_Click(object sender, RoutedEventArgs e)
@@ -370,39 +375,76 @@ public partial class AdminWindow : Window
         await RefreshPalletLabelPrintersAsync(PalletLabelPrinterComboBox.Text, statusPrefix: null);
     }
 
-    private async void SavePalletLabelPrinter_Click(object sender, RoutedEventArgs e)
+    private void PalletLabelPrinterComboBox_DropDownClosed(object sender, EventArgs e)
     {
-        if (IsUiPreview) return;
+        TrySavePalletLabelPrinterSelection();
+    }
+
+    private void PalletLabelPrinterComboBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (!PalletLabelPrinterComboBox.IsDropDownOpen)
+        {
+            TrySavePalletLabelPrinterSelection();
+        }
+    }
+
+    private void PalletLabelPrinterComboBox_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter && !PalletLabelPrinterComboBox.IsDropDownOpen)
+        {
+            TrySavePalletLabelPrinterSelection();
+        }
+    }
+
+    private void AdminWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        // Save manually typed text even when the ComboBox still has focus.
+        if (!TrySavePalletLabelPrinterSelection())
+        {
+            e.Cancel = true;
+        }
+    }
+
+    private bool TrySavePalletLabelPrinterSelection()
+    {
+        if (IsUiPreview || !_palletLabelPrinterUiLoaded || _updatingPalletLabelPrinterUi)
+        {
+            return true;
+        }
 
         _palletLabelPrinterEnvironmentOverride = PalletLabelPrinterNameResolver.ResolveEnvironmentOverride(
             Environment.GetEnvironmentVariable(PalletLabelPrinterNameResolver.EnvironmentVariableName));
         if (_palletLabelPrinterEnvironmentOverride != null)
         {
             PalletLabelPrinterComboBox.IsEnabled = false;
-            SavePalletLabelPrinterButton.IsEnabled = false;
-            await RefreshPalletLabelPrintersAsync(PalletLabelPrinterComboBox.Text, statusPrefix: null);
-            return;
+            PalletLabelPrinterStatusText.Text = BuildPalletLabelPrinterStatus(
+                PalletLabelPrinterSelectionState.Build(
+                    _installedPalletLabelPrinterNames, PalletLabelPrinterComboBox.Text),
+                enumerationError: null, statusPrefix: null);
+            return true;
         }
 
+        var printerName = PalletLabelPrinterNameResolver.NormalizePrinterName(PalletLabelPrinterComboBox.Text);
         try
         {
-            var settings = _services.Settings.Load();
-            settings.PalletLabels ??= new PalletLabelSettings();
-            var printerName = PalletLabelPrinterNameResolver.NormalizePrinterName(
-                PalletLabelPrinterComboBox.Text);
-            settings.PalletLabels.PrinterName = printerName;
-            _services.Settings.Save(settings);
+            if (_services.Settings.SavePalletLabelPrinterName(printerName))
+            {
+                _services.AdminLogger.Info("admin_pallet_label_printer saved");
+            }
 
-            _services.AdminLogger.Info("admin_pallet_label_printer saved");
-            await RefreshPalletLabelPrintersAsync(
-                printerName,
-                "Настройка сохранена и будет использована при следующей печати.");
+            PalletLabelPrinterStatusText.Text = BuildPalletLabelPrinterStatus(
+                PalletLabelPrinterSelectionState.Build(_installedPalletLabelPrinterNames, printerName),
+                enumerationError: null,
+                statusPrefix: "Настройка сохранена и будет использована при следующей печати.");
+            return true;
         }
         catch (Exception ex)
         {
             _services.AdminLogger.Error("admin_pallet_label_printer save failed", ex);
             PalletLabelPrinterStatusText.Text =
-                $"Не удалось сохранить настройку принтера. Предыдущее значение не изменено. {ex.Message}";
+                $"Не удалось сохранить настройку принтера. Выбранное значение не применено; " +
+                $"продолжает действовать прежняя настройка. Повторите ввод или выбор. {ex.Message}";
+            return false;
         }
     }
 
@@ -428,10 +470,20 @@ public partial class AdminWindow : Window
                 currentPrinterName);
         }
 
-        PalletLabelPrinterComboBox.ItemsSource = new[] { string.Empty }
-            .Concat(state.InstalledPrinterNames)
-            .ToArray();
-        PalletLabelPrinterComboBox.Text = state.PrinterName;
+        _installedPalletLabelPrinterNames = state.InstalledPrinterNames;
+        _updatingPalletLabelPrinterUi = true;
+        try
+        {
+            PalletLabelPrinterComboBox.ItemsSource = new[] { string.Empty }
+                .Concat(state.InstalledPrinterNames)
+                .ToArray();
+            PalletLabelPrinterComboBox.Text = state.PrinterName;
+        }
+        finally
+        {
+            _updatingPalletLabelPrinterUi = false;
+        }
+
         PalletLabelPrinterStatusText.Text = BuildPalletLabelPrinterStatus(
             state,
             enumerationError,
@@ -453,7 +505,7 @@ public partial class AdminWindow : Window
         {
             messages.Add(
                 $"Активный принтер задан переменной {PalletLabelPrinterNameResolver.EnvironmentVariableName}: " +
-                $"«{_palletLabelPrinterEnvironmentOverride}». Локальный выбор и сохранение отключены.");
+                $"«{_palletLabelPrinterEnvironmentOverride}». Локальный выбор отключён.");
         }
 
         if (!string.IsNullOrWhiteSpace(enumerationError))
