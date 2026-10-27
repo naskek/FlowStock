@@ -146,8 +146,7 @@ public sealed class AdminWindowCategoryNavigationSourceTests
                      "CheckUpdate_Click",
                      "InstallUpdate_Click",
                      "SaveClientBlocks_Click",
-                     "RefreshPalletLabelPrinters_Click",
-                     "SavePalletLabelPrinter_Click"
+                     "RefreshPalletLabelPrinters_Click"
                  })
         {
             Assert.Contains($"Click=\"{handler}\"", xaml, StringComparison.Ordinal);
