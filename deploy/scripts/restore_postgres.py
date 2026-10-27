@@ -174,8 +174,63 @@ exit "$status"
                 "-U", self.user, "-d", self.database, source=path, output=subprocess.DEVNULL)
 
 
+
+class BackupCoordinator:
+    """Shared durable pause on the existing pgbackups volume.
+
+    One-shot helper: does not start scheduler, PostgreSQL or HTTP API.
+    """
+    def __init__(self, backend):
+        self.backend = backend
+
+    def invoke(self, *args):
+        result = self.backend.run([*self.backend.compose, "run", "--rm", "--no-deps",
+                                   "-T", "--entrypoint", "python3", "pgbackup",
+                                   "/usr/local/bin/managed_backup.py", "--root", "/backups",
+                                   "--lock-timeout", "60", *args])
+        try:
+            return json.loads(result)
+        except (ValueError, TypeError):
+            raise RestoreError("managed maintenance response invalid") from None
+
+    def pause(self, reason):
+        result = self.invoke("pause", "--reason", reason)
+        require(result.get("paused") is True, "backup pause not confirmed")
+
+    def assert_paused(self, reason):
+        result = self.invoke("status")
+        require(result.get("paused") is True and result.get("pause_reason") == reason,
+                "backup pause reason changed; operator review required")
+    def backup(self, pending):
+        # This backup is created under the same persistent flock/catalog as
+        # scheduled/manual dumps, despite the durable maintenance pause.
+        record = self.invoke("create", "--origin", "pre_restore",
+                             "--during-maintenance", "--expected-bytes",
+                             os.environ.get("BACKUP_EXPECTED_BYTES", "1073741824"))
+        ident, sha, size = record.get("backup_id"), record.get("sha256"), record.get("size_bytes")
+        require(bool(re.fullmatch(r"[0-9a-f]{32}", ident or "")) and
+                bool(re.fullmatch(r"[0-9a-f]{64}", sha or "")) and
+                type(size) is int and size > 0 and record.get("local_state") == "LOCAL_VALID",
+                "invalid managed pre-restore catalog result")
+        # Stream bytes rather than buffering a full production database in RAM.
+        # Host safety output remains independent for operator/legacy recovery.
+        with pending.open("xb") as out:
+            os.chmod(pending, 0o600)
+            self.backend.run([*self.backend.compose, "run", "--rm", "--no-deps",
+                              "-T", "--entrypoint", "cat", "pgbackup",
+                              "/backups/managed/archives/" + ident + ".dump"], output=out)
+            out.flush()
+            os.fsync(out.fileno())
+        require(_archive_info(pending) == (size, sha),
+                "managed pre-restore safety export changed")
+        _fsync_dir(pending.parent)
+        return ident
+
+
+
 class Restore:
-    def __init__(self, backend, root):
+    def __init__(self, backend, root, coordinator=None):
+        self.coordinator = coordinator
         self.backend = backend
         self.root = directory(root)
         self.active = self.root / "active.json"
@@ -220,6 +275,8 @@ class Restore:
         state = self.previous(operation_id)
         require(self.backend.preflight() == state["target"], "recovery target changed")
         self.backend.assert_stopped()
+        if self.coordinator and state.get("backup_pause_reason"):
+            self.coordinator.assert_paused(state["backup_pause_reason"])
         require(state["phase"] == "RESTORED_AWAITING_VALIDATION" or
                 (not state.get("destructive_started") and state.get("recovery_source") is None),
                 "failed destructive restore must be recovered before completion")
@@ -257,10 +314,17 @@ class Restore:
         require(not os.path.lexists(safety), "safety output already exists; archives are never overwritten")
         require(safety != source.absolute() and safety != staged, "input/safety path collision")
         directory(safety.parent, private=False)
+        pause_reason = (previous or {}).get("backup_pause_reason") or ("restore:" + operation_id)
         self.state = {"schema_version": 1, "operation_id": operation_id, "target": target,
                       "input_info": input_info, "safety_path": str(safety), "safety_validated": False,
-                      "destructive_started": False, "recovery_source": recovery_source}
+                      "destructive_started": False, "recovery_source": recovery_source,
+                      "backup_pause_reason": pause_reason}
         self.record("PREFLIGHT_VALIDATED")
+        if self.coordinator:
+            if previous and previous.get("backup_pause_reason"):
+                self.coordinator.assert_paused(pause_reason)
+            else:
+                self.coordinator.pause(pause_reason)
         marker = {"schema_version": 1, "operation_id": operation_id}
         if previous:
             replacement = self.root / (operation_id + ".active")
@@ -270,15 +334,19 @@ class Restore:
         else:
             _write_new(self.active, marker)
         try:
+            self.record("BACKUP_MAINTENANCE_PAUSED")
             self.record("STOPPING_SERVICES")
             self.backend.stop()
             self.record("CREATING_SAFETY")
             pending = safety.parent / (".restore-" + operation_id + ".partial")
-            self.backend.backup(pending)
+            managed_id = self.coordinator.backup(pending) if self.coordinator else None
+            if not self.coordinator:
+                self.backend.backup(pending)
             safety_info = self.backend.validate(pending)
             _rename_new(pending, safety)
             _fsync_dir(safety.parent)
-            self.record("SAFETY_VALIDATED", safety_validated=True, safety_info=safety_info)
+            self.record("SAFETY_VALIDATED", safety_validated=True, safety_info=safety_info,
+                        managed_safety_backup_id=managed_id)
             print(f"[restore] validated safety backup: {safety}", flush=True)
             self.backend.assert_stopped()
             require(self.backend.validate(staged) == input_info, "staged input changed")
@@ -307,7 +375,9 @@ def main():
     require(bool(args.dump) + bool(args.recover) + bool(args.complete) == 1, "select dump, --recover or --complete")
     require(args.confirm_validated == bool(args.complete), "--complete requires --confirm-validated")
     os.umask(0o077)
-    restore = Restore(DockerPostgres(), Path(os.environ["FLOWSTOCK_RUNTIME_DIR"]) / "restore")
+    backend = DockerPostgres()
+    restore = Restore(backend, Path(os.environ["FLOWSTOCK_RUNTIME_DIR"]) / "restore",
+                      coordinator=BackupCoordinator(backend))
     with restore.lock():
         if args.complete:
             restore.complete(args.complete)

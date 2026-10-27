@@ -219,15 +219,30 @@ if "--list" not in sys.argv and (os.environ.get("PAYLOAD_FAIL") or not data.ends
         self.assertEqual(self.paths(), ([], []))
 
     def test_pause_is_durable_and_pre_restore_needs_explicit_allowance(self):
-        self.assertEqual(self.call("pause", "--reason", "isolated fixture").returncode, 0)
+        self.assertEqual(self.call("pause", "--reason", "restore:fixture").returncode, 0)
         denied = self.call("create", "--origin", "manual", "--expected-bytes", "1024")
         self.assertIn("MAINTENANCE_PAUSED", denied.stderr)
         self.assertEqual(self.paths(), ([], []))
         allow = self.call("create", "--origin", "pre_restore",
                           "--during-maintenance", "--expected-bytes", "1024")
         self.assertEqual(allow.returncode, 0, allow.stderr)
+        unauthorized = self.call("create", "--origin", "pre_deploy",
+                                  "--during-maintenance", "--expected-bytes", "1024")
+        self.assertIn("MAINTENANCE_PAUSED", unauthorized.stderr)
         self.assertEqual(self.call("resume", "--operator-confirmed").returncode, 0)
         self.make()
+
+    def test_predeploy_pause_only_allows_explicit_fresh_safety_origin(self):
+        self.assertEqual(self.call("pause", "--reason", "pre_deploy:" + "a" * 40).returncode, 0)
+        denied = self.call("create", "--origin", "scheduled", "--expected-bytes", "1024")
+        self.assertIn("MAINTENANCE_PAUSED", denied.stderr)
+        denied_restore = self.call("create", "--origin", "pre_restore",
+                                   "--during-maintenance", "--expected-bytes", "1024")
+        self.assertIn("MAINTENANCE_PAUSED", denied_restore.stderr)
+        allowed = self.call("create", "--origin", "pre_deploy",
+                            "--during-maintenance", "--expected-bytes", "1024")
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        self.assertEqual(json.loads(allowed.stdout)["origin"], "pre_deploy")
 
     def test_lock_timeout_and_release(self):
         store = core.Store(str(self.root))

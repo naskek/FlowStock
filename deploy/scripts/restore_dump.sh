@@ -4,6 +4,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 require_command python3
+acquire_host_backup_lock
 # Restore owns preflight; never start/recreate PostgreSQL before validation.
 # Preserve canonical base-only Compose. Caller/worker coordination is separate.
 export FLOWSTOCK_PROJECT_NAME FLOWSTOCK_ENV_FILE FLOWSTOCK_COMPOSE_FILE

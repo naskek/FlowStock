@@ -37,6 +37,7 @@ checks = {
     ),
     "config": require(r'"\$\{compose\[@\]\}" config -q', "Compose config gate is missing"),
     "resolved validator": require(r"validate_resolved_compose\.py", "resolved Compose validator is missing"),
+    "managed worker build": require(r'"\$\{compose\[@\]\}" build flowstock discovery-relay pgbackup', "pgbackup must be built before startup"),
     "deploy": require(r'"\$\{compose\[@\]\}" up -d --remove-orphans', "Compose deploy is missing"),
     "loopback port": require(r'flowstock_port="\$\{compose_env\[FLOWSTOCK_PORT\]:-8080\}"', "loopback port must come from resolved Compose environment"),
     "loopback URL": require(r'loopback_url="http://127\.0\.0\.1:\$flowstock_port"', "canonical loopback URL is missing"),
@@ -115,8 +116,30 @@ if remote_match is None:
 if "$PublicUrl" in remote_match.group("body"):
     raise AssertionError("server-side post-deploy gates must not depend on operator external HTTPS")
 
-if not checks["production-copy gate"] < checks["transport preflight script file"] < checks["backup verification"] < checks["exact server update"] < checks["deploy"]:
+if not checks["production-copy gate"] < checks["transport preflight script file"] < checks["backup verification"] < checks["exact server update"] < checks["managed worker build"] < checks["deploy"]:
     raise AssertionError("production-copy gate, transport preflight, backup, exact update and deploy order is unsafe")
+
+pause_gate = require(r'pause --reason "\$pause_reason"', "managed shared pause acquisition is missing")
+legacy_stop_gate = require(r'"\$\{compose\[@\]\}" stop pgbackup', "legacy worker stop is missing")
+full_payload_gate = require(r'pg_restore --file=/dev/null', "pre-deploy must inspect full backup payload")
+managed_origin_gate = require(r'create --origin pre_deploy --during-maintenance', "pre-deploy managed origin missing")
+host_exclusion_gate = require(r'flock -w 60 "\$host_backup_fd"', "pre-deploy must acquire host-level operator lock")
+downlevel_host_gate = require(r'coordination_dir="\$\(dirname "\$backup_dir"\)/coordination"', "old-checkout host lock must not depend on future Compose interpolation")
+mismatch_gate = require(r'FLOWSTOCK_COORDINATION_DIR must match canonical backup-parent coordination path', "new-checkout operator lock identity gate missing")
+
+unique_filename_gate = require(r'flowstock-before-.*?\$\{BASHPID\}\.dump', "pre-deploy filename must include process-unique suffix")
+fsync_backup_gate = require(r'FSYNC_BACKUP', "validated pre-deploy backup must be fsynced")
+fsync_directory_gate = require(r'FSYNC_DIRECTORY', "final pre-deploy archive directory must be fsynced")
+unique_publish_gate = require(r'ln -- "\$backup_partial" "\$backup_path"', "verified dump must publish without replacement")
+new_image_pause_gate = require(r'"\$\{compose\[@\]\}" build flowstock discovery-relay pgbackup.*?pause --reason "\$pause_reason" >/dev/null', "new worker pause is missing")
+external_gate = require(r'Invoke-RestMethod -Uri "\$PublicUrl/api/version"', "external identity missing")
+resume_gate = require(r'resume --operator-confirmed', "explicit validated resume is missing")
+if not downlevel_host_gate < host_exclusion_gate < legacy_stop_gate < managed_origin_gate < full_payload_gate:
+    raise AssertionError("host exclusion, legacy stop and managed pre-deploy origin are out of order")
+if not (legacy_stop_gate < full_payload_gate < fsync_backup_gate < unique_publish_gate < fsync_directory_gate <
+        checks["exact server update"] < new_image_pause_gate <
+        checks["deploy"] < checks["internal ready"] < external_gate < resume_gate):
+    raise AssertionError("backup pause, validation and resume order is unsafe")
 
 pre_backup = source[: checks["backup verification"]]
 if re.search(r'"\$\{compose\[@\]\}" (?:up|build|pull|restart|create)', pre_backup):

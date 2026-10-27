@@ -127,10 +127,15 @@ services:
     restart: unless-stopped
 
   pgbackup:
-    image: postgres:16-alpine
+    build:
+      context: ..
+      dockerfile: deploy/backup/Dockerfile
+    image: flowstock-pgbackup:local
     depends_on:
       postgres:
         condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
     environment:
       PGHOST: postgres
       PGPORT: 5432
@@ -141,9 +146,11 @@ services:
       BACKUP_PREFIX: FlowStock
       BACKUP_KEEP: ${BACKUP_KEEP:-30}
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_EXPECTED_BYTES: ${BACKUP_EXPECTED_BYTES:-1073741824}
+      BACKUP_LOCK_TIMEOUT_SECONDS: ${BACKUP_LOCK_TIMEOUT_SECONDS:-10}
+      FLOWSTOCK_COORDINATION_DIR: ${FLOWSTOCK_COORDINATION_DIR:-}
     volumes:
       - pgbackups:/backups
-      - ./backup/pg_backup.sh:/usr/local/bin/pg_backup.sh:ro
     command: ["sh", "/usr/local/bin/pg_backup.sh"]
     restart: unless-stopped
 

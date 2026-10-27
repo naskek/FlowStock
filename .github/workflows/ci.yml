@@ -332,6 +332,9 @@ jobs:
         run: |
           python3 deploy/scripts/deploy-production.static.test.py
           bash deploy/scripts/deploy-script-file.test.sh
+          bash deploy/scripts/tests/operator-backup.test.sh
+          bash deploy/scripts/tests/rollback-safety.test.sh
+          bash deploy/scripts/tests/host-lock-concurrency.test.sh
       - name: Validate and apply disposable migrations
         shell: bash
         run: |
@@ -363,7 +366,7 @@ jobs:
         timeout-minutes: 10
         run: |
           set -euo pipefail
-          python3 -m unittest discover -s deploy/backup/tests -p 'test_managed_backup.py' -v
+          python3 -m unittest discover -s deploy/backup/tests -p 'test_*.py' -v
           # Disposable PostgreSQL 16 container with the canonical migrations.
           compose=(docker compose --project-name flowstock-ci-migrations -f deploy/docker-compose.test-postgres.yml)
           container_id="$("${compose[@]}" ps -q postgres-test)"
@@ -382,6 +385,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s deploy/scripts/tests -p 'test_restore_faults.py' -v
+          docker build -f deploy/backup/Dockerfile -t flowstock-pgbackup:local .
           python3 deploy/scripts/tests/integration_restore_pg16.py
       - name: Validate production Compose and build images
         shell: bash
@@ -449,7 +453,7 @@ jobs:
               --telegram-enabled \
               --forbidden-environment-value ci-synthetic-token-file-content
 
-          FLOWSTOCK_SOURCE_COMMIT="$GITHUB_SHA" "${compose[@]}" build flowstock discovery-relay
+          FLOWSTOCK_SOURCE_COMMIT="$GITHUB_SHA" "${compose[@]}" build flowstock discovery-relay pgbackup
       - name: Clean up disposable PostgreSQL
         if: always()
         shell: bash

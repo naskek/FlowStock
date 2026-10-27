@@ -6,18 +6,19 @@ source "$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 usage() {
     cat <<EOF
 Usage:
-  bash deploy/scripts/rollback_release.sh
-  bash deploy/scripts/rollback_release.sh --no-restore
-  bash deploy/scripts/rollback_release.sh <git-ref> <dump-path>
+  bash deploy/scripts/rollback_release.sh --no-restore <exact-git-commit>
+  bash deploy/scripts/rollback_release.sh --no-restore --allow-downlevel-app-only <exact-git-commit>
 
 Behavior:
-  - without arguments rolls back to the previous successful recorded release
-  - by default restores the last recorded pre-deploy backup of the current release
-  - with --no-restore switches app revision only, without database restore
+  - requires an explicit exact target commit; stale latest_success/previous_success
+    pointers are never used as source identity after canonical PowerShell deploy
+  - database restore + restart is NOT automatic: restore_dump.sh requires explicit
+    recovery validation and service restart gate; select target/archive manually
 EOF
 }
 
 do_restore="true"
+allow_downlevel="false"
 positionals=()
 
 while [[ $# -gt 0 ]]; do
@@ -30,6 +31,10 @@ while [[ $# -gt 0 ]]; do
             do_restore="false"
             shift
             ;;
+        --allow-downlevel-app-only)
+            allow_downlevel="true"
+            shift
+            ;;
         *)
             positionals+=("$1")
             shift
@@ -39,6 +44,11 @@ done
 
 target_input="${positionals[0]:-}"
 dump_path="${positionals[1]:-}"
+# Validate caller intent BEFORE Docker, git or checkout access. Canonical
+# production deploy never updates historical latest_success/previous_success.
+(( ${#positionals[@]} == 1 )) || fail "rollback requires exactly one explicit target commit"
+[[ "$target_input" =~ ^[0-9a-f]{40}$ ]] || fail "rollback target must be an exact 40-character lowercase commit SHA"
+[[ "$do_restore" == "false" ]] || fail "automatic SQL restore/restart is unsafe; use explicit restore_dump.sh, validate recovery, then a separate app restart"
 rollback_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 latest_success_file="$(release_state_file latest_success)"
 previous_success_file="$(release_state_file previous_success)"
@@ -67,40 +77,17 @@ on_error() {
 
 trap on_error ERR
 
+acquire_host_backup_lock
 ensure_docker
 ensure_git_repo
 ensure_git_clean_worktree
 ensure_compose_config
 
-[[ -f "$latest_success_file" ]] || fail "latest successful release metadata not found: $latest_success_file"
-
-unset deployed_commit deployed_ref backup_path previous_commit previous_branch deploy_kind deployed_at restored_from_dump
-# shellcheck disable=SC1090
-source "$latest_success_file"
-recorded_current_backup="${backup_path:-}"
-
-if [[ -f "$previous_success_file" ]]; then
-    unset deployed_commit deployed_ref backup_path previous_commit previous_branch deploy_kind deployed_at restored_from_dump
-    # shellcheck disable=SC1090
-    source "$previous_success_file"
-    recorded_previous_ref="${deployed_ref:-}"
-    recorded_previous_commit="${deployed_commit:-}"
-fi
-
-if [[ -z "$target_input" ]]; then
-    [[ -n "$recorded_previous_commit" ]] || fail "previous successful release metadata not found; pass an explicit git ref"
-    target_ref="$recorded_previous_commit"
-else
-    target_ref="$target_input"
-fi
-
-if [[ "$do_restore" == "true" && -z "$dump_path" ]]; then
-    dump_path="$recorded_current_backup"
-fi
-
-if [[ "$do_restore" == "true" ]]; then
-    [[ -n "$dump_path" ]] || fail "no dump path available for restore"
-    [[ -f "$dump_path" ]] || fail "dump file not found: $dump_path"
+# Canonical deploy does not update legacy release pointers. They can refer
+# to a different checkout/database and must not imply rollback provenance.
+target_ref="$target_input"
+if [[ -e "${FLOWSTOCK_RUNTIME_DIR}/restore/active.json" || -L "${FLOWSTOCK_RUNTIME_DIR}/restore/active.json" ]]; then
+    fail "restore maintenance active; app-only rollback forbidden"
 fi
 
 log "fetching git refs from $FLOWSTOCK_GIT_REMOTE"
@@ -108,6 +95,23 @@ git_in_repo fetch --prune --tags "$FLOWSTOCK_GIT_REMOTE"
 
 if ! target_commit="$(git_in_repo rev-parse --verify "${target_ref}^{commit}" 2>/dev/null)"; then
     fail "git ref not found: $target_ref"
+fi
+
+# Downlevel source cannot honour managed pause. Explicitly allow only
+# app-only switch after external schema/data compatibility qualification.
+# The legacy backup worker is NEVER started by this rollback workflow.
+target_compose="$(git_in_repo show "$target_commit:deploy/docker-compose.yml")" ||
+    fail "rollback target Compose unavailable"
+legacy_worker_target="false"
+if ! git_in_repo cat-file -e "$target_commit:deploy/backup/Dockerfile" 2>/dev/null ||
+    ! printf '%s\n' "$target_compose" | grep -q 'dockerfile: deploy/backup/Dockerfile'; then
+    legacy_worker_target="true"
+    [[ "$allow_downlevel" == true ]] ||
+        fail "downlevel worker unsafe; explicit --allow-downlevel-app-only and operator compatibility review required"
+    log "downlevel app-only target; legacy pgbackup must remain stopped"
+else
+    [[ "$allow_downlevel" == false ]] ||
+        fail "downlevel override is forbidden for managed backup target"
 fi
 
 current_commit="$(git_in_repo rev-parse HEAD)"
@@ -126,6 +130,18 @@ fi
 
 if [[ "$do_restore" == "true" ]]; then
     pre_restore_backup="$(resolve_backup_path "${FLOWSTOCK_BACKUP_OUTPUT_DIR}/rollback_guard/FlowStock_${rollback_stamp}_${current_commit:0:12}.dump")"
+fi
+
+if [[ "$legacy_worker_target" == true ]]; then
+    old_backup_id="$(compose ps -q pgbackup)"
+    if [[ -n "$old_backup_id" ]]; then
+        # prevent Docker engine restart from reviving an old worker that does
+        # not understand the paused managed catalog.
+        docker update --restart=no "$old_backup_id" >/dev/null
+        compose stop pgbackup
+        [[ "$(docker inspect -f '{{.State.Status}}' "$old_backup_id")" == exited ]] ||
+            fail "downlevel pgbackup cannot be proven stopped"
+    fi
 fi
 
 remove_discovery_relay_containers
@@ -191,7 +207,11 @@ fi
 rollback_tail_services=()
 while IFS= read -r service; do
     rollback_tail_services+=("$service")
-done < <(existing_services nginx pgbackup)
+done < <(if [[ "$legacy_worker_target" == true ]]; then
+    existing_services nginx
+else
+    existing_services nginx pgbackup
+fi)
 if (( ${#rollback_tail_services[@]} > 0 )); then
     compose up -d --build --no-deps --force-recreate "${rollback_tail_services[@]}"
 fi
@@ -213,7 +233,7 @@ write_release_state "$history_file" \
     deployed_at="$rollback_stamp" \
     deploy_kind="rollback" \
     requested_ref="$target_ref" \
-    deployed_ref="${recorded_previous_ref:-$target_ref}" \
+    deployed_ref="$target_ref" \
     deployed_commit="$target_commit" \
     previous_commit="$current_commit" \
     previous_branch="$current_branch" \
@@ -224,6 +244,9 @@ write_release_state "$history_file" \
 
 cp "$history_file" "$latest_success_file"
 
+if [[ "$legacy_worker_target" == true ]]; then
+    log "WARNING: downlevel pgbackup stopped with restart=no; manual restore compatibility/recovery gate required"
+fi
 log "rollback completed successfully"
 log "active revision: $target_commit"
 if [[ "$do_restore" == "true" ]]; then

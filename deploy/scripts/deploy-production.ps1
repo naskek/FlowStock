@@ -217,11 +217,119 @@ postgres_id="$("${compose[@]}" ps -q postgres)"
 test -n "$postgres_id" || fail 'running production postgres container is missing; refusing to mutate the stack before backup'
 status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$postgres_id")"
 test "$status" = healthy || fail 'production postgres is not healthy; refusing to mutate the stack before backup'
+# This host lock is shared with operator backup_now/restore/rollback wrappers.
+# It remains held through the old-checkout pre-deploy safety backup.
+# Must also work on the OLD checkout whose Compose file does not reference
+# FLOWSTOCK_COORDINATION_DIR. Derive deterministically from the canonical
+# operator backup parent and validate the same value after the Git update.
+coordination_dir="$(dirname "$backup_dir")/coordination"
+case "$coordination_dir" in
+    /*) ;;
+    *) fail 'FLOWSTOCK_COORDINATION_DIR must be absolute' ;;
+esac
+case "$coordination_dir" in
+    */../*|*/./*|*/..|*/.) fail 'unsafe coordination directory path' ;;
+esac
+command -v flock >/dev/null || fail 'flock is required for operator exclusion'
+umask 077
+mkdir -p -m 700 "$coordination_dir" || fail 'cannot create host coordination directory'
+test -d "$coordination_dir" && test ! -L "$coordination_dir" ||
+    fail 'unsafe host coordination directory'
+test "$(stat -c %u "$coordination_dir")" = "$(id -u)" &&
+    test "$(stat -c %a "$coordination_dir")" = 700 ||
+    fail 'host coordination directory owner or mode mismatch'
+test ! -L "$coordination_dir/operator.lock" || fail 'unsafe host lock symlink'
+exec {host_backup_fd}>"$coordination_dir/operator.lock"
+chmod 600 "$coordination_dir/operator.lock"
+flock -w 60 "$host_backup_fd" || fail 'BACKUP_BUSY: operator/deploy/restore lock timed out'
+
+# The current worker may be a downlevel postgres:16 image without Python.
+# Once the managed worker is deployed, pause uses the shared persistent flock.
+# Until then STOP the legacy worker before the fresh pre-deploy backup.
+test ! -e deploy/runtime/restore/active.json && test ! -L deploy/runtime/restore/active.json ||
+    fail 'restore maintenance is active; operator investigation required'
+pause_reason="pre_deploy:$expected_commit"
+pause_before_checkout=0
+old_pgbackup_id="$("${compose[@]}" ps -q pgbackup)"
+if test -n "$old_pgbackup_id"; then
+    if docker exec "$old_pgbackup_id" test -f /usr/local/bin/managed_backup.py; then
+        docker exec "$old_pgbackup_id" python3 /usr/local/bin/managed_backup.py \
+            --root /backups --lock-timeout 60 pause --reason "$pause_reason" >/dev/null ||
+            fail 'cannot acquire managed backup pause before deploy'
+        pause_before_checkout=1
+    else
+        log 'legacy worker detected; it will be stopped before fresh backup'
+    fi
+    "${compose[@]}" stop pgbackup || fail 'cannot stop backup worker'
+    stopped_state="$(docker inspect -f '{{.State.Status}}' "$old_pgbackup_id")"
+    test "$stopped_state" = exited || fail 'backup worker did not stop; refusing backup'
+fi
 mkdir -p "$backup_dir"
-backup_path="$backup_dir/flowstock-before-${expected_commit:0:12}-$(date -u +%Y%m%dT%H%M%SZ).dump"
-"${compose[@]}" exec -T postgres sh -eu -c 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"$backup_path"
-test -s "$backup_path" || fail 'backup is empty'
-"${compose[@]}" exec -T postgres pg_restore --list <"$backup_path" >/dev/null
+backup_path="$backup_dir/flowstock-before-${expected_commit:0:12}-$(date -u +%Y%m%dT%H%M%SZ)-${BASHPID}.dump"
+test ! -e "$backup_path" && test ! -L "$backup_path" || fail 'backup target exists'
+umask 077
+backup_partial="$(mktemp "${backup_path}.partial.XXXXXX")" || fail 'cannot reserve fresh backup output'
+if test "$pause_before_checkout" = 1; then
+    # Already-deployed managed worker: create a fresh catalog-backed pre_deploy
+    # archive under the same durable flock/pause as scheduled/manual calls.
+    managed_record="$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
+        /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 \
+        create --origin pre_deploy --during-maintenance \
+        --expected-bytes "${compose_env[BACKUP_EXPECTED_BYTES]:-1073741824}")" ||
+        fail 'managed pre-deploy archive failed'
+    managed_meta="$(printf '%s' "$managed_record" | python3 -c '
+import json,re,sys
+v=json.load(sys.stdin)
+i,h,s=v.get("backup_id"),v.get("sha256"),v.get("size_bytes")
+if not isinstance(i,str) or not re.fullmatch("[0-9a-f]{32}",i) or not isinstance(h,str) or not re.fullmatch("[0-9a-f]{64}",h) or type(s) is not int or s<1 or v.get("origin")!="pre_deploy" or v.get("local_state")!="LOCAL_VALID":
+    raise SystemExit(1)
+print(i,h,s)
+')" || fail 'invalid managed pre-deploy catalog record'
+    read -r managed_id managed_sha managed_size <<<"$managed_meta"
+    if ! "${compose[@]}" run --rm --no-deps -T --entrypoint cat pgbackup \
+        "/backups/managed/archives/${managed_id}.dump" >"$backup_partial"; then
+        fail "managed pre-deploy export failed; staging retained: $backup_partial"
+    fi
+    test "$(stat -c %s "$backup_partial")" = "$managed_size" &&
+        test "$(sha256sum "$backup_partial" | cut -d' ' -f1)" = "$managed_sha" ||
+        fail 'managed pre-deploy export hash or size mismatch'
+else
+    # First rollout from a supported legacy postgres:16 image has no Python
+    # primitive. Its worker is already stopped and host callers are excluded.
+    # Preserve the old-host verified independent pre-deploy safety archive.
+    if ! "${compose[@]}" exec -T postgres sh -eu -c 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"$backup_partial"; then
+        fail "pre-deploy pg_dump failed; private staging retained: $backup_partial"
+    fi
+fi
+test -s "$backup_partial" || fail "pre-deploy dump empty; staging retained: $backup_partial"
+# List validation alone does not read every payload block. Drain stdin to
+# avoid a false transport failure on large valid archives.
+"${compose[@]}" exec -T postgres sh -c '
+status=0
+pg_restore --list >/dev/null || status=$?
+cat >/dev/null || exit 1
+exit "$status"
+' <"$backup_partial" || fail "pre-deploy TOC invalid; staging retained: $backup_partial"
+"${compose[@]}" exec -T postgres pg_restore --file=/dev/null <"$backup_partial" ||
+    fail "pre-deploy dump payload invalid; staging retained: $backup_partial"
+# Make the validated bytes durable before atomically exposing the
+# operator recovery path; make final link/unlink directory metadata durable.
+python3 - "$backup_partial" <<'FSYNC_BACKUP'
+import os,sys
+with open(sys.argv[1], "rb") as fp:
+    os.fsync(fp.fileno())
+FSYNC_BACKUP
+ln -- "$backup_partial" "$backup_path" || fail 'cannot atomically publish verified backup'
+rm -f -- "$backup_partial"
+python3 - "$backup_path" <<'FSYNC_DIRECTORY'
+import os,sys
+folder=os.path.dirname(sys.argv[1])
+fd=os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+FSYNC_DIRECTORY
 log "fresh PostgreSQL backup verified: $backup_path"
 
 # Update the server clone to exactly the caller-verified origin/main commit.
@@ -240,6 +348,12 @@ test "$source_tsd_version" = "$expected_tsd_version" || fail 'server TSD source 
 test "$worker_tsd_version" = "$expected_tsd_version" || fail 'server TSD source versions are inconsistent'
 
 "${compose[@]}" config -q
+# Post-checkout contract: generic operator helpers read this exact setting
+# from .env. A mismatch must not produce two independent host locks.
+resolved_coordination="$("${compose[@]}" config --environment |
+    sed -n 's/^FLOWSTOCK_COORDINATION_DIR=//p')"
+test "$resolved_coordination" = "$coordination_dir" ||
+    fail 'FLOWSTOCK_COORDINATION_DIR must match canonical backup-parent coordination path'
 postgres_bind_host="${compose_env[FLOWSTOCK_PG_BIND_HOST]:-127.0.0.1}"
 postgres_second_bind_host="${compose_env[FLOWSTOCK_PG_SECOND_BIND_HOST]:-}"
 validator=(python3 deploy/scripts/validate_resolved_compose.py --postgres-host "$postgres_bind_host")
@@ -248,8 +362,25 @@ test "$telegram_enabled" = 0 || validator+=(--telegram-enabled)
 "${compose[@]}" config --format json | "${validator[@]}" >/dev/null
 log 'secret-safe resolved Compose validation passed'
 
-"${compose[@]}" pull postgres nginx pgbackup
-"${compose[@]}" build flowstock discovery-relay
+"${compose[@]}" pull postgres nginx
+"${compose[@]}" build flowstock discovery-relay pgbackup
+# No worker may start a scheduled dump during migrator/deploy or failure gates.
+# This is after the old-checkout backup, so the newly built helper may run.
+if test "$pause_before_checkout" = 0; then
+    "${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
+        /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 \
+        pause --reason "$pause_reason" >/dev/null ||
+        fail 'managed backup pause failed before new stack startup'
+else
+    marker="$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
+        /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 status)" ||
+        fail 'managed pause status unavailable after image build'
+    printf '%s' "$marker" | python3 -c '
+import json,sys
+v=json.load(sys.stdin)
+raise SystemExit(0 if v.get("paused") is True and v.get("pause_reason")==sys.argv[1] else 1)
+' "$pause_reason" || fail 'managed pause owner changed across checkout'
+fi
 "${compose[@]}" up -d --remove-orphans
 "${compose[@]}" ps
 
@@ -290,6 +421,8 @@ test "$deployed_tsd" = "$expected_tsd_version" || fail 'deployed TSD version dif
 log "deployed TSD version: $deployed_tsd"
 df -h "$repo" "$backup_path"
 log "verified backup path: $backup_path"
+# Keep the durable pause through the external operator HTTPS gates executed
+# by PowerShell. Their failure must not silently resume the worker.
 log "deployed source commit: $expected_commit"
 printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
 '@
@@ -326,6 +459,41 @@ printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
     if (-not $deployedTsdMatch.Success -or $deployedTsdMatch.Groups[1].Value -ne $expectedTsdVersion) {
         throw 'External deployed TSD version gate failed'
     }
+
+    # A second SSH invocation is allowed only after all external HTTPS identity
+    # gates passed; failed external gates deliberately leave maintenance paused.
+    $resumeScript = @'
+set -Eeuo pipefail
+expected="$1"
+repo="$2"
+cd "$repo"
+test "$(git rev-parse --verify 'HEAD^{commit}')" = "$expected"
+test ! -e deploy/runtime/restore/active.json
+compose=(docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml)
+"${compose[@]}" config -q
+pause_reason="pre_deploy:$expected"
+state="$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
+    /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 status)"
+printf '%s' "$state" | python3 -c '
+import json,sys
+v=json.load(sys.stdin)
+raise SystemExit(0 if v.get("paused") is True and v.get("pause_reason")==sys.argv[1] else 1)
+' "$pause_reason"
+"${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
+    /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 \
+    resume --operator-confirmed >/dev/null
+printf 'FLOWSTOCK_RESUME_OK=%s\n' "$expected"
+'@
+    $resumeScript = $resumeScript.Replace("`r`n", "`n").Replace("`r", "`n")
+    $resumeBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($resumeScript)
+    $resumeResult = Invoke-RemoteBashScriptViaSsh -SshTarget $sshTarget -ScriptBytes $resumeBytes -RemoteArgumentList @($ExpectedCommit, $RemoteRepoPath)
+    if ($resumeResult.ExitCode -ne 0) {
+        throw "Remote backup resume failed; maintenance remains pending operator review"
+    }
+    if (@($resumeResult.StdOut -split '\r?\n') -notcontains "FLOWSTOCK_RESUME_OK=$ExpectedCommit") {
+        throw "Remote backup resume did not return exact success marker"
+    }
+
     Write-Host "Production deploy verified: commit=$ExpectedCommit, TSD=$expectedTsdVersion"
 }
 finally {

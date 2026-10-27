@@ -10,7 +10,7 @@ import unittest
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from restore_postgres import DockerPostgres, Restore, RestoreError, BackupError
+from restore_postgres import DockerPostgres, Restore, RestoreError, BackupError, BackupCoordinator
 
 SCRIPT = Path(__file__).resolve().parents[1] / "restore_dump.sh"
 
@@ -43,12 +43,27 @@ class PostgreSQLRestoreTests(unittest.TestCase):
       retries: 60
     restart: "no"
   flowstock:
-''' + dummy + '  nginx:\n' + dummy + '  discovery-relay:\n' + dummy + '  pgbackup:\n' + dummy + '''networks:
+''' + dummy + '  nginx:\n' + dummy + '  discovery-relay:\n' + dummy + '''  pgbackup:
+    image: flowstock-pgbackup:local
+    entrypoint: ["sh", "-c", "exec sleep infinity"]
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: restore_fixture
+      PGUSER: postgres
+      PGPASSWORD: isolated_ci_only
+    volumes:
+      - pgbackups:/backups
+    restart: "no"
+volumes:
+  pgbackups:
+networks:
   default:
     internal: true
 ''')
         os.environ.update(FLOWSTOCK_PROJECT_NAME="flowstock-restore-test-" + uuid.uuid4().hex[:10],
-                          FLOWSTOCK_ENV_FILE=str(cls.envfile), FLOWSTOCK_COMPOSE_FILE=str(cls.composefile))
+                          FLOWSTOCK_ENV_FILE=str(cls.envfile), FLOWSTOCK_COMPOSE_FILE=str(cls.composefile),
+                          FLOWSTOCK_COORDINATION_DIR=str(cls.base / "host-coordination"))
         cls.backend = DockerPostgres()
         try:
             cls.backend.run([*cls.backend.compose, "up", "-d", "--wait"])
@@ -85,6 +100,16 @@ class PostgreSQLRestoreTests(unittest.TestCase):
         self.backend.backup(self.source)
         self.assertGreater(self.source.stat().st_size, 4 * 1024 * 1024)
         self.backend.run([*self.backend.compose, "up", "-d", *self.backend.stopped_services])
+
+    def tearDown(self):
+        # Every disposable test case must explicitly release its own shared
+        # maintenance pause. Production never auto-resumes after restore.
+        args = [*self.backend.compose, "run", "--rm", "--no-deps",
+                "-T", "--entrypoint", "python3", "pgbackup",
+                "/usr/local/bin/managed_backup.py", "--root", "/backups"]
+        check = self.backend.run([*args, "status"])
+        if json.loads(check).get("paused"):
+            self.backend.run([*args, "resume", "--operator-confirmed"])
 
     def entrypoint(self, *args, expect_success=True):
         process = subprocess.run(["bash", str(SCRIPT), *map(str, args)], capture_output=True, text=True)
@@ -198,7 +223,8 @@ class PostgreSQLRestoreTests(unittest.TestCase):
                 runtime = self.case / boundary
                 os.environ["FLOWSTOCK_RUNTIME_DIR"] = str(runtime)
                 backend = BoundaryFault()
-                restore = Restore(backend, runtime / "restore")
+                restore = Restore(backend, runtime / "restore",
+                                  coordinator=BackupCoordinator(backend))
                 with restore.lock(), self.assertRaises(RestoreError):
                     restore.execute(self.source)
                 state = restore.state.copy()
@@ -213,6 +239,16 @@ class PostgreSQLRestoreTests(unittest.TestCase):
                 self.verify_data()
                 self.backend.assert_stopped()
                 self.assertTrue(Path(state["safety_path"]).exists())
+                completed = self.active()
+                self.entrypoint("--complete", completed["operation_id"], "--confirm-validated")
+                args = [*self.backend.compose, "run", "--rm", "--no-deps",
+                        "-T", "--entrypoint", "python3", "pgbackup",
+                        "/usr/local/bin/managed_backup.py", "--root", "/backups"]
+                paused = json.loads(self.backend.run([*args, "status"]))
+                self.assertEqual(paused["pause_reason"], "restore:" + state["operation_id"])
+                # Deliberate operator-style resume between the two isolated
+                # DDL boundary scenarios; never resume on failed recovery.
+                self.backend.run([*args, "resume", "--operator-confirmed"])
 
 
 if __name__ == "__main__":
