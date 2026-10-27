@@ -1,5 +1,11 @@
 # Спецификация FlowStock Server
 
+## Изолированный remote backup adapter
+
+`deploy/backup/remote_backup.py` — явно запускаемый серверный SFTP-инструмент для уже `LOCAL_VALID` managed PostgreSQL 16 архивов. Он не подключён к scheduler, HTTP/WPF API или retention и не меняет локальный dump/catalog. Операция привязана к принятой паре `destination_revision + destination_identity`; identity включает конфигурацию и публичную часть provisioned credential. Неизвестный/изменённый SSH host key, неподтверждённый адрес, небезопасный путь или неподдерживаемый no-replace rename блокируют доставку.
+
+Удалённое подтверждение требует полного SFTP readback staging и опубликованной пары archive/manifest с SHA-256 и размером. Final не перезаписывается; идемпотентность также требует readback обоих объектов. Неполная публикация требует явного reconciliation, локальная копия при remote failures сохраняется. Вывод содержит только безопасные коды и состояние cleanup; фактическое подключение требует operator-controlled config, отдельный read-only secret mount и attestation encrypted destination/key recovery. Формат, ограничения endpoint и изолированные тесты описаны в [`deployment.md`](deployment.md#изолированный-remote-adapter-125).
+
 ## Операторское восстановление PostgreSQL
 
 `restore_dump.sh` восстанавливает только проверенный PostgreSQL 16 custom-format dump. До остановки сервисов проверяется закрытый snapshot входного архива; до любых destructive SQL проверяется свежий safety backup после остановки writers. Ошибка SQL останавливает restore и откатывает его транзакцию; автоматического rollback или запуска app/pgbackup нет. Durable maintenance сохраняется до явной проверки оператором. Recovery использует исходный проверенный safety archive, не меняет бизнес-данные отдельными repair-командами. Полный preflight, ограничения barrier, recovery и условия возобновления описаны в [`deployment.md`](deployment.md#восстановление-из-dump).
