@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using WpfButton = System.Windows.Controls.Button;
 using WpfProgressBar = System.Windows.Controls.ProgressBar;
 
@@ -9,12 +11,18 @@ internal sealed class StartupSplashWindow : Window
 {
     private bool _allowClose;
     private readonly TextBlock _statusText;
+    private readonly TextBlock _elapsedText;
     private readonly TextBlock _detailsText;
+    private readonly Stopwatch _stageWatch = Stopwatch.StartNew();
+    private readonly DispatcherTimer _elapsedTimer;
     private readonly WpfProgressBar _progress;
     private readonly WpfButton _closeButton;
 
     public StartupSplashWindow()
     {
+        // Do not resolve the Application's implicit Window style from this
+        // independently dispatched STA thread.
+        Style = new Style(typeof(Window));
         Title = "FlowStock";
         Width = 440;
         Height = 220;
@@ -28,11 +36,10 @@ internal sealed class StartupSplashWindow : Window
         {
             Margin = new Thickness(28)
         };
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        for (var i = 0; i < 6; i++)
+        {
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        }
 
         var title = new TextBlock
         {
@@ -47,10 +54,26 @@ internal sealed class StartupSplashWindow : Window
         {
             Text = "Запуск приложения…",
             FontSize = 15,
-            Margin = new Thickness(0, 12, 0, 12)
+            Margin = new Thickness(0, 12, 0, 4),
+            TextWrapping = TextWrapping.Wrap
         };
         Grid.SetRow(_statusText, 1);
         root.Children.Add(_statusText);
+
+        _elapsedText = new TextBlock
+        {
+            Text = "Ожидание: 0 с",
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+        Grid.SetRow(_elapsedText, 2);
+        root.Children.Add(_elapsedText);
+
+        _elapsedTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _elapsedTimer.Tick += (_, _) =>
+            _elapsedText.Text = $"Ожидание: {(int)_stageWatch.Elapsed.TotalSeconds} с";
+        _elapsedTimer.Start();
+        Closed += (_, _) => _elapsedTimer.Stop();
 
         _progress = new WpfProgressBar
         {
@@ -58,7 +81,7 @@ internal sealed class StartupSplashWindow : Window
             Height = 5,
             Margin = new Thickness(0, 0, 0, 12)
         };
-        Grid.SetRow(_progress, 2);
+        Grid.SetRow(_progress, 3);
         root.Children.Add(_progress);
 
         _detailsText = new TextBlock
@@ -67,7 +90,7 @@ internal sealed class StartupSplashWindow : Window
             Visibility = Visibility.Collapsed,
             MaxHeight = 55
         };
-        Grid.SetRow(_detailsText, 3);
+        Grid.SetRow(_detailsText, 4);
         root.Children.Add(_detailsText);
 
         _closeButton = new WpfButton
@@ -80,7 +103,7 @@ internal sealed class StartupSplashWindow : Window
             Visibility = Visibility.Collapsed
         };
         _closeButton.Click += (_, _) => Close();
-        Grid.SetRow(_closeButton, 4);
+        Grid.SetRow(_closeButton, 5);
         root.Children.Add(_closeButton);
 
         Closing += (_, e) =>
@@ -95,6 +118,7 @@ internal sealed class StartupSplashWindow : Window
     }
 
     internal string StatusText => _statusText.Text;
+    internal string ElapsedText => _elapsedText.Text;
     internal string DetailsText => _detailsText.Text;
     internal bool IsProgressVisible => _progress.Visibility == Visibility.Visible;
     internal bool IsCloseVisible => _closeButton.Visibility == Visibility.Visible;
@@ -102,11 +126,14 @@ internal sealed class StartupSplashWindow : Window
     public void SetStatus(string message)
     {
         _statusText.Text = string.IsNullOrWhiteSpace(message) ? "Идёт запуск…" : message;
+        _stageWatch.Restart();
+        _elapsedText.Text = "Ожидание: 0 с";
     }
 
     public void ShowFailure(string message, string? logPath)
     {
         _allowClose = true;
+        _elapsedTimer.Stop();
         _statusText.Text = "Запуск не завершён";
         _progress.IsIndeterminate = false;
         _progress.Visibility = Visibility.Collapsed;

@@ -22,6 +22,7 @@ namespace FlowStock.App;
 public partial class MainWindow : Window
 {
     private readonly AppServices? _productionServices;
+    private readonly Action<string>? _startupStage;
     public bool IsUiPreview => _productionServices is null;
     private AppServices _services => _productionServices
         ?? throw new InvalidOperationException(UiPreviewContext.OperationUnavailable);
@@ -126,10 +127,11 @@ public partial class MainWindow : Window
     private int _ordersPagedDepth;
     private bool _ordersHasMore;
 
-    public MainWindow(AppServices services)
+    public MainWindow(AppServices services, Action<string>? startupStage = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         _productionServices = services;
+        _startupStage = startupStage;
         InitializeComponent();
         BuildIdentityText.Text = AppRuntimeInfo.DisplayText;
         BuildIdentityText.ToolTip = AppRuntimeInfo.Current.SourceCommit;
@@ -308,6 +310,7 @@ public partial class MainWindow : Window
     {
         try
         {
+            _startupStage?.Invoke("Проверка FlowStock Server API…");
             if (!TryCheckServerApiAvailable(out var serverApiError))
             {
                 _serverApiUnavailableAtStartup = true;
@@ -327,7 +330,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            LoadAll();
+            LoadAll(_startupStage);
         }
         catch (Exception ex)
         {
@@ -344,16 +347,20 @@ public partial class MainWindow : Window
         }
     }
 
-    private void LoadAll()
+    private void LoadAll(Action<string>? startupStage = null)
     {
+        startupStage?.Invoke("Загрузка справочников…");
         LoadItemTypes();
         LoadItems();
         LoadUoms();
         LoadTaras();
         LoadLocations();
         LoadPartners();
+        startupStage?.Invoke("Загрузка документов…");
         LoadDocs();
+        startupStage?.Invoke("Загрузка заказов…");
         LoadOrders();
+        startupStage?.Invoke("Загрузка остатков…");
         LoadStock(null);
         LoadLowStockView();
     }
