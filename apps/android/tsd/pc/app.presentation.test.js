@@ -638,6 +638,77 @@ const customerFullHuCoverageHtml = pc.renderOrderLinesTable(
 assert.match(customerFullHuCoverageHtml, /pc-order-line-coverage-covered/);
 assert.match(customerFullHuCoverageHtml, /Горчица: покрыто 1800 из 1800/);
 
+// #166: full CUSTOMER reservation uses canonical coverage and operational HU, not a production plan.
+const stockOnlyCustomerLine = {
+  id: 166,
+  item_name: "Аджика Печагин, 1 кг",
+  qty_ordered: 756,
+  qty_left: 756,
+  qty_shipped: 0,
+  planned_pallet_count: 0,
+  pallet_planned_qty: 0,
+  pallet_fill_label: "План не сформирован",
+  coverage: { ordered_qty: 756, covered_qty: 756, missing_qty: 0, shipped_qty: 0 },
+  hu_presentation: {
+    operational_hus: [
+      { hu_code: "HU-0001913", qty: 378, state: { code: "RESERVED", label: "Зарезервирован" } },
+      { hu_code: "HU-0001914", qty: 378, state: { code: "RESERVED", label: "Зарезервирован" } },
+    ],
+    production_tasks: [],
+  },
+};
+const stockOnlyCustomerHtml = pc.renderOrderLinesTable(
+  [stockOnlyCustomerLine],
+  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" },
+  { 166: true }
+);
+assert.match(stockOnlyCustomerHtml, /pc-order-line-coverage-covered/);
+assert.match(stockOnlyCustomerHtml, /HU-0001913/);
+assert.match(stockOnlyCustomerHtml, /Зарезервирован/);
+assert.doesNotMatch(stockOnlyCustomerHtml, /План не сформирован/);
+assert.doesNotMatch(stockOnlyCustomerHtml, /pc-line-pallet-badge/);
+
+// Partial warehouse reserve must not hide a genuine missing-production-plan indication.
+const partialWarehouseCustomerHtml = pc.renderOrderLinesTable(
+  [{
+    ...stockOnlyCustomerLine,
+    coverage: { ordered_qty: 756, covered_qty: 378, missing_qty: 378, shipped_qty: 0 },
+    hu_presentation: {
+      operational_hus: stockOnlyCustomerLine.hu_presentation.operational_hus.slice(0, 1),
+      production_tasks: [],
+    },
+  }],
+  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
+);
+assert.match(partialWarehouseCustomerHtml, /План не сформирован/);
+assert.match(partialWarehouseCustomerHtml, /pc-order-line-coverage-partial/);
+
+// Coverage without canonical warehouse HU is insufficient evidence to suppress the warning.
+const coverageWithoutHuHtml = pc.renderOrderLinesTable(
+  [{ ...stockOnlyCustomerLine, hu_presentation: { operational_hus: [], production_tasks: [] } }],
+  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
+);
+assert.match(coverageWithoutHuHtml, /План не сформирован/);
+
+// Mixed coverage still displays actual production progress when a production plan exists.
+const mixedStockAndProductionHtml = pc.renderOrderLinesTable(
+  [{
+    ...stockOnlyCustomerLine,
+    planned_pallet_count: 1,
+    pallet_planned_qty: 378,
+    filled_pallet_count: 0,
+    pallet_filled_qty: 0,
+    hu_presentation: {
+      operational_hus: stockOnlyCustomerLine.hu_presentation.operational_hus.slice(0, 1),
+      production_tasks: [{ hu_code: "HU-0001915", qty: 378, state: { code: "AWAITING_FILL", label: "Ожидает наполнения" } }],
+    },
+  }],
+  { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
+);
+assert.match(mixedStockAndProductionHtml, /pc-pallet-progress-inprogress/);
+assert.match(mixedStockAndProductionHtml, />0 \\/ 1</);
+assert.doesNotMatch(mixedStockAndProductionHtml, /План не сформирован/);
+
 const customerPartialHuCoverageHtml = pc.renderOrderLinesTable(
   [
     {
