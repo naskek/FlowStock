@@ -336,6 +336,12 @@ jobs:
           bash deploy/scripts/tests/operator-backup.test.sh
           bash deploy/scripts/tests/rollback-safety.test.sh
           bash deploy/scripts/tests/host-lock-concurrency.test.sh
+      - name: Verify nginx upstream refresh after backend IP recreation
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          python3 deploy/scripts/tests/integration_nginx_upstream.py
       - name: Validate and apply disposable migrations
         shell: bash
         run: |
