@@ -706,7 +706,7 @@ const mixedStockAndProductionHtml = pc.renderOrderLinesTable(
   { order_type: "CUSTOMER", order_status: "IN_PROGRESS" }
 );
 assert.match(mixedStockAndProductionHtml, /pc-pallet-progress-inprogress/);
-assert.match(mixedStockAndProductionHtml, />0 \\/ 1</);
+assert.match(mixedStockAndProductionHtml, />0 \/ 1</);
 assert.doesNotMatch(mixedStockAndProductionHtml, /План не сформирован/);
 
 const customerPartialHuCoverageHtml = pc.renderOrderLinesTable(
