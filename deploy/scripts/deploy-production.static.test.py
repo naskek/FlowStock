@@ -43,6 +43,9 @@ checks = {
     ),
     "managed worker build": require(r'"\$\{compose\[@\]\}" build flowstock discovery-relay pgbackup', "pgbackup must be built before startup"),
     "deploy": require(r'"\$\{compose\[@\]\}" up -d --remove-orphans', "Compose deploy is missing"),
+    "nginx upstream refresh": require(r'refresh_nginx_upstream "\$nginx_id"', "post-recreate nginx refresh missing"),
+    "nginx config validation": require(r'docker exec "\$nginx_container_id" nginx -t >/dev/null \|\|', "fail-closed nginx configuration gate missing"),
+    "nginx graceful reload": require(r'docker exec "\$nginx_container_id" nginx -s reload \|\|', "fail-closed nginx graceful reload missing"),
     "loopback port": require(r'flowstock_port="\$\{compose_env\[FLOWSTOCK_PORT\]:-8080\}"', "loopback port must come from resolved Compose environment"),
     "loopback URL": require(r'loopback_url="http://127\.0\.0\.1:\$flowstock_port"', "canonical loopback URL is missing"),
     "internal live": require(r'curl -fsS\s+"?\$loopback_url/health/live"?', "server-side live check must use canonical loopback URL"),
@@ -138,6 +141,10 @@ unique_publish_gate = require(r'ln -- "\$backup_partial" "\$backup_path"', "veri
 new_image_pause_gate = require(r'"\$\{compose\[@\]\}" build flowstock discovery-relay pgbackup.*?ensure_deploy_pause "\$\{compose\[@\]\}"', "new worker pause is missing")
 external_gate = require(r'Invoke-RestMethod -Uri "\$PublicUrl/api/version"', "external identity missing")
 resume_gate = require(r'resume --operator-confirmed', "explicit validated resume is missing")
+if not (checks["nginx config validation"] < checks["nginx graceful reload"] <
+        checks["deploy"] < checks["nginx upstream refresh"] <
+        checks["internal live"] < external_gate < resume_gate):
+    raise AssertionError("nginx must validate/reload after backend recreation and before internal/external gates and backup resume")
 if not downlevel_host_gate < host_exclusion_gate < legacy_stop_gate < managed_origin_gate < full_payload_gate:
     raise AssertionError("host exclusion, legacy stop and managed pre-deploy origin are out of order")
 if not (legacy_stop_gate < full_payload_gate < fsync_backup_gate < unique_publish_gate < fsync_directory_gate <

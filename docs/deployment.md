@@ -75,6 +75,8 @@ Entrypoint никогда не печатает `deploy/.env`, connection string
 
 Базовые образы `postgres` и `nginx` подтягиваются командой `docker compose pull --policy missing postgres nginx`: если соответствующий образ уже присутствует в локальном Docker daemon, повторный запрос в Docker Hub не нужен. При отсутствии образа Compose пытается загрузить его и останавливает deploy при ошибке. Перед production deploy оператор должен отдельно проверить/при необходимости обновить mutable tags базовых образов доверенным способом (например, через подготовленный registry cache); режим `missing` **не** обеспечивает автоматическое получение новой ревизии уже существующего тега. Все остальные Compose, backup и deployment gates остаются обязательными.
 
+После `docker compose up -d --remove-orphans` канонический deploy получает ID текущего nginx-контейнера и **обязательно** выполняет `nginx -t`, затем graceful `nginx -s reload`. Для `nginx:1.27-alpine` со статическим `proxy_pass http://flowstock:8080` это обновляет DNS/IP upstream при пересоздании backend, даже если сам nginx-контейнер не менялся. Ошибка проверки конфигурации или reload прерывает deploy до health/HTTPS gates и **не** снимает общую backup-паузу; далее оператор разбирает причину и повторяет штатный deploy. Успешный reload сам по себе не заменяет проверку внешних HTTPS live/ready, source identity и TSD. Изолированный Docker regression test: `python3 deploy/scripts/tests/integration_nginx_upstream.py`.
+
 `deploy_from_git.sh` и `deploy_update.sh` остаются helper/legacy и не заменяют этот entrypoint. Скрипт не является unattended CD: production deploy всегда явно запускает оператор. Для проверки контракта без доступа к production используйте:
 
 ```bash
