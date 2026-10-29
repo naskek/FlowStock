@@ -120,7 +120,7 @@ def main():
                     "-v", f"{proxy_conf}:/etc/nginx/conf.d/default.conf:ro",
                     "-v", f"{certdir}:/etc/nginx/certs:ro", IMAGE)
             exposed = command("docker", "port", proxy, "443/tcp").stdout
-            port_match = re.search(r"127\\.0\\.0\\.1:(\\d+)", exposed)
+            port_match = re.search(r"127\.0\.0\.1:(\d+)", exposed)
             if port_match is None:
                 raise AssertionError(f"nginx port was not published to localhost: {exposed}")
             port = int(port_match.group(1))
