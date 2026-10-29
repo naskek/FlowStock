@@ -20,6 +20,9 @@ internal sealed class StartupSplashWindow : Window
 
     public StartupSplashWindow()
     {
+        // Do not resolve the Application's implicit Window style from this
+        // independently dispatched STA thread.
+        Style = new Style(typeof(Window));
         Title = "FlowStock";
         Width = 440;
         Height = 220;
