@@ -667,6 +667,66 @@ API job response `v1` содержит `request_id`, `job_id`, `operation`, `job
 - Remote final никогда не перезаписывает чужой или конфликтующий объект. Повтор по `backup_id + sha256 + destination_revision` идемпотентен; совпадающий уже verified объект распознаётся после readback, конфликт блокируется. Probe — server-initiated уникальный тестовый файл с проверкой read/write/delete **только собственного** тестового объекта, без проверки на production data. Отказ сети не останавливает local dump; retry без повторного `pg_dump`.
 - SFTP шифрует **передачу, не хранение**. Перед включением remote replication оператор документально подтверждает encrypted destination volume/dataset, управление ключами/их независимую recovery copy, защищённые backup rights и тест восстановления после потери основного сервера. Невозможно доказать at-rest protection — не включать mirror, не объявлять полный DR-ready. Дополнительный формат encrypted archive — отдельное согласованное расширение; не обещать его в первом adapter.
 
+### Изолированный remote adapter (#125)
+
+**Реализованный примитив:** `/usr/local/bin/remote_backup.py` поставляется в образе `pgbackup`, но worker его **не вызывает**; Compose не добавляет remote config, credentials, mounts или network. Нет API/WPF, очереди, автоматических повторов, remote inventory и retention. `managed_backup.py`, local catalog и текущий scheduled flow не изменяются. Для проверки использовать только disposable инфраструктуру; включение на NAS и production provisioning — отдельное поручение.
+
+Adapter рассчитан на Linux, отдельную service identity и операторски подготовленный **эксклюзивный** root: его предки не writable для group/other, на всех компонентах запрещены symlink. Другие процессы и пользователи не должны подменять root/объекты во время операции: SFTP v3 не предоставляет `openat(O_NOFOLLOW)` и не изолирует враждебные concurrent filesystem mutations. Учётная запись должна быть ограничена SFTP и нужным каталогом средствами сервера. Примитив поддерживает только OpenSSH SFTP v3: перед каждой операцией проверяет `hardlink@openssh.com`, отказ standard RENAME при занятом имени и успешный перенос в свободное имя. Hardlink нужен для исключения известного OpenSSH fallback `stat + rename`; файловая система без hardlink или endpoint с overwrite/неподдерживаемой rename/readback семантикой отклоняются. `posix-rename@openssh.com` не вызывается. Эти проверки подтверждают возможности доверенного, pinned endpoint, но не доказывают корректность произвольной враждебной реализации сервера. Протокол: [OpenSSH PROTOCOL](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL), [standard RENAME implementation](https://github.com/openssh/openssh-portable/blob/master/sftp-server.c), [Paramiko SFTP](https://docs.paramiko.org/en/stable/api/sftp.html).
+
+Операторский JSON вне Git должен иметь mode `0600` или `0400`, ownership root/текущего service UID, без symlink в пути. Минимальная схема (placeholder-ы заменяются **только** в закрытом operator provisioning):
+
+```json
+{
+  "schema_version": 1,
+  "enabled": true,
+  "destination_revision": 1,
+  "host": "<APPROVED_PRIVATE_HOST_OR_IP>",
+  "port": 22,
+  "account": "<SFTP_SERVICE_ACCOUNT>",
+  "allowed_addresses": ["<APPROVED_PRIVATE_IP>"],
+  "root": "/<EXCLUSIVE_SFTP_ROOT>",
+  "host_key_sha256": "SHA256:<OPERATOR_PINNED_ED25519_HOST_KEY>",
+  "credential_file": "/run/secrets/<READ_ONLY_ED25519_KEY>",
+  "rename_policy": "openssh-v3-hardlink",
+  "exclusive_root_attested": true,
+  "encrypted_at_rest_recovery_attested": true,
+  "connect_seconds": 10,
+  "auth_seconds": 10,
+  "transfer_seconds": 600,
+  "max_archive_bytes": 10737418240
+}
+```
+
+`host` фиксирован оператором; все адреса его DNS-ответа должны входить в явный IP allowlist. Подключение идёт прямо к проверенному IP без повторного DNS resolution. Разрешены private/intranet, Tailscale CGNAT и loopback для изолированных тестов; multicast/unspecified/public targets отклоняются. Нет proxy, SSH-agent, чтения пользовательских SSH config/known_hosts, shell/exec и TOFU. Первый adapter поддерживает только Ed25519 host key и отдельный Ed25519 private key без passphrase: secret reference — обычный файл `0400` под `/run/secrets`, смонтированный read-only; значения не передаются через env/CLI/API. Фактический mount read-only и least privilege обеспечивает оператор. Локальные config/catalog/архивы открываются через `O_NOFOLLOW` на каждом компоненте пути; проверяются тип, ownership, mode и link count файлов. `encrypted_at_rest_recovery_attested=true` — запись ранее выполненной операторской проверки, **не** программная проверка шифрования NAS. До её получения нельзя активировать config.
+
+`describe` без сетевых операций возвращает только revision/identity. Принятая операция обязана передавать **сохранённые при принятии** revision/identity: изменение конфигурации или публичного credential key делает старый ввод недействительным. Ротация требует новой `destination_revision` и явного решения для старых операций. Нельзя автоматически подставлять результат нового `describe` в ранее принятую операцию.
+
+```sh
+python3 /usr/local/bin/remote_backup.py --config /run/config/remote.json describe
+python3 /usr/local/bin/remote_backup.py --config /run/config/remote.json probe \
+  --destination-revision <ACCEPTED_REVISION> --destination-identity <ACCEPTED_IDENTITY>
+python3 /usr/local/bin/remote_backup.py --config /run/config/remote.json upload \
+  --destination-revision <ACCEPTED_REVISION> --destination-identity <ACCEPTED_IDENTITY> \
+  --root /backups --backup-id <MANAGED_BACKUP_ID>
+```
+
+`--root` — доверенный локальный operator path, `--backup-id` — строго managed UUID без произвольного имени файла; root/host/path не поступают из клиентского запроса. Adapter проверяет существующий catalog `schema_version=1`, `LOCAL_VALID`, `structural_validated=true`, `pg_major=16`, backup/archive ID, size/SHA-256. Локальный FD остаётся открытым, bytes, inode/timestamps и catalog перечитываются до/после передачи и перед publish. Архив не удаляется и catalog не переписывается, даже при ошибке или тайм-ауте; результат `VERIFIED` пока является результатом явного вызова, а не persisted remote job state.
+
+Probe создаёт только уникальные собственные объекты через exclusive create, пишет/читает/проверяет их и удаляет; дополнительно проверяет rename/hardlink capability на этих же объектах. Никакие чужие имена не удаляются. `cleanup=complete|failed` отражает результат; `PROBE_CLEANUP_FAILED` блокирует success и требует операторской проверки оставшихся probe-файлов. Connect/DNS/handshake, auth и transfer имеют отдельные wall-clock deadlines; transfer включает capability probe, все write/readback/publish и финальную проверку. I/O идёт синхронными блоками до 32 KiB без unbounded prefetch; readback ограничен ожидаемым размером плюс один байт. Для cleanup даётся не более 5 секунд; пока transfer budget активен, действует и его остаток. После срабатывания transfer timeout допускается отдельный cleanup budget до 5 секунд. Потерянные OPEN/hardlink/rename ACK учитываются отдельно от подтверждённого ownership: неизвестные объекты не удаляются, cleanup отражает неопределённость как failed.
+
+Пара remote final: `<backup_id>-r<revision>.dump` и `.json`; manifest содержит schema version, backup ID, SHA-256, размер, destination revision/identity. Оба staging имени уникальны, создаются эксклюзивно, закрываются и полностью перечитываются перед standard no-replace rename. Success требует полного readback **обоих final** и повторной проверки local source. Совпадающая пара идемпотентна без перезаписи; чужие/конфликтующие final или manifest дают отказ. После crash между публикациями archive без manifest не признаётся verified: обычный повтор возвращает `REMOTE_UNKNOWN`; только явно выбранный оператором `upload --reconcile` после проверки того же accepted destination допускает полный readback и допубликацию отсутствующего manifest. Конфликтующий manifest не исправляется автоматически.
+
+Ошибки выводятся как JSON с конечными `error_code` и `cleanup`, без raw exception, адресов, путей, credentials или dump bytes. Потерянный rename ack — `REMOTE_UNKNOWN`, без blind retry и без удаления final. Незавершённые upload staging сохраняются (`cleanup=retained`) для последующей сверки; автоматический сбор/удаление orphan-файлов в #125 не входит. При любой ошибке перед новым ручным действием проверить состояние пары на том же destination; отсутствие ответа не означает отсутствие архива. Успех SFTP не обещает restore-test, remote fsync/power-loss durability или полноценную DR-ready конфигурацию.
+
+Изолированный regression/smoke запускает настоящий PostgreSQL 16, получает `LOCAL_VALID` через неизменённый managed primitive и поднимает OpenSSH только на loopback внутри одноразового контейнера. Отдельный SSH/SFTP fault peer вносит wire-level auth/permission/timeout, interrupted write/read, corruption и rename faults. Проверяются pin/allowlist/path/symlink, cleanup, final conflict/idempotency/reconciliation и сохранность local archive/catalog. Контейнер запускается с **`--network none`**, без host ports, production volumes/secrets или mounts:
+
+```sh
+docker build -f deploy/backup/tests/Dockerfile.sftp -t flowstock-remote-sftp:test .
+docker run --rm --network none flowstock-remote-sftp:test
+```
+
+Это подходящий изолированный integration gate для adapter, но не production-copy attestation. До merge/deploy остаётся отдельный требуемый production-copy/exact-tree gate; NAS permissions, encrypted dataset/key recovery, реальная worker→NAS связность и operator restore smoke выполняются только после отдельного разрешения. В #125 production не подключается.
+
 ### Серверная инвентаризация NAS и наблюдение из WPF
 
 Журнал отправок отвечает на вопрос «что worker отправлял», inventory — «что сервер наблюдал на NAS и когда». Одного `remote_state=VERIFIED` в завершённом job недостаточно для списка сохранённых удалённых копий. Инвентаризация — обязательная server-side функция первого NAS/WPF этапа, а не необязательное открытие сетевой папки.

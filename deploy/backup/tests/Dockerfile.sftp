@@ -1,0 +1,9 @@
+FROM postgres:16
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssh-server python3-venv && rm -r /var/lib/apt/lists/*
+COPY deploy/backup/requirements-remote.txt /tmp/requirements-remote.txt
+RUN python3 -m venv /opt/remote && /opt/remote/bin/pip install --no-cache-dir -r /tmp/requirements-remote.txt \
+    && useradd -m -s /usr/sbin/nologin remote_fixture && usermod -p '*' remote_fixture \
+    && mkdir -p /run/sshd /run/secrets
+COPY deploy/backup /suite
+ENTRYPOINT ["/opt/remote/bin/python", "/suite/tests/integration_sftp.py"]
