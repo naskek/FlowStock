@@ -1,5 +1,9 @@
 # Спецификация FlowStock Server
 
+## Совместимость и recovery backup worker
+
+Scheduled backup worker требует Python 3, исполняемый managed primitive и PostgreSQL 16 clients. Несовместимый image, включая legacy-контейнер с новым bind-mounted скриптом после checkout, завершается с `INCOMPATIBLE_BACKUP_RUNTIME` и кодом `78` до scheduled loop. Runtime healthcheck подтверждает только совместимость; operational recovery требует нового `LOCAL_VALID` архива. Прерванный deploy сохраняет worker остановленным либо в durable pause; автоматического запуска legacy-контейнера и снятия чужой maintenance pause нет. Recovery проходит через канонический deploy с fresh backup, всеми health/identity/TSD gates и проверкой нового архива фактически развёрнутым worker до resume. Детали — в `deployment.md`.
+
 ## Изолированный remote backup adapter
 
 `deploy/backup/remote_backup.py` — явно запускаемый серверный SFTP-инструмент для уже `LOCAL_VALID` managed PostgreSQL 16 архивов. Он не подключён к scheduler, HTTP/WPF API или retention и не меняет локальный dump/catalog. Операция привязана к принятой паре `destination_revision + destination_identity`; identity включает конфигурацию и публичную часть provisioned credential. Неизвестный/изменённый SSH host key, неподтверждённый адрес, небезопасный путь или неподдерживаемый no-replace rename блокируют доставку.
