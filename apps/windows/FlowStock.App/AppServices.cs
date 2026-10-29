@@ -143,7 +143,7 @@ public sealed class AppServices
         DatabaseStartupError = databaseStartupError;
     }
 
-    public static AppServices CreateDefault()
+    public static AppServices CreateDefault(Action<string>? startupStage = null)
     {
         var baseDir = AppPaths.BaseDir;
         var backupsDir = AppPaths.BackupsDir;
@@ -158,6 +158,7 @@ public sealed class AppServices
 
         var appLogger = new FileLogger(Path.Combine(logsDir, "app.log"));
         var adminLogger = new FileLogger(Path.Combine(logsDir, "admin.log"));
+        startupStage?.Invoke("Чтение настроек приложения…");
         var userSettings = new SettingsService(settingsPath).Load();
         var connectionConfig = BuildPostgresConnectionConfiguration(userSettings);
         var connectionString = connectionConfig.ConnectionString;
@@ -175,6 +176,8 @@ public sealed class AppServices
         {
             try
             {
+                startupStage?.Invoke("Подключение и проверка PostgreSQL…");
+                appLogger.Info("Startup: beginning PostgreSQL initialization.");
                 dataStore.Initialize();
                 isDatabaseAvailable = true;
                 appLogger.Info($"Database provider: postgres {target}");
