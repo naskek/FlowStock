@@ -15,17 +15,19 @@ public sealed class StartupSplashTests
         {
             var controller = StartupSplashController.Start(null);
             var window = Assert.IsType<StartupSplashWindow>(controller.Window);
+            using var closed = new ManualResetEventSlim();
+            window.Dispatcher.Invoke(() => window.Closed += (_, _) => closed.Set());
             try
             {
                 Assert.False(controller.UsesExternalSplash);
-                Assert.True(window.IsVisible);
-                Assert.True(window.IsProgressVisible);
+                Assert.True(window.Dispatcher.Invoke(() => window.IsVisible));
+                Assert.True(window.Dispatcher.Invoke(() => window.IsProgressVisible));
 
                 controller.SetStage("Загрузка интерфейса…");
-                Assert.Equal("Загрузка интерфейса…", window.StatusText);
+                Assert.Equal("Загрузка интерфейса…", window.Dispatcher.Invoke(() => window.StatusText));
 
                 controller.Complete();
-                Assert.False(window.IsVisible);
+                Assert.True(closed.Wait(TimeSpan.FromSeconds(5)), "Splash window did not close");
             }
             finally
             {
@@ -45,11 +47,43 @@ public sealed class StartupSplashTests
             {
                 controller.Fail("boom", @"C:\temp\app.log");
 
-                Assert.Equal("Запуск не завершён", window.StatusText);
-                Assert.Contains("boom", window.DetailsText);
-                Assert.Contains(@"C:\temp\app.log", window.DetailsText);
-                Assert.False(window.IsProgressVisible);
-                Assert.True(window.IsCloseVisible);
+                var state = window.Dispatcher.Invoke(() => (
+                    window.StatusText,
+                    window.DetailsText,
+                    window.IsProgressVisible,
+                    window.IsCloseVisible));
+                Assert.Equal("Запуск не завершён", state.StatusText);
+                Assert.Contains("boom", state.DetailsText);
+                Assert.Contains(@"C:\temp\app.log", state.DetailsText);
+                Assert.False(state.IsProgressVisible);
+                Assert.True(state.IsCloseVisible);
+            }
+            finally
+            {
+                controller.Close();
+            }
+        });
+    }
+
+    [Fact]
+    public async Task Internal_splash_dispatcher_keeps_processing_while_production_dispatcher_is_busy()
+    {
+        await OnUiThread(() =>
+        {
+            var controller = StartupSplashController.Start(null);
+            var window = Assert.IsType<StartupSplashWindow>(controller.Window);
+            using var rendered = new ManualResetEventSlim();
+            try
+            {
+                window.Dispatcher.BeginInvoke(() => rendered.Set());
+
+                // This intentionally blocks the WPF thread running startup. The
+                // splash must be driven by its independent STA Dispatcher.
+                Thread.Sleep(TimeSpan.FromMilliseconds(1200));
+
+                Assert.True(rendered.IsSet, "Splash Dispatcher was blocked by production startup");
+                Assert.NotEqual("Ожидание: 0 с",
+                    window.Dispatcher.Invoke(() => window.ElapsedText));
             }
             finally
             {
