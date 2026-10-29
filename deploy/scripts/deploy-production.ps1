@@ -401,7 +401,21 @@ v=json.load(sys.stdin)
 raise SystemExit(0 if v.get("paused") is True and v.get("pause_reason")==sys.argv[1] else 1)
 ' "$pause_reason" || fail 'managed pause owner changed across checkout'
 fi
+# The backend may receive a different Docker IP while the nginx container is
+# reused. nginx:1.27 resolves a literal proxy_pass upstream at config load.
+# Refresh only after the new backend passed Compose health dependencies.
+refresh_nginx_upstream() {
+    local nginx_container_id="$1"
+    test -n "$nginx_container_id" || fail 'nginx container missing before upstream refresh'
+    docker exec "$nginx_container_id" nginx -t >/dev/null ||
+        fail 'nginx config validation failed; backup maintenance remains paused'
+    docker exec "$nginx_container_id" nginx -s reload ||
+        fail 'nginx upstream reload failed; backup maintenance remains paused'
+    log 'nginx upstream refreshed after backend recreate'
+}
 "${compose[@]}" up -d --remove-orphans
+nginx_id="$("${compose[@]}" ps -q nginx)"
+refresh_nginx_upstream "$nginx_id"
 "${compose[@]}" ps
 
 for service in postgres flowstock discovery-relay nginx pgbackup; do
