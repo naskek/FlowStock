@@ -2103,6 +2103,35 @@
     };
   }
 
+  function hasFullWarehouseHuCoverageWithoutProduction(line, order) {
+    if (!line || isInternalOrder(order)) {
+      return false;
+    }
+
+    var huPresentation = line.hu_presentation;
+    if (!huPresentation || !Array.isArray(huPresentation.operational_hus)) {
+      return false;
+    }
+    if (
+      huPresentation.production_tasks &&
+      (!Array.isArray(huPresentation.production_tasks) || huPresentation.production_tasks.length > 0)
+    ) {
+      return false;
+    }
+    var hasReservedHu = huPresentation.operational_hus.some(function (row) {
+      return row && row.state && row.state.code === "RESERVED";
+    });
+    if (!hasReservedHu) {
+      return false;
+    }
+
+    var coverage = getLineCoverageState(line);
+    return !!coverage
+      && coverage.required > 0.000001
+      && coverage.shortage <= 0.000001
+      && coverage.available + 0.000001 >= coverage.required;
+  }
+
   function renderLineNoPlanBadge(title) {
     return renderStatusBadge(
       "План не сформирован",
@@ -2160,6 +2189,11 @@
         lineTitle ||
           "Наполнение по строке: " + formatQuantity(state.filledQty) + " / " + formatQuantity(state.plannedQty)
       );
+    }
+
+    // Stock HU reservation covers this line; production pallet planning is not required.
+    if (hasFullWarehouseHuCoverageWithoutProduction(line, order)) {
+      return "";
     }
 
     if (line && line.pallet_fill_label) {
