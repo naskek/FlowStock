@@ -127,7 +127,7 @@ $window.ShowInTaskbar = $true
 $root = New-Object Windows.Controls.Grid
 $root.Margin = New-Object Windows.Thickness -ArgumentList 28
 
-0..4 | ForEach-Object {
+0..5 | ForEach-Object {
     $row = New-Object Windows.Controls.RowDefinition
     $row.Height = [Windows.GridLength]::Auto
     $root.RowDefinitions.Add($row)
@@ -143,22 +143,30 @@ $root.Children.Add($title) | Out-Null
 $statusText = New-Object Windows.Controls.TextBlock
 $statusText.Text = 'Запуск FlowStock…'
 $statusText.FontSize = 15
-$statusText.Margin = New-Object Windows.Thickness -ArgumentList 0, 12, 0, 12
+$statusText.Margin = New-Object Windows.Thickness -ArgumentList 0, 12, 0, 4
+$statusText.TextWrapping = [Windows.TextWrapping]::Wrap
 [Windows.Controls.Grid]::SetRow($statusText, 1)
 $root.Children.Add($statusText) | Out-Null
+
+$elapsedText = New-Object Windows.Controls.TextBlock
+$elapsedText.Text = 'Запуск: 0 с'
+$elapsedText.FontSize = 12
+$elapsedText.Margin = New-Object Windows.Thickness -ArgumentList 0, 0, 0, 12
+[Windows.Controls.Grid]::SetRow($elapsedText, 2)
+$root.Children.Add($elapsedText) | Out-Null
 
 $progress = New-Object Windows.Controls.ProgressBar
 $progress.IsIndeterminate = $true
 $progress.Height = 5
 $progress.Margin = New-Object Windows.Thickness -ArgumentList 0, 0, 0, 12
-[Windows.Controls.Grid]::SetRow($progress, 2)
+[Windows.Controls.Grid]::SetRow($progress, 3)
 $root.Children.Add($progress) | Out-Null
 
 $details = New-Object Windows.Controls.TextBlock
 $details.TextWrapping = [Windows.TextWrapping]::Wrap
 $details.Visibility = [Windows.Visibility]::Collapsed
 $details.MaxHeight = 55
-[Windows.Controls.Grid]::SetRow($details, 3)
+[Windows.Controls.Grid]::SetRow($details, 4)
 $root.Children.Add($details) | Out-Null
 
 $close = New-Object Windows.Controls.Button
@@ -169,7 +177,7 @@ $close.HorizontalAlignment = [Windows.HorizontalAlignment]::Right
 $close.Margin = New-Object Windows.Thickness -ArgumentList 0, 12, 0, 0
 $close.Visibility = [Windows.Visibility]::Collapsed
 $close.Add_Click({ $window.Close() })
-[Windows.Controls.Grid]::SetRow($close, 4)
+[Windows.Controls.Grid]::SetRow($close, 5)
 $root.Children.Add($close) | Out-Null
 
 $window.Content = $root
@@ -192,6 +200,7 @@ $timer.Interval = [TimeSpan]::FromMilliseconds(150)
 $timer.Add_Tick({
     $state = Read-StartupStatus
     $outcome = Get-Outcome $state $watch
+    $elapsedText.Text = 'Запуск: ' + [int][Math]::Floor($watch.Elapsed.TotalSeconds) + ' с'
 
     if ($null -ne $state -and
         $state.state -eq 'starting' -and
