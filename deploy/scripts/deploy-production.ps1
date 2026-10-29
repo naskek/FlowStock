@@ -380,7 +380,9 @@ test "$telegram_enabled" = 0 || validator+=(--telegram-enabled)
 "${compose[@]}" config --format json | "${validator[@]}" >/dev/null
 log 'secret-safe resolved Compose validation passed'
 
-"${compose[@]}" pull postgres nginx
+log "ensuring postgres/nginx images are available (pull missing only)"
+"${compose[@]}" pull --policy missing postgres nginx
+log "postgres/nginx images available"
 "${compose[@]}" build flowstock discovery-relay pgbackup
 "${compose[@]}" run --rm --no-deps -T --entrypoint sh pgbackup \
     /usr/local/bin/pg_backup.sh --check-runtime || fail 'new backup image is incompatible; worker remains stopped'
