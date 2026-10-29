@@ -41,11 +41,36 @@ internal sealed class StartupSplashController
             return external;
         }
 
-        var window = new StartupSplashWindow();
-        var controller = new StartupSplashController(window, null);
-        window.Show();
-        window.Dispatcher.Invoke(DispatcherPriority.Render, new Action(() => { }));
-        return controller;
+        // The production WPF startup synchronously initializes PostgreSQL and loads
+        // the first window. Keep the splash on its own STA Dispatcher so animation
+        // and diagnostics remain responsive while the main Dispatcher is blocked.
+        var ready = new TaskCompletionSource<StartupSplashWindow>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var dispatcher = Dispatcher.CurrentDispatcher;
+                var window = new StartupSplashWindow();
+                window.Closed += (_, _) => dispatcher.BeginInvokeShutdown(DispatcherPriority.Background);
+                window.Show();
+                ready.TrySetResult(window);
+                Dispatcher.Run();
+            }
+            catch (Exception ex)
+            {
+                ready.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "FlowStock startup splash"
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        var splashWindow = ready.Task.WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
+        return new StartupSplashController(splashWindow, null);
     }
 
     public void SetStage(string message)
@@ -57,7 +82,7 @@ internal sealed class StartupSplashController
 
         if (_window is not null)
         {
-            _window.SetStatus(message);
+            UpdateWindow(window => window.SetStatus(message));
             return;
         }
 
@@ -74,7 +99,7 @@ internal sealed class StartupSplashController
         _finished = true;
         if (_window is not null)
         {
-            _window.Complete();
+            UpdateWindow(window => window.Complete());
             return;
         }
 
@@ -91,7 +116,7 @@ internal sealed class StartupSplashController
         _finished = true;
         if (_window is not null)
         {
-            _window.ShowFailure(message, logPath);
+            UpdateWindow(window => window.ShowFailure(message, logPath));
             return;
         }
 
@@ -100,9 +125,38 @@ internal sealed class StartupSplashController
 
     public void Close()
     {
-        if (_window?.IsVisible == true)
+        if (_window is not null)
         {
-            _window.ForceClose();
+            UpdateWindow(window => window.ForceClose());
+        }
+    }
+
+    private void UpdateWindow(Action<StartupSplashWindow> update)
+    {
+        var window = _window;
+        if (window is null || window.Dispatcher.HasShutdownStarted)
+        {
+            return;
+        }
+
+        try
+        {
+            if (window.Dispatcher.CheckAccess())
+            {
+                update(window);
+            }
+            else
+            {
+                window.Dispatcher.Invoke(() => update(window));
+            }
+        }
+        catch (TaskCanceledException) when (window.Dispatcher.HasShutdownStarted)
+        {
+            // The splash thread was already closed during application shutdown.
+        }
+        catch (InvalidOperationException) when (window.Dispatcher.HasShutdownStarted)
+        {
+            // The Dispatcher no longer accepts new work.
         }
     }
 
