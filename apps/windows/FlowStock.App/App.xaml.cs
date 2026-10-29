@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Threading;
@@ -14,6 +15,13 @@ public partial class App : Application
     private AppServices? _services;
     private Mutex? _instanceMutex;
     private StartupSplashController? _startupSplash;
+    private readonly Stopwatch _startupWatch = Stopwatch.StartNew();
+
+    private void ReportStartupStage(string message)
+    {
+        _startupSplash?.SetStage(message);
+        _appLogger?.Info($"WPF startup stage at {_startupWatch.ElapsedMilliseconds} ms: {message}");
+    }
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -33,7 +41,7 @@ public partial class App : Application
             if (UiPreviewStartup.TryStart(e.Args, preview =>
                 {
                     _logPath = Path.Combine(Path.GetTempPath(), "FlowStock-UiPreview", "app.log");
-                    _startupSplash?.SetStage("Загрузка UI Preview / DEV…");
+                    ReportStartupStage("Загрузка UI Preview / DEV…");
                     DispatcherUnhandledException += OnDispatcherUnhandledException;
                     AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
                     ShutdownMode = ShutdownMode.OnMainWindowClose;
@@ -84,14 +92,14 @@ public partial class App : Application
 
         try
         {
-            _startupSplash?.SetStage("Подготовка runtime…");
-            var services = AppServices.CreateDefault();
+            ReportStartupStage("Подготовка runtime…");
+            var services = AppServices.CreateDefault(ReportStartupStage);
             _services = services;
             _appLogger = services.AppLogger;
             _logPath = services.AppLogPath;
             if (!services.IsDatabaseAvailable)
             {
-                _startupSplash?.SetStage("Открытие настройки подключения…");
+                ReportStartupStage("Открытие настройки подключения…");
                 var connectionWindow = new DbConnectionWindow(services, requireConnectionOnStartup: true);
                 var updateReadyHandled = false;
                 connectionWindow.ContentRendered += (_, _) =>
@@ -111,8 +119,8 @@ public partial class App : Application
             }
 
             TryRunAutoBackup(services);
-            _startupSplash?.SetStage("Загрузка интерфейса…");
-            var mainWindow = new MainWindow(services);
+            ReportStartupStage("Подготовка главного окна…");
+            var mainWindow = new MainWindow(services, ReportStartupStage);
             MainWindow = mainWindow;
             var mainReadyHandled = false;
             mainWindow.ContentRendered += (_, _) =>
@@ -218,9 +226,11 @@ public partial class App : Application
                 return;
             }
 
+            ReportStartupStage("Создание резервной копии PostgreSQL…");
             services.Backups.CreateBackup(settings.BackupMode == BackupMode.OnEveryStart
                 ? "auto_on_start"
                 : "auto_on_start_if_older");
+            ReportStartupStage("Проверка хранения резервных копий…");
             services.Backups.ApplyRetention(settings.KeepLastNBackups);
         }
         catch (Exception ex)
