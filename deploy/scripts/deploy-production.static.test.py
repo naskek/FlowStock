@@ -37,6 +37,10 @@ checks = {
     ),
     "config": require(r'"\$\{compose\[@\]\}" config -q', "Compose config gate is missing"),
     "resolved validator": require(r"validate_resolved_compose\.py", "resolved Compose validator is missing"),
+    "cache-aware base image pull": require(
+        r'"\$\{compose\[@\]\}" pull --policy missing postgres nginx',
+        "base images must use cache-aware pull policy to avoid redundant Docker Hub requests",
+    ),
     "managed worker build": require(r'"\$\{compose\[@\]\}" build flowstock discovery-relay pgbackup', "pgbackup must be built before startup"),
     "deploy": require(r'"\$\{compose\[@\]\}" up -d --remove-orphans', "Compose deploy is missing"),
     "loopback port": require(r'flowstock_port="\$\{compose_env\[FLOWSTOCK_PORT\]:-8080\}"', "loopback port must come from resolved Compose environment"),

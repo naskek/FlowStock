@@ -362,7 +362,9 @@ test "$telegram_enabled" = 0 || validator+=(--telegram-enabled)
 "${compose[@]}" config --format json | "${validator[@]}" >/dev/null
 log 'secret-safe resolved Compose validation passed'
 
-"${compose[@]}" pull postgres nginx
+log "ensuring postgres/nginx images are available (pull missing only)"
+"${compose[@]}" pull --policy missing postgres nginx
+log "postgres/nginx images available"
 "${compose[@]}" build flowstock discovery-relay pgbackup
 # No worker may start a scheduled dump during migrator/deploy or failure gates.
 # This is after the old-checkout backup, so the newly built helper may run.

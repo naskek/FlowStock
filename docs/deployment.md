@@ -73,6 +73,8 @@ Entrypoint последовательно и fail-closed проверяет ло
 
 Entrypoint никогда не печатает `deploy/.env`, connection strings или resolved Compose JSON. При `FLOWSTOCK_TELEGRAM_ENABLED=1` он добавляет `deploy/docker-compose.telegram.yml` в единый массив Compose и fail-closed проверяет absolute secret path, regular/readable/non-empty secret-файл с mode `600`, непустой chat id, непустой `socks5://` proxy, external network и подключение существующего egress-контейнера; после deploy сохраняются Telegram runtime gates. При любом другом значении используется только base `deploy/docker-compose.yml`, а Telegram-файлы, secret, network и runtime не проверяются.
 
+Базовые образы `postgres` и `nginx` подтягиваются командой `docker compose pull --policy missing postgres nginx`: если соответствующий образ уже присутствует в локальном Docker daemon, повторный запрос в Docker Hub не нужен. При отсутствии образа Compose пытается загрузить его и останавливает deploy при ошибке. Перед production deploy оператор должен отдельно проверить/при необходимости обновить mutable tags базовых образов доверенным способом (например, через подготовленный registry cache); режим `missing` **не** обеспечивает автоматическое получение новой ревизии уже существующего тега. Все остальные Compose, backup и deployment gates остаются обязательными.
+
 `deploy_from_git.sh` и `deploy_update.sh` остаются helper/legacy и не заменяют этот entrypoint. Скрипт не является unattended CD: production deploy всегда явно запускает оператор. Для проверки контракта без доступа к production используйте:
 
 ```bash
