@@ -77,13 +77,24 @@ public sealed class StartupSplashTests
             {
                 window.Dispatcher.BeginInvoke(() => rendered.Set());
 
-                // This intentionally blocks the WPF thread running startup. The
-                // splash must be driven by its independent STA Dispatcher.
-                Thread.Sleep(TimeSpan.FromMilliseconds(1200));
+                // Keep the caller STA blocked while the independent splash
+                // Dispatcher processes work. Wait for the real timer tick rather
+                // than assuming the Windows runner schedules it within 1.2 s.
+                var elapsedUpdated = false;
+                var watch = Stopwatch.StartNew();
+                while (watch.Elapsed < TimeSpan.FromSeconds(5))
+                {
+                    Thread.Sleep(100);
+                    elapsedUpdated = window.Dispatcher.Invoke(
+                        () => window.ElapsedText != "Ожидание: 0 с");
+                    if (elapsedUpdated)
+                    {
+                        break;
+                    }
+                }
 
                 Assert.True(rendered.IsSet, "Splash Dispatcher was blocked by production startup");
-                Assert.NotEqual("Ожидание: 0 с",
-                    window.Dispatcher.Invoke(() => window.ElapsedText));
+                Assert.True(elapsedUpdated, "Splash stage timer did not advance while caller STA was blocked");
             }
             finally
             {
