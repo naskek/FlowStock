@@ -152,6 +152,12 @@ services:
     volumes:
       - pgbackups:/backups
     command: ["sh", "/usr/local/bin/pg_backup.sh"]
+    healthcheck:
+      # Runtime compatibility only; successful archives are proved separately.
+      test: ["CMD", "sh", "/usr/local/bin/pg_backup.sh", "--check-runtime"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
 volumes:

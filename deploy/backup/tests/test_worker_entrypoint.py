@@ -49,6 +49,7 @@ class ManagedWorkerTests(unittest.TestCase):
             python = fake_bin / "python3"
             python.write_text("""#!/bin/sh
 case " $* " in
+  *" --help "*) exit 0;;
   *" status "*)
     if [ "$FAKE_STATUS_FAILURE" = 1 ]; then exit 1; fi
     printf '{"paused": %s}\\n' "$FAKE_PAUSED";;
@@ -57,12 +58,22 @@ case " $* " in
 esac
 """)
             python.chmod(0o755)
+            for client in ("pg_dump", "pg_restore"):
+                path = fake_bin / client
+                path.write_text('#!/bin/sh\necho "' + client + ' (PostgreSQL) 16.0"\n')
+                path.chmod(0o755)
+            # Preserve the production entrypoint, only relocate its immutable
+            # image path for this unprivileged host fixture.
+            worker = root / "worker.sh"
+            worker.write_text(WORKER.read_text().replace(
+                'MANAGER="/usr/local/bin/managed_backup.py"',
+                'MANAGER="' + str(BACKUP / "managed_backup.py") + '"'))
             env = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ["PATH"],
                        FAKE_PAUSED="true" if paused else "false",
                        FAKE_STATUS_FAILURE="1" if status_failure else "0",
                        FAKE_LOG=str(log), BACKUP_DIR=str(root / "backups"),
                        BACKUP_INTERVAL_SECONDS="2", BACKUP_EXPECTED_BYTES="4096")
-            proc = subprocess.Popen(["sh", str(WORKER)], env=env,
+            proc = subprocess.Popen(["sh", str(worker)], env=env,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
                 time.sleep(0.5)

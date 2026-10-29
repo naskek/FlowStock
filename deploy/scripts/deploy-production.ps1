@@ -249,21 +249,39 @@ flock -w 60 "$host_backup_fd" || fail 'BACKUP_BUSY: operator/deploy/restore lock
 test ! -e deploy/runtime/restore/active.json && test ! -L deploy/runtime/restore/active.json ||
     fail 'restore maintenance is active; operator investigation required'
 pause_reason="pre_deploy:$expected_commit"
+ensure_deploy_pause() {
+    local state paused
+    state="$("$@" status)" || fail 'cannot read managed backup pause'
+    paused="$(printf '%s' "$state" | python3 -c '
+import json,sys
+v=json.load(sys.stdin)
+if type(v.get("paused")) is not bool:
+    raise SystemExit(1)
+if v["paused"] and v.get("pause_reason")!=sys.argv[1]:
+    raise SystemExit(1)
+print("paused" if v["paused"] else "active")
+' "$pause_reason")" || fail 'backup maintenance belongs to another operation; operator investigation required'
+    if test "$paused" = active; then
+        "$@" pause --reason "$pause_reason" >/dev/null || fail 'cannot acquire managed backup pause'
+    fi
+}
 pause_before_checkout=0
 old_pgbackup_id="$("${compose[@]}" ps -q pgbackup)"
 if test -n "$old_pgbackup_id"; then
-    if docker exec "$old_pgbackup_id" test -f /usr/local/bin/managed_backup.py; then
-        docker exec "$old_pgbackup_id" python3 /usr/local/bin/managed_backup.py \
-            --root /backups --lock-timeout 60 pause --reason "$pause_reason" >/dev/null ||
-            fail 'cannot acquire managed backup pause before deploy'
+    if docker exec "$old_pgbackup_id" sh -ec 'command -v python3 >/dev/null && test -s /usr/local/bin/managed_backup.py && python3 /usr/local/bin/managed_backup.py --help >/dev/null'; then
+        ensure_deploy_pause docker exec "$old_pgbackup_id" python3 /usr/local/bin/managed_backup.py \
+            --root /backups --lock-timeout 60
         pause_before_checkout=1
     else
         log 'legacy worker detected; it will be stopped before fresh backup'
     fi
+    # Failure recovery is deliberately forward-only. In particular the old
+    # container may bind-mount a script replaced by the upcoming checkout.
     "${compose[@]}" stop pgbackup || fail 'cannot stop backup worker'
     stopped_state="$(docker inspect -f '{{.State.Status}}' "$old_pgbackup_id")"
     test "$stopped_state" = exited || fail 'backup worker did not stop; refusing backup'
 fi
+trap 'rc=$?; if test "$rc" != 0; then log "DEPLOY_ABORTED: backup worker remains stopped or maintenance-paused; do not docker start/restart the legacy container; rerun canonical deploy after resolving the failure" >&2; fi' EXIT
 mkdir -p "$backup_dir"
 backup_path="$backup_dir/flowstock-before-${expected_commit:0:12}-$(date -u +%Y%m%dT%H%M%SZ)-${BASHPID}.dump"
 test ! -e "$backup_path" && test ! -L "$backup_path" || fail 'backup target exists'
@@ -366,13 +384,13 @@ log "ensuring postgres/nginx images are available (pull missing only)"
 "${compose[@]}" pull --policy missing postgres nginx
 log "postgres/nginx images available"
 "${compose[@]}" build flowstock discovery-relay pgbackup
+"${compose[@]}" run --rm --no-deps -T --entrypoint sh pgbackup \
+    /usr/local/bin/pg_backup.sh --check-runtime || fail 'new backup image is incompatible; worker remains stopped'
 # No worker may start a scheduled dump during migrator/deploy or failure gates.
 # This is after the old-checkout backup, so the newly built helper may run.
 if test "$pause_before_checkout" = 0; then
-    "${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
-        /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 \
-        pause --reason "$pause_reason" >/dev/null ||
-        fail 'managed backup pause failed before new stack startup'
+    ensure_deploy_pause "${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
+        /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60
 else
     marker="$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
         /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 status)" ||
@@ -392,6 +410,9 @@ for service in postgres flowstock discovery-relay nginx pgbackup; do
     state="$(docker inspect -f '{{.State.Status}}' "$id")"
     test "$state" = running || fail "container is not running: $service"
 done
+pgbackup_id="$("${compose[@]}" ps -q pgbackup)"
+docker exec "$pgbackup_id" sh /usr/local/bin/pg_backup.sh --check-runtime ||
+    fail 'running backup worker is incompatible; maintenance remains paused'
 if test "$telegram_enabled" = 1; then
     flowstock_id="$("${compose[@]}" ps -q flowstock)"
     docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$flowstock_id" | grep -qx 'FLOWSTOCK_TELEGRAM_ENABLED=1' || fail 'Telegram runtime flag is missing'
@@ -468,11 +489,23 @@ printf 'FLOWSTOCK_DEPLOY_OK=%s\n' "$expected_commit"
 set -Eeuo pipefail
 expected="$1"
 repo="$2"
+backup_dir="$3"
 cd "$repo"
 test "$(git rev-parse --verify 'HEAD^{commit}')" = "$expected"
-test ! -e deploy/runtime/restore/active.json
+test -z "$(git status --porcelain)"
+test ! -e deploy/runtime/restore/active.json && test ! -L deploy/runtime/restore/active.json
+# Serialize final validation/resume with all host operator/restore callers.
+coordination_dir="$(dirname "$backup_dir")/coordination"
+test -d "$coordination_dir" && test ! -L "$coordination_dir"
+test "$(stat -c %u "$coordination_dir")" = "$(id -u)"
+test "$(stat -c %a "$coordination_dir")" = 700
+test ! -L "$coordination_dir/operator.lock"
+exec {host_backup_fd}>"$coordination_dir/operator.lock"
+flock -w 60 "$host_backup_fd"
+test ! -e deploy/runtime/restore/active.json && test ! -L deploy/runtime/restore/active.json
 compose=(docker compose -p flowstock --env-file deploy/.env -f deploy/docker-compose.yml)
 "${compose[@]}" config -q
+test "$("${compose[@]}" config --environment | sed -n 's/^FLOWSTOCK_COORDINATION_DIR=//p')" = "$coordination_dir"
 pause_reason="pre_deploy:$expected"
 state="$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
     /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 status)"
@@ -481,6 +514,28 @@ import json,sys
 v=json.load(sys.stdin)
 raise SystemExit(0 if v.get("paused") is True and v.get("pause_reason")==sys.argv[1] else 1)
 ' "$pause_reason"
+# Run the actual deployed worker's primitive, not just a one-off image. A
+# running container/healthcheck alone does not establish successful backups.
+pgbackup_id="$("${compose[@]}" ps -q pgbackup)"
+test -n "$pgbackup_id"
+docker exec "$pgbackup_id" sh /usr/local/bin/pg_backup.sh --check-runtime
+record="$(docker exec "$pgbackup_id" sh -ec '
+    python3 /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 \
+        create --origin pre_deploy --during-maintenance \
+        --expected-bytes "${BACKUP_EXPECTED_BYTES:-1073741824}"
+')"
+printf '%s' "$record" | python3 -c '
+import json,re,sys
+v=json.load(sys.stdin)
+valid=(v.get("origin")=="pre_deploy" and v.get("local_state")=="LOCAL_VALID"
+ and v.get("structural_validated") is True and v.get("pg_major")==16
+ and isinstance(v.get("backup_id"),str) and re.fullmatch("[0-9a-f]{32}",v["backup_id"])
+ and isinstance(v.get("sha256"),str) and re.fullmatch("[0-9a-f]{64}",v["sha256"])
+ and type(v.get("size_bytes")) is int and v["size_bytes"]>0)
+if not valid:
+    raise SystemExit(1)
+print("[deploy] deployed backup worker created a new LOCAL_VALID archive: " + v["backup_id"])
+'
 "${compose[@]}" run --rm --no-deps -T --entrypoint python3 pgbackup \
     /usr/local/bin/managed_backup.py --root /backups --lock-timeout 60 \
     resume --operator-confirmed >/dev/null
@@ -488,7 +543,7 @@ printf 'FLOWSTOCK_RESUME_OK=%s\n' "$expected"
 '@
     $resumeScript = $resumeScript.Replace("`r`n", "`n").Replace("`r", "`n")
     $resumeBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($resumeScript)
-    $resumeResult = Invoke-RemoteBashScriptViaSsh -SshTarget $sshTarget -ScriptBytes $resumeBytes -RemoteArgumentList @($ExpectedCommit, $RemoteRepoPath)
+    $resumeResult = Invoke-RemoteBashScriptViaSsh -SshTarget $sshTarget -ScriptBytes $resumeBytes -RemoteArgumentList @($ExpectedCommit, $RemoteRepoPath, $RemoteBackupDir)
     if ($resumeResult.ExitCode -ne 0) {
         throw "Remote backup resume failed; maintenance remains pending operator review"
     }

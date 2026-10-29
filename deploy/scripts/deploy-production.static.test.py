@@ -135,7 +135,7 @@ unique_filename_gate = require(r'flowstock-before-.*?\$\{BASHPID\}\.dump', "pre-
 fsync_backup_gate = require(r'FSYNC_BACKUP', "validated pre-deploy backup must be fsynced")
 fsync_directory_gate = require(r'FSYNC_DIRECTORY', "final pre-deploy archive directory must be fsynced")
 unique_publish_gate = require(r'ln -- "\$backup_partial" "\$backup_path"', "verified dump must publish without replacement")
-new_image_pause_gate = require(r'"\$\{compose\[@\]\}" build flowstock discovery-relay pgbackup.*?pause --reason "\$pause_reason" >/dev/null', "new worker pause is missing")
+new_image_pause_gate = require(r'"\$\{compose\[@\]\}" build flowstock discovery-relay pgbackup.*?ensure_deploy_pause "\$\{compose\[@\]\}"', "new worker pause is missing")
 external_gate = require(r'Invoke-RestMethod -Uri "\$PublicUrl/api/version"', "external identity missing")
 resume_gate = require(r'resume --operator-confirmed', "explicit validated resume is missing")
 if not downlevel_host_gate < host_exclusion_gate < legacy_stop_gate < managed_origin_gate < full_payload_gate:
@@ -144,6 +144,18 @@ if not (legacy_stop_gate < full_payload_gate < fsync_backup_gate < unique_publis
         checks["exact server update"] < new_image_pause_gate <
         checks["deploy"] < checks["internal ready"] < external_gate < resume_gate):
     raise AssertionError("backup pause, validation and resume order is unsafe")
+
+runtime_gate = require(r'pg_backup.sh --check-runtime \|\| fail', "built worker runtime preflight is missing")
+worker_archive_gate = require(r'record="\$\(docker exec "\$pgbackup_id" sh -ec', "actual deployed worker must create a validated archive before resume")
+if not checks["managed worker build"] < runtime_gate < checks["deploy"] < external_gate < worker_archive_gate < resume_gate:
+    raise AssertionError("worker runtime/archive validation and resume order is unsafe")
+require(r'DEPLOY_ABORTED:.*?do not docker start/restart the legacy container', "abort must leave explicit forward recovery instructions")
+resume_script = source.split("$resumeScript = @'", 1)[1].split("'@", 1)[0]
+if resume_script.index('flock -w 60 "$host_backup_fd"') > resume_script.index('state="$('):
+    raise AssertionError("final resume must hold the shared host operator lock")
+for field in ('structural_validated', 'LOCAL_VALID', 'size_bytes', 'sha256', 'pg_major'):
+    if field not in resume_script:
+        raise AssertionError("worker archive validation is incomplete: " + field)
 
 pre_backup = source[: checks["backup verification"]]
 if re.search(r'"\$\{compose\[@\]\}" (?:up|build|pull|restart|create)', pre_backup):
