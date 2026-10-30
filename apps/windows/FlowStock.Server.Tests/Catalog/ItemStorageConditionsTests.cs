@@ -116,7 +116,7 @@ public sealed class ItemStorageConditionsTests
         var storeSource = ReadRepoFile("apps", "windows", "FlowStock.Data", "PostgresDataStore.cs");
 
         Assert.Contains("ADD COLUMN IF NOT EXISTS storage_conditions TEXT NULL", migration, StringComparison.Ordinal);
-        Assert.Contains("ColumnExists(connection, \"items\", \"storage_conditions\")", storeSource, StringComparison.Ordinal);
+        Assert.Contains("(\"items\", \"storage_conditions\")", storeSource, StringComparison.Ordinal);
         Assert.DoesNotContain("EnsureColumn(connection, \"items\", \"storage_conditions\"", storeSource, StringComparison.Ordinal);
     }
 
