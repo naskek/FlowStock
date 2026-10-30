@@ -17580,36 +17580,6 @@ ORDER BY pll.production_pallet_id, pll.id;
         };
     }
 
-    private static void EnsureColumn(NpgsqlConnection connection, string tableName, string columnName, string definition)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = $"ALTER TABLE {tableName} ADD COLUMN IF NOT EXISTS {columnName} {definition};";
-        command.ExecuteNonQuery();
-    }
-
-    private static void EnsureNullable(NpgsqlConnection connection, string tableName, string columnName)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = @"
-SELECT is_nullable
-FROM information_schema.columns
-WHERE table_schema = current_schema()
-  AND table_name = @table_name
-  AND column_name = @column_name
-LIMIT 1;";
-        command.Parameters.AddWithValue("@table_name", tableName.ToLowerInvariant());
-        command.Parameters.AddWithValue("@column_name", columnName.ToLowerInvariant());
-        var isNullable = command.ExecuteScalar() as string;
-        if (string.Equals(isNullable, "YES", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        using var alter = connection.CreateCommand();
-        alter.CommandText = $"ALTER TABLE {tableName} ALTER COLUMN {columnName} DROP NOT NULL;";
-        alter.ExecuteNonQuery();
-    }
-
     private static bool ColumnExists(NpgsqlConnection connection, string tableName, string columnName)
     {
         using var command = connection.CreateCommand();
@@ -17638,26 +17608,59 @@ LIMIT 1;";
         return command.ExecuteScalar() != null;
     }
 
-    private static bool ConstraintExists(NpgsqlConnection connection, string tableName, string constraintName)
+    private static void EnsureSchemaReady(NpgsqlConnection connection)
     {
-        using var command = connection.CreateCommand();
-        command.CommandText = @"
-SELECT 1
+        // One catalog read replaces dozens of per-column round trips and must never
+        // mutate schema: migrations are an explicit operator action, not WPF startup.
+        var tables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var nullableColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var constraints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = @"
+SELECT 'TABLE', table_name, '' AS member_name, '' AS nullable
+FROM information_schema.tables
+WHERE table_schema = current_schema()
+UNION ALL
+SELECT 'COLUMN', table_name, column_name, is_nullable
+FROM information_schema.columns
+WHERE table_schema = current_schema()
+UNION ALL
+SELECT 'CONSTRAINT', t.relname, c.conname, ''
 FROM pg_constraint c
 INNER JOIN pg_class t ON t.oid = c.conrelid
 INNER JOIN pg_namespace n ON n.oid = t.relnamespace
-WHERE n.nspname = current_schema()
-  AND t.relname = @table_name
-  AND c.conname = @constraint_name
-LIMIT 1;";
-        command.Parameters.AddWithValue("@table_name", tableName.ToLowerInvariant());
-        command.Parameters.AddWithValue("@constraint_name", constraintName);
-        return command.ExecuteScalar() != null;
-    }
+WHERE n.nspname = current_schema();";
 
-    private static void EnsureSchemaReady(NpgsqlConnection connection)
-    {
-        if (!TableExists(connection, "schema_migrations"))
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var kind = reader.GetString(0);
+                var table = reader.GetString(1);
+                var member = reader.GetString(2);
+                switch (kind)
+                {
+                    case "TABLE":
+                        tables.Add(table);
+                        break;
+                    case "COLUMN":
+                        var key = $"{table}.{member}";
+                        columns.Add(key);
+                        if (string.Equals(reader.GetString(3), "YES", StringComparison.OrdinalIgnoreCase))
+                        {
+                            nullableColumns.Add(key);
+                        }
+                        break;
+                    case "CONSTRAINT":
+                        constraints.Add($"{table}.{member}");
+                        break;
+                }
+            }
+        }
+
+        if (!tables.Contains("schema_migrations"))
         {
             throw new InvalidOperationException("Database schema is not initialized. Run deploy/scripts/migrate.sh before starting FlowStock.");
         }
@@ -17695,87 +17698,85 @@ LIMIT 1;";
             "warehouse_tasks",
             "warehouse_task_lines",
             "warehouse_task_events"
+        
         };
 
         foreach (var table in requiredTables)
         {
-            if (!TableExists(connection, table))
+            if (!tables.Contains(table))
             {
                 throw new InvalidOperationException($"Database schema is incomplete. Missing table '{table}'. Run deploy/scripts/migrate.sh.");
             }
         }
 
-        EnsureColumn(connection, "item_types", "min_stock_uses_order_binding", "BOOLEAN NOT NULL DEFAULT FALSE");
-        EnsureColumn(connection, "item_types", "enable_order_reservation", "BOOLEAN NOT NULL DEFAULT FALSE");
-        EnsureColumn(connection, "item_types", "enable_marking", "BOOLEAN NOT NULL DEFAULT FALSE");
-        EnsureColumn(connection, "orders", "marking_status", "TEXT NOT NULL DEFAULT 'NOT_REQUIRED'");
-        EnsureColumn(connection, "orders", "marking_excel_generated_at", "TEXT NULL");
-        EnsureColumn(connection, "orders", "marking_printed_at", "TEXT NULL");
-        EnsureColumn(connection, "orders", "marking_responsibility", "TEXT NOT NULL DEFAULT 'FLOWSTOCK'");
-        EnsureColumn(connection, "order_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
-        EnsureColumn(connection, "order_lines", "production_pallet_group", "TEXT NULL");
-        EnsureColumn(connection, "order_lines", "cancelled_at", "TEXT NULL");
-        EnsureColumn(connection, "order_lines", "cancelled_by_actor", "TEXT NULL");
-        EnsureColumn(connection, "order_lines", "cancelled_by_device_id", "TEXT NULL");
-        EnsureColumn(connection, "order_lines", "cancel_reason", "TEXT NULL");
-        EnsureColumn(connection, "order_lines", "revision", "BIGINT NOT NULL DEFAULT 0");
-        EnsureColumn(connection, "doc_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
-        EnsureColumn(connection, "production_pallets", "pallet_no", "INTEGER NOT NULL DEFAULT 0");
-        EnsureColumn(connection, "production_pallets", "pallet_count", "INTEGER NOT NULL DEFAULT 0");
-        EnsureColumn(connection, "production_pallets", "printed_at", "TEXT NULL");
-        EnsureColumn(connection, "production_pallets", "cancel_reason", "TEXT NULL");
-        EnsureColumn(connection, "production_pallets", "cancelled_at", "TEXT NULL");
-        EnsureColumn(connection, "production_pallet_lines", "filled_at", "TEXT NULL");
-        EnsureNullable(connection, "marking_order", "order_id");
-        EnsureColumn(connection, "marking_order", "order_line_id", "BIGINT NULL");
-        EnsureColumn(connection, "marking_order", "request_status", "TEXT NOT NULL DEFAULT 'NotRequested'");
-        EnsureColumn(connection, "marking_order", "last_excel_requested_at", "TEXT NULL");
-        EnsureColumn(connection, "marking_order", "last_excel_request_hash", "TEXT NULL");
-        EnsureColumn(connection, "marking_order", "source_type", "TEXT NULL");
-        EnsureColumn(connection, "marking_order", "source_order_id", "BIGINT NULL");
-        EnsureColumn(connection, "marking_code", "origin", "TEXT NOT NULL DEFAULT 'HistoricalUnknown'");
-        EnsureColumn(connection, "marking_code", "receipt_doc_id", "BIGINT NULL");
-        EnsureColumn(connection, "marking_code", "receipt_line_id", "BIGINT NULL");
-
-        if (!ColumnExists(connection, "orders", "order_type")
-            || !ColumnExists(connection, "orders", "bind_reserved_stock")
-            || !ColumnExists(connection, "doc_lines", "replaces_line_id")
-            || !ColumnExists(connection, "doc_lines", "pack_single_hu")
-            || !ColumnExists(connection, "ledger", "hu_code")
-            || !ColumnExists(connection, "client_blocks", "is_enabled")
-            || !ColumnExists(connection, "items", "item_type_id")
-            || !ColumnExists(connection, "items", "min_stock_qty")
-            || !ColumnExists(connection, "items", "storage_conditions")
-            || !ColumnExists(connection, "items", "default_sale_price_gross")
-            || !ColumnExists(connection, "items", "default_sale_vat_rate_id")
-            || !ColumnExists(connection, "locations", "auto_hu_distribution_enabled")
-            || !ColumnExists(connection, "item_types", "is_visible_in_product_catalog")
-            || !ColumnExists(connection, "item_types", "enable_min_stock_control")
-            || !ColumnExists(connection, "item_types", "min_stock_uses_order_binding")
-            || !ColumnExists(connection, "item_types", "enable_order_reservation")
-            || !ColumnExists(connection, "item_types", "enable_hu_distribution")
-            || !ColumnExists(connection, "item_types", "enable_marking")
-            || !ColumnExists(connection, "orders", "marking_status")
-            || !ColumnExists(connection, "orders", "marking_excel_generated_at")
-            || !ColumnExists(connection, "orders", "marking_printed_at")
-            || !ColumnExists(connection, "orders", "marking_responsibility")
-            || !ColumnExists(connection, "orders", "allow_partial_outbound")
-            || !ConstraintExists(connection, "orders", "ck_orders_terminal_partial_outbound_false")
-            || !ColumnExists(connection, "order_lines", "production_purpose")
-            || !ColumnExists(connection, "order_lines", "production_pallet_group")
-            || !ColumnExists(connection, "order_lines", "cancelled_at")
-            || !ColumnExists(connection, "order_lines", "revision")
-            || !ColumnExists(connection, "order_lines", "unit_price_gross")
-            || !ColumnExists(connection, "order_lines", "vat_rate")
-            || !ColumnExists(connection, "doc_lines", "production_purpose")
-            || !ColumnExists(connection, "marking_order", "order_line_id")
-            || !ColumnExists(connection, "marking_order", "request_status")
-            || !ColumnExists(connection, "marking_code", "origin")
-            || !ColumnExists(connection, "production_pallets", "cancel_reason")
-            || !ColumnExists(connection, "production_pallets", "cancelled_at")
-            || !ColumnExists(connection, "production_pallet_lines", "filled_at"))
+        var requiredColumns = new (string Table, string Column)[]
         {
-            throw new InvalidOperationException("Database schema is outdated. Run deploy/scripts/migrate.sh before starting FlowStock.");
+            ("item_types", "min_stock_uses_order_binding"),
+            ("item_types", "enable_order_reservation"),
+            ("item_types", "enable_marking"),
+            ("orders", "marking_status"),
+            ("orders", "marking_excel_generated_at"),
+            ("orders", "marking_printed_at"),
+            ("orders", "marking_responsibility"),
+            ("order_lines", "production_purpose"),
+            ("order_lines", "production_pallet_group"),
+            ("order_lines", "cancelled_at"),
+            ("order_lines", "cancelled_by_actor"),
+            ("order_lines", "cancelled_by_device_id"),
+            ("order_lines", "cancel_reason"),
+            ("order_lines", "revision"),
+            ("doc_lines", "production_purpose"),
+            ("production_pallets", "pallet_no"),
+            ("production_pallets", "pallet_count"),
+            ("production_pallets", "printed_at"),
+            ("production_pallets", "cancel_reason"),
+            ("production_pallets", "cancelled_at"),
+            ("production_pallet_lines", "filled_at"),
+            ("marking_order", "order_line_id"),
+            ("marking_order", "request_status"),
+            ("marking_order", "last_excel_requested_at"),
+            ("marking_order", "last_excel_request_hash"),
+            ("marking_order", "source_type"),
+            ("marking_order", "source_order_id"),
+            ("marking_code", "origin"),
+            ("marking_code", "receipt_doc_id"),
+            ("marking_code", "receipt_line_id"),
+            ("orders", "order_type"),
+            ("orders", "bind_reserved_stock"),
+            ("doc_lines", "replaces_line_id"),
+            ("doc_lines", "pack_single_hu"),
+            ("ledger", "hu_code"),
+            ("client_blocks", "is_enabled"),
+            ("items", "item_type_id"),
+            ("items", "min_stock_qty"),
+            ("items", "storage_conditions"),
+            ("items", "default_sale_price_gross"),
+            ("items", "default_sale_vat_rate_id"),
+            ("locations", "auto_hu_distribution_enabled"),
+            ("item_types", "is_visible_in_product_catalog"),
+            ("item_types", "enable_min_stock_control"),
+            ("item_types", "enable_hu_distribution"),
+            ("orders", "allow_partial_outbound"),
+            ("order_lines", "unit_price_gross"),
+            ("order_lines", "vat_rate"),
+        };
+
+        foreach (var (table, column) in requiredColumns)
+        {
+            if (!columns.Contains($"{table}.{column}"))
+            {
+                throw new InvalidOperationException($"Database schema is outdated. Missing column '{table}.{column}'. Run deploy/scripts/migrate.sh.");
+            }
+        }
+
+        if (!nullableColumns.Contains("marking_order.order_id"))
+        {
+            throw new InvalidOperationException("Database schema is outdated. 'marking_order.order_id' must be nullable. Run deploy/scripts/migrate.sh.");
+        }
+
+        if (!constraints.Contains("orders.ck_orders_terminal_partial_outbound_false"))
+        {
+            throw new InvalidOperationException("Database schema is outdated. Missing constraint 'ck_orders_terminal_partial_outbound_false'. Run deploy/scripts/migrate.sh.");
         }
     }
 
