@@ -30,7 +30,9 @@ public sealed class BusinessNotificationCloseTests
         Assert.Equal("OUT-44", partial.Payload.DocRef);
         Assert.Equal(60, Assert.Single(partial.Payload.ShipmentLines!).Remaining);
         Assert.DoesNotContain(notifications, n => n.EventType == "CUSTOMER_ORDER_SHIPPED");
-        Assert.True(service.TryCloseDoc(44, allowNegative: false).Success);
+        var replay = service.TryCloseDoc(44, allowNegative: false);
+        Assert.False(replay.Success);
+        Assert.Contains("Документ уже закрыт.", replay.Errors);
         Assert.Equal(2, notifications.Count);
     }
 }
