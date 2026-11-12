@@ -201,6 +201,13 @@ public partial class IncomingRequestsWindow : Window
 
     private void NotificationsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateNotificationButtons();
 
+    private void NotificationsGrid_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (NotificationsGrid.Columns.Count < 2) return;
+        NotificationsGrid.Columns[1].Width = new DataGridLength(Math.Max(400,
+            NotificationsGrid.ActualWidth - 135 - SystemParameters.VerticalScrollBarWidth - 6));
+    }
+
     private void UpdateNotificationButtons()
     {
         if (MarkNotificationReadButton == null) return;

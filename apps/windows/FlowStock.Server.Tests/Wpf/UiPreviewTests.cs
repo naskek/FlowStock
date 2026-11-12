@@ -663,6 +663,7 @@ public sealed class UiPreviewTests
                 root.Measure(new Size(1320, 690)); root.Arrange(new Rect(0, 0, 1320, 690)); root.UpdateLayout();
                 Assert.True(grid.ActualWidth > 500);
                 Assert.True(grid.Columns[1].ActualWidth >= 400);
+                Assert.True(grid.Columns[1].ActualWidth > grid.ActualWidth - 200);
                 var exportPath = Environment.GetEnvironmentVariable("FLOWSTOCK_EVENT_JOURNAL_PREVIEW_PNG");
                 if (!string.IsNullOrWhiteSpace(exportPath))
                 {

@@ -38,6 +38,6 @@ public sealed class BusinessNotificationRow
         : Notification.EventType == "INTERNAL_ORDER_COMPLETED" ? "Производство на склад завершено."
         : Snapshot?.ShipmentLines is { Count: > 0 } lines
             ? string.Join("\n", lines.Select(line => $"{line.ItemName}: отгружено {line.Shipped:G} из {line.Ordered:G}, осталось {line.Remaining:G}"))
-            : "Событие сохранено сервером. Количества на момент события не записаны.";
+            : "Количества на момент события не сохранены.";
     public string Diagnostics => $"Тип: {Notification.EventType}\nИсточник: {Notification.Source}\nКод: {Snapshot?.ErrorCode ?? "—"}\n\nИсходный заголовок: {Notification.Title}\nИсходное описание: {Notification.Message}";
 }
