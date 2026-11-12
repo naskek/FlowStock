@@ -68,9 +68,19 @@
                             <DataGrid.RowStyle>
                                 <Style TargetType="DataGridRow">
                                     <Setter Property="MinHeight" Value="82"/>
-                                    <Style.Triggers><DataTrigger Binding="{Binding IsUnread}" Value="True"><Setter Property="Background" Value="#EFF6FC"/></DataTrigger></Style.Triggers>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsUnread}" Value="True"><Setter Property="Background" Value="#EFF6FC"/></DataTrigger>
+                                        <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#DCECF5"/></Trigger>
+                                    </Style.Triggers>
                                 </Style>
                             </DataGrid.RowStyle>
+                            <DataGrid.CellStyle>
+                                <Style TargetType="DataGridCell">
+                                    <Setter Property="Foreground" Value="#182330"/>
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="BorderThickness" Value="0"/>
+                                </Style>
+                            </DataGrid.CellStyle>
                             <DataGrid.Columns>
                                 <DataGridTemplateColumn Width="35"><DataGridTemplateColumn.CellTemplate><DataTemplate>
                                     <TextBlock Text="{Binding Marker}" Foreground="#176C74" FontSize="20" Margin="8,12,0,0"/>
