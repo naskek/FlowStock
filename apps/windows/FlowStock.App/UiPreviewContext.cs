@@ -19,12 +19,11 @@ public sealed class UiPreviewContext
         {
             if (element is WpfButton button && button.Content as string != "Закрыть")
             {
-                // This single action opens an isolated, synthetic price-list window.
-                // Repeated preparation must not disable its safe preview navigation.
-                if (root is MainWindow && button.Name == "CatalogPriceListsButton")
+                // Safe navigation opens synthetic windows without production services.
+                if (root is MainWindow && button.Name is "CatalogPriceListsButton" or "ItemRequestsButton")
                 {
                     button.IsEnabled = true;
-                    button.ToolTip = "Демо-прайс-листы без БД и API";
+                    button.ToolTip = button.Name == "ItemRequestsButton" ? "Демо-журнал событий без БД и API" : "Демо-прайс-листы без БД и API";
                 }
                 else
                 {

@@ -817,6 +817,9 @@ bash deploy/scripts/backup_now.sh <REMOTE_BACKUP_DIR>/pre_release.dump
 
 ## Ручной запуск миграций
 
+Миграция `V0046__business_notification_journal.sql` additive: добавляет nullable notification snapshot, revision счётчик заказа и read-only view для группировки. Старые события и read-state сохраняются, backfill клиентов/истории не выполняется. Применять штатным migrator до запуска новой версии; при откате приложения поля/view не удалять. Перед merge/deploy требуется smoke на изолированной production-copy и exact-tree attestation, включая rollback транзакции, повторный Close и legacy события. CI использует disposable PostgreSQL и не заменяет этот gate.
+
+
 Применить pending migrations без пересоздания контейнеров приложения:
 
 ```bash

@@ -773,7 +773,7 @@ public sealed class DocumentService
             TryRefreshLinkedOrderStatus(store, doc, lines, timing);
             partialOutboundPermissionAutoReset = permissionBeforeByOrderId.Any(entry =>
                 entry.Value && store.GetOrder(entry.Key)?.AllowPartialOutbound == false);
-            AddCloseBusinessNotifications(store, doc, closedAt);
+            AddCloseBusinessNotifications(store, doc, lines, closedAt);
         });
         transactionStopwatch.Stop();
         timing.LedgerTransactionMs = transactionStopwatch.ElapsedMilliseconds;
@@ -3062,80 +3062,42 @@ public sealed class DocumentService
         return result;
     }
 
-    private static void AddCloseBusinessNotifications(IDataStore store, Doc doc, DateTime createdAt)
+    private static void AddCloseBusinessNotifications(IDataStore store, Doc doc, IReadOnlyList<DocLine> lines, DateTime createdAt)
     {
+        // Status transition notifications are written atomically by the canonical status writer.
+        if (doc.Type != DocType.Outbound) return;
         try
         {
-            if (doc.Type == DocType.Outbound)
+            var headerOrder = doc.OrderId.HasValue ? store.GetOrder(doc.OrderId.Value) : null;
+            store.AddBusinessNotification(new BusinessNotification
             {
+                EventType = "OUTBOUND_CLOSED",
+                Title = $"Отгрузка {doc.DocRef} проведена",
+                Message = "",
+                EntityType = "DOC", EntityId = doc.Id, EntityRef = doc.DocRef,
+                CreatedAt = createdAt.ToUniversalTime(), Source = "DOCUMENT_CLOSE",
+                DedupeKey = $"outbound_doc:{doc.Id}:closed",
+                Payload = BusinessNotificationContent.Snapshot(store, headerOrder, doc)
+            });
+            foreach (var orderId in CollectAffectedOrderIds(store, doc, lines))
+            {
+                var order = store.GetOrder(orderId);
+                if (order?.Type != OrderType.Customer) continue;
+                var remaining = store.GetOrderShipmentRemaining(orderId);
+                if (!remaining.Any(line => line.QtyRemaining > 0.000001)
+                    || !remaining.Any(line => line.QtyShipped > 0.000001)) continue;
+                var payload = BusinessNotificationContent.Snapshot(store, order, doc) with
+                {
+                    ShipmentLines = remaining.Select(line => new BusinessNotificationQuantity(
+                        line.ItemName, line.QtyOrdered, line.QtyShipped, line.QtyRemaining)).ToArray()
+                };
                 store.AddBusinessNotification(new BusinessNotification
                 {
-                    EventType = "OUTBOUND_CLOSED",
-                    Title = $"Отгрузка {doc.DocRef} закрыта",
-                    Message = "Все выбранные HU проведены сервером.",
-                    EntityType = "DOC",
-                    EntityId = doc.Id,
-                    EntityRef = doc.DocRef,
-                    CreatedAt = createdAt,
-                    Source = "DOCUMENT_CLOSE",
-                    DedupeKey = $"outbound_doc:{doc.Id}:closed"
-                });
-            }
-
-            if (!doc.OrderId.HasValue)
-            {
-                return;
-            }
-
-            var order = store.GetOrder(doc.OrderId.Value);
-            if (order == null)
-            {
-                return;
-            }
-
-            if (order.Type == OrderType.Customer && order.Status == OrderStatus.Accepted)
-            {
-                store.AddBusinessNotification(new BusinessNotification
-                {
-                    EventType = "CUSTOMER_ORDER_READY",
-                    Title = $"Заказ №{order.OrderRef} готов",
-                    Message = "Все требуемые паллеты произведены.",
-                    EntityType = "ORDER",
-                    EntityId = order.Id,
-                    EntityRef = order.OrderRef,
-                    CreatedAt = createdAt,
-                    Source = "ORDER_STATUS",
-                    DedupeKey = $"order:{order.Id}:status:ACCEPTED"
-                });
-            }
-            else if (order.Type == OrderType.Customer && order.Status == OrderStatus.Shipped)
-            {
-                store.AddBusinessNotification(new BusinessNotification
-                {
-                    EventType = "CUSTOMER_ORDER_SHIPPED",
-                    Title = $"Заказ №{order.OrderRef} полностью отгружен",
-                    Message = "Отгрузка заказа завершена.",
-                    EntityType = "ORDER",
-                    EntityId = order.Id,
-                    EntityRef = order.OrderRef,
-                    CreatedAt = createdAt,
-                    Source = "ORDER_STATUS",
-                    DedupeKey = $"order:{order.Id}:status:SHIPPED"
-                });
-            }
-            else if (order.Type == OrderType.Internal && order.Status == OrderStatus.Shipped)
-            {
-                store.AddBusinessNotification(new BusinessNotification
-                {
-                    EventType = "INTERNAL_ORDER_COMPLETED",
-                    Title = $"Внутренний заказ №{order.OrderRef} выполнен",
-                    Message = "Производство на склад завершено.",
-                    EntityType = "ORDER",
-                    EntityId = order.Id,
-                    EntityRef = order.OrderRef,
-                    CreatedAt = createdAt,
-                    Source = "ORDER_STATUS",
-                    DedupeKey = $"internal_order:{order.Id}:completed"
+                    EventType = "CUSTOMER_ORDER_PARTIALLY_SHIPPED",
+                    Title = $"Заказ {order.OrderRef} частично отгружен",
+                    Message = "", EntityType = "ORDER", EntityId = order.Id, EntityRef = order.OrderRef,
+                    CreatedAt = createdAt.ToUniversalTime(), Source = "DOCUMENT_CLOSE",
+                    DedupeKey = $"outbound_doc:{doc.Id}:order:{order.Id}:partial", Payload = payload
                 });
             }
         }

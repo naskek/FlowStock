@@ -15,11 +15,13 @@ public sealed class WpfIncomingRequestsApiService
 
     private readonly SettingsService _settings;
     private readonly FileLogger _logger;
+    private readonly Func<HttpMessageHandler>? _handlerFactory;
 
-    public WpfIncomingRequestsApiService(SettingsService settings, FileLogger logger)
+    public WpfIncomingRequestsApiService(SettingsService settings, FileLogger logger, Func<HttpMessageHandler>? handlerFactory = null)
     {
         _settings = settings;
         _logger = logger;
+        _handlerFactory = handlerFactory;
     }
 
     public bool TryGetItemRequests(bool includeResolved, out IReadOnlyList<ItemRequest> requests)
@@ -75,6 +77,42 @@ public sealed class WpfIncomingRequestsApiService
 
     public Task<bool> TryMarkAllBusinessNotificationsReadAsync(CancellationToken cancellationToken = default) =>
         TryPostAsync("/api/notifications/read-all", null, "business-notifications-read-all", cancellationToken);
+
+    public async Task<BusinessNotificationPage?> GetBusinessNotificationPageAsync(
+        BusinessNotificationQuery query, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration)) return null;
+            using var handler = _handlerFactory?.Invoke() ?? CreateHandler(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!), Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            var path = $"/api/notifications/journal?unreadOnly={query.UnreadOnly.ToString().ToLowerInvariant()}&limit={query.Limit}&offset={query.Offset}";
+            if (!string.IsNullOrWhiteSpace(query.Search)) path += "&search=" + Uri.EscapeDataString(query.Search);
+            if (query.Category != null) path += "&category=" + Uri.EscapeDataString(query.Category);
+            if (query.FromUtc.HasValue) path += "&from=" + Uri.EscapeDataString(query.FromUtc.Value.ToString("O", CultureInfo.InvariantCulture));
+            if (query.ToUtc.HasValue) path += "&to=" + Uri.EscapeDataString(query.ToUtc.Value.ToString("O", CultureInfo.InvariantCulture));
+            using var request = new HttpRequestMessage(HttpMethod.Get, path);
+            AddTrustedWpfHeaders(request, configuration, null);
+            using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode) return null;
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+            var root = json.RootElement;
+            return new BusinessNotificationPage
+            {
+                Items = root.GetProperty("items").EnumerateArray().Select(MapBusinessNotification).ToArray(),
+                Total = root.GetProperty("total").GetInt32(), UnreadCount = root.GetProperty("unread_count").GetInt32()
+            };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return null; }
+        catch (Exception ex)
+        {
+            _logger.Error("Не удалось обновить журнал событий", ex);
+            return null;
+        }
+    }
 
     public async Task<bool> TryResolveItemRequestAsync(long requestId, CancellationToken cancellationToken = default)
     {
@@ -368,7 +406,10 @@ public sealed class WpfIncomingRequestsApiService
         EntityRef = ReadString(element, "entity_ref"),
         CreatedAt = ReadDateTime(element, "created_at"),
         Source = ReadString(element, "source") ?? "SERVER",
-        IsRead = element.TryGetProperty("is_read", out var isRead) && isRead.ValueKind == JsonValueKind.True
+        IsRead = element.TryGetProperty("is_read", out var isRead) && isRead.ValueKind == JsonValueKind.True,
+        Payload = element.TryGetProperty("payload", out var payload) && payload.ValueKind == JsonValueKind.Object
+            ? payload.Deserialize<BusinessNotificationPayload>(new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower })
+            : null
     };
 
     private static string? ReadString(JsonElement element, string propertyName)

@@ -662,7 +662,7 @@ public sealed class UiPreviewTests
                 // Account preview buttons open presentation-only dialogs. They
                 // deliberately cannot persist data; don't invoke a modal from
                 // this generic event-probing loop.
-                if (button.Name is "CreateAccountButton" or "EditAccountButton" or "CatalogPriceListsButton")
+                if (button.Name is "CreateAccountButton" or "EditAccountButton" or "CatalogPriceListsButton" or "ItemRequestsButton")
                 {
                     // These only navigate to local, non-persisting demo dialogs.
                     // Their enabled state depends on the currently selected row.
