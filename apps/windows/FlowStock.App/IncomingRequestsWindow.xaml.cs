@@ -111,6 +111,11 @@ public partial class IncomingRequestsWindow : Window
         if (!_journalReady || _windowClosed) return;
         if (NotificationFromDate.SelectedDate > NotificationToDate.SelectedDate)
         {
+            ++_journalGeneration;
+            _journalCancellation?.Cancel();
+            _journalCancellation = null;
+            _journalLoading = false;
+            UpdateNotificationButtons();
             NotificationLoadStatus.Text = "Дата начала должна быть не позже даты окончания.";
             return;
         }
@@ -146,15 +151,21 @@ public partial class IncomingRequestsWindow : Window
             var selected = NotificationsGrid.SelectedItems.Cast<BusinessNotificationRow>().Select(row => row.Id).ToHashSet();
             var scroll = FindScrollViewer(NotificationsGrid);
             var verticalOffset = scroll?.VerticalOffset ?? 0;
+            var previousById = _notificationRows.ToDictionary(row => row.Id);
             for (var i = 0; i < page.Items.Count; i++)
             {
-                var row = new BusinessNotificationRow(page.Items[i]);
-                if (i < _notificationRows.Count) _notificationRows[i] = row;
+                var item = page.Items[i];
+                var row = previousById.TryGetValue(item.Id, out var previous) && previous.IsUnread == !item.IsRead
+                    ? previous : new BusinessNotificationRow(item);
+                if (i < _notificationRows.Count)
+                {
+                    if (!ReferenceEquals(_notificationRows[i], row)) _notificationRows[i] = row;
+                }
                 else _notificationRows.Add(row);
             }
             while (_notificationRows.Count > page.Items.Count) _notificationRows.RemoveAt(_notificationRows.Count - 1);
-            NotificationsGrid.SelectedItems.Clear();
-            foreach (var row in _notificationRows.Where(row => selected.Contains(row.Id))) NotificationsGrid.SelectedItems.Add(row);
+            foreach (var row in _notificationRows.Where(row => selected.Contains(row.Id)))
+                if (!NotificationsGrid.SelectedItems.Contains(row)) NotificationsGrid.SelectedItems.Add(row);
             scroll?.ScrollToVerticalOffset(verticalOffset);
             _notificationTotal = page.Total;
             _journalUpdatedAt = DateTime.Now;

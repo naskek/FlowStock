@@ -33,6 +33,9 @@ public sealed class BusinessNotificationJournalPostgresTests
             Assert.Equal("Новое имя", rows[0].Payload!.PartnerName);
             Assert.Equal("CUSTOMER_ORDER_SHIPPED", rows[0].EventType);
             Assert.False(store.GetOrder(id)!.AllowPartialOutbound);
+            store.UpdateOrder(new Order { Id = id, OrderRef = reference, Type = OrderType.Customer, PartnerId = partnerId, Status = OrderStatus.InProgress });
+            store.UpdateOrder(new Order { Id = id, OrderRef = reference, Type = OrderType.Customer, PartnerId = partnerId, Status = OrderStatus.Accepted });
+            Assert.Equal(4, journal.GetBusinessNotificationPage(query, reference).Total);
         });
     }
 

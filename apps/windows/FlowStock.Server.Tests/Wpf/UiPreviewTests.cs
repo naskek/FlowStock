@@ -643,6 +643,44 @@ public sealed class UiPreviewTests
         });
     }
 
+    [Fact]
+    public async Task Event_journal_preview_uses_real_layout_filters_and_safe_read_only_details()
+    {
+        await OnUiThread(() =>
+        {
+            var window = new IncomingRequestsWindow(new UiPreviewContext());
+            try
+            {
+                var grid = (DataGrid)window.FindName("NotificationsGrid");
+                Assert.Equal(5, grid.Items.Count);
+                Assert.All(grid.Items.Cast<BusinessNotificationRow>(), row => Assert.DoesNotContain("CUSTOMER_ORDER_", row.Summary));
+                grid.SelectedIndex = 1;
+                Assert.Contains("частично отгружен", ((BusinessNotificationRow)grid.SelectedItem).Summary);
+                Assert.Contains("осталось 1200", ((BusinessNotificationRow)grid.SelectedItem).Details);
+                foreach (var name in new[] { "MarkNotificationReadButton", "MarkAllNotificationsReadButton", "OpenNotificationOrderButton", "OpenNotificationDocButton" })
+                    Assert.False(((Button)window.FindName(name)).IsEnabled);
+                var root = (FrameworkElement)window.Content;
+                root.Measure(new Size(1320, 690)); root.Arrange(new Rect(0, 0, 1320, 690)); root.UpdateLayout();
+                Assert.True(grid.ActualWidth > 500);
+                var exportPath = Environment.GetEnvironmentVariable("FLOWSTOCK_EVENT_JOURNAL_PREVIEW_PNG");
+                if (!string.IsNullOrWhiteSpace(exportPath))
+                {
+                    var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(1320, 690, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                    bitmap.Render(root);
+                    var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                    encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+                    using var output = System.IO.File.Create(exportPath);
+                    encoder.Save(output);
+                }
+                ((TextBox)window.FindName("NotificationSearchBox")).Text = "SO-2026-044";
+                Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "Найти")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert.Single(grid.Items.Cast<BusinessNotificationRow>());
+                Assert.Contains("полностью отгружен", ((BusinessNotificationRow)grid.Items[0]).Summary);
+            }
+            finally { window.Close(); }
+        });
+    }
+
     private static void AssertPreviewController(object controller)
     {
         Assert.True((bool)controller.GetType().GetProperty("IsUiPreview")!.GetValue(controller)!);

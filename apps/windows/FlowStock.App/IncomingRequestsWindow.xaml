@@ -54,7 +54,7 @@
                         <DatePicker x:Name="NotificationFromDate" Width="120" SelectedDateChanged="NotificationDate_Changed" Margin="0,0,8,0"/>
                         <TextBlock Text="по" VerticalAlignment="Center" Margin="0,0,5,0"/>
                         <DatePicker x:Name="NotificationToDate" Width="120" SelectedDateChanged="NotificationDate_Changed" Margin="0,0,12,0"/>
-                        <TextBox x:Name="NotificationSearchBox" Width="210" ToolTip="Номер заказа, клиент или отгрузка" KeyDown="NotificationSearch_KeyDown" Margin="0,0,6,0"/>
+                        <TextBox x:Name="NotificationSearchBox" Width="210" MaxLength="200" ToolTip="Номер заказа, клиент или отгрузка" KeyDown="NotificationSearch_KeyDown" Margin="0,0,6,0"/>
                         <Button Content="Найти" Click="NotificationSearch_Click" Margin="0,0,6,0"/>
                         <Button Content="Обновить" Click="RefreshNotifications_Click"/>
                     </WrapPanel>

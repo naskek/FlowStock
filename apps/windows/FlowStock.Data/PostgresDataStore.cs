@@ -7495,7 +7495,7 @@ RETURNING id;
             var transactional = (PostgresDataStore)scoped;
             transactional.WithConnection(connection =>
             {
-            using var command = transactional.CreateCommand(connection, @"
+                using var command = transactional.CreateCommand(connection, @"
 UPDATE orders
 SET order_ref = @order_ref,
     order_type = @order_type,
@@ -7505,15 +7505,15 @@ SET order_ref = @order_ref,
     bind_reserved_stock = @bind_reserved_stock
 WHERE id = @id;
 ");
-            command.Parameters.AddWithValue("@order_ref", order.OrderRef);
-            command.Parameters.AddWithValue("@order_type", OrderStatusMapper.TypeToString(order.Type));
-            command.Parameters.AddWithValue("@partner_id", order.PartnerId.HasValue ? order.PartnerId.Value : DBNull.Value);
-            command.Parameters.AddWithValue("@due_date", order.DueDate.HasValue ? ToDbDateOnly(order.DueDate.Value) : DBNull.Value);
-            command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(order.Comment) ? DBNull.Value : order.Comment);
-            command.Parameters.AddWithValue("@bind_reserved_stock", order.UseReservedStock);
-            command.Parameters.AddWithValue("@id", order.Id);
-            command.ExecuteNonQuery();
-            return 0;
+                command.Parameters.AddWithValue("@order_ref", order.OrderRef);
+                command.Parameters.AddWithValue("@order_type", OrderStatusMapper.TypeToString(order.Type));
+                command.Parameters.AddWithValue("@partner_id", order.PartnerId.HasValue ? order.PartnerId.Value : DBNull.Value);
+                command.Parameters.AddWithValue("@due_date", order.DueDate.HasValue ? ToDbDateOnly(order.DueDate.Value) : DBNull.Value);
+                command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(order.Comment) ? DBNull.Value : order.Comment);
+                command.Parameters.AddWithValue("@bind_reserved_stock", order.UseReservedStock);
+                command.Parameters.AddWithValue("@id", order.Id);
+                command.ExecuteNonQuery();
+                return 0;
             });
             transactional.UpdateOrderStatus(order.Id, order.Status);
         });
