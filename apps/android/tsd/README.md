@@ -36,7 +36,7 @@ TSD работает только онлайн через `FlowStock.Server`. С
 ## Ранняя частичная отгрузка
 
 - List/details `/api/tsd/outbound/orders` содержит additive boolean `allow_partial_outbound`; отсутствующее или `null` значение клиент трактует как `false`.
-- При server-returned `true` TSD показывает метку `Частичная отгрузка разрешена`. Клиент не вычисляет eligibility/readiness и не включает заказ самостоятельно.
+- TSD не отображает разрешение ранней отгрузки ни меткой, ни переключателем. Поле остаётся в wire-контракте для совместимости; eligibility/readiness вычисляет сервер. Изменять разрешение через TSD нельзя.
 - Permission не заменяет существующий `allow_partial=true` в запросе неполного `complete` и не ослабляет server-side scan/status guards.
 
 ## Совместимость WebView 51

@@ -29,10 +29,12 @@ public sealed class PcWebSessionPostgresTests
             var restartedSessions = new PcWebSessionStore(connectionString);
             var identity = Assert.IsType<PcWebIdentity>(restartedSessions.Resolve(context.Request));
             Assert.True(identity.CanManagePendingRequests);
+            Assert.True(identity.CanManagePartialOutbound);
 
             await SetRoleAsync(connectionString, accountId, PcAccessRole.Operator);
             identity = Assert.IsType<PcWebIdentity>(restartedSessions.Resolve(context.Request));
             Assert.False(identity.CanManagePendingRequests);
+            Assert.False(identity.CanManagePartialOutbound);
             Assert.False(Assert.IsType<PcWebSessionRefreshResult>(
                 restartedSessions.Refresh(context.Request, loginAt.AddMinutes(10))).Identity.CanManagePendingRequests);
 

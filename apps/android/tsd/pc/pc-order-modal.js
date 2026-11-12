@@ -138,6 +138,7 @@
     }
     applyOrderModalContentUpdates(modal, getOrderModalContentUpdates(order, lines, expandedOrderLineIds));
     bindOrderLineExpansion(modal, order, lines, expandedOrderLineIds);
+    renderPartialOutboundPermission(modal, order);
   }
 
   function createOrderModalRefreshHandler(modal, order) {
@@ -151,6 +152,9 @@
       if (refreshInFlight) {
         return Promise.resolve();
       }
+      var controller = openOrderModalController;
+      if (controller && controller.permissionBusy) return Promise.resolve();
+      var generation = controller ? controller.permissionGeneration : 0;
 
       refreshInFlight = true;
       return loadOrderModalData(order)
@@ -159,12 +163,17 @@
             clearOpenOrderModalController();
             return;
           }
+          if (controller && generation !== controller.permissionGeneration) return;
 
           var freshOrder = payload && payload.order ? payload.order : order;
           if (freshOrder && freshOrder !== order) {
             Object.keys(freshOrder).forEach(function (key) {
               order[key] = freshOrder[key];
             });
+          }
+          if (controller) {
+            controller.permissionLoaded = true;
+            controller.permissionMessage = "";
           }
 
           populateOrderModalContent(modal, order, payload.lines);
@@ -460,6 +469,83 @@
     );
   }
 
+  function permissionState(order) {
+    var status = String(order && order.order_status || "").toUpperCase();
+    var visible = !!(order && Number(order.id) > 0 && !order.is_pending_confirmation &&
+      String(order.order_type || "").toUpperCase() === "CUSTOMER" &&
+      deps.hasCapability && deps.hasCapability("ManagePartialOutbound"));
+    var active = status === "IN_PROGRESS" || status === "ACCEPTED";
+    return { visible: visible, active: active, checked: active && order.allow_partial_outbound === true };
+  }
+
+  function renderPartialOutboundPermission(modal, order) {
+    var wrap = modal.querySelector("#partialOutboundPermissionWrap");
+    if (!wrap) return;
+    var state = permissionState(order);
+    var controller = openOrderModalController;
+    wrap.innerHTML = state.visible
+      ? '<label class="pc-partial-outbound-permission"><input type="checkbox" id="partialOutboundPermission">' +
+        '<span>Разрешить отгрузку готовых паллет до полной готовности заказа</span></label>' +
+        '<div class="pc-status" role="status" id="partialOutboundPermissionStatus"></div>'
+      : "";
+    var checkbox = wrap.querySelector("#partialOutboundPermission");
+    if (!checkbox) return;
+    checkbox.checked = state.checked;
+    checkbox.disabled = !state.active || !controller || !controller.permissionLoaded || controller.permissionBusy;
+    var statusEl = wrap.querySelector("#partialOutboundPermissionStatus");
+    statusEl.textContent = controller && controller.permissionMessage ||
+      (!state.active ? "Доступно только для активного сохранённого заказа." : "Изменение сохраняется сразу.");
+    checkbox.addEventListener("change", function () {
+      changePartialOutboundPermission(modal, order, checkbox.checked);
+    });
+  }
+
+  function changePartialOutboundPermission(modal, order, requestedValue) {
+    var controller = openOrderModalController;
+    var state = permissionState(order);
+    if (!controller || controller.modal !== modal || controller.permissionBusy ||
+        !controller.permissionLoaded || !state.visible || !state.active) return Promise.resolve();
+    if (requestedValue && !window.confirm("Разрешить отгрузку готовых паллет до полной готовности заказа?")) {
+      renderPartialOutboundPermission(modal, order);
+      return Promise.resolve();
+    }
+    controller.permissionBusy = true;
+    controller.permissionGeneration += 1;
+    controller.permissionMessage = "Сохранение…";
+    renderPartialOutboundPermission(modal, order);
+    return fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/partial-outbound-permission", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allow_partial_outbound: requestedValue }),
+    }).then(function (result) {
+      if (!result || result.ok !== true || Number(result.order_id) !== Number(order.id) ||
+          typeof result.allow_partial_outbound !== "boolean" || !result.status) {
+        throw new Error("INVALID_RESPONSE");
+      }
+      order.allow_partial_outbound = result.allow_partial_outbound;
+      order.order_status = result.status;
+      controller.permissionMessage = result.allow_partial_outbound ? "Ранняя отгрузка разрешена." : "Ранняя отгрузка отключена.";
+    }).catch(function (error) {
+      controller.permissionLoaded = false;
+      controller.permissionMessage = "Не удалось сохранить. Обновите заказ, чтобы проверить фактическое значение.";
+      var code = error && (error.error || error.message);
+      if ((code === "INVALID_SESSION" || (error && error.status === 401)) && deps.onSessionInvalid) {
+        deps.onSessionInvalid();
+        controller.close();
+      } else if (code === "ADMIN_REQUIRED") {
+        controller.permissionMessage = "Доступ администратора отозван.";
+        if (deps.refreshSession) {
+          return Promise.resolve(deps.refreshSession()).then(function () {
+            if (modal.isConnected) renderPartialOutboundPermission(modal, order);
+          }, function () { controller.close(); });
+        }
+      }
+    }).finally(function () {
+      controller.permissionBusy = false;
+      if (modal.isConnected) renderPartialOutboundPermission(modal, order);
+    });
+  }
+
   function submitPendingOrderAction(order, action) {
     var requestId = Number(order && order.request_id) || 0;
     var normalizedAction = String(action || "").trim().toLowerCase();
@@ -509,6 +595,7 @@
         : "Статус формируется автоматически по выпуску и отгрузке.") +
       "</div>" +
       "  </div>" +
+      '  <div id="partialOutboundPermissionWrap"></div>' +
       '  <div id="orderLinesWrap" class="pc-status" style="margin-top:12px;">Загрузка строк...</div>' +
       (canManage
         ? '  <div class="pc-modal-footer">' +
@@ -602,6 +689,10 @@
       order: order,
       lines: [],
       expandedOrderLineIds: {},
+      permissionLoaded: false,
+      permissionBusy: false,
+      permissionGeneration: 0,
+      permissionMessage: "",
       refresh: refreshOrderModalContent,
       close: close,
     };
@@ -621,6 +712,7 @@
     getOpenOrderModalController: getOpenOrderModalController,
     canManagePendingOrder: canManagePendingOrder,
     submitPendingOrderAction: submitPendingOrderAction,
+    permissionState: permissionState,
     __setOpenOrderModalControllerForTest: setOpenOrderModalControllerForTest,
   };
 })();

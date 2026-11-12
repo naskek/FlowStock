@@ -344,7 +344,7 @@ const listHtml = hooks.renderOutboundPickingList([snakeCaseOrder]);
 assert.match(listHtml, /data-outbound-order="93"/);
 assert.match(listHtml, /Заказ № TSD-UI-20260527172818/);
 assert.match(listHtml, /Клиент: Тестовый клиент/);
-assert.match(listHtml, /Частичная отгрузка разрешена/);
+assert.doesNotMatch(listHtml, /Частичная отгрузка разрешена/);
 assert.match(listHtml, /Подобрано <strong>0\/1<\/strong>/);
 
 hooks.wireOutboundPickingList();
@@ -800,3 +800,5 @@ async function scanOutboundHu(rawValue, order, scanResultOrder) {
   console.error(error);
   process.exitCode = 1;
 });
+
+assert.doesNotMatch(fs.readFileSync(path.join(__dirname, "app.js"), "utf8"), /Частичная отгрузка разрешена/);

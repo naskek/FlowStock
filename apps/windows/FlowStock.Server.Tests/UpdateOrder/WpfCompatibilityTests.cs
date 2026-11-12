@@ -265,11 +265,33 @@ public sealed class WpfCompatibilityTests
         }.TryGetCanonicalState(out _, out _));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PartialOutboundPermission_WpfClientUsesConfiguredMachineCredential(bool authorized)
+    {
+        var harness = new CloseDocumentHarness();
+        harness.SeedOrder(new Order
+        {
+            Id = 42, OrderRef = "SO-042", Type = OrderType.Customer,
+            Status = OrderStatus.InProgress, CreatedAt = DateTime.UtcNow
+        });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+        using var temp = new TempSettingsScope(host.Client.BaseAddress!, true,
+            authorized ? CloseDocumentHttpHost.WpfAdminApiKey : "wrong-machine-key");
+        var service = new WpfOrderPartialOutboundPermissionService(
+            new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath));
+        var result = await service.SetAsync(42, true);
+        Assert.Equal(authorized, result.IsSuccess);
+        Assert.Equal(authorized, harness.GetOrder(42).AllowPartialOutbound);
+        if (!authorized) Assert.Equal("INVALID_SESSION", result.ErrorCode);
+    }
+
     private sealed class TempSettingsScope : IDisposable
     {
         private readonly string _dir;
 
-        public TempSettingsScope(Uri baseAddress, bool useServerUpdateOrder)
+        public TempSettingsScope(Uri baseAddress, bool useServerUpdateOrder, string? machineKey = CloseDocumentHttpHost.WpfAdminApiKey)
         {
             _dir = Path.Combine(Path.GetTempPath(), "FlowStock.Server.Tests", "UpdateOrderWpf", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_dir);
@@ -284,7 +306,8 @@ public sealed class WpfCompatibilityTests
                     UseServerUpdateOrder = useServerUpdateOrder,
                     BaseUrl = baseAddress.ToString().TrimEnd('/'),
                     CloseTimeoutSeconds = 10,
-                    AllowInvalidTls = false
+                    AllowInvalidTls = false,
+                    WpfAdminApiKey = machineKey
                 }
             };
 

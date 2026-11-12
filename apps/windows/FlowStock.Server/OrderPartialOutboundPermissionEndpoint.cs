@@ -17,8 +17,23 @@ public static class OrderPartialOutboundPermissionEndpoint
         long orderId,
         HttpRequest request,
         IDataStore store,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        WpfMachineAuthorization wpfAuthorization,
+        IPcWebSessionResolver pcSessions)
     {
+        if (!wpfAuthorization.IsAuthorized(request))
+        {
+            var identity = pcSessions.Resolve(request);
+            if (identity == null)
+            {
+                return Results.Json(new ApiResult(false, "INVALID_SESSION"), statusCode: StatusCodes.Status401Unauthorized);
+            }
+            if (!identity.CanManagePartialOutbound)
+            {
+                return Results.Json(new ApiResult(false, "ADMIN_REQUIRED"), statusCode: StatusCodes.Status403Forbidden);
+            }
+        }
+
         var logger = loggerFactory.CreateLogger("FlowStock.Server.OrderOperations");
         var rawJson = await ReadBodyAsync(request);
         if (string.IsNullOrWhiteSpace(rawJson))
