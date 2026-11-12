@@ -662,10 +662,14 @@ public sealed class UiPreviewTests
                 var root = (FrameworkElement)window.Content;
                 root.Measure(new Size(1320, 690)); root.Arrange(new Rect(0, 0, 1320, 690)); root.UpdateLayout();
                 Assert.True(grid.ActualWidth > 500);
+                Assert.True(grid.Columns[1].ActualWidth >= 400);
                 var exportPath = Environment.GetEnvironmentVariable("FLOWSTOCK_EVENT_JOURNAL_PREVIEW_PNG");
                 if (!string.IsNullOrWhiteSpace(exportPath))
                 {
                     var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(1320, 690, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                    var background = new System.Windows.Media.DrawingVisual();
+                    using (var drawing = background.RenderOpen()) drawing.DrawRectangle(System.Windows.Media.Brushes.White, null, new Rect(0, 0, 1320, 690));
+                    bitmap.Render(background);
                     bitmap.Render(root);
                     var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
                     encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));

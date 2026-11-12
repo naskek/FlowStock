@@ -74,7 +74,7 @@
                                 <DataGridTemplateColumn Width="35"><DataGridTemplateColumn.CellTemplate><DataTemplate>
                                     <TextBlock Text="{Binding Marker}" Foreground="#176C74" FontSize="20" Margin="8,12,0,0"/>
                                 </DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
-                                <DataGridTemplateColumn Width="*"><DataGridTemplateColumn.CellTemplate><DataTemplate>
+                                <DataGridTemplateColumn Width="*" MinWidth="400"><DataGridTemplateColumn.CellTemplate><DataTemplate>
                                     <StackPanel Margin="4,10,10,10">
                                         <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" FontSize="14" FontWeight="SemiBold"/>
                                         <TextBlock Text="{Binding Subtitle}" ToolTip="{Binding TimeTooltip}" Foreground="#526276" Margin="0,6,0,0"/>
