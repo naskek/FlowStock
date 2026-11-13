@@ -140,7 +140,7 @@ SELECT COUNT(*) FROM marking_code_import WHERE matched_marking_order_id = @task;
             FileHash = $"TEST-195-HASH-{id:N}",
             SourceType = source,
             MatchedMarkingOrderId = task,
-            Status = MarkingCodeImportStatus.Imported,
+            Status = MarkingCodeImportStatus.Bound,
             CreatedAt = DateTime.UtcNow
         };
 
