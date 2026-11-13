@@ -95,6 +95,88 @@ SELECT COUNT(*) FROM marking_code WHERE marking_order_id = @task;
     }
 
     [Fact]
+    public async Task LegacyExcelFirst_QuantityIssueRejectsTechnicalOverlap()
+    {
+        var cs = RequiredDisposablePostgresConnection();
+        var fixture = await CreateFixture(cs);
+        var store = new PostgresDataStore(cs);
+
+        var exported = new MarkingExcelService(store).Export(
+            new[] { fixture.TaskId }, Array.Empty<long>(), DateTime.UtcNow);
+        Assert.True(exported.IsSuccess);
+
+        var ex = await Assert.ThrowsAsync<PostgresException>(
+            async () => { await IssuePool(cs, fixture.TaskId, quantity: 3); });
+        Assert.Equal("23514", ex.SqlState);
+        Assert.Contains("QUANTITY_POOL_LEGACY_EXPORT_CONFLICT", ex.MessageText);
+
+        await using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync();
+        Assert.Equal(3L, await Scalar<long>(connection, """
+SELECT COUNT(*) FROM marking_code WHERE marking_order_id = @task;
+""", ("task", fixture.TaskId)));
+        Assert.Equal(0L, await Scalar<long>(connection, """
+SELECT COUNT(*) FROM marking_synthetic_quantity_pool WHERE marking_order_id = @task;
+""", ("task", fixture.TaskId)));
+    }
+
+    [Fact]
+    public async Task QuantityIssue_WaitsForInFlightLegacyTechnicalInsertThenRejects()
+    {
+        var cs = RequiredDisposablePostgresConnection();
+        var fixture = await CreateFixture(cs);
+        var import = Guid.NewGuid();
+        new PostgresDataStore(cs).AddMarkingCodeImport(
+            CreateImport(import, fixture.TaskId, "temporary-chz-export"));
+
+        await using var oldWriter = new NpgsqlConnection(cs);
+        await oldWriter.OpenAsync();
+        await using var tx = await oldWriter.BeginTransactionAsync();
+        await using (var insert = oldWriter.CreateCommand())
+        {
+            insert.Transaction = tx;
+            insert.CommandText = """
+WITH task_lock AS (
+    SELECT id FROM marking_order WHERE id = @task FOR UPDATE
+)
+INSERT INTO marking_code(
+    id, code, code_hash, gtin, marking_order_id, import_id,
+    status, origin, created_at, updated_at)
+SELECT @id, @code, @hash, @gtin, task_lock.id, @import,
+       'Reserved', 'LegacySynthetic', @at, @at
+FROM task_lock;
+""";
+            insert.Parameters.AddWithValue("task", fixture.TaskId);
+            insert.Parameters.AddWithValue("id", Guid.NewGuid());
+            insert.Parameters.AddWithValue("code", "TEMP-CHZ-" + fixture.TaskId + "-000001");
+            insert.Parameters.AddWithValue("hash", Guid.NewGuid().ToString("N"));
+            insert.Parameters.AddWithValue("gtin", fixture.Gtin);
+            insert.Parameters.AddWithValue("import", import);
+            insert.Parameters.AddWithValue("at", "2026-11-13T12:00:00Z");
+            Assert.Equal(1, await insert.ExecuteNonQueryAsync());
+        }
+
+        var issuing = Task.Run(() => IssuePool(cs, fixture.TaskId, quantity: 3));
+        await Task.Delay(200);
+        Assert.False(issuing.IsCompleted);
+        await tx.CommitAsync();
+
+        var ex = await Assert.ThrowsAsync<PostgresException>(
+            async () => { await issuing.WaitAsync(TimeSpan.FromSeconds(20)); });
+        Assert.Equal("23514", ex.SqlState);
+        Assert.Contains("QUANTITY_POOL_LEGACY_EXPORT_CONFLICT", ex.MessageText);
+
+        await using var verification = new NpgsqlConnection(cs);
+        await verification.OpenAsync();
+        Assert.Equal(1L, await Scalar<long>(verification, """
+SELECT COUNT(*) FROM marking_code WHERE marking_order_id = @task;
+""", ("task", fixture.TaskId)));
+        Assert.Equal(0L, await Scalar<long>(verification, """
+SELECT COUNT(*) FROM marking_synthetic_quantity_pool WHERE marking_order_id = @task;
+""", ("task", fixture.TaskId)));
+    }
+
+    [Fact]
     public async Task ExistingPool_BlocksExcelAndDirectTechnicalWriterButNotRealCodeImport()
     {
         var cs = RequiredDisposablePostgresConnection();
