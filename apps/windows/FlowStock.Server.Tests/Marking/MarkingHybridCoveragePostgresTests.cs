@@ -67,6 +67,20 @@ INSERT INTO doc_lines(doc_id, item_id, order_line_id, qty)
 VALUES (@doc, @item, @order_line, 100) RETURNING id;
 """, ("doc", doc), ("item", item), ("order_line", order1.LineId));
 
+        // The production writer is now fail-closed in both directions:
+        // it cannot ISSUE a pool after TEMP-CHZ codes were generated.
+        // This test intentionally injects a *historical/ambiguous* mixed
+        // snapshot via direct disposable-DB SQL after issuing the pool, so
+        // the diagnostic reader still proves that it handles legacy overlap
+        // without treating observed totals as authorized coverage.
+        var pool1 = Guid.NewGuid();
+        await Apply(connection, tx, pool1, "ISSUE", 10, task1, "new-quantity-" + suffix);
+        await Apply(connection, tx, pool1, "ASSIGN", 6,
+            receiptDoc: doc, receiptLine: line);
+        await Apply(connection, tx, pool1, "RELEASE", 2,
+            receiptDoc: doc, receiptLine: line);
+        await Apply(connection, tx, pool1, "VOID", 1);
+
         // Group two per-code rows into a single import/status/GTIN scope.
         await InsertCode(connection, tx, suffix + "-1", task1, tempImport,
             gtin, "Reserved", "LegacySynthetic", true);
@@ -90,14 +104,6 @@ VALUES (@doc, @item, @order_line, 100) RETURNING id;
         // Other order/line, same item + GTIN: must never leak into task1.
         await InsertCode(connection, tx, suffix + "-10", task2, secondTempImport,
             gtin, "Reserved", "LegacySynthetic", true);
-
-        var pool1 = Guid.NewGuid();
-        await Apply(connection, tx, pool1, "ISSUE", 10, task1, "new-quantity-" + suffix);
-        await Apply(connection, tx, pool1, "ASSIGN", 6,
-            receiptDoc: doc, receiptLine: line);
-        await Apply(connection, tx, pool1, "RELEASE", 2,
-            receiptDoc: doc, receiptLine: line);
-        await Apply(connection, tx, pool1, "VOID", 1);
 
         // Separate production-need task has no per-code rows.
         var pool3 = Guid.NewGuid();

@@ -9416,9 +9416,12 @@ VALUES(
             return;
         }
 
-        WithConnection(connection =>
+        // The status and compatibility preflight must use the same transaction
+        // as any generated TEMP-CHZ codes (including legacy/global exports).
+        ExecuteAtomic(scoped => scoped.WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, @"
+            scoped.EnsureLegacyMarkingTasksHaveNoQuantityPools(connection, ids);
+            using var command = scoped.CreateCommand(connection, @"
 UPDATE marking_order
 SET status = @status,
     codes_bound_at = COALESCE(codes_bound_at, @printed_at),
@@ -9429,7 +9432,7 @@ WHERE id = ANY(@ids::uuid[]);");
             command.Parameters.AddWithValue("@printed_at", ToDbDate(printedAt));
             command.ExecuteNonQuery();
             return 0;
-        });
+        }));
     }
 
     public void MarkOrdersPrinted(IReadOnlyCollection<long> orderIds, DateTime printedAt)
@@ -18917,6 +18920,33 @@ WHERE id = @id;");
             return;
         }
 
+        // The only legacy technical writer uses this prefix. Real DataMatrix
+        // imports remain unchanged; a mixed batch is protected as a whole.
+        var technicalTaskIds = codes
+            .Where(code => code.Code.StartsWith("TEMP-CHZ-", StringComparison.Ordinal))
+            .Select(code => code.MarkingOrderId)
+            .Distinct()
+            .ToArray();
+        if (technicalTaskIds.Length == 0)
+        {
+            AddMarkingCodesCore(codes);
+            return;
+        }
+
+        ExecuteAtomic(scoped =>
+        {
+            scoped.WithConnection(connection =>
+            {
+                scoped.EnsureLegacyMarkingTasksHaveNoQuantityPools(connection, technicalTaskIds);
+                return 0;
+            });
+            scoped.AddMarkingCodesCore(codes);
+            return 0;
+        });
+    }
+
+    private void AddMarkingCodesCore(IReadOnlyList<MarkingCode> codes)
+    {
         WithConnection(connection =>
         {
             var ids = codes.Select(code => code.Id).ToArray();
@@ -19018,6 +19048,51 @@ FROM unnest(
 
             return 0;
         });
+    }
+
+    // Temporary bridge until all PRD/COR consumers are quantity-aware.
+    // Take exclusive task locks in a deterministic order before querying the
+    // pool table. V0048 ISSUE first takes SHARE on marking_order, so these
+    // locks serialize the legacy per-code path against a concurrent ISSUE.
+    // An existing pool is blocked even if all its quantities were VOIDed:
+    // pool provenance cannot be reclassified or safely inferred here.
+    private void EnsureLegacyMarkingTasksHaveNoQuantityPools(
+        NpgsqlConnection connection,
+        IReadOnlyCollection<Guid> markingOrderIds)
+    {
+        var ids = markingOrderIds.Distinct().OrderBy(id => id).ToArray();
+        if (ids.Length == 0)
+        {
+            return;
+        }
+
+        using (var lockCommand = CreateCommand(connection, @"
+SELECT id
+FROM marking_order
+WHERE id = ANY(@task_ids::uuid[])
+ORDER BY id
+FOR UPDATE;"))
+        {
+            lockCommand.Parameters.AddWithValue("@task_ids", ids);
+            using var reader = lockCommand.ExecuteReader();
+            while (reader.Read())
+            {
+                // Hold the row locks until the surrounding transaction ends.
+            }
+        }
+
+        using var checkCommand = CreateCommand(connection, @"
+SELECT EXISTS(
+    SELECT 1 FROM marking_synthetic_quantity_pool
+    WHERE marking_order_id = ANY(@task_ids::uuid[])
+);");
+        checkCommand.Parameters.AddWithValue("@task_ids", ids);
+        if (Convert.ToBoolean(checkCommand.ExecuteScalar()))
+        {
+            throw new InvalidOperationException(
+                "QUANTITY_POOL_LEGACY_EXPORT_CONFLICT: " +
+                "Нельзя формировать старые TEMP-CHZ для задачи с количественным пулом.");
+        }
     }
 
     public int CountMarkingCodesByMarkingOrder(Guid markingOrderId)
