@@ -509,6 +509,10 @@ PC Web ADMIN управляет разрешением готовых палле
 
 ## Маркировка ЧЗ
 
+- Read-only `marking_synthetic_coverage_shadow` (миграция V0047) — вспомогательное PostgreSQL VIEW для **доказанных** legacy temporary codes: одновременно `marking_code.code LIKE 'TEMP-CHZ-%'`, `marking_code_import.source_type = 'temporary-chz-export'`, `origin IN ('LegacySynthetic', 'HistoricalUnknown')`. Оно группирует `marking_order_id`, `import_id`, `origin`, `status`, `receipt_doc_id`, `receipt_line_id`, нормализованный GTIN и timestamps `printed_at/applied_at/reported_at/introduced_at`, возвращает `quantity BIGINT`. `HistoricalUnknown` не переименовывается, real/ambiguous codes не подменяются счётчиками.
+- VIEW вычисляется из существующих поэкземплярных строк при каждом запросе. Это **диагностический shadow read-model**, а не источник записи или новая схема выдачи/привязки кодов: в `SHADOW` все существующие legacy `marking_code`, PRD close, HU corrections, order statuses и реальный DM workflow работают как раньше. Само VIEW **не ускоряет** обработку 1,4 млн строк и не экономит физическое место. Независимый transactional quantity event ledger, balances, retries/concurrency и переключение на них требуют отдельного изменения и production-copy smoke.
+
+
 - Товар, уже находящийся на складе как **физический stock** (`ledger` > 0), считается **уже промаркированным**: маркируемый товар без маркировки не должен попадать на склад.
 - Складские HU, физически готовые и привязанные к `CUSTOMER` через `order_receipt_plan_lines`, **не требуют** новой ЧЗ-выгрузки.
 - Новая Excel ЧЗ для `CUSTOMER` создаётся **только** на производственную нехватку / planned production part; источник истины — серверный `GET/POST /api/orders/{orderId}/marking/preview|export`.
