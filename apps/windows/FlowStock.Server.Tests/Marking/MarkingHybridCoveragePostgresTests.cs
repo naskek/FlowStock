@@ -107,7 +107,14 @@ VALUES (@doc, @item, @order_line, 100) RETURNING id;
 
         // Separate production-need task has no per-code rows.
         var pool3 = Guid.NewGuid();
-        await Apply(connection, tx, pool3, "ISSUE", 3, task3, "new-quantity-need-" + suffix);
+        await Apply(connection, tx, pool3, "ISSUE", 6, task3, "new-quantity-need-" + suffix);
+        // Quantity-only receipt: the same item/GTIN and PRD line as
+        // task1 must not leak across separate task identities.
+        await Apply(connection, tx, pool3, "ASSIGN", 4,
+            receiptDoc: doc, receiptLine: line);
+        await Apply(connection, tx, pool3, "RELEASE", 1,
+            receiptDoc: doc, receiptLine: line);
+        await Apply(connection, tx, pool3, "VOID", 1);
 
         var eventsBefore = await Scalar<long>(connection, tx,
             "SELECT COUNT(*) FROM marking_synthetic_quantity_event;");
@@ -185,20 +192,24 @@ VALUES (@doc, @item, @order_line, 100) RETURNING id;
         var onlyQuantity = await MarkingHybridCoverageReader.ReadTaskAsync(
             connection, tx, task3);
         Assert.Equal(0, onlyQuantity.PerCodeRows);
-        Assert.Equal(3, onlyQuantity.QuantityIssued);
+        Assert.Equal(6, onlyQuantity.QuantityIssued);
         Assert.False(onlyQuantity.RequiresReconciliation);
-        Assert.Equal(3L, onlyQuantity.UnambiguousObservedActive);
+        Assert.Equal(5L, onlyQuantity.UnambiguousObservedActive);
         Assert.All(onlyQuantity.Rows, row => Assert.Null(row.OrderLineId));
         var quantityDecision = MarkingQuantityEvidencePolicy.Evaluate(onlyQuantity);
         Assert.Equal(MarkingQuantityEvidenceState.VerifiedQuantity, quantityDecision.State);
-        Assert.Equal(3, quantityDecision.IssuedQuantity);
-        Assert.Equal(3, quantityDecision.AvailableQuantity);
-        Assert.Equal(0, quantityDecision.AppliedQuantity);
-        Assert.Equal(0, quantityDecision.VoidedQuantity);
+        Assert.Equal(6, quantityDecision.IssuedQuantity);
+        Assert.Equal(2, quantityDecision.AvailableQuantity);
+        Assert.Equal(3, quantityDecision.AppliedQuantity);
+        Assert.Equal(1, quantityDecision.VoidedQuantity);
         Assert.Equal("PRODUCTION_NEED", quantityDecision.SourceType);
         Assert.Equal(item, quantityDecision.ItemId);
         Assert.Equal(gtin, quantityDecision.NormalizedGtin);
-        Assert.Empty(quantityDecision.Receipts);
+        var receiptEvidence = Assert.Single(quantityDecision.Receipts);
+        Assert.Equal(pool3, receiptEvidence.PoolId);
+        Assert.Equal(doc, receiptEvidence.ReceiptDocId);
+        Assert.Equal(line, receiptEvidence.ReceiptLineId);
+        Assert.Equal(3, receiptEvidence.AppliedQuantity);
 
         var unknownTask = await MarkingHybridCoverageReader.ReadTaskAsync(
             connection, tx, Guid.NewGuid());
