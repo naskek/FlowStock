@@ -1,3 +1,4 @@
+using System.Data;
 using Npgsql;
 
 namespace FlowStock.Data;
@@ -17,6 +18,15 @@ public static class MarkingHybridCoverageReader
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(transaction);
+        // Three SELECT statements must see one consistent snapshot. In
+        // READ COMMITTED, a concurrent ISSUE/ASSIGN between statements can
+        // make the diagnostic appear internally inconsistent or double count.
+        if (transaction.IsolationLevel is not
+            (IsolationLevel.RepeatableRead or IsolationLevel.Serializable))
+        {
+            throw new InvalidOperationException(
+                "Hybrid coverage diagnostics require a REPEATABLE READ or SERIALIZABLE transaction.");
+        }
 
         var rows = new List<MarkingHybridCoverageRow>();
 
