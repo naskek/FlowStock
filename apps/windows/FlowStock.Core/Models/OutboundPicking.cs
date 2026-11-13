@@ -15,7 +15,9 @@ public sealed class OutboundPickingOrderRow
     public double RemainingQty { get; init; }
     public double ScannedQty { get; init; }
     public bool AllowPartialOutbound { get; init; }
-    public bool IsComplete => ExpectedHuCount > 0 && PickedHuCount >= ExpectedHuCount;
+    public bool IsComplete => ExpectedHuCount > 0 && PickedHuCount >= ExpectedHuCount
+        && RemainingQty > StockQuantityRules.QtyTolerance
+        && ScannedQty + StockQuantityRules.QtyTolerance >= RemainingQty;
     public int RequiredPallets => ExpectedHuCount;
     public int ScannedPallets => PickedHuCount;
     public int RemainingPallets => Math.Max(0, ExpectedHuCount - PickedHuCount);
@@ -41,7 +43,9 @@ public sealed class OutboundPickingOrderDetails
     public double RemainingQty { get; init; }
     public double ScannedQty { get; init; }
     public bool AllowPartialOutbound { get; init; }
-    public bool IsComplete => ExpectedHuCount > 0 && PickedHuCount >= ExpectedHuCount;
+    public bool IsComplete => ExpectedHuCount > 0 && PickedHuCount >= ExpectedHuCount
+        && RemainingQty > StockQuantityRules.QtyTolerance
+        && ScannedQty + StockQuantityRules.QtyTolerance >= RemainingQty;
     public int RequiredPallets => ExpectedHuCount;
     public int ScannedPallets => PickedHuCount;
     public int RemainingPallets => Math.Max(0, ExpectedHuCount - PickedHuCount);

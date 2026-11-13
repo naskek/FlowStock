@@ -566,6 +566,7 @@ Legacy-расчет задач маркировки из производств�
 - HU в открытом OUTBOUND другого заказа, а также HU в draft OUTBOUND с `order_id = NULL`, исключается до list/details; same-order draft сохраняет continuation, закрытый исторический OUTBOUND не считается foreign conflict. Для mixed `FILLED` HU отсутствие достаточного ledger stock хотя бы одного обязательного компонента исключает HU целиком; persisted pallet state, filling, ledger и close semantics не меняются.
 - Canonical `UpdateOrderStatus` одним SQL statement устанавливает `SHIPPED`/`CANCELLED`/`MERGED` и сбрасывает permission в `false`. CHECK `status NOT IN ('SHIPPED','CANCELLED','MERGED') OR allow_partial_outbound = FALSE` закрепляет invariant в БД. Status guard TSD независимо исключает terminal orders.
 - После partial close permission автоматически не снимается. Отключение скрывает заказ без draft, но открытый TSD draft продолжает details/scan/complete. Неполный `complete` по-прежнему требует action-level `allow_partial=true`.
+- `is_complete`/`can_close` в list/details истинны только при подборе всех ожидаемых HU **и** количестве текущего draft, покрывающем положительный остаток заказа с общей quantity tolerance. Подбор всех доступных HU, покрывающих лишь часть заказа, остаётся частичным: `complete` без `allow_partial=true` возвращает `PARTIAL_CONFIRMATION_REQUIRED` без проведения и записи ledger. TSD не предлагает полное завершение после такого scan; кнопка завершения требует подтверждения частичной отгрузки с количеством подобрано/осталось. Scan сам документ не проводит.
 
 ## Типы заказов
 
