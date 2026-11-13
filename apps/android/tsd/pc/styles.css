@@ -3597,3 +3597,16 @@ body.pc-modal-open {
     gap: 2px;
   }
 }
+
+.pc-partial-outbound-permission {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  cursor: pointer;
+}
+
+.pc-partial-outbound-permission input {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}

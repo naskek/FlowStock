@@ -5017,9 +5017,6 @@
           '    <div class="order-status-pill order-status-accepted">' +
           escapeHtml(order.status || "Готов") +
           "</div>" +
-          (order.allowPartialOutbound
-            ? '    <div class="filling-doc-meta">Частичная отгрузка разрешена</div>'
-            : "") +
           "  </div>" +
           '  <div class="filling-doc-progress">' +
           "    <div>Подобрано <strong>" +
@@ -5117,9 +5114,6 @@
       '    <div class="filling-scan-header">' +
       escapeHtml(buildOutboundPickingHeaderLine(order)) +
       "</div>" +
-      (order.allowPartialOutbound
-        ? '    <div class="field-hint">Частичная отгрузка разрешена</div>'
-        : "") +
       messageHtml +
       '    <div class="outbound-picking-progress">' +
       '      <div>Заказано <strong>' + escapeHtml(formatOrderQtyValue(order.orderedQty)) + "</strong></div>" +

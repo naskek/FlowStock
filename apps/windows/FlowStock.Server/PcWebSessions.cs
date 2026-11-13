@@ -16,6 +16,7 @@ public static class PcAccessRole
     public const string Admin = "ADMIN";
     public const string ManagePendingRequests = "ManagePendingRequests";
     public const string ManageCatalog = "ManageCatalog";
+    public const string ManagePartialOutbound = "ManagePartialOutbound";
     public const string InvalidAccessRole = "INVALID_ACCESS_ROLE";
 
     public static string Normalize(string? value) =>
@@ -42,6 +43,9 @@ public static class PcAccessRole
 
 public sealed record PcWebIdentity(long AccountId, string DeviceId, string Login, string Platform, string AccessRole)
 {
+    public bool CanManagePartialOutbound => (string.Equals(Platform, "PC", StringComparison.Ordinal)
+        || string.Equals(Platform, "BOTH", StringComparison.Ordinal))
+        && string.Equals(AccessRole, PcAccessRole.Admin, StringComparison.Ordinal);
     public bool CanManagePendingRequests => string.Equals(AccessRole, PcAccessRole.Admin, StringComparison.Ordinal);
     public bool CanManageCatalog => string.Equals(AccessRole, PcAccessRole.Admin, StringComparison.Ordinal);
 }
@@ -524,7 +528,7 @@ public static class PcWebSessionEndpoints
             access_role = identity.AccessRole
         },
         capabilities = identity.CanManagePendingRequests
-            ? new[] { PcAccessRole.ManagePendingRequests, PcAccessRole.ManageCatalog }
+            ? new[] { PcAccessRole.ManagePendingRequests, PcAccessRole.ManageCatalog, PcAccessRole.ManagePartialOutbound }
             : Array.Empty<string>(),
         expires_at = expiresAt?.ToString("O", CultureInfo.InvariantCulture),
         blocks = ClientBlockCatalog.MergeWithDefaults(store.GetClientBlockSettings())

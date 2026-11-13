@@ -45,6 +45,7 @@ public sealed class WpfOrderPartialOutboundPermissionService
             BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromSeconds(Math.Max(1, server.CloseTimeoutSeconds))
         };
+        WpfTrustedRequestHeaders.Add(client, WpfTrustedRequestHeaders.ReadAdminApiKey(server));
 
         try
         {

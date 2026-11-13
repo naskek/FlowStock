@@ -123,6 +123,46 @@ public sealed class PartialOutboundPermissionTests
     }
 
     [Theory]
+    [InlineData(null, null, 401)]
+    [InlineData("PC", "OPERATOR", 403)]
+    [InlineData("TSD", "ADMIN", 403)]
+    [InlineData("PC", "ADMIN", 200)]
+    [InlineData("BOTH", "ADMIN", 200)]
+    public async Task Command_RequiresCurrentPcAdminOrTrustedWpf(string? platform, string? role, int expectedStatus)
+    {
+        var harness = CreateHarness(OrderType.Customer, OrderStatus.InProgress);
+        var identity = platform == null ? null : new PcWebIdentity(1, "device", "user", platform, role!);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore(), pcIdentity: identity);
+        host.Client.DefaultRequestHeaders.Remove(WpfMachineAuthorization.KeyHeader);
+        host.Client.DefaultRequestHeaders.Add("X-FlowStock-Access-Role", "ADMIN");
+        using var response = await host.Client.PutAsJsonAsync(
+            "/api/orders/42/partial-outbound-permission",
+            new { allow_partial_outbound = true, device_id = "WPF-ADMIN", access_role = "ADMIN" });
+        Assert.Equal(expectedStatus, (int)response.StatusCode);
+        Assert.Equal(expectedStatus == 200, harness.GetOrder(42).AllowPartialOutbound);
+        if (expectedStatus == 200)
+        {
+            using var disabled = await host.Client.PutAsJsonAsync(
+                "/api/orders/42/partial-outbound-permission", new { allow_partial_outbound = false });
+            Assert.Equal(HttpStatusCode.OK, disabled.StatusCode);
+            Assert.False(harness.GetOrder(42).AllowPartialOutbound);
+        }
+    }
+
+    [Fact]
+    public async Task Command_InvalidMachineKeyCannotChangePermissionOrProbeOrder()
+    {
+        var harness = CreateHarness(OrderType.Customer, OrderStatus.InProgress);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
+        host.Client.DefaultRequestHeaders.Remove(WpfMachineAuthorization.KeyHeader);
+        host.Client.DefaultRequestHeaders.Add(WpfMachineAuthorization.KeyHeader, "invalid-key");
+        using var response = await host.Client.PutAsJsonAsync(
+            "/api/orders/999/partial-outbound-permission", new { allow_partial_outbound = true });
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.False(harness.GetOrder(42).AllowPartialOutbound);
+    }
+
+    [Theory]
     [InlineData(OrderType.Internal, OrderStatus.InProgress, "ORDER_PARTIAL_OUTBOUND_NOT_CUSTOMER")]
     [InlineData(OrderType.Customer, OrderStatus.Draft, "ORDER_PARTIAL_OUTBOUND_NOT_ACTIVE")]
     [InlineData(OrderType.Customer, OrderStatus.Shipped, "ORDER_PARTIAL_OUTBOUND_TERMINAL")]
