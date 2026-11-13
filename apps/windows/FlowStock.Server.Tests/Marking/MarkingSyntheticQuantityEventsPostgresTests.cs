@@ -263,6 +263,12 @@ SELECT COUNT(*) FROM marking_synthetic_quantity_event WHERE pool_id = @pool;
             NpgsqlConnection connection, NpgsqlTransaction? tx)
         {
             var suffix = Guid.NewGuid().ToString("N");
+            // Do not pollute other PG integration fixtures with the same GTIN.
+            // The concurrency case commits in a disposable DB to be visible
+            // from independent PostgreSQL sessions.
+            var gtin = "0460" +
+                (BitConverter.ToUInt64(Guid.NewGuid().ToByteArray(), 0) % 10000000000UL)
+                .ToString("D10", CultureInfo.InvariantCulture);
             var typeId = await Scalar<long>(connection, tx, """
 INSERT INTO item_types(name, code, enable_marking)
 VALUES (@name, @code, TRUE) RETURNING id;
@@ -270,18 +276,19 @@ VALUES (@name, @code, TRUE) RETURNING id;
 
             var itemId = await Scalar<long>(connection, tx, """
 INSERT INTO items(name, barcode, gtin, item_type_id)
-VALUES (@name, @barcode, '04601234567890', @type) RETURNING id;
+VALUES (@name, @barcode, @gtin, @type) RETURNING id;
 """, ("name", "TEST-191-ITEM-" + suffix),
-                ("barcode", "TEST-191-BARCODE-" + suffix), ("type", typeId));
+                ("barcode", "TEST-191-BARCODE-" + suffix),
+                ("gtin", gtin), ("type", typeId));
 
             var task = Guid.NewGuid();
             await Execute(connection, tx, """
 INSERT INTO marking_order(
     id, item_id, gtin, requested_quantity, request_number, status,
     source_type, created_at, updated_at)
-VALUES (@id, @item, '04601234567890', 100,
+VALUES (@id, @item, @gtin, 100,
         @ref, 'WaitingForCodes', 'PRODUCTION_NEED', @at, @at);
-""", ("id", task), ("item", itemId),
+""", ("id", task), ("item", itemId), ("gtin", gtin),
                 ("ref", "TEST-191-TASK-" + suffix),
                 ("at", "2026-11-13T12:00:00.000Z"));
 
