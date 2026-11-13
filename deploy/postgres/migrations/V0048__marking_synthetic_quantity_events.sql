@@ -123,6 +123,7 @@ CREATE FUNCTION marking_synthetic_quantity_apply(
 LANGUAGE plpgsql AS $$
 DECLARE
     v_pool marking_synthetic_quantity_pool%ROWTYPE;
+    v_task RECORD;
     v_previous marking_synthetic_quantity_event%ROWTYPE;
     v_free BIGINT;
     v_line_applied BIGINT;
@@ -200,9 +201,29 @@ BEGIN
         END IF;
     END IF;
 
-    -- Create a pool ONLY from a live marking task with valid markable
-    -- item/GTIN. A source key is stable across retries of Excel export.
+    -- Lock source task/item BEFORE pool: both the metadata and eligibility
+    -- remain valid until commit. Avoid pool -> order lock inversion.
     IF p_action = 'ISSUE' THEN
+        SELECT mo.id, mo.order_line_id, mo.item_id,
+               BTRIM(mo.gtin) AS normalized_gtin,
+               BTRIM(mo.source_type) AS source_type
+        INTO v_task
+        FROM marking_order mo
+        INNER JOIN items i ON i.id = mo.item_id
+        INNER JOIN item_types it ON it.id = i.item_type_id
+        WHERE mo.id = p_marking_order_id
+          AND mo.status NOT IN ('Cancelled', 'Failed')
+          AND COALESCE(it.enable_marking, FALSE)
+          AND NULLIF(BTRIM(mo.gtin), '') IS NOT NULL
+          AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
+          AND BTRIM(mo.gtin) = BTRIM(i.gtin)
+          AND NULLIF(BTRIM(mo.source_type), '') IS NOT NULL
+        FOR SHARE OF mo, i, it;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'cannot issue for ineligible marking task'
+                USING ERRCODE = '23514';
+        END IF;
+
         INSERT INTO marking_synthetic_quantity_pool (
             id, marking_order_id, order_line_id, item_id,
             normalized_gtin, source_type, source_key
@@ -230,7 +251,11 @@ BEGIN
     END IF;
     IF p_action = 'ISSUE' AND
        (v_pool.marking_order_id IS DISTINCT FROM p_marking_order_id
-        OR v_pool.source_key IS DISTINCT FROM p_source_key) THEN
+        OR v_pool.source_key IS DISTINCT FROM p_source_key
+        OR v_pool.item_id IS DISTINCT FROM v_task.item_id
+        OR v_pool.order_line_id IS DISTINCT FROM v_task.order_line_id
+        OR v_pool.normalized_gtin IS DISTINCT FROM v_task.normalized_gtin
+        OR v_pool.source_type IS DISTINCT FROM v_task.source_type) THEN
         RAISE EXCEPTION 'issue source does not match pool provenance'
             USING ERRCODE = '23514';
     END IF;
@@ -253,18 +278,6 @@ BEGIN
                      FROM marking_synthetic_quantity_balance b
                      WHERE b.pool_id = p_pool_id;
         RETURN;
-    END IF;
-
-    IF p_action = 'ISSUE' THEN
-        -- A new ISSUE after cancellation must fail, even for an older pool.
-        PERFORM 1 FROM marking_order
-        WHERE id = v_pool.marking_order_id
-          AND status NOT IN ('Cancelled', 'Failed')
-        FOR SHARE;
-        IF NOT FOUND THEN
-            RAISE EXCEPTION 'cannot issue for inactive marking task'
-                USING ERRCODE = '23514';
-        END IF;
     END IF;
 
     SELECT b.available_quantity INTO v_free
