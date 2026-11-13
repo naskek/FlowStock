@@ -249,15 +249,18 @@ BEGIN
         RAISE EXCEPTION 'synthetic quantity pool not found or task ineligible'
             USING ERRCODE = '23514';
     END IF;
-    IF p_action = 'ISSUE' AND
-       (v_pool.marking_order_id IS DISTINCT FROM p_marking_order_id
-        OR v_pool.source_key IS DISTINCT FROM p_source_key
-        OR v_pool.item_id IS DISTINCT FROM v_task.item_id
-        OR v_pool.order_line_id IS DISTINCT FROM v_task.order_line_id
-        OR v_pool.normalized_gtin IS DISTINCT FROM v_task.normalized_gtin
-        OR v_pool.source_type IS DISTINCT FROM v_task.source_type) THEN
-        RAISE EXCEPTION 'issue source does not match pool provenance'
-            USING ERRCODE = '23514';
+    -- A PL/pgSQL RECORD without a query result is unassigned. Explicit
+    -- branching (not AND short-circuit) is essential for ASSIGN/RELEASE/VOID.
+    IF p_action = 'ISSUE' THEN
+        IF v_pool.marking_order_id IS DISTINCT FROM p_marking_order_id
+           OR v_pool.source_key IS DISTINCT FROM p_source_key
+           OR v_pool.item_id IS DISTINCT FROM v_task.item_id
+           OR v_pool.order_line_id IS DISTINCT FROM v_task.order_line_id
+           OR v_pool.normalized_gtin IS DISTINCT FROM v_task.normalized_gtin
+           OR v_pool.source_type IS DISTINCT FROM v_task.source_type THEN
+            RAISE EXCEPTION 'issue source does not match pool provenance'
+                USING ERRCODE = '23514';
+        END IF;
     END IF;
 
     -- Recheck after the pool lock for an operation committed while we waited.
