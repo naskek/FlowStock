@@ -57,16 +57,19 @@ INSERT INTO order_lines(order_id,item_id,qty_ordered) VALUES (@o,@i,6) RETURNING
     {
         await using var db = await Open();
         var f = await Seed(db, null, 10, 10);
+        var location = await Scalar<long>(db, null, "INSERT INTO locations(code,name) VALUES (@r,'TEST-200') RETURNING id;", ("r", "TEST-200-" + Guid.NewGuid()));
         await using (var tx = await db.BeginTransactionAsync())
         {
             Assert.Equal(10, await Assign(db, tx, f.Doc));
             await Execute(db, tx, "UPDATE docs SET status='CLOSED' WHERE id=@d;", ("d", f.Doc));
+            await Execute(db, tx, "INSERT INTO ledger(ts,doc_id,item_id,location_id,qty_delta) VALUES (@at,@d,@i,@loc,10);", ("at", At), ("d", f.Doc), ("i", f.Item), ("loc", location));
             await Assert.ThrowsAsync<PostgresException>(() => Execute(db, tx, "SELECT 1/0;"));
             await tx.RollbackAsync();
         }
         Assert.Equal(0, await EventCount(db, null, f.Doc));
         Assert.Equal(10, await Free(db, null, f.Pool));
         Assert.Equal("DRAFT", await Scalar<string>(db, null, "SELECT status FROM docs WHERE id=@d;", ("d", f.Doc)));
+        Assert.Equal(0, await Scalar<long>(db, null, "SELECT COUNT(*) FROM ledger WHERE doc_id=@d;", ("d", f.Doc)));
         Assert.Equal(10, await Assign(db, null, f.Doc));
     }
 
@@ -204,6 +207,23 @@ VALUES (@p,@t,@l,@i,@g,'PRODUCTION_ORDER','forged-scope','{"source_order_id":-1}
     }
 
     [Fact]
+    public async Task PoolFromBeforeSourceSnapshotMigration_RemainsUnverified()
+    {
+        await using var db = await Open();
+        await using var tx = await db.BeginTransactionAsync();
+        // Emulate a pool created before V0050. Restore the stamping trigger
+        // BEFORE testing the command; the whole schema fixture is rolled back.
+        await Execute(db, tx, "ALTER TABLE marking_synthetic_quantity_pool DISABLE TRIGGER trg_marking_synthetic_quantity_source_scope;");
+        var f = await Seed(db, tx, 10, 10);
+        await Execute(db, tx, "ALTER TABLE marking_synthetic_quantity_pool ENABLE TRIGGER trg_marking_synthetic_quantity_source_scope;");
+        await Rejected(db, tx, () => Assign(db, tx, f.Doc), "QUANTITY_PRD_INVALID_SOURCE");
+        Assert.Equal(10, await Free(db, tx, f.Pool));
+        Assert.Equal(0, await EventCount(db, tx, f.Doc));
+        Assert.True(await Scalar<bool>(db, tx, "SELECT source_scope IS NULL FROM marking_synthetic_quantity_pool WHERE id=@p;", ("p", f.Pool)));
+        await tx.RollbackAsync();
+    }
+
+    [Fact]
     public async Task SupersessionInsert_WaitsUntilAssignmentTransactionFinishes()
     {
         await using var setup = await Open();
@@ -265,6 +285,31 @@ VALUES (@p,@t,@l,@i,@g,'PRODUCTION_ORDER','forged-scope','{"source_order_id":-1}
         Assert.Equal(10, await pending);
         Assert.Equal(0, await EventCount(setup, null, f.Doc));
         Assert.Equal(1, await EventCount(setup, null, secondDoc));
+    }
+
+    [Fact]
+    public async Task DifferentOrders_CompeteForLastGeneralProductionNeedPool()
+    {
+        await using var setup = await Open();
+        var f = await Seed(setup, null, 10, 10);
+        await Execute(setup, null, "SELECT * FROM marking_synthetic_quantity_apply(@op,@p,'VOID',10,NULL,NULL,NULL,NULL,'test');", ("op", Guid.NewGuid()), ("p", f.Pool));
+        var general = await Pool(setup, null, f, "PRODUCTION_NEED", null, null, 10);
+        var otherOrder = await NewOrder(setup, null);
+        var otherLine = await Scalar<long>(setup, null, "INSERT INTO order_lines(order_id,item_id,qty_ordered) VALUES (@o,@i,10) RETURNING id;", ("o", otherOrder), ("i", f.Item));
+        var otherDoc = await Receipt(setup, null, otherOrder);
+        await ReceiptLine(setup, null, otherDoc, f.Item, otherLine, 10);
+        await using var first = await Open();
+        await using var tx = await first.BeginTransactionAsync();
+        await Assign(first, tx, f.Doc);
+        await using var second = await Open();
+        var pending = Assign(second, null, otherDoc);
+        await WaitForLock(setup, second.ProcessID);
+        await tx.CommitAsync();
+        var ex = await Assert.ThrowsAsync<PostgresException>(() => pending);
+        Assert.Contains("QUANTITY_PRD_SHORTAGE", ex.MessageText);
+        Assert.Equal(0, await Free(setup, null, general));
+        Assert.Equal(10, await Applied(setup, null, general, f.Doc, f.Line));
+        Assert.Equal(0, await EventCount(setup, null, otherDoc));
     }
 
     private const string At = "2026-11-13T12:00:00.000Z";
