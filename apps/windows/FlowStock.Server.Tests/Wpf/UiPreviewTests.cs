@@ -643,6 +643,49 @@ public sealed class UiPreviewTests
         });
     }
 
+    [Fact]
+    public async Task Event_journal_preview_uses_real_layout_filters_and_safe_read_only_details()
+    {
+        await OnUiThread(() =>
+        {
+            var window = new IncomingRequestsWindow(new UiPreviewContext());
+            try
+            {
+                var grid = (DataGrid)window.FindName("NotificationsGrid");
+                Assert.Equal(5, grid.Items.Count);
+                Assert.All(grid.Items.Cast<BusinessNotificationRow>(), row => Assert.DoesNotContain("CUSTOMER_ORDER_", row.Summary));
+                grid.SelectedIndex = 1;
+                Assert.Contains("частично отгружен", ((BusinessNotificationRow)grid.SelectedItem).Summary);
+                Assert.Contains("осталось 1200", ((BusinessNotificationRow)grid.SelectedItem).Details);
+                foreach (var name in new[] { "MarkNotificationReadButton", "MarkAllNotificationsReadButton", "OpenNotificationOrderButton", "OpenNotificationDocButton" })
+                    Assert.False(((Button)window.FindName(name)).IsEnabled);
+                var root = (FrameworkElement)window.Content;
+                root.Measure(new Size(1320, 690)); root.Arrange(new Rect(0, 0, 1320, 690)); root.UpdateLayout();
+                Assert.True(grid.ActualWidth > 500);
+                Assert.True(grid.Columns[1].ActualWidth >= 400);
+                Assert.True(grid.Columns[1].ActualWidth > grid.ActualWidth - 200);
+                var exportPath = Environment.GetEnvironmentVariable("FLOWSTOCK_EVENT_JOURNAL_PREVIEW_PNG");
+                if (!string.IsNullOrWhiteSpace(exportPath))
+                {
+                    var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(1320, 690, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                    var background = new System.Windows.Media.DrawingVisual();
+                    using (var drawing = background.RenderOpen()) drawing.DrawRectangle(System.Windows.Media.Brushes.White, null, new Rect(0, 0, 1320, 690));
+                    bitmap.Render(background);
+                    bitmap.Render(root);
+                    var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                    encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+                    using var output = System.IO.File.Create(exportPath);
+                    encoder.Save(output);
+                }
+                ((TextBox)window.FindName("NotificationSearchBox")).Text = "SO-2026-044";
+                Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "Найти")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert.Single(grid.Items.Cast<BusinessNotificationRow>());
+                Assert.Contains("полностью отгружен", ((BusinessNotificationRow)grid.Items[0]).Summary);
+            }
+            finally { window.Close(); }
+        });
+    }
+
     private static void AssertPreviewController(object controller)
     {
         Assert.True((bool)controller.GetType().GetProperty("IsUiPreview")!.GetValue(controller)!);
@@ -662,7 +705,7 @@ public sealed class UiPreviewTests
                 // Account preview buttons open presentation-only dialogs. They
                 // deliberately cannot persist data; don't invoke a modal from
                 // this generic event-probing loop.
-                if (button.Name is "CreateAccountButton" or "EditAccountButton" or "CatalogPriceListsButton")
+                if (button.Name is "CreateAccountButton" or "EditAccountButton" or "CatalogPriceListsButton" or "ItemRequestsButton")
                 {
                     // These only navigate to local, non-persisting demo dialogs.
                     // Their enabled state depends on the currently selected row.

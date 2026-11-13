@@ -1,7 +1,7 @@
 <Window x:Class="FlowStock.App.IncomingRequestsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Центр событий" Height="650" Width="1250">
+        Title="Центр событий" Height="760" Width="1360" MinWidth="1000" MinHeight="580">
     <Grid Margin="12">
         <TabControl>
             <TabItem x:Name="ActionRequiredTab" Header="Требуют действия">
@@ -37,29 +37,99 @@
                 </Grid>
             </TabItem>
             <TabItem x:Name="EventJournalTab" Header="Журнал событий">
-                <Grid Margin="0,8,0,0">
+                <Grid Margin="0,12,0,0">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/><RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                        <Button x:Name="MarkNotificationReadButton" Content="Пометить прочитанным" Click="MarkNotificationRead_Click" />
-                        <Button Content="Пометить все прочитанными" Click="MarkAllNotificationsRead_Click" Margin="8,0,0,0" />
-                        <Button Content="Обновить" Click="RefreshNotifications_Click" Margin="8,0,0,0" />
-                        <CheckBox x:Name="ShowReadNotificationsCheck" Content="Показывать прочитанные" Margin="14,0,0,0"
-                                  VerticalAlignment="Center" Checked="ShowReadNotifications_Changed" Unchecked="ShowReadNotifications_Changed" />
+                    <WrapPanel Margin="0,0,0,10">
+                        <CheckBox x:Name="ShowReadNotificationsCheck" Content="Показывать просмотренные" VerticalAlignment="Center" Margin="0,0,16,0"
+                                  Checked="ShowReadNotifications_Changed" Unchecked="ShowReadNotifications_Changed"/>
+                        <ComboBox x:Name="NotificationCategoryCombo" Width="155" SelectedIndex="0" SelectionChanged="NotificationFilter_Changed" Margin="0,0,12,0">
+                            <ComboBoxItem Content="Все категории"/><ComboBoxItem Content="Готовность" Tag="READY"/>
+                            <ComboBoxItem Content="Отгрузки" Tag="SHIPMENT"/><ComboBoxItem Content="Производство" Tag="PRODUCTION"/>
+                            <ComboBoxItem Content="Ошибки" Tag="ERROR"/><ComboBoxItem Content="Другие" Tag="OTHER"/>
+                        </ComboBox>
+                        <TextBlock Text="С" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                        <DatePicker x:Name="NotificationFromDate" Width="120" SelectedDateChanged="NotificationDate_Changed" Margin="0,0,8,0"/>
+                        <TextBlock Text="по" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                        <DatePicker x:Name="NotificationToDate" Width="120" SelectedDateChanged="NotificationDate_Changed" Margin="0,0,12,0"/>
+                        <TextBox x:Name="NotificationSearchBox" Width="210" MaxLength="200" ToolTip="Номер заказа, клиент или отгрузка" KeyDown="NotificationSearch_KeyDown" Margin="0,0,6,0"/>
+                        <Button Content="Найти" Click="NotificationSearch_Click" Margin="0,0,6,0"/>
+                        <Button Content="Обновить" Click="RefreshNotifications_Click"/>
+                    </WrapPanel>
+                    <TextBlock Grid.Row="1" x:Name="NotificationLoadStatus" TextWrapping="Wrap" Foreground="#526276" Margin="0,0,0,10"/>
+                    <Grid Grid.Row="2">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="330"/></Grid.ColumnDefinitions>
+                        <DataGrid x:Name="NotificationsGrid" AutoGenerateColumns="False" IsReadOnly="True" HeadersVisibility="None" GridLinesVisibility="Horizontal"
+                                  SizeChanged="NotificationsGrid_SizeChanged"
+                                  CanUserAddRows="False" SelectionMode="Extended" SelectionUnit="FullRow" SelectionChanged="NotificationsGrid_SelectionChanged"
+                                  HorizontalScrollBarVisibility="Disabled" EnableRowVirtualization="True">
+                            <DataGrid.RowStyle>
+                                <Style TargetType="DataGridRow">
+                                    <Setter Property="MinHeight" Value="82"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsUnread}" Value="True"><Setter Property="Background" Value="#EFF6FC"/></DataTrigger>
+                                        <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#DCECF5"/></Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DataGrid.RowStyle>
+                            <DataGrid.CellStyle>
+                                <Style TargetType="DataGridCell">
+                                    <Setter Property="Foreground" Value="#182330"/>
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="BorderThickness" Value="0"/>
+                                </Style>
+                            </DataGrid.CellStyle>
+                            <DataGrid.Columns>
+                                <DataGridTemplateColumn Width="35"><DataGridTemplateColumn.CellTemplate><DataTemplate>
+                                    <TextBlock Text="{Binding Marker}" Foreground="#176C74" FontSize="20" Margin="8,12,0,0"/>
+                                </DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
+                                <DataGridTemplateColumn Width="*" MinWidth="400"><DataGridTemplateColumn.CellTemplate><DataTemplate>
+                                    <StackPanel Margin="4,10,10,10">
+                                        <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" FontSize="14" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding Subtitle}" ToolTip="{Binding TimeTooltip}" Foreground="#526276" Margin="0,6,0,0"/>
+                                    </StackPanel>
+                                </DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
+                                <DataGridTextColumn Binding="{Binding ReadLabel}" Width="100">
+                                    <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="VerticalAlignment" Value="Center"/><Setter Property="Margin" Value="6"/></Style></DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                        <Border Grid.Column="2" Background="#F5F7FA" CornerRadius="8" Padding="16">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel x:Name="NotificationDetailsPanel">
+                                    <TextBlock Text="Подробности события" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                                    <TextBlock Text="Выберите событие в журнале." x:Name="NotificationDetailsHint" TextWrapping="Wrap"/>
+                                    <StackPanel x:Name="NotificationDetailsContent" Visibility="Collapsed" DataContext="{Binding SelectedItem, ElementName=NotificationsGrid}">
+                                        <TextBlock Text="{Binding Summary}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                                        <TextBox Text="{Binding OrderDisplay, Mode=OneWay}" IsReadOnly="True" BorderThickness="0" Background="Transparent" TextWrapping="Wrap"/>
+                                        <TextBox Text="{Binding PartnerDisplay, Mode=OneWay}" IsReadOnly="True" BorderThickness="0" Background="Transparent" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                        <TextBox Text="{Binding DocDisplay, Mode=OneWay}" IsReadOnly="True" BorderThickness="0" Background="Transparent" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                        <TextBlock Text="{Binding TimeTooltip}" TextWrapping="Wrap" Foreground="#526276" Margin="0,10,0,0"/>
+                                        <TextBlock Text="{Binding Details}" TextWrapping="Wrap" Margin="0,12,0,12"/>
+                                        <WrapPanel>
+                                            <Button x:Name="OpenNotificationOrderButton" Content="Открыть заказ" Click="OpenNotificationOrder_Click" Margin="0,0,6,6"/>
+                                            <Button x:Name="OpenNotificationDocButton" Content="Открыть отгрузку" Click="OpenNotificationDoc_Click" Margin="0,0,0,6"/>
+                                        </WrapPanel>
+                                        <Expander Header="Диагностика" Margin="0,12,0,0">
+                                            <TextBox Text="{Binding Diagnostics, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent"/>
+                                        </Expander>
+                                    </StackPanel>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
+                    <StackPanel Grid.Row="3" Margin="0,12,0,0">
+                        <WrapPanel>
+                            <Button x:Name="MarkNotificationReadButton" Content="Отметить выбранные просмотренными" Click="MarkNotificationRead_Click" Margin="0,0,8,8"/>
+                            <Button x:Name="MarkAllNotificationsReadButton" Content="Отметить весь журнал просмотренным" Click="MarkAllNotificationsRead_Click" Margin="0,0,16,8"/>
+                            <Button x:Name="NotificationsPreviousButton" Content="Назад" Click="NotificationsPrevious_Click" Margin="0,0,8,8"/>
+                            <TextBlock x:Name="NotificationsPageText" VerticalAlignment="Center" Margin="0,0,8,8"/>
+                            <Button x:Name="NotificationsNextButton" Content="Далее" Click="NotificationsNext_Click" Margin="0,0,0,8"/>
+                        </WrapPanel>
+                        <TextBlock Text="Статус просмотра общий для всех рабочих мест WPF. Просмотр не подтверждает операцию." Foreground="#526276" TextWrapping="Wrap"/>
                     </StackPanel>
-                    <DataGrid x:Name="NotificationsGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
-                              SelectionMode="Extended" SelectionUnit="FullRow" SelectionChanged="NotificationsGrid_SelectionChanged">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="Дата/время" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" />
-                            <DataGridTextColumn Header="Тип события" Binding="{Binding EventType}" Width="Auto" />
-                            <DataGridTextColumn Header="Событие" Binding="{Binding Title}" Width="*" />
-                            <DataGridTextColumn Header="Описание" Binding="{Binding Message}" Width="*" />
-                            <DataGridTextColumn Header="Связанная сущность" Binding="{Binding EntityRef}" Width="Auto" />
-                            <DataGridCheckBoxColumn Header="Прочитано" Binding="{Binding IsRead}" Width="Auto" />
-                        </DataGrid.Columns>
-                    </DataGrid>
                 </Grid>
             </TabItem>
         </TabControl>

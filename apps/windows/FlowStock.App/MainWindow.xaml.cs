@@ -3417,7 +3417,11 @@ public partial class MainWindow : Window
 
     private void OpenIncomingRequests_Click(object sender, RoutedEventArgs e)
     {
-        if (IsUiPreview) return;
+        if (IsUiPreview)
+        {
+            new IncomingRequestsWindow(new UiPreviewContext()) { Owner = this }.ShowDialog();
+            return;
+        }
 
         ScheduleItemRequestsBadgeUpdate();
         var window = new IncomingRequestsWindow(_services, () =>

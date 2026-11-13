@@ -14,7 +14,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed class PostgresDataStore : IDataStore, IOrderRequestManagementStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
+public sealed partial class PostgresDataStore : IDataStore, IBusinessNotificationJournalStore, IOrderRequestManagementStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -1816,8 +1816,9 @@ ON CONFLICT (order_id, operation_fingerprint) DO NOTHING;");
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO business_notifications(event_type, severity, title, message, entity_type, entity_id, entity_ref, created_at, source, dedupe_key)
-VALUES (@event_type, @severity, @title, @message, @entity_type, @entity_id, @entity_ref, @created_at, @source, @dedupe_key)
+INSERT INTO business_notifications(event_type, severity, title, message, entity_type, entity_id, entity_ref, created_at, source, dedupe_key, payload)
+VALUES (@event_type, @severity, @title, @message, @entity_type, @entity_id, @entity_ref, @created_at, @source, @dedupe_key,
+        CASE WHEN @payload IS NULL THEN NULL ELSE @payload || jsonb_build_object('correlation_id', txid_current()::text) END)
 ON CONFLICT (dedupe_key) DO NOTHING;");
             command.Parameters.AddWithValue("@event_type", notification.EventType);
             command.Parameters.AddWithValue("@severity", notification.Severity);
@@ -1829,6 +1830,8 @@ ON CONFLICT (dedupe_key) DO NOTHING;");
             command.Parameters.AddWithValue("@created_at", notification.CreatedAt);
             command.Parameters.AddWithValue("@source", notification.Source);
             command.Parameters.AddWithValue("@dedupe_key", notification.DedupeKey);
+            command.Parameters.Add("@payload", NpgsqlDbType.Jsonb).Value = notification.Payload == null
+                ? DBNull.Value : JsonSerializer.Serialize(notification.Payload, NotificationJsonOptions);
             return command.ExecuteNonQuery() > 0;
         });
     }
@@ -1839,7 +1842,7 @@ ON CONFLICT (dedupe_key) DO NOTHING;");
         {
             using var command = CreateCommand(connection, @"
 SELECT n.id, n.event_type, n.severity, n.title, n.message, n.entity_type, n.entity_id, n.entity_ref,
-       n.created_at, n.source, n.dedupe_key, (r.notification_id IS NOT NULL) AS is_read
+       n.created_at, n.source, n.dedupe_key, (r.notification_id IS NOT NULL) AS is_read, n.payload
 FROM business_notifications n
 LEFT JOIN business_notification_reads r ON r.notification_id = n.id AND r.reader_key = @reader_key
 WHERE (@unread_only = FALSE OR r.notification_id IS NULL)
@@ -1865,7 +1868,8 @@ LIMIT @limit;");
                     CreatedAt = reader.GetDateTime(8),
                     Source = reader.GetString(9),
                     DedupeKey = reader.GetString(10),
-                    IsRead = reader.GetBoolean(11)
+                    IsRead = reader.GetBoolean(11),
+                    Payload = reader.IsDBNull(12) ? null : JsonSerializer.Deserialize<BusinessNotificationPayload>(reader.GetString(12), NotificationJsonOptions)
                 });
             }
             return rows;
@@ -1877,8 +1881,8 @@ LIMIT @limit;");
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT COUNT(*)
-FROM business_notifications n
+SELECT COUNT(DISTINCT n.journal_id)
+FROM business_notification_journal_members n
 LEFT JOIN business_notification_reads r ON r.notification_id = n.id AND r.reader_key = @reader_key
 WHERE r.notification_id IS NULL;");
             command.Parameters.AddWithValue("@reader_key", readerKey);
@@ -1892,7 +1896,8 @@ WHERE r.notification_id IS NULL;");
         {
             using var command = CreateCommand(connection, @"
 INSERT INTO business_notification_reads(notification_id, reader_key, read_at)
-SELECT id, @reader_key, @read_at FROM business_notifications WHERE id = @notification_id
+SELECT id, @reader_key, @read_at FROM business_notification_journal_members
+WHERE journal_id = (SELECT journal_id FROM business_notification_journal_members WHERE id = @notification_id)
 ON CONFLICT (notification_id, reader_key) DO NOTHING;");
             command.Parameters.AddWithValue("@notification_id", notificationId);
             command.Parameters.AddWithValue("@reader_key", readerKey);
@@ -7485,29 +7490,32 @@ RETURNING id;
 
     public void UpdateOrder(Order order)
     {
-        WithConnection(connection =>
+        ExecuteInTransaction(scoped =>
         {
-            using var command = CreateCommand(connection, @"
+            var transactional = (PostgresDataStore)scoped;
+            transactional.WithConnection(connection =>
+            {
+                using var command = transactional.CreateCommand(connection, @"
 UPDATE orders
 SET order_ref = @order_ref,
     order_type = @order_type,
     partner_id = @partner_id,
     due_date = @due_date,
-    status = @status,
     comment = @comment,
     bind_reserved_stock = @bind_reserved_stock
 WHERE id = @id;
 ");
-            command.Parameters.AddWithValue("@order_ref", order.OrderRef);
-            command.Parameters.AddWithValue("@order_type", OrderStatusMapper.TypeToString(order.Type));
-            command.Parameters.AddWithValue("@partner_id", order.PartnerId.HasValue ? order.PartnerId.Value : DBNull.Value);
-            command.Parameters.AddWithValue("@due_date", order.DueDate.HasValue ? ToDbDateOnly(order.DueDate.Value) : DBNull.Value);
-            command.Parameters.AddWithValue("@status", OrderStatusMapper.StatusToString(order.Status));
-            command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(order.Comment) ? DBNull.Value : order.Comment);
-            command.Parameters.AddWithValue("@bind_reserved_stock", order.UseReservedStock);
-            command.Parameters.AddWithValue("@id", order.Id);
-            command.ExecuteNonQuery();
-            return 0;
+                command.Parameters.AddWithValue("@order_ref", order.OrderRef);
+                command.Parameters.AddWithValue("@order_type", OrderStatusMapper.TypeToString(order.Type));
+                command.Parameters.AddWithValue("@partner_id", order.PartnerId.HasValue ? order.PartnerId.Value : DBNull.Value);
+                command.Parameters.AddWithValue("@due_date", order.DueDate.HasValue ? ToDbDateOnly(order.DueDate.Value) : DBNull.Value);
+                command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(order.Comment) ? DBNull.Value : order.Comment);
+                command.Parameters.AddWithValue("@bind_reserved_stock", order.UseReservedStock);
+                command.Parameters.AddWithValue("@id", order.Id);
+                command.ExecuteNonQuery();
+                return 0;
+            });
+            transactional.UpdateOrderStatus(order.Id, order.Status);
         });
     }
 
@@ -7516,13 +7524,32 @@ WHERE id = @id;
         WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-UPDATE orders
-SET status = @status,
-    allow_partial_outbound = CASE
-        WHEN @status IN (@shipped_status, @cancelled_status, @merged_status) THEN FALSE
-        ELSE allow_partial_outbound
-    END
-WHERE id = @id;
+WITH previous AS MATERIALIZED (
+    SELECT id, status FROM orders WHERE id = @id FOR UPDATE
+), updated AS (
+    UPDATE orders o
+    SET status = @status,
+        allow_partial_outbound = CASE
+            WHEN @status IN (@shipped_status, @cancelled_status, @merged_status) THEN FALSE
+            ELSE o.allow_partial_outbound END,
+        notification_revision = o.notification_revision + CASE WHEN p.status IS DISTINCT FROM @status THEN 1 ELSE 0 END
+    FROM previous p WHERE o.id = p.id
+    RETURNING o.*, p.status AS old_status
+)
+INSERT INTO business_notifications(event_type, title, message, entity_type, entity_id, entity_ref, created_at, source, dedupe_key, payload)
+SELECT CASE WHEN o.order_type = 'INTERNAL' THEN 'INTERNAL_ORDER_COMPLETED'
+            WHEN o.status = 'ACCEPTED' THEN 'CUSTOMER_ORDER_READY' ELSE 'CUSTOMER_ORDER_SHIPPED' END,
+       'Заказ ' || o.order_ref || CASE WHEN p.name IS NULL THEN '' ELSE ' для «' || p.name || '»' END ||
+       CASE WHEN o.order_type = 'INTERNAL' THEN ' выполнен' WHEN o.status = 'ACCEPTED' THEN ' готов к отгрузке' ELSE ' полностью отгружен' END,
+       '', 'ORDER', o.id, o.order_ref, clock_timestamp(), 'ORDER_STATUS',
+       'order_transition:' || o.id || ':' || o.notification_revision || ':' || o.status,
+       jsonb_build_object('version', 1, 'order_id', o.id, 'order_ref', o.order_ref,
+                          'order_type', o.order_type, 'partner_name', p.name, 'correlation_id', txid_current()::text)
+FROM updated o LEFT JOIN partners p ON p.id = o.partner_id
+WHERE o.old_status IS DISTINCT FROM o.status
+  AND ((o.order_type = 'CUSTOMER' AND o.status IN ('ACCEPTED','SHIPPED'))
+       OR (o.order_type = 'INTERNAL' AND o.status = 'SHIPPED'))
+ON CONFLICT (dedupe_key) DO NOTHING;
 ");
             command.Parameters.AddWithValue("@status", OrderStatusMapper.StatusToString(status));
             command.Parameters.AddWithValue("@shipped_status", OrderStatusMapper.StatusToString(OrderStatus.Shipped));
@@ -17738,6 +17765,8 @@ LIMIT 1;";
         EnsureColumn(connection, "marking_code", "receipt_line_id", "BIGINT NULL");
 
         if (!ColumnExists(connection, "orders", "order_type")
+            || !ColumnExists(connection, "orders", "notification_revision")
+            || !ColumnExists(connection, "business_notifications", "payload")
             || !ColumnExists(connection, "orders", "bind_reserved_stock")
             || !ColumnExists(connection, "doc_lines", "replaces_line_id")
             || !ColumnExists(connection, "doc_lines", "pack_single_hu")
