@@ -59,6 +59,12 @@ CREATE TRIGGER trg_marking_synthetic_quantity_pool_immutable
 CREATE TRIGGER trg_marking_synthetic_quantity_event_immutable
     BEFORE UPDATE OR DELETE ON marking_synthetic_quantity_event
     FOR EACH ROW EXECUTE FUNCTION marking_synthetic_quantity_immutable();
+CREATE TRIGGER trg_marking_synthetic_quantity_pool_no_truncate
+    BEFORE TRUNCATE ON marking_synthetic_quantity_pool
+    FOR EACH STATEMENT EXECUTE FUNCTION marking_synthetic_quantity_immutable();
+CREATE TRIGGER trg_marking_synthetic_quantity_event_no_truncate
+    BEFORE TRUNCATE ON marking_synthetic_quantity_event
+    FOR EACH STATEMENT EXECUTE FUNCTION marking_synthetic_quantity_immutable();
 
 -- These read models are derived from immutable events, not persisted
 -- counters. No possibility of a separately-maintained cache drifting.
@@ -319,3 +325,9 @@ BEGIN
                  WHERE b.pool_id = p_pool_id;
 END;
 $$;
+
+-- Not an enabled runtime API. Only the migration owner may invoke this
+-- primitive until a separate authenticated integration explicitly grants use.
+REVOKE EXECUTE ON FUNCTION marking_synthetic_quantity_apply(
+    UUID, UUID, TEXT, BIGINT, UUID, TEXT, BIGINT, BIGINT, TEXT
+) FROM PUBLIC;
