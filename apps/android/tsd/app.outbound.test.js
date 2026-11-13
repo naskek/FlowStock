@@ -23,6 +23,7 @@ let nextOutboundScanOrder = null;
 let nextOutboundScanError = null;
 let scanInputFocusCount = 0;
 const confirmMessages = [];
+let confirmResult = true;
 const scanInputEl = {
   value: "",
   isConnected: true,
@@ -100,7 +101,7 @@ const context = {
     addEventListener: function () {},
     confirm: function (message) {
       confirmMessages.push(message);
-      return true;
+      return confirmResult;
     },
   },
   document: {
@@ -668,6 +669,40 @@ async function scanOutboundHu(rawValue, order, scanResultOrder) {
   await new Promise(function (resolve) {
     setImmediate(resolve);
   });
+  assert.deepStrictEqual(lastCompleteRequest, { orderId: 96, allowPartial: true });
+
+  // Все доступные HU подобраны, но сервер подтверждает только 5 из остатка 10.
+  const earlyPartial = {
+    ...completeSecondOutboundOrder,
+    expected_hu_count: 1,
+    picked_hu_count: 1,
+    ordered_qty: 10,
+    shipped_qty: 0,
+    remaining_qty: 10,
+    scanned_qty: 5,
+    required_pallets: 1,
+    scanned_pallets: 1,
+    remaining_pallets: 0,
+    is_complete: false,
+    can_close: false,
+  };
+  const fullClosePrompts = () => createdOverlays.filter(o => /Завершить отгрузку и закрыть документ/.test(o.innerHTML)).length;
+  const promptsBeforeEarlyPartial = fullClosePrompts();
+  await scanOutboundHu("HU-0000726", earlyPartial, earlyPartial);
+  await new Promise(setImmediate);
+  assert.strictEqual(fullClosePrompts(), promptsBeforeEarlyPartial,
+    "early partial scan must not offer full completion");
+  lastCompleteRequest = null;
+  confirmMessages.length = 0;
+  confirmResult = false;
+  outboundCompleteHandler();
+  await new Promise(setImmediate);
+  assert.strictEqual(lastCompleteRequest, null, "cancel must not send complete");
+  assert.match(confirmMessages[0], /5 из 10/);
+  assert.strictEqual(completeBtnEl.disabled, false);
+  confirmResult = true;
+  outboundCompleteHandler();
+  await new Promise(setImmediate);
   assert.deepStrictEqual(lastCompleteRequest, { orderId: 96, allowPartial: true });
 
   assert(

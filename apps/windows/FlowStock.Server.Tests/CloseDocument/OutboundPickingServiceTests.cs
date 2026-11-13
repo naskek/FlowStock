@@ -6,6 +6,64 @@ namespace FlowStock.Server.Tests.CloseDocument;
 
 public sealed class OutboundPickingServiceTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void AllAvailableHus_WithUncoveredOrderQuantity_RequirePartialConfirmation(
+        bool autoClose, bool missingSeparateLine)
+    {
+        var harness = CreateBasicPickingHarness();
+        harness.Store.UpdateOrderStatus(20, OrderStatus.InProgress);
+        if (missingSeparateLine)
+        {
+            harness.SeedOrderLine(new OrderLine
+            {
+                Id = 202,
+                OrderId = 20,
+                ItemId = 1001,
+                QtyOrdered = 5,
+                ProductionPurpose = ProductionLinePurpose.CustomerOrder
+            });
+        }
+        else
+        {
+            harness.Store.UpdateOrderLineQty(201, 10);
+        }
+        harness.Store.UpdateOrderPartialOutboundPermission(20, true);
+        var picking = CreatePickingService(harness, autoClose);
+
+        var scan = picking.Scan(20, "HU-000001", "TSD-01");
+        Assert.True(scan.Success, $"{scan.ErrorCode}: {scan.Message}");
+        Assert.False(scan.OutboundClosed);
+        var details = scan.Order!;
+        Assert.Equal(1, details.ExpectedHuCount);
+        Assert.Equal(1, details.PickedHuCount);
+        Assert.Equal(5, details.ScannedQty);
+        Assert.Equal(10, details.RemainingQty);
+        Assert.False(details.IsComplete);
+        Assert.False(details.CanClose);
+        var row = Assert.Single(picking.GetOrders(), r => r.OrderId == 20);
+        Assert.False(row.IsComplete);
+        Assert.False(row.CanClose);
+
+        // Отключение permission сохраняет открытый draft.
+        harness.Store.UpdateOrderPartialOutboundPermission(20, false);
+        var rejected = picking.Complete(20, allowPartial: false);
+        Assert.False(rejected.Success);
+        Assert.Equal("PARTIAL_CONFIRMATION_REQUIRED", rejected.ErrorCode);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(DocStatus.Draft, harness.GetDoc(details.DraftOutboundDocId!.Value).Status);
+
+        var confirmed = picking.Complete(20, allowPartial: true);
+        Assert.True(confirmed.Success, $"{confirmed.ErrorCode}: {confirmed.Message}");
+        Assert.True(confirmed.OutboundClosed);
+        Assert.Equal(-5, Assert.Single(harness.LedgerEntries).QtyDelta);
+        Assert.Equal(5, confirmed.Order!.RemainingQty);
+        Assert.NotEqual(OrderStatus.Shipped, harness.GetOrder(20).Status);
+    }
+
     [Fact]
     public void EarlyPartialPermission_ControlsVisibility_AndOpenDraftContinuesAfterDisable()
     {

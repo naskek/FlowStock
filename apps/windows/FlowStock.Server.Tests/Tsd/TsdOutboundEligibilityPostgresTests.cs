@@ -10,6 +10,47 @@ namespace FlowStock.Server.Tests.Tsd;
 public sealed class TsdOutboundEligibilityPostgresTests
 {
     [PostgresFact]
+    public void AllReadyHusBelowOrderRemaining_RequireExplicitPartialConfirmation()
+    {
+        RunInRollbackTransaction(RequirePostgresTestConnectionString(), store =>
+        {
+            var suffix = Guid.NewGuid().ToString("N")[..8];
+            var partner = store.AddPartner(new Partner { Code = $"P184-{suffix}", Name = "Smoke customer", PartnerRole = "CLIENT", CreatedAt = DateTime.UtcNow });
+            var location = store.AddLocation(new Location { Code = $"L184-{suffix}", Name = "Smoke location" });
+            var item = store.AddItem(new Item { Name = $"Item 184 {suffix}", Barcode = $"I184-{suffix}" });
+            var hu = $"HU184-{suffix}".ToUpperInvariant();
+            var inbound = store.AddDoc(new Doc { DocRef = $"IN184-{suffix}", Type = DocType.Inbound, Status = DocStatus.Draft, CreatedAt = DateTime.UtcNow });
+            store.AddDocLine(new DocLine { DocId = inbound, ItemId = item, Qty = 5, ToLocationId = location, ToHu = hu });
+            var documents = new DocumentService(store);
+            Assert.True(documents.TryCloseDoc(inbound, false).Success);
+            var order = store.AddOrder(new Order { OrderRef = $"SO184-{suffix}", Type = OrderType.Customer, PartnerId = partner, Status = OrderStatus.InProgress, CreatedAt = DateTime.UtcNow });
+            var line = store.AddOrderLine(new OrderLine { OrderId = order, ItemId = item, QtyOrdered = 10, ProductionPurpose = ProductionLinePurpose.CustomerOrder });
+            store.ReplaceOrderReceiptPlanLines(order, [new OrderReceiptPlanLine { OrderId = order, OrderLineId = line, ItemId = item, QtyPlanned = 5, ToLocationId = location, ToHu = hu }]);
+            store.UpdateOrderPartialOutboundPermission(order, true);
+            var picking = new OutboundPickingService(store, documents);
+            var scan = picking.Scan(order, hu, "TSD-184");
+            Assert.True(scan.Success, $"{scan.ErrorCode}: {scan.Message}");
+            Assert.False(scan.OutboundClosed);
+            Assert.False(scan.Order!.IsComplete);
+            Assert.False(Assert.Single(picking.GetOrders(), r => r.OrderId == order).CanClose);
+            store.UpdateOrderPartialOutboundPermission(order, false);
+
+            var rejected = picking.Complete(order, false);
+            Assert.False(rejected.Success);
+            Assert.Equal("PARTIAL_CONFIRMATION_REQUIRED", rejected.ErrorCode);
+            Assert.Equal(DocStatus.Draft, store.GetDoc(scan.Order.DraftOutboundDocId!.Value)!.Status);
+            Assert.Equal(5, Assert.Single(store.GetStock(null), s => s.ItemId == item).Qty);
+
+            var confirmed = picking.Complete(order, true);
+            Assert.True(confirmed.Success, $"{confirmed.ErrorCode}: {confirmed.Message}");
+            Assert.Equal(5, confirmed.Order!.ShippedQty);
+            Assert.Equal(5, confirmed.Order.RemainingQty);
+            Assert.NotEqual(OrderStatus.Shipped, store.GetOrder(order)!.Status);
+            Assert.Equal(DocStatus.Closed, store.GetDoc(scan.Order.DraftOutboundDocId.Value)!.Status);
+        });
+    }
+
+    [PostgresFact]
     public void CustomerToInternal_GenericUpdatePersistsServerOwnedReset()
     {
         var connectionString = RequirePostgresTestConnectionString();
