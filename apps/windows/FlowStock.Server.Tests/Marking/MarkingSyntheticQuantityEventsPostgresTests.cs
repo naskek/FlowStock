@@ -62,6 +62,9 @@ UPDATE marking_synthetic_quantity_event SET quantity = 100 WHERE pool_id = @pool
         await ExpectRejected(connection, tx, () => Execute(connection, tx, """
 DELETE FROM marking_synthetic_quantity_pool WHERE id = @pool;
 """, ("pool", pool)), "55000");
+        await ExpectRejected(connection, tx, () => Execute(connection, tx, """
+TRUNCATE TABLE marking_synthetic_quantity_event;
+"""), "55000");
 
         // Roll back the entire fixture, journal and allocation. Neither a
         // production document nor a legacy code is touched.
