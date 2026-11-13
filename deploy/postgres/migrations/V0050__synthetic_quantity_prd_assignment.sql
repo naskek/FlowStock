@@ -1,5 +1,27 @@
 -- #200: dormant quantity-only authorization primitive. No runtime call sites,
 -- no grants, no Close/ledger/status changes and no change to SHADOW.
+-- Existing pools remain unverified (NULL); never infer historical provenance
+-- from a task's current mutable source_order_id or from a caller's source_key.
+ALTER TABLE marking_synthetic_quantity_pool ADD COLUMN source_scope JSONB NULL;
+
+CREATE FUNCTION marking_synthetic_quantity_stamp_source_scope() RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_task marking_order%ROWTYPE;
+BEGIN
+    SELECT * INTO STRICT v_task FROM marking_order
+    WHERE id = NEW.marking_order_id FOR SHARE;
+    NEW.source_scope := JSONB_BUILD_OBJECT(
+        'source_type', BTRIM(v_task.source_type),
+        'source_order_id', v_task.source_order_id,
+        'order_id', v_task.order_id);
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_marking_synthetic_quantity_source_scope
+    BEFORE INSERT ON marking_synthetic_quantity_pool
+    FOR EACH ROW EXECUTE FUNCTION marking_synthetic_quantity_stamp_source_scope();
+
 CREATE FUNCTION marking_synthetic_quantity_assign_prd(
     p_doc_id BIGINT, p_actor TEXT
 ) RETURNS BIGINT
@@ -112,11 +134,17 @@ BEGIN
                OR p.normalized_gtin IS DISTINCT FROM BTRIM(mo.gtin)
                OR p.normalized_gtin IS DISTINCT FROM BTRIM(i.gtin)
                OR p.source_type IS DISTINCT FROM BTRIM(mo.source_type)
+               OR p.source_scope IS DISTINCT FROM JSONB_BUILD_OBJECT(
+                   'source_type', BTRIM(mo.source_type),
+                   'source_order_id', mo.source_order_id, 'order_id', mo.order_id)
                OR p.source_type NOT IN ('PRODUCTION_ORDER', 'PRODUCTION_NEED')
                OR (mo.source_order_id IS NOT NULL AND mo.source_order_id <> v_doc.order_id)
                OR (mo.order_id IS NOT NULL AND mo.order_id <> v_doc.order_id)
                OR (p.source_type = 'PRODUCTION_ORDER' AND
-                   mo.source_order_id IS DISTINCT FROM v_doc.order_id))
+                   mo.source_order_id IS DISTINCT FROM v_doc.order_id)
+               OR (p.source_type = 'PRODUCTION_NEED' AND
+                   (mo.source_order_id IS NOT NULL OR mo.order_id IS NOT NULL
+                    OR p.order_line_id IS NOT NULL)))
     ) OR EXISTS (
         SELECT 1 FROM marking_synthetic_quantity_balance b
         WHERE b.marking_order_id = ANY(v_tasks)

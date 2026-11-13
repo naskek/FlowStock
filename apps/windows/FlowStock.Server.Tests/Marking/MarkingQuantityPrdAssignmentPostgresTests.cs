@@ -79,6 +79,7 @@ INSERT INTO order_lines(order_id,item_id,qty_ordered) VALUES (@o,@i,6) RETURNING
     [InlineData("disabled-marking")]
     [InlineData("gtin-drift")]
     [InlineData("foreign-line")]
+    [InlineData("source-order-drift")]
     [InlineData("mixed-voided-real")]
     public async Task InvalidLiveScope_FailsClosedWithoutPartialCoverage(string fault)
     {
@@ -110,6 +111,14 @@ INSERT INTO order_lines(order_id,item_id,qty_ordered) VALUES (@o,@i,6) RETURNING
                 break;
             case "foreign-line":
                 await Execute(db, tx, "UPDATE order_lines SET order_id=@o WHERE id=@l;", ("o", await NewOrder(db, tx)), ("l", f.OrderLine));
+                break;
+            case "source-order-drift":
+                var newOrder = await NewOrder(db, tx);
+                await Execute(db, tx, """
+UPDATE docs SET order_id=@o WHERE id=@d;
+UPDATE order_lines SET order_id=@o WHERE id=@l;
+UPDATE marking_order SET source_order_id=@o WHERE id=@t;
+""", ("o", newOrder), ("d", f.Doc), ("l", f.OrderLine), ("t", f.Task));
                 break;
             case "mixed-voided-real":
                 var import = Guid.NewGuid();
@@ -175,6 +184,22 @@ SELECT EXISTS(SELECT 1 FROM pg_proc p,
 WHERE p.oid='marking_synthetic_quantity_assign_prd(bigint,text)'::regprocedure
   AND a.grantee=0 AND a.privilege_type='EXECUTE');
 """));
+        await tx.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task PoolSourceScope_IsStampedByDatabase_AndCannotBeSuppliedByCaller()
+    {
+        await using var db = await Open();
+        await using var tx = await db.BeginTransactionAsync();
+        var f = await Seed(db, tx, 10, 10);
+        var pool = Guid.NewGuid();
+        await Execute(db, tx, """
+INSERT INTO marking_synthetic_quantity_pool(
+ id,marking_order_id,order_line_id,item_id,normalized_gtin,source_type,source_key,source_scope)
+VALUES (@p,@t,@l,@i,@g,'PRODUCTION_ORDER','forged-scope','{"source_order_id":-1}'::jsonb);
+""", ("p", pool), ("t", f.Task), ("l", f.OrderLine), ("i", f.Item), ("g", f.Gtin));
+        Assert.Equal(f.Order, await Scalar<long>(db, tx, "SELECT (source_scope->>'source_order_id')::bigint FROM marking_synthetic_quantity_pool WHERE id=@p;", ("p", pool)));
         await tx.RollbackAsync();
     }
 
