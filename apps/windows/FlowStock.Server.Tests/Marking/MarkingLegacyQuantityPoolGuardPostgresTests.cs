@@ -41,6 +41,60 @@ SELECT COUNT(*) FROM marking_code_import WHERE matched_marking_order_id = @task;
     }
 
     [Fact]
+    public async Task LegacyWriter_WaitsForInFlightQuantityIssueAndRejectsAfterCommit()
+    {
+        var cs = RequiredDisposablePostgresConnection();
+        var fixture = await CreateFixture(cs);
+        await using var issuingConnection = new NpgsqlConnection(cs);
+        await issuingConnection.OpenAsync();
+        await using var issuingTransaction = await issuingConnection.BeginTransactionAsync();
+
+        // V0048 ISSUE locks this marking_order with FOR SHARE, which conflicts
+        // with the legacy guard's FOR UPDATE until the issuing transaction ends.
+        await using (var issue = issuingConnection.CreateCommand())
+        {
+            issue.Transaction = issuingTransaction;
+            issue.CommandText = """
+SELECT issued_quantity FROM marking_synthetic_quantity_apply(
+    @op, @pool, 'ISSUE', 3,
+    @task, @source, NULL::bigint, NULL::bigint, 'test-195-race');
+""";
+            issue.Parameters.AddWithValue("op", Guid.NewGuid());
+            issue.Parameters.AddWithValue("pool", Guid.NewGuid());
+            issue.Parameters.AddWithValue("task", fixture.TaskId);
+            issue.Parameters.AddWithValue("source", "test-195-race-" + Guid.NewGuid().ToString("N"));
+            Assert.Equal(3L, Convert.ToInt64(
+                await issue.ExecuteScalarAsync(), CultureInfo.InvariantCulture));
+        }
+
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var legacy = Task.Run(() =>
+        {
+            started.SetResult();
+            new PostgresDataStore(cs).MarkMarkingOrdersPrinted(
+                new[] { fixture.TaskId }, DateTime.UtcNow);
+        });
+        await started.Task;
+        await Task.Delay(200);
+        Assert.False(legacy.IsCompleted);
+
+        await issuingTransaction.CommitAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => legacy.WaitAsync(TimeSpan.FromSeconds(20)));
+        Assert.Contains("QUANTITY_POOL_LEGACY_EXPORT_CONFLICT", error.Message);
+
+        await using var verification = new NpgsqlConnection(cs);
+        await verification.OpenAsync();
+        Assert.Equal("WaitingForCodes", await Scalar<string>(verification, """
+SELECT status FROM marking_order WHERE id = @task;
+""", ("task", fixture.TaskId)));
+        Assert.Equal(0L, await Scalar<long>(verification, """
+SELECT COUNT(*) FROM marking_code WHERE marking_order_id = @task;
+""", ("task", fixture.TaskId)));
+    }
+
+    [Fact]
     public async Task ExistingPool_BlocksExcelAndDirectTechnicalWriterButNotRealCodeImport()
     {
         var cs = RequiredDisposablePostgresConnection();
