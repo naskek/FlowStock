@@ -86,6 +86,34 @@ public sealed class MarkingQuantityEvidencePolicyTests
     }
 
     [Fact]
+    public void LegacyCountDrift_FailsClosed()
+    {
+        var legacy = new MarkingHybridCoverageRow(
+            "PerCode", Guid.NewGuid().ToString(), "temporary-chz-export",
+            "LegacySynthetic", "Reserved", null, null, "04601234567890",
+            8, 42, 7, 1, "ProvenTemporary");
+        var snapshot = new MarkingHybridCoverageSnapshot(
+            TaskId, [legacy], 2, 0, 1, 0, 1, false, 1);
+        var decision = MarkingQuantityEvidencePolicy.Evaluate(snapshot);
+        Assert.Equal(MarkingQuantityEvidenceState.Blocked, decision.State);
+        Assert.Equal("PER_CODE_SNAPSHOT_MISMATCH", decision.RefusalCode);
+    }
+
+    [Fact]
+    public void NegativeLegacyCount_FailsClosed()
+    {
+        var legacy = new MarkingHybridCoverageRow(
+            "PerCode", Guid.NewGuid().ToString(), "temporary-chz-export",
+            "LegacySynthetic", "Reserved", null, null, "04601234567890",
+            8, 42, 7, -1, "ProvenTemporary");
+        var snapshot = new MarkingHybridCoverageSnapshot(
+            TaskId, [legacy], -1, 0, -1, 0, -1, false, -1);
+        var decision = MarkingQuantityEvidencePolicy.Evaluate(snapshot);
+        Assert.Equal(MarkingQuantityEvidenceState.Blocked, decision.State);
+        Assert.Equal("INVALID_PER_CODE_ROW", decision.RefusalCode);
+    }
+
+    [Fact]
     public void QuantityScopeDrift_FailsClosed()
     {
         var snapshot = ValidQuantity();

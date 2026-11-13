@@ -56,6 +56,35 @@ public static class MarkingQuantityEvidencePolicy
             if (snapshot.Rows.Any(row => row.Evidence is not ("ProvenTemporary" or "RealCode"))
                 || snapshot.RequiresReconciliation)
                 return Result(MarkingQuantityEvidenceState.Blocked, "UNVERIFIED_PER_CODE");
+
+            // Per-code coverage is NOT authorized here, but even the
+            // LegacyOnly label must never bless a corrupted diagnostic.
+            long perCodeRows = 0;
+            long perCodeActive = 0;
+            try
+            {
+                foreach (var row in snapshot.Rows)
+                {
+                    if (row.Quantity <= 0)
+                        return Result(MarkingQuantityEvidenceState.Blocked, "INVALID_PER_CODE_ROW");
+                    perCodeRows = checked(perCodeRows + row.Quantity);
+                    if (row.Status is "Reserved" or "Applied")
+                        perCodeActive = checked(perCodeActive + row.Quantity);
+                }
+            }
+            catch (OverflowException)
+            {
+                return Result(MarkingQuantityEvidenceState.Blocked, "PER_CODE_OVERFLOW");
+            }
+
+            if (snapshot.PerCodeRows != perCodeRows
+                || snapshot.PerCodeObservedActive != perCodeActive
+                || snapshot.QuantityIssued != 0
+                || snapshot.QuantityObservedActive != 0
+                || snapshot.ObservedPotentialActive != perCodeActive
+                || snapshot.UnambiguousObservedActive != perCodeActive)
+                return Result(MarkingQuantityEvidenceState.Blocked, "PER_CODE_SNAPSHOT_MISMATCH");
+
             return Result(MarkingQuantityEvidenceState.LegacyOnly);
         }
 
