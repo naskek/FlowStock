@@ -1,3 +1,4 @@
+using System.Data;
 using System.Globalization;
 using FlowStock.Data;
 using Npgsql;
@@ -8,10 +9,20 @@ namespace FlowStock.Server.Tests.Marking;
 public sealed class MarkingHybridCoveragePostgresTests
 {
     [Fact]
+    public async Task DiagnosticReader_RejectsReadCommittedTransactions()
+    {
+        await using var connection = await OpenDisposableTestDatabase();
+        await using var tx = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            MarkingHybridCoverageReader.ReadTaskAsync(connection, tx, Guid.NewGuid()));
+        await tx.RollbackAsync();
+    }
+
+    [Fact]
     public async Task DiagnosticReader_SeparatesLegacyAndQuantityWithoutClaimingMixedCoverage()
     {
         await using var connection = await OpenDisposableTestDatabase();
-        await using var tx = await connection.BeginTransactionAsync();
+        await using var tx = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead);
         var suffix = Guid.NewGuid().ToString("N");
         var gtin = "0460" +
             (BitConverter.ToUInt64(Guid.NewGuid().ToByteArray(), 0) % 10000000000UL)
