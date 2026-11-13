@@ -55,7 +55,7 @@ VALUES
         // Valid receipt doc/line, without changing ledger or closed documents.
         var itemId = await Scalar<long>(connection, transaction, """
 INSERT INTO items(name, barcode, gtin)
-VALUES (@name, @barcode, '04601234567890')
+VALUES (@name, @barcode, NULL)
 RETURNING id;
 """, ("name", prefix), ("barcode", prefix + "-barcode"));
 
@@ -154,7 +154,7 @@ VALUES
             ("task", taskId), ("real", realImportId),
             ("temp", temporaryImportId), ("at", timestamp));
 
-        Assert.Equal(7L, await Scalar<long>(connection, transaction, """
+        Assert.Equal(6L, await Scalar<long>(connection, transaction, """
 SELECT COALESCE(SUM(quantity), 0)::bigint
 FROM marking_synthetic_coverage_shadow
 WHERE marking_order_id = @task;
@@ -193,13 +193,13 @@ FROM marking_synthetic_coverage_shadow
 WHERE marking_order_id = @task AND status = 'Voided';
 """, ("task", taskId)));
 
-        Assert.Equal(6L, await Scalar<long>(connection, transaction, """
+        Assert.Equal(5L, await Scalar<long>(connection, transaction, """
 SELECT COALESCE(SUM(quantity) FILTER (WHERE status <> 'Voided'), 0)::bigint
 FROM marking_synthetic_coverage_shadow
 WHERE marking_order_id = @task;
 """, ("task", taskId)));
 
-        Assert.Equal(7L, await Scalar<long>(connection, transaction, """
+        Assert.Equal(6L, await Scalar<long>(connection, transaction, """
 SELECT COUNT(*)::bigint
 FROM marking_code c
 JOIN marking_code_import i ON i.id = c.import_id
