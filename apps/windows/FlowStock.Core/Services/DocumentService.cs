@@ -3749,19 +3749,15 @@ public sealed class DocumentService
         foreach (var pallet in pallets
                      .Where(pallet => string.Equals(pallet.Status, ProductionPalletStatus.Filled, StringComparison.OrdinalIgnoreCase)))
         {
-            if (metricsByPalletId.TryGetValue(pallet.Id, out var stockMetrics))
+            if (metricsByPalletId.TryGetValue(pallet.Id, out var stockMetrics)
+                && stockMetrics.Length > 0
+                && stockMetrics.All(metrics =>
+                    metrics.OutboundBySameHuQty + QtyTolerance >= metrics.PlannedQty))
             {
-                var analyses = stockMetrics
-                    .Select(ProductionPalletStockBackfillDecision.Analyze)
-                    .ToArray();
-                if (analyses.Length > 0
-                    && analyses.All(analysis => string.Equals(
-                        analysis.Decision,
-                        ProductionPalletStockBackfillDecisionCodes.AlreadyShippedSkip,
-                        StringComparison.OrdinalIgnoreCase)))
-                {
-                    continue;
-                }
+                // Only this physical HU's shipment can suppress its receipt.
+                // Order/item shipment totals also include previously shipped HU
+                // and must not prevent new pallets from entering the ledger.
+                continue;
             }
 
             foreach (var entry in BuildProductionPalletLedgerDrafts(pallet, docLinesById))
