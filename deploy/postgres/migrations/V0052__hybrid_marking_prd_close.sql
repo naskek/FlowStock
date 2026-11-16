@@ -114,6 +114,10 @@ BEGIN
     PERFORM 1 FROM km_code c WHERE c.receipt_doc_id = p_doc_id
         OR c.receipt_line_id IN (SELECT id FROM doc_lines WHERE doc_id = p_doc_id)
         ORDER BY c.id FOR UPDATE;
+    PERFORM 1 FROM km_code_batch b WHERE b.id IN (
+        SELECT c.batch_id FROM km_code c WHERE c.receipt_doc_id = p_doc_id
+            OR c.receipt_line_id IN (SELECT id FROM doc_lines WHERE doc_id = p_doc_id))
+        ORDER BY b.id FOR SHARE;
 
     -- Validate existing bindings before counting them. Historical/voided facts
     -- are never reclassified or silently removed to make a receipt close.
@@ -135,13 +139,16 @@ BEGIN
     ) OR EXISTS (
         SELECT 1 FROM km_code c LEFT JOIN doc_lines dl ON dl.id = c.receipt_line_id
         LEFT JOIN items i ON i.id = dl.item_id
+        LEFT JOIN km_code_batch b ON b.id = c.batch_id
         WHERE (c.receipt_doc_id = p_doc_id OR dl.doc_id = p_doc_id)
           AND (c.receipt_doc_id IS DISTINCT FROM p_doc_id OR dl.doc_id IS DISTINCT FROM p_doc_id
                OR dl.qty <= 0 OR EXISTS (SELECT 1 FROM doc_lines n WHERE n.replaces_line_id = dl.id)
-               OR c.sku_id IS DISTINCT FROM dl.item_id
-               OR BTRIM(c.gtin14) IS DISTINCT FROM
-                  CASE WHEN LENGTH(BTRIM(i.gtin)) = 13 THEN '0' || BTRIM(i.gtin) ELSE BTRIM(i.gtin) END
+               OR (c.sku_id IS NOT NULL AND c.sku_id IS DISTINCT FROM dl.item_id)
+               OR (c.sku_id IS NULL AND NULLIF(BTRIM(c.gtin14), '') IS NULL)
+               OR (NULLIF(BTRIM(c.gtin14), '') IS NOT NULL AND BTRIM(c.gtin14) IS DISTINCT FROM
+                  CASE WHEN LENGTH(BTRIM(i.gtin)) = 13 THEN '0' || BTRIM(i.gtin) ELSE BTRIM(i.gtin) END)
                OR (c.order_id IS NOT NULL AND c.order_id IS DISTINCT FROM v_doc.order_id)
+               OR (b.order_id IS NOT NULL AND b.order_id IS DISTINCT FROM v_doc.order_id)
                OR c.status <> 1)
     ) THEN
         RAISE EXCEPTION 'QUANTITY_PRD_PER_CODE_BINDING_CONFLICT' USING ERRCODE = '23514';

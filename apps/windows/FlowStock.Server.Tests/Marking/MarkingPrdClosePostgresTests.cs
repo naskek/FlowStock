@@ -117,16 +117,33 @@ public sealed class MarkingPrdClosePostgresTests
         Assert.Equal(2, store.GetDocsByOrder(f.Order).Count);
     }
 
-    [Fact]
-    public async Task ExistingRealKmBinding_ContributesOnlyToItsExactLine()
+    [Theory]
+    [InlineData("full")]
+    [InlineData("nullable-sku")]
+    [InlineData("nullable-gtin")]
+    public async Task ExistingRealKmBinding_ContributesOnlyToItsExactLine(string legacyScope)
     {
         await using var db = await Open();
         var f = await Ready(db, 10, 8);
         var batch = await Scalar<long>(db, null, "INSERT INTO km_code_batch(order_id,file_hash,imported_at,total_codes) VALUES (@o,@h,@at,2) RETURNING id", ("o", f.Order), ("h", Guid.NewGuid().ToString()), ("at", At));
         await Execute(db, null, "INSERT INTO km_code(batch_id,code_raw,gtin14,sku_id,status,receipt_doc_id,receipt_line_id,order_id) SELECT @b,@raw || n,@g,@i,1,@d,@l,@o FROM generate_series(1,2) n", ("b", batch), ("raw", Guid.NewGuid().ToString()), ("g", f.Gtin), ("i", f.Item), ("d", f.Doc), ("l", f.Line), ("o", f.Order));
+        if (legacyScope == "nullable-sku") await Execute(db, null, "UPDATE km_code SET sku_id=NULL WHERE batch_id=@b", ("b", batch));
+        if (legacyScope == "nullable-gtin") await Execute(db, null, "UPDATE km_code SET gtin14=NULL WHERE batch_id=@b", ("b", batch));
         Assert.True(Documents().TryCloseDoc(f.Doc, false).Success);
         Assert.Equal(8, await Applied(db, null, f.Pool, f.Doc, f.Line));
         Assert.Equal(2, await Scalar<long>(db, null, "SELECT COUNT(*) FROM km_code WHERE receipt_doc_id=@d AND receipt_line_id=@l AND status=1", ("d", f.Doc), ("l", f.Line)));
+    }
+
+    [Fact]
+    public async Task ForeignKmBatch_WithNullableCodeOrder_CannotAuthorizeReceiptCoverage()
+    {
+        await using var db = await Open();
+        var f = await Ready(db, 10, 10);
+        var batch = await Scalar<long>(db, null, "INSERT INTO km_code_batch(order_id,file_hash,imported_at,total_codes) VALUES (@o,@h,@at,1) RETURNING id", ("o", await NewOrder(db, null)), ("h", Guid.NewGuid().ToString()), ("at", At));
+        await Execute(db, null, "INSERT INTO km_code(batch_id,code_raw,gtin14,sku_id,status,receipt_doc_id,receipt_line_id) VALUES (@b,@raw,@g,@i,1,@d,@l)", ("b", batch), ("raw", Guid.NewGuid().ToString()), ("g", f.Gtin), ("i", f.Item), ("d", f.Doc), ("l", f.Line));
+        var ex = Assert.Throws<PostgresException>(() => Documents().TryCloseDoc(f.Doc, false));
+        Assert.Contains("QUANTITY_PRD_PER_CODE_BINDING_CONFLICT", ex.MessageText);
+        await Unchanged(db, f, 10);
     }
 
     [Theory]
