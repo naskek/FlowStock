@@ -11,6 +11,7 @@
 - source и replacement образуют revision edge в `production_pallet_filling_adjustments`; predecessor находится строго по `previous.replacement_pallet_id = current.source_pallet_id`, а не по совпадению HU. Повторно наполненный replacement может быть source следующей коррекции, независимые исторические цепочки с тем же HU не объединяются;
 - один COR и одна replacement pallet могут принадлежать только одному committed/provisional adjustment; один target DRAFT PRD может содержать несколько replacement pallets и поэтому не является уникальным;
 - `RESET_PARTIAL` replacement после предыдущей COR допустим, если текущий DRAFT PRD не имеет ledger, а исторические source/COR movements дают нулевой физический balance по component item/location;
+- quantitative RELEASE при `CORRECT_FILLED` имеет отдельный выключенный внутренний gate и выполняется по exact source receipt doc/line/pool в общей COR transaction; правила доказательства, immutable audit и блокировки описаны в [спецификации сервера](spec.md#wpf-корректировка-наполнения-hu). Любая quantity history текущего DRAFT PRD блокирует `RESET_PARTIAL`, но история предыдущей ревизии не переносится на replacement;
 - `CORRECTED` означает историческую, более не operational ревизию паллеты. Она подтверждает существование palletized history, но не считается открытым планом, новым выпуском или shipment-ready stock.
 
 ## Модель данных
