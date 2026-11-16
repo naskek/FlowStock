@@ -222,6 +222,40 @@ VALUES (@id,@r,@r,@g,@t,@id,'Voided',@at,@at,'RealImport');
     }
 
     [Fact]
+    public async Task TsdFillCorrectionRefillCorrection_UsesNewReceiptAndRevisionEachTime()
+    {
+        await using var db = await Open();
+        var f = await Ready(db, 10, 10);
+        await Execute(db, null, "UPDATE order_lines SET qty_ordered=10 WHERE id=@l; UPDATE items SET max_qty_per_hu=5 WHERE id=@i; UPDATE client_blocks SET is_enabled=TRUE WHERE block_key='pc_hu_correction'",
+            ("l", f.OrderLine), ("i", f.Item));
+        var store = new PostgresDataStore(Connection);
+        var filling = new ProductionPalletService(store,
+            new ProductionFillCloseService(store, new DocumentService(store, true), new FlowStockLedgerFlowOptions()));
+        filling.Plan(f.Doc);
+        var pallet = store.GetProductionPalletsByDoc(f.Doc).OrderBy(p => p.Id).First();
+        var fill = filling.Fill(pallet.HuCode, "TEST-209", f.Order, f.Doc);
+        Assert.True(fill.Success, fill.Error);
+        Assert.True(fill.PrdAutoClosed);
+        var first = Corrections().Confirm(Request(pallet.HuCode));
+        Assert.True(first.Success, first.Message);
+        Assert.Equal(fill.ClosedPrdDocId, first.SourcePrdDocId);
+        Assert.Equal(10, await Free(db, null, f.Pool));
+        var refill = filling.Fill(pallet.HuCode, "TEST-209", f.Order, first.ReplacementPrdDocId);
+        Assert.True(refill.Success, refill.Error);
+        Assert.True(refill.PrdAutoClosed);
+        Assert.NotEqual(fill.ClosedPrdDocId, refill.ClosedPrdDocId);
+        var second = Corrections().Confirm(Request(pallet.HuCode));
+        Assert.True(second.Success, second.Message);
+        Assert.Equal(refill.ClosedPrdDocId, second.SourcePrdDocId);
+        Assert.NotEqual(first.SourcePalletId, second.SourcePalletId);
+        Assert.Equal(10, await Free(db, null, f.Pool));
+        Assert.Equal(1, await AuditCount(db, first.AdjustmentId!.Value));
+        Assert.Equal(1, await AuditCount(db, second.AdjustmentId!.Value));
+        Assert.Equal(first.AdjustmentId, await Scalar<long>(db, null,
+            "SELECT predecessor_adjustment_id FROM production_pallet_filling_adjustments WHERE id=@a", ("a", second.AdjustmentId)));
+    }
+
+    [Fact]
     public async Task ConsumerWaitsForUncommittedRelease_ThenSpendsFreshBalance()
     {
         await using var db = await Open();
