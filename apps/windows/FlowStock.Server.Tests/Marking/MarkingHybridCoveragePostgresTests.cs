@@ -128,6 +128,26 @@ VALUES (@doc, @item, @order_line, 100) RETURNING id;
             "SELECT COUNT(*) FROM marking_code WHERE marking_order_id = @task;",
             ("task", task1));
 
+        // #202: the combined V0047-V0051 tree must preserve both read
+        // models. Shadow sees only proven legacy rows (including voided);
+        // quantity ISSUE/ASSIGN/RELEASE/VOID never inflate that projection.
+        Assert.Equal(5, await Scalar<long>(connection, tx, """
+SELECT COALESCE(SUM(quantity), 0)::bigint
+FROM marking_synthetic_coverage_shadow WHERE marking_order_id = @task;
+""", ("task", task1)));
+        Assert.Equal(1, await Scalar<long>(connection, tx, """
+SELECT COALESCE(SUM(quantity), 0)::bigint
+FROM marking_synthetic_coverage_shadow WHERE marking_order_id = @task;
+""", ("task", task2)));
+        Assert.Equal(0, await Scalar<long>(connection, tx, """
+SELECT COUNT(*) FROM marking_synthetic_coverage_shadow WHERE marking_order_id = @task;
+""", ("task", task3)));
+        Assert.True(await Scalar<bool>(connection, tx, """
+SELECT source_scope = jsonb_build_object('source_type', 'PRODUCTION_NEED',
+    'source_order_id', NULL, 'order_id', NULL)
+FROM marking_synthetic_quantity_pool WHERE id = @pool;
+""", ("pool", pool3)));
+
         var mixed = await MarkingHybridCoverageReader.ReadTaskAsync(
             connection, tx, task1);
         Assert.Equal(9, mixed.PerCodeRows);
