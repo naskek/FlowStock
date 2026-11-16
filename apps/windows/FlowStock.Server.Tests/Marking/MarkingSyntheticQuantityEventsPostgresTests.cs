@@ -1,3 +1,5 @@
+using System.Data;
+using System.Diagnostics;
 using System.Globalization;
 using Npgsql;
 
@@ -151,6 +153,166 @@ UPDATE docs SET status = 'CLOSED' WHERE id = @doc;
             await ReadBalance(connection, pool, tx));
 
         await tx.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Apply_RemainsUnavailableToPublicAfterMigration()
+    {
+        await using var connection = await OpenDisposableTestDatabase();
+        Assert.False(await Scalar<bool>(connection, null, """
+SELECT EXISTS (
+    SELECT 1 FROM pg_proc p,
+    LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
+    WHERE p.oid = 'marking_synthetic_quantity_apply(uuid,uuid,text,bigint,uuid,text,bigint,bigint,text)'::regprocedure
+      AND a.grantee = 0 AND a.privilege_type = 'EXECUTE');
+"""));
+    }
+
+    [Theory]
+    [InlineData(IsolationLevel.RepeatableRead)]
+    [InlineData(IsolationLevel.Serializable)]
+    [InlineData(IsolationLevel.ReadUncommitted)]
+    public async Task UnsupportedIsolation_RejectsEveryActionAndReplayBeforePoolLock(
+        IsolationLevel isolation)
+    {
+        await using var setup = await OpenDisposableTestDatabase();
+        var fixture = await Fixture.Create(setup, null);
+        var pool = Guid.NewGuid();
+        var issue = Guid.NewGuid();
+        await Apply(setup, null, issue, pool, "ISSUE", 10, fixture.TaskId, "isolation");
+        await Apply(setup, null, Guid.NewGuid(), pool, "ASSIGN", 8,
+            doc: fixture.DocId, line: fixture.LineId);
+        var before = await ReadBalance(setup, pool);
+
+        // An unsupported caller must fail even while the pool is locked.
+        // lock_timeout distinguishes an early isolation gate from lock waiting.
+        await using var holder = await OpenDisposableTestDatabase();
+        await using var holding = await holder.BeginTransactionAsync();
+        await Execute(holder, holding,
+            "SELECT id FROM marking_synthetic_quantity_pool WHERE id = @pool FOR UPDATE;",
+            ("pool", pool));
+        await using var caller = await OpenDisposableTestDatabase();
+        await using var tx = await caller.BeginTransactionAsync(isolation);
+        await Execute(caller, tx, "SET LOCAL lock_timeout = '500ms';");
+        foreach (var action in new[] { "ISSUE", "ASSIGN", "RELEASE", "VOID" })
+        {
+            await ExpectRejected(caller, tx, () => Apply(caller, tx, Guid.NewGuid(),
+                action == "ISSUE" ? Guid.NewGuid() : pool, action, 1,
+                task: action == "ISSUE" ? fixture.TaskId : null,
+                source: action == "ISSUE" ? "rejected" : null,
+                doc: action is "ASSIGN" or "RELEASE" ? fixture.DocId : null,
+                line: action is "ASSIGN" or "RELEASE" ? fixture.LineId : null), "25001");
+        }
+        await ExpectRejected(caller, tx, () => Apply(caller, tx, issue, pool,
+            "ISSUE", 10, fixture.TaskId, "isolation"), "25001");
+        await tx.CommitAsync();
+        Assert.Equal(before, await ReadBalance(setup, pool));
+        Assert.Equal(1, await Scalar<long>(setup, null,
+            "SELECT COUNT(*) FROM marking_synthetic_quantity_pool WHERE marking_order_id = @task;",
+            ("task", fixture.TaskId)));
+    }
+
+    [Theory]
+    [InlineData("ASSIGN", "ASSIGN", false, false)]
+    [InlineData("RELEASE", "RELEASE", false, false)]
+    [InlineData("VOID", "VOID", false, false)]
+    [InlineData("ASSIGN", "VOID", false, false)]
+    [InlineData("VOID", "ASSIGN", false, false)]
+    [InlineData("ASSIGN", "ASSIGN", true, false)]
+    [InlineData("RELEASE", "RELEASE", true, false)]
+    [InlineData("VOID", "VOID", true, false)]
+    [InlineData("ISSUE", "ISSUE", false, true)]
+    [InlineData("ASSIGN", "ASSIGN", false, true)]
+    [InlineData("RELEASE", "RELEASE", false, true)]
+    [InlineData("VOID", "VOID", false, true)]
+    public async Task ReadCommitted_RealPoolWaitPreservesBalancesRollbackAndReplay(
+        string firstAction, string secondAction, bool rollback, bool replay)
+    {
+        await using var setup = await OpenDisposableTestDatabase();
+        var fixture = await Fixture.Create(setup, null);
+        var secondDoc = await Scalar<long>(setup, null, """
+INSERT INTO docs(doc_ref, type, status, created_at)
+VALUES (@ref, 'PRODUCTION_RECEIPT', 'DRAFT', '2026-11-16') RETURNING id;
+""", ("ref", "TEST-203-" + Guid.NewGuid().ToString("N")));
+        var secondLine = await Scalar<long>(setup, null, """
+INSERT INTO doc_lines(doc_id, item_id, qty)
+SELECT @doc, item_id, 100 FROM doc_lines WHERE id = @line RETURNING id;
+""", ("doc", secondDoc), ("line", fixture.LineId));
+        var pool = Guid.NewGuid();
+        await Apply(setup, null, Guid.NewGuid(), pool, "ISSUE", 10,
+            fixture.TaskId, "contention");
+        if (firstAction == "RELEASE")
+            await Apply(setup, null, Guid.NewGuid(), pool, "ASSIGN", 8,
+                doc: fixture.DocId, line: fixture.LineId);
+        var before = await ReadBalance(setup, pool);
+        var operation = Guid.NewGuid();
+        await using var first = await OpenDisposableTestDatabase();
+        await using var second = await OpenDisposableTestDatabase();
+        await using var firstTx = await first.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        await using var secondTx = await second.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        Task<Quantities> Call(NpgsqlConnection connection, NpgsqlTransaction? tx,
+            Guid op, string action, bool otherReceipt) => Apply(connection, tx, op, pool, action, 8,
+                task: action == "ISSUE" ? fixture.TaskId : null,
+                source: action == "ISSUE" ? "contention" : null,
+                doc: action is "ASSIGN" or "RELEASE"
+                    ? (otherReceipt ? secondDoc : fixture.DocId) : null,
+                line: action is "ASSIGN" or "RELEASE"
+                    ? (otherReceipt ? secondLine : fixture.LineId) : null);
+        var firstResult = await Call(first, firstTx, operation, firstAction, false);
+        // Different PRDs prove contention on pool, not the receipt row.
+        var otherReceipt = secondAction == "ASSIGN" && !replay;
+        var pending = Call(second, secondTx, replay ? operation : Guid.NewGuid(),
+            secondAction, otherReceipt);
+        var firstEnded = false;
+        try
+        {
+            var deadline = Stopwatch.StartNew();
+            while (!await Scalar<bool>(setup, null, """
+SELECT @blocker = ANY(pg_blocking_pids(@waiter));
+""", ("blocker", first.ProcessID), ("waiter", second.ProcessID)))
+            {
+                Assert.False(pending.IsCompleted, "Competing operation finished without a pool wait.");
+                Assert.True(deadline.Elapsed < TimeSpan.FromSeconds(10), "No actual PostgreSQL lock wait.");
+                await Task.Delay(20);
+            }
+            if (rollback) await firstTx.RollbackAsync();
+            else await firstTx.CommitAsync();
+            firstEnded = true;
+            if (rollback || replay)
+            {
+                var result = await pending;
+                Assert.Equal(firstResult, result);
+                await secondTx.CommitAsync();
+            }
+            else
+            {
+                var error = await Assert.ThrowsAsync<PostgresException>(() => pending);
+                Assert.Equal("23514", error.SqlState);
+                await secondTx.RollbackAsync();
+            }
+        }
+        finally
+        {
+            // Release locks before disposing the pending command, even on a
+            // failed assertion. No background database operation outlives test.
+            if (!firstEnded) await firstTx.RollbackAsync();
+            try { await pending; } catch (PostgresException) { }
+        }
+        var after = await ReadBalance(setup, pool);
+        Assert.Equal(firstResult, after);
+        Assert.Equal(before.Revision + 1, after.Revision);
+        Assert.True(after.Available >= 0 && after.Applied >= 0 && after.Voided >= 0);
+        Assert.Equal(after.Issued, after.Available + after.Applied + after.Voided);
+        Assert.Equal(after.Applied, await Scalar<long>(setup, null, """
+SELECT COALESCE(SUM(applied_quantity), 0)::bigint
+FROM marking_synthetic_quantity_receipt_balance WHERE pool_id = @pool;
+""", ("pool", pool)));
+        if (rollback)
+            Assert.Equal(0, await Scalar<long>(setup, null,
+                "SELECT COUNT(*) FROM marking_synthetic_quantity_event WHERE operation_id = @op;",
+                ("op", operation)));
+        else
+            Assert.Equal(after, await Call(setup, null, operation, firstAction, false));
     }
 
     private static async Task ExpectRejected(
