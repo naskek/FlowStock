@@ -51,6 +51,90 @@ public sealed class TsdOutboundEligibilityPostgresTests
     }
 
     [PostgresFact]
+    public void PartialOutbound_ThenFillingNewHus_PostsIndependentProductionLedger()
+    {
+        RunInRollbackTransaction(RequirePostgresTestConnectionString(), store =>
+        {
+            var suffix = Guid.NewGuid().ToString("N")[..8];
+            var partner = store.AddPartner(new Partner
+            {
+                Code = $"P211-{suffix}", Name = "Partial shipment customer",
+                PartnerRole = "CLIENT", CreatedAt = DateTime.UtcNow
+            });
+            var location = store.AddLocation(new Location
+            {
+                Code = $"L211-{suffix}", Name = "Production destination",
+                AutoHuDistributionEnabled = true
+            });
+            var item = store.AddItem(new Item
+            {
+                Name = $"P211 item {suffix}", Barcode = $"I211-{suffix}",
+                BaseUom = "шт", MaxQtyPerHu = 1800
+            });
+            var orderId = store.AddOrder(new Order
+            {
+                OrderRef = $"O211-{suffix}", Type = OrderType.Customer,
+                PartnerId = partner, Status = OrderStatus.InProgress,
+                CreatedAt = DateTime.UtcNow
+            });
+            store.AddOrderLine(new OrderLine
+            {
+                OrderId = orderId, ItemId = item, QtyOrdered = 10800,
+                ProductionPurpose = ProductionLinePurpose.CustomerOrder
+            });
+
+            var documents = new DocumentService(store);
+            var autoClose = new ProductionFillCloseService(
+                store, documents,
+                new FlowStockLedgerFlowOptions { ProductionAutoCloseOnFill = true });
+            var filling = new ProductionPalletService(store, autoClose);
+            var plan = filling.PlanOrder(orderId);
+            var hus = store.GetProductionPalletsByDoc(plan.PrdDocId)
+                .OrderBy(pallet => pallet.HuCode, StringComparer.OrdinalIgnoreCase)
+                .Select(pallet => pallet.HuCode)
+                .ToArray();
+            Assert.Equal(6, hus.Length);
+
+            foreach (var hu in hus.Take(3))
+            {
+                var filled = filling.Fill(hu, "TSD-211", orderId: orderId);
+                Assert.True(filled.Success, filled.Error);
+            }
+
+            store.UpdateOrderPartialOutboundPermission(orderId, true);
+            var picking = new OutboundPickingService(store, documents);
+            foreach (var hu in hus.Take(3))
+            {
+                var scanned = picking.Scan(orderId, hu, "TSD-211");
+                Assert.True(scanned.Success, $"{scanned.ErrorCode}: {scanned.Message}");
+            }
+            var outbound = picking.Complete(orderId, allowPartial: true);
+            Assert.True(outbound.Success, $"{outbound.ErrorCode}: {outbound.Message}");
+            Assert.True(outbound.OutboundClosed);
+            Assert.Equal(5400, outbound.Order!.ShippedQty, 3);
+            Assert.NotEqual(OrderStatus.Shipped, store.GetOrder(orderId)!.Status);
+
+            foreach (var hu in hus.Skip(3))
+            {
+                var filled = filling.Fill(hu, "TSD-211", orderId: orderId);
+                Assert.True(filled.Success, filled.Error);
+                Assert.True(filled.PrdAutoClosed);
+                Assert.Equal(DocStatus.Closed, store.GetDoc(filled.ClosedPrdDocId!.Value)!.Status);
+                Assert.Equal(1800, store.GetLedgerBalance(item, location, hu), 3);
+
+                var metrics = Assert.Single(store.GetFilledProductionPalletStockMetrics(),
+                    row => row.HuCode == hu && row.ItemId == item);
+                Assert.Equal(0, metrics.OutboundBySameHuQty, 3);
+                Assert.Equal(5400, metrics.OutboundByOrderItemQty, 3);
+                Assert.Equal(1800, metrics.CurrentLedgerQty, 3);
+            }
+
+            Assert.All(hus.Take(3), hu =>
+                Assert.Equal(0, store.GetLedgerBalance(item, location, hu), 3));
+        });
+    }
+
+    [PostgresFact]
     public void CustomerToInternal_GenericUpdatePersistsServerOwnedReset()
     {
         var connectionString = RequirePostgresTestConnectionString();
