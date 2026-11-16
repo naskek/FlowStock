@@ -47,7 +47,16 @@ public sealed class ProductionPalletAutoCloseTests
     [Fact]
     public void FillAfterPartialOutbound_PostsLedgerForNewHusOfTheSameOrderAndItem()
     {
-        var harness = CreateHarnessWithOrderOnly(orderQty: 10800, maxQtyPerHu: 1800);
+        var harness = new CloseDocumentHarness();
+        harness.SeedLocation(new Location { Id = 1, Code = "MAIN", Name = "Основной склад" });
+        harness.SeedItem(new Item
+        {
+            Id = 100,
+            Name = "Товар",
+            IsActive = true,
+            BaseUom = "шт",
+            MaxQtyPerHu = 1800
+        });
         harness.SeedPartner(new Partner
         {
             Id = 501,
