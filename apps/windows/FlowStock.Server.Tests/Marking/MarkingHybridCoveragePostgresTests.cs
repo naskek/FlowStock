@@ -22,47 +22,47 @@ public sealed class MarkingHybridCoveragePostgresTests
     public async Task DiagnosticReader_SeparatesLegacyAndQuantityWithoutClaimingMixedCoverage()
     {
         await using var connection = await OpenDisposableTestDatabase();
-        await using var tx = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead);
+        await using var setupTx = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         var suffix = Guid.NewGuid().ToString("N");
         var gtin = "0460" +
             (BitConverter.ToUInt64(Guid.NewGuid().ToByteArray(), 0) % 10000000000UL)
             .ToString("D10", CultureInfo.InvariantCulture);
 
-        var type = await Scalar<long>(connection, tx, """
+        var type = await Scalar<long>(connection, setupTx, """
 INSERT INTO item_types(name, code, enable_marking)
 VALUES (@name, @code, TRUE) RETURNING id;
 """, ("name", "TEST-193-TYPE-" + suffix), ("code", "T193-" + suffix));
 
-        var item = await Scalar<long>(connection, tx, """
+        var item = await Scalar<long>(connection, setupTx, """
 INSERT INTO items(name, barcode, item_type_id, gtin)
 VALUES (@name, @barcode, @type, @gtin) RETURNING id;
 """, ("name", "TEST-193-ITEM-" + suffix), ("barcode", suffix),
             ("type", type), ("gtin", gtin));
 
-        var order1 = await CreateOrder(connection, tx, suffix + "-1", item);
-        var order2 = await CreateOrder(connection, tx, suffix + "-2", item);
-        var task1 = await CreateTask(connection, tx, suffix + "-1", item, gtin,
+        var order1 = await CreateOrder(connection, setupTx, suffix + "-1", item);
+        var order2 = await CreateOrder(connection, setupTx, suffix + "-2", item);
+        var task1 = await CreateTask(connection, setupTx, suffix + "-1", item, gtin,
             order1.OrderId, order1.LineId);
-        var task2 = await CreateTask(connection, tx, suffix + "-2", item, gtin,
+        var task2 = await CreateTask(connection, setupTx, suffix + "-2", item, gtin,
             order2.OrderId, order2.LineId);
-        var task3 = await CreateTask(connection, tx, suffix + "-3", item, gtin,
+        var task3 = await CreateTask(connection, setupTx, suffix + "-3", item, gtin,
             null, null);
 
         var tempImport = Guid.NewGuid();
         var csvImport = Guid.NewGuid();
         var secondTempImport = Guid.NewGuid();
-        await InsertImport(connection, tx, suffix + "-temp", task1,
+        await InsertImport(connection, setupTx, suffix + "-temp", task1,
             tempImport, "temporary-chz-export");
-        await InsertImport(connection, tx, suffix + "-csv", task1,
+        await InsertImport(connection, setupTx, suffix + "-csv", task1,
             csvImport, "csv");
-        await InsertImport(connection, tx, suffix + "-temp2", task2,
+        await InsertImport(connection, setupTx, suffix + "-temp2", task2,
             secondTempImport, "temporary-chz-export");
 
-        var doc = await Scalar<long>(connection, tx, """
+        var doc = await Scalar<long>(connection, setupTx, """
 INSERT INTO docs(doc_ref, type, status, created_at)
 VALUES (@ref, 'PRODUCTION_RECEIPT', 'DRAFT', @at) RETURNING id;
 """, ("ref", "TEST-193-PRD-" + suffix), ("at", "2026-11-13T12:00:00Z"));
-        var line = await Scalar<long>(connection, tx, """
+        var line = await Scalar<long>(connection, setupTx, """
 INSERT INTO doc_lines(doc_id, item_id, order_line_id, qty)
 VALUES (@doc, @item, @order_line, 100) RETURNING id;
 """, ("doc", doc), ("item", item), ("order_line", order1.LineId));
@@ -74,47 +74,53 @@ VALUES (@doc, @item, @order_line, 100) RETURNING id;
         // the diagnostic reader still proves that it handles legacy overlap
         // without treating observed totals as authorized coverage.
         var pool1 = Guid.NewGuid();
-        await Apply(connection, tx, pool1, "ISSUE", 10, task1, "new-quantity-" + suffix);
-        await Apply(connection, tx, pool1, "ASSIGN", 6,
+        await Apply(connection, setupTx, pool1, "ISSUE", 10, task1, "new-quantity-" + suffix);
+        await Apply(connection, setupTx, pool1, "ASSIGN", 6,
             receiptDoc: doc, receiptLine: line);
-        await Apply(connection, tx, pool1, "RELEASE", 2,
+        await Apply(connection, setupTx, pool1, "RELEASE", 2,
             receiptDoc: doc, receiptLine: line);
-        await Apply(connection, tx, pool1, "VOID", 1);
+        await Apply(connection, setupTx, pool1, "VOID", 1);
 
         // Group two per-code rows into a single import/status/GTIN scope.
-        await InsertCode(connection, tx, suffix + "-1", task1, tempImport,
+        await InsertCode(connection, setupTx, suffix + "-1", task1, tempImport,
             gtin, "Reserved", "LegacySynthetic", true);
-        await InsertCode(connection, tx, suffix + "-2", task1, tempImport,
+        await InsertCode(connection, setupTx, suffix + "-2", task1, tempImport,
             " " + gtin + " ", "Reserved", "LegacySynthetic", true);
-        await InsertCode(connection, tx, suffix + "-3", task1, tempImport,
+        await InsertCode(connection, setupTx, suffix + "-3", task1, tempImport,
             gtin, "Applied", "LegacySynthetic", true, doc, line);
-        await InsertCode(connection, tx, suffix + "-4", task1, tempImport,
+        await InsertCode(connection, setupTx, suffix + "-4", task1, tempImport,
             gtin, "Voided", "LegacySynthetic", true);
-        await InsertCode(connection, tx, suffix + "-5", task1, tempImport,
+        await InsertCode(connection, setupTx, suffix + "-5", task1, tempImport,
             gtin, "Reserved", "HistoricalUnknown", true);
-        await InsertCode(connection, tx, suffix + "-6", task1, csvImport,
+        await InsertCode(connection, setupTx, suffix + "-6", task1, csvImport,
             gtin, "Reserved", "RealImport", false);
-        await InsertCode(connection, tx, suffix + "-7", task1, csvImport,
+        await InsertCode(connection, setupTx, suffix + "-7", task1, csvImport,
             gtin, "Quarantined", "RealImport", false);
-        await InsertCode(connection, tx, suffix + "-8", task1, csvImport,
+        await InsertCode(connection, setupTx, suffix + "-8", task1, csvImport,
             gtin, "Reserved", "HistoricalUnknown", false);
-        await InsertCode(connection, tx, suffix + "-9", task1, tempImport,
+        await InsertCode(connection, setupTx, suffix + "-9", task1, tempImport,
             gtin, "Reserved", "LegacySynthetic", false);
 
         // Other order/line, same item + GTIN: must never leak into task1.
-        await InsertCode(connection, tx, suffix + "-10", task2, secondTempImport,
+        await InsertCode(connection, setupTx, suffix + "-10", task2, secondTempImport,
             gtin, "Reserved", "LegacySynthetic", true);
 
         // Separate production-need task has no per-code rows.
         var pool3 = Guid.NewGuid();
-        await Apply(connection, tx, pool3, "ISSUE", 6, task3, "new-quantity-need-" + suffix);
+        await Apply(connection, setupTx, pool3, "ISSUE", 6, task3, "new-quantity-need-" + suffix);
         // Quantity-only receipt: the same item/GTIN and PRD line as
         // task1 must not leak across separate task identities.
-        await Apply(connection, tx, pool3, "ASSIGN", 4,
+        await Apply(connection, setupTx, pool3, "ASSIGN", 4,
             receiptDoc: doc, receiptLine: line);
-        await Apply(connection, tx, pool3, "RELEASE", 1,
+        await Apply(connection, setupTx, pool3, "RELEASE", 1,
             receiptDoc: doc, receiptLine: line);
-        await Apply(connection, tx, pool3, "VOID", 1);
+        await Apply(connection, setupTx, pool3, "VOID", 1);
+
+        // Writers require READ COMMITTED; diagnostics require a separate
+        // consistent snapshot. Committed append-only fixtures stay exclusively
+        // in the disposable flowstock_test database until it is destroyed.
+        await setupTx.CommitAsync();
+        await using var tx = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead);
 
         var eventsBefore = await Scalar<long>(connection, tx,
             "SELECT COUNT(*) FROM marking_synthetic_quantity_event;");
@@ -226,7 +232,7 @@ VALUES (@doc, @item, @order_line, 100) RETURNING id;
             ("task", task1)));
 
         await tx.RollbackAsync();
-        Assert.Equal(0, await Scalar<long>(connection, null,
+        Assert.Equal(1, await Scalar<long>(connection, null,
             "SELECT COUNT(*) FROM marking_order WHERE id = @task;",
             ("task", task1)));
     }
