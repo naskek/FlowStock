@@ -118,6 +118,27 @@ BEGIN
         SELECT c.batch_id FROM km_code c WHERE c.receipt_doc_id = p_doc_id
             OR c.receipt_line_id IN (SELECT id FROM doc_lines WHERE doc_id = p_doc_id))
         ORDER BY b.id FOR SHARE;
+    PERFORM 1 FROM marking_code_import i WHERE i.id IN (
+        SELECT c.import_id FROM marking_code c WHERE c.marking_order_id = ANY(v_tasks)
+            OR c.receipt_doc_id = p_doc_id
+            OR c.receipt_line_id IN (SELECT id FROM doc_lines WHERE doc_id = p_doc_id))
+        ORDER BY i.id FOR SHARE;
+
+    -- Revalidate live evidence under locks; the diagnostic view is not an
+    -- authorization. Never infer that HistoricalUnknown is a physical DM.
+    IF EXISTS (
+        SELECT 1 FROM marking_code c LEFT JOIN marking_code_import i ON i.id = c.import_id
+        WHERE ((c.marking_order_id = ANY(v_tasks) AND c.status IN ('Reserved', 'Printed'))
+               OR c.receipt_doc_id = p_doc_id
+               OR c.receipt_line_id IN (SELECT id FROM doc_lines WHERE doc_id = p_doc_id))
+          AND NOT COALESCE(
+              (c.code LIKE 'TEMP-CHZ-%' AND i.source_type = 'temporary-chz-export'
+               AND c.origin IN ('LegacySynthetic', 'HistoricalUnknown'))
+              OR (c.code NOT LIKE 'TEMP-CHZ-%' AND i.source_type IN ('csv', 'tsv')
+                  AND c.origin IN ('RealImport', 'LegacyRealImport')), FALSE)
+    ) THEN
+        RAISE EXCEPTION 'QUANTITY_PRD_UNVERIFIED_PER_CODE' USING ERRCODE = '23514';
+    END IF;
 
     -- Validate existing bindings before counting them. Historical/voided facts
     -- are never reclassified or silently removed to make a receipt close.

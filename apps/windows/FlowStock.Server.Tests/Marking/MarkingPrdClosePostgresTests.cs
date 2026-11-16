@@ -13,6 +13,19 @@ public sealed class MarkingPrdClosePostgresTests
     private static DocumentService Documents() => new(new PostgresDataStore(Connection), quantityPrdCloseEnabled: true);
 
     [Fact]
+    public async Task UnverifiedHistoricalCode_CannotSupplementQuantity()
+    {
+        await using var db = await Open();
+        var f = await Ready(db, 10, 6);
+        await Codes(db, f, 4, "RealImport", general: true);
+        await Execute(db, null, "UPDATE marking_code SET origin='HistoricalUnknown' WHERE marking_order_id IN (SELECT id FROM marking_order WHERE item_id=@i)", ("i", f.Item));
+        var ex = Assert.Throws<PostgresException>(() => Documents().TryCloseDoc(f.Doc, false));
+        Assert.Contains("QUANTITY_PRD_UNVERIFIED_PER_CODE", ex.MessageText);
+        await Unchanged(db, f, 6);
+        Assert.Equal(0, await BoundCodes(db, f));
+    }
+
+    [Fact]
     public async Task SamePhysicalRealCodeAcrossHistoricalTables_CannotCountTwice()
     {
         await using var db = await Open();
@@ -210,6 +223,8 @@ VALUES (@id,@r,@r,@g,@t,@id,'Voided',@at,@at,'RealImport');
     [Theory]
     [InlineData("LegacySynthetic")]
     [InlineData("RealImport")]
+    [InlineData("HistoricalUnknown")]
+    [InlineData("LegacyRealImport")]
     public async Task PerCodeOnly_ClosePreservesCodesAndReceiptBinding(string origin)
     {
         await using var db = await Open();
@@ -218,6 +233,7 @@ VALUES (@id,@r,@r,@g,@t,@id,'Voided',@at,@at,'RealImport');
         Assert.True(Documents().TryCloseDoc(f.Doc, false).Success);
         Assert.Equal(4, await BoundCodes(db, f));
         Assert.Equal(0, await EventCount(db, null, f.Doc));
+        Assert.Equal(4, await Scalar<long>(db, null, "SELECT COUNT(*) FROM marking_code WHERE receipt_doc_id=@d AND origin=@origin", ("d", f.Doc), ("origin", origin)));
     }
 
     [Fact]
@@ -357,14 +373,15 @@ VALUES (@id,@r,@r,@g,@t,@id,'Voided',@at,@at,'RealImport');
     {
         var task = Guid.NewGuid();
         var import = Guid.NewGuid();
+        var temporary = origin is "LegacySynthetic" or "HistoricalUnknown";
         await Execute(db, null, """
 INSERT INTO marking_order(id,item_id,gtin,order_line_id,requested_quantity,request_number,status,source_type,source_order_id,created_at,updated_at)
 VALUES (@t,@i,@g,@l::bigint,@q,@r,'Printed',@s,@o::bigint,@at,@at);
 INSERT INTO marking_code_import(id,original_filename,storage_path,file_hash,source_type,matched_marking_order_id,status,created_at)
-VALUES (@id,'test.csv','<test>',@r,'csv',@t,'Imported',@at);
+VALUES (@id,'test.csv','<test>',@r,@source,@t,'Imported',@at);
 INSERT INTO marking_code(id,code,code_hash,gtin,marking_order_id,import_id,status,created_at,updated_at,origin)
 SELECT gen_random_uuid(),@r || n,@r || n,@g,@t,@id,'Reserved',@at,@at,@origin FROM generate_series(1,@q) n;
-""", ("t", task), ("i", f.Item), ("g", f.Gtin), ("l", general ? null : f.OrderLine), ("q", qty), ("r", "TEST-207-" + task), ("s", general ? "PRODUCTION_NEED" : "PRODUCTION_ORDER"), ("o", general ? null : f.Order), ("at", At), ("id", import), ("origin", origin));
+""", ("t", task), ("i", f.Item), ("g", f.Gtin), ("l", general ? null : f.OrderLine), ("q", qty), ("r", (temporary ? "TEMP-CHZ-" : "TEST-207-") + task), ("source", temporary ? "temporary-chz-export" : "csv"), ("s", general ? "PRODUCTION_NEED" : "PRODUCTION_ORDER"), ("o", general ? null : f.Order), ("at", At), ("id", import), ("origin", origin));
     }
 
     private static Task<long> BoundCodes(NpgsqlConnection db, Fixture f) => Scalar<long>(db, null, "SELECT COUNT(*) FROM marking_code WHERE receipt_doc_id=@d AND receipt_line_id=@l AND status='Applied'", ("d", f.Doc), ("l", f.Line));
