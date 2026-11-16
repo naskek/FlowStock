@@ -12,16 +12,26 @@ public sealed class DocumentService
         "Строки выпуска PRD нельзя удалять вручную. Измените паллетный план или заказ.";
 
     private readonly IDataStore _data;
+    private readonly bool _quantityPrdCloseEnabled;
     private const string AutoHuCreatedBy = "WINDOWS-AUTO";
     private const string ProductionPalletHuDistributionMessage = "Для выпуска с планом паллет распределение HU выполняется через план паллет";
     private const double QtyTolerance = 0.000001;
     private static readonly HashSet<string> EmptyHuSet = new(StringComparer.OrdinalIgnoreCase);
     private static bool KmWorkflowEnabled => false;
 
-    public DocumentService(IDataStore data)
+    public DocumentService(IDataStore data) : this(data, quantityPrdCloseEnabled: false)
+    {
+    }
+
+    // Deliberately unavailable to API/configuration until end-to-end rollout.
+    internal DocumentService(IDataStore data, bool quantityPrdCloseEnabled)
     {
         _data = data;
+        _quantityPrdCloseEnabled = quantityPrdCloseEnabled;
     }
+
+    internal DocumentService ForStore(IDataStore store) =>
+        new(store, _quantityPrdCloseEnabled);
 
     public IReadOnlyList<Doc> GetDocs()
     {
@@ -510,7 +520,19 @@ public sealed class DocumentService
                 }
             }
 
-            lines ??= EnsureOrderLineLinks(store, doc, store.GetDocLines(docId));
+            if (_quantityPrdCloseEnabled && doc.Type == DocType.ProductionReceipt)
+            {
+                if (store is not IProductionReceiptMarkingStore markingStore)
+                    throw new InvalidOperationException("PRD quantity marking store is required.");
+                markingStore.LockProductionReceiptMarkingLines();
+                var lockedCheck = ForStore(store).BuildCloseDocCheck(docId);
+                if (lockedCheck.Errors.Count > 0 || (!allowNegative && lockedCheck.Warnings.Count > 0))
+                    throw new InvalidOperationException(string.Join("; ", lockedCheck.Errors.Concat(lockedCheck.Warnings)));
+            }
+
+            lines ??= _quantityPrdCloseEnabled && doc.Type == DocType.ProductionReceipt
+                ? store.GetDocLines(docId)
+                : EnsureOrderLineLinks(store, doc, store.GetDocLines(docId));
 
             var hasProductionPallets = doc.Type == DocType.ProductionReceipt && store.HasProductionPallets(docId);
             Dictionary<StockKey, double>? inventoryTotals = doc.Type == DocType.Inventory
@@ -534,7 +556,16 @@ public sealed class DocumentService
 
             if (doc.Type == DocType.ProductionReceipt)
             {
-                AutoAssignProductionReceiptMarkingCodes(store, doc, lines, closedAt);
+                if (_quantityPrdCloseEnabled)
+                {
+                    if (store is not IProductionReceiptMarkingStore markingStore)
+                        throw new InvalidOperationException("PRD quantity marking store is required.");
+                    markingStore.AssignProductionReceiptMarking(doc.Id, closedAt);
+                }
+                else
+                {
+                    AutoAssignProductionReceiptMarkingCodes(store, doc, lines, closedAt);
+                }
             }
 
             foreach (var line in lines)
@@ -2011,7 +2042,9 @@ public sealed class DocumentService
         }
 
         var docHu = NormalizeHuValue(doc.ShippingRef);
-        var lines = EnsureOrderLineLinks(_data, doc, _data.GetDocLines(docId));
+        var lines = _quantityPrdCloseEnabled && doc.Type == DocType.ProductionReceipt
+            ? _data.GetDocLines(docId)
+            : EnsureOrderLineLinks(_data, doc, _data.GetDocLines(docId));
         if (doc.Type == DocType.Outbound)
         {
             check.Errors.AddRange(BuildOutboundOrderLinkErrors(_data, doc, lines));
