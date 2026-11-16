@@ -45,6 +45,92 @@ public sealed class ProductionPalletAutoCloseTests
     }
 
     [Fact]
+    public void FillAfterPartialOutbound_PostsLedgerForNewHusOfTheSameOrderAndItem()
+    {
+        var harness = CreateHarnessWithOrderOnly(orderQty: 10800, maxQtyPerHu: 1800);
+        harness.SeedPartner(new Partner
+        {
+            Id = 501,
+            Code = "CUSTOMER-387",
+            Name = "Partial shipment customer",
+            CreatedAt = DateTime.UtcNow
+        });
+        harness.SeedOrder(new Order
+        {
+            Id = 10,
+            OrderRef = "387",
+            Type = OrderType.Customer,
+            PartnerId = 501,
+            Status = OrderStatus.InProgress,
+            CreatedAt = DateTime.UtcNow
+        });
+        harness.SeedOrderLine(new OrderLine
+        {
+            Id = 101,
+            OrderId = 10,
+            ItemId = 100,
+            QtyOrdered = 10800,
+            ProductionPurpose = ProductionLinePurpose.CustomerOrder
+        });
+
+        var filling = CreatePalletService(harness);
+        var plan = filling.PlanOrder(10);
+        var hus = harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
+            .OrderBy(pallet => pallet.HuCode, StringComparer.OrdinalIgnoreCase)
+            .Select(pallet => pallet.HuCode)
+            .ToArray();
+        Assert.Equal(6, hus.Length);
+
+        // First three whole HU are produced and then shipped while the order
+        // still needs three more HU. The partial outbound is a real close.
+        foreach (var hu in hus.Take(3))
+        {
+            var fill = filling.Fill(hu, "TSD-01", orderId: 10);
+            Assert.True(fill.Success, fill.Error);
+        }
+
+        harness.Store.UpdateOrderPartialOutboundPermission(10, true);
+        var outbound = new OutboundPickingService(harness.Store, harness.CreateService());
+        foreach (var hu in hus.Take(3))
+        {
+            var scan = outbound.Scan(10, hu, "TSD-OUT");
+            Assert.True(scan.Success, $"{scan.ErrorCode}: {scan.Message}");
+        }
+
+        var shipped = outbound.Complete(10, allowPartial: true);
+        Assert.True(shipped.Success, $"{shipped.ErrorCode}: {shipped.Message}");
+        Assert.True(shipped.OutboundClosed);
+        Assert.Equal(5400, shipped.Order!.ShippedQty, 3);
+        Assert.NotEqual(OrderStatus.Shipped, harness.GetOrder(10).Status);
+        Assert.All(hus.Take(3), hu =>
+            Assert.Equal(0, harness.Store.GetLedgerBalance(100, 1, hu), 3));
+
+        // A shipped *different* HU must not make the new dedicated PRD skip
+        // its +1800 receipt simply because the order/item shipped 5400 total.
+        foreach (var hu in hus.Skip(3))
+        {
+            var fill = filling.Fill(hu, "TSD-01", orderId: 10);
+            Assert.True(fill.Success, fill.Error);
+            Assert.True(fill.PrdAutoClosed);
+            Assert.Equal(DocStatus.Closed, harness.GetDoc(fill.ClosedPrdDocId!.Value).Status);
+            Assert.Equal(1800, harness.Store.GetLedgerBalance(100, 1, hu), 3);
+            Assert.Contains(harness.LedgerEntries, entry =>
+                entry.DocId == fill.ClosedPrdDocId.Value
+                && entry.HuCode == hu
+                && entry.QtyDelta == 1800);
+
+            var ledgerCount = harness.LedgerEntries.Count;
+            var replay = filling.Fill(hu, "TSD-01", orderId: 10);
+            Assert.True(replay.Success, replay.Error);
+            Assert.True(replay.AlreadyFilled);
+            Assert.Equal(ledgerCount, harness.LedgerEntries.Count);
+        }
+
+        Assert.All(hus.Take(3), hu =>
+            Assert.Equal(0, harness.Store.GetLedgerBalance(100, 1, hu), 3));
+    }
+
+    [Fact]
     public void FillPallet_SingleItem_RemainsTerminalAndDoesNotReappearInTsdQueue()
     {
         var harness = CreateHarnessWithOrderOnly(orderQty: 600, maxQtyPerHu: 600);
