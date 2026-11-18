@@ -405,11 +405,30 @@ BEGIN
        OR v_t.compensation_kind IS DISTINCT FROM 'RETURN_PLAN' THEN
         RAISE EXCEPTION 'HU_MARKING_RETURN_NOT_COMPENSATED' USING ERRCODE = '23514';
     END IF;
-    IF EXISTS (
+    -- Only a completed safe RETURN_PLAN may free an exclusive allocation.
+    -- The canonical compensation can create a replacement source DRAFT PRD,
+    -- therefore current source PRD identity need not equal its old snapshot.
+    PERFORM 1 FROM production_pallets pp
+      JOIN docs d ON d.id = pp.prd_doc_id
+      WHERE pp.id = v_t.production_pallet_id
+        AND pp.order_id = v_t.source_order_id
+        AND pp.status = 'PLANNED' AND pp.filled_at IS NULL
+        AND d.order_id = v_t.source_order_id
+        AND d.type = 'PRODUCTION_RECEIPT' AND d.status = 'DRAFT'
+        AND NOT EXISTS (
+          SELECT 1 FROM production_pallet_lines pll
+          WHERE pll.production_pallet_id = pp.id
+            AND (pll.filled_at IS NOT NULL OR pll.filled_qty > 0))
+      FOR SHARE OF pp,d;
+    IF NOT FOUND OR EXISTS (
         SELECT 1 FROM order_coverage_transfer_lines tl
-        JOIN doc_lines dl ON dl.id = tl.source_doc_line_id
+        LEFT JOIN doc_lines dl ON dl.id = tl.source_doc_line_id
+        LEFT JOIN production_pallets pp ON pp.id = v_t.production_pallet_id
         WHERE tl.transfer_id = v_t.id
-          AND dl.order_line_id = tl.target_order_line_id
+          AND (dl.id IS NULL OR pp.id IS NULL
+               OR dl.doc_id IS DISTINCT FROM pp.prd_doc_id
+               OR dl.order_line_id IS DISTINCT FROM tl.source_order_line_id
+               OR dl.item_id IS DISTINCT FROM tl.item_id)
     ) THEN
         RAISE EXCEPTION 'HU_MARKING_RETURN_OWNERSHIP_NOT_RESTORED' USING ERRCODE = '23514';
     END IF;
