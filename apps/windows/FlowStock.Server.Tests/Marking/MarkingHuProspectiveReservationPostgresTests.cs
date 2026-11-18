@@ -118,12 +118,15 @@ SELECT * FROM marking_synthetic_quantity_apply(
         await using var db = await OpenTestDb();
         await using var tx = await db.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         var f = await Fixture.Create(db, tx, qty: 4);
-        await CreateSourceCodes(db, tx, f, 2);
+        // The normal writer rejects per-code -> quantity mixing. Model only
+        // an existing ambiguous history by issuing a pool first, then
+        // injecting per-code facts on the disposable database.
         await Execute(db, tx, """
 SELECT * FROM marking_synthetic_quantity_apply(
     @operation, @pool, 'ISSUE', 4, @task, 'TEST-218', NULL::bigint,
     NULL::bigint, 'TEST');
 """, ("operation", Guid.NewGuid()), ("pool", Guid.NewGuid()), ("task", f.Task));
+        await CreateSourceCodes(db, tx, f, 2);
         await AssertSqlError(db, tx, "HU_MARKING_MIXED_TASK",
             "SELECT * FROM marking_hu_reserve_transfer(@transfer,'TEST');",
             ("transfer", f.Transfer));
