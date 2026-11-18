@@ -155,7 +155,8 @@ SELECT * FROM marking_synthetic_quantity_apply(
             NpgsqlConnection c, NpgsqlTransaction t, int qty, bool prospective = true)
         {
             var token = Guid.NewGuid().ToString("N");
-            const string gtin = "04607186952749";
+            var gtin = "0460" + (BitConverter.ToUInt64(Guid.NewGuid().ToByteArray(), 0)
+                % 10000000000UL).ToString("D10", CultureInfo.InvariantCulture);
             var type = await Scalar<long>(c, t,
                 "INSERT INTO item_types(name,code,enable_marking) VALUES(@n,@n,TRUE) RETURNING id;",
                 ("n","HU-RES-TYPE-"+token));
