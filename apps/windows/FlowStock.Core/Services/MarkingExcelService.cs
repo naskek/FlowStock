@@ -155,7 +155,17 @@ public sealed class MarkingExcelService
                             }
                             else
                             {
-                                issueStore.EnsureMarkingTaskQuantityIssued(taskRow.MarkingOrderId, generatedAt);
+                                var issued = issueStore.EnsureMarkingTaskQuantityIssued(
+                                    taskRow.MarkingOrderId, generatedAt);
+                                // Another quantity writer may have changed the journal
+                                // since BuildTaskRows. Do not send a workbook containing
+                                // more units than this transaction actually issued.
+                                if (!reexportExisting &&
+                                    (taskRow.Qty <= 0 ||
+                                     Math.Abs(issued - taskRow.Qty) > 0.000001))
+                                    throw new MarkingQuantityIssueException(
+                                        "EXCEL_QUANTITY_STALE_PLAN: фактически выпущенное количество " +
+                                        "не совпадает с Excel. Транзакция полностью отменена.");
                             }
                         }
                     }
