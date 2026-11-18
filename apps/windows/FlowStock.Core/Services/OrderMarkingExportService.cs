@@ -53,6 +53,7 @@ public sealed class OrderMarkingExportService
             ? BuildProductionHuCodesByOrderLine(order.Id)
             : new Dictionary<long, IReadOnlyList<string>>();
         var summaries = BuildLineSummaries(order).ToArray();
+        ValidateQuantityExportPlan(order, summaries);
         // Match the existing server export rule: a positive delta exports
         // only missing units; otherwise explicit re-export reproduces the
         // already covered task quantities. Never mix them in one XLSX.
@@ -137,6 +138,7 @@ public sealed class OrderMarkingExportService
         RequireResolvedAdoption(order);
 
         var lines = BuildLineSummaries(order).ToList();
+        ValidateQuantityExportPlan(order, lines);
         if (lines.Count == 0)
         {
             return new OrderMarkingExportResult(
@@ -260,6 +262,58 @@ public sealed class OrderMarkingExportService
             lines);
     }
 
+
+    // This validation is shared by read-only preview and locked export.
+    // Never produce a workbook for a different quantity than the operator
+    // confirmed, including after order decrease, HU changes or partial ISSUE.
+    private void ValidateQuantityExportPlan(
+        Order order,
+        IReadOnlyList<OrderMarkingExportLineSummary> lines)
+    {
+        if (!_quantityIssueEnabled || lines.Count == 0)
+            return;
+
+        var hasNewQuantity = lines.Any(line => line.ExportQty > QtyTolerance);
+        var tasks = _data.GetMarkingOrdersByItemIds(lines.Select(line => line.ItemId).Distinct().ToArray())
+            .Where(task => task.ItemId.HasValue
+                           && !IsTerminalFailed(task.Status)
+                           && IsOrderLinkedTask(task, order.Id))
+            .ToArray();
+
+        foreach (var group in lines.GroupBy(line => line.ItemId))
+        {
+            var required = group.Sum(line => Math.Max(0, line.ExportQty + line.ExistingCodeQty));
+            if (required <= QtyTolerance)
+                continue;
+
+            var itemTasks = tasks.Where(task => task.ItemId == group.Key).ToArray();
+            var covered = itemTasks.ToDictionary(task => task.Id, task => CountTaskCoverage(task.Id));
+            if (hasNewQuantity)
+            {
+                var missingFromTask = itemTasks.Sum(task =>
+                    Math.Max(0, task.RequestedQuantity - covered[task.Id]));
+                var missingNewTask = Math.Max(0, required - itemTasks.Sum(task =>
+                    Math.Max(0, task.RequestedQuantity)));
+                var projected = missingFromTask + Math.Ceiling(missingNewTask - QtyTolerance);
+                var expected = group.Sum(line => line.ExportQty);
+                if (Math.Abs(projected - expected) > QtyTolerance)
+                    throw new MarkingQuantityIssueException(
+                        "EXCEL_QUANTITY_SCOPE_MISMATCH: текущая потребность не совпадает с количеством " +
+                        "недовыпущенных задач. Нельзя повторно заказывать лишние коды.");
+            }
+            else
+            {
+                var reexportQty = itemTasks
+                    .Where(task => covered[task.Id] > QtyTolerance)
+                    .Sum(task => Math.Max(0, task.RequestedQuantity));
+                var expected = group.Sum(line => line.ExistingCodeQty);
+                if (Math.Abs(reexportQty - expected) > QtyTolerance)
+                    throw new MarkingQuantityIssueException(
+                        "EXCEL_REEXPORT_CHANGED_DEMAND: количество заказа изменилось после выпуска ЧЗ; " +
+                        "повторный Excel из исторических задач не соответствует текущей потребности.");
+            }
+        }
+    }
 
     private void RequireResolvedAdoption(Order order)
     {
