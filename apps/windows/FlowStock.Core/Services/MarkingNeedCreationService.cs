@@ -188,7 +188,11 @@ public sealed class MarkingNeedCreationService(IDataStore dataStore)
         {
             var itemId = order.ItemId!.Value;
             var requestedQty = Math.Max(0, order.RequestedQuantity);
-            var codesTotal = _dataStore.CountMarkingCodesByMarkingOrder(order.Id);
+            // A task backed by the immutable quantity journal has no per-unit
+            // marking_code rows. Do not generate duplicate production demand.
+            var codesTotal = _dataStore is IMarkingQuantityIssueStore quantityStore
+                ? quantityStore.ReadMarkingTaskQuantityEvidence(order.Id).ActiveQuantity
+                : _dataStore.CountMarkingCodesByMarkingOrder(order.Id);
             if (requestedQty <= QtyTolerance || codesTotal + QtyTolerance >= requestedQty)
             {
                 continue;
