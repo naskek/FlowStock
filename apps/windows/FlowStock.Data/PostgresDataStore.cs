@@ -5767,7 +5767,7 @@ INSERT INTO order_coverage_transfers(
     pallet_status_at_transfer,
     printed_at_at_transfer,
     transferred_qty,
-    created_at{(ProspectiveHuMarkingAllocationEnabled ? ", hu_marking_allocation_version" : "")})
+    created_at{(ProspectiveHuMarkingAllocationEnabled ? ", hu_marking_allocation_version, hu_marking_allocation_xid" : "")})
 VALUES(
     @transfer_type,
     @source_order_id,
@@ -5784,7 +5784,7 @@ VALUES(
     @pallet_status_at_transfer,
     @printed_at_at_transfer,
     @transferred_qty,
-    @created_at{(ProspectiveHuMarkingAllocationEnabled ? ", 'v1'" : "")})
+    @created_at{(ProspectiveHuMarkingAllocationEnabled ? ", 'v1', pg_current_xact_id()" : "")})
 RETURNING id;"))
         {
             insertTransfer.Parameters.AddWithValue("@transfer_type", OrderCoverageTransferType.PlannedPalletAdoption);
