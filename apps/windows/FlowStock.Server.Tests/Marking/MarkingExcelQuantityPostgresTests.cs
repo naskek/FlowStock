@@ -162,6 +162,26 @@ public sealed class MarkingExcelQuantityPostgresTests
     }
 
     [Fact]
+    public async Task ItemGtinChangedAfterIssue_BlocksPreviewAndCannotReuseStaleQuantity()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 40);
+        var service = NewService(cs);
+        Assert.True(service.Export(fixture.OrderId, ExportAt).IsSuccess);
+        await ExecuteAsync(cs, "UPDATE items SET gtin = @gtin WHERE id = @item_id;",
+            ("gtin", "04999123456789"), ("item_id", fixture.ItemId));
+
+        var preview = service.Preview(fixture.OrderId);
+        Assert.False(preview.IsSuccess);
+        Assert.Contains("MARKING_QUANTITY_AMBIGUOUS", preview.Message);
+        var export = service.Export(fixture.OrderId, ExportAt.AddMinutes(1));
+        Assert.False(export.IsSuccess);
+        Assert.Contains("MARKING_QUANTITY_AMBIGUOUS", export.Message);
+        Assert.Equal(40, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+    }
+
+    [Fact]
     public async Task ParallelOrderExports_SerializeAndCannotDoubleIssue()
     {
         var cs = ConnectionString();
