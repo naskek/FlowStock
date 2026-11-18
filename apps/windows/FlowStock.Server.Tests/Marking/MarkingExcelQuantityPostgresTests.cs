@@ -28,6 +28,7 @@ public sealed class MarkingExcelQuantityPostgresTests
         var first = service.Export(fixture.OrderId, ExportAt);
         Assert.True(first.IsSuccess, first.Message);
         Assert.Equal(6000, first.CreatedCodeQty);
+        Assert.Equal(6000, first.CoveredQty);
         Assert.Equal(6000, ReadXlsxFirstQuantity(first.FileBytes!));
         Assert.Equal(0, await CountAsync(cs, "marking_code", fixture.OrderId));
         Assert.Equal(0, await CountAsync(cs, "marking_code_import", fixture.OrderId));
@@ -38,6 +39,7 @@ public sealed class MarkingExcelQuantityPostgresTests
         var retry = service.Export(fixture.OrderId, ExportAt.AddMinutes(1));
         Assert.True(retry.IsSuccess, retry.Message);
         Assert.Equal(0, retry.CreatedCodeQty);
+        Assert.Equal(6000, retry.CoveredQty);
         Assert.Equal(6000, ReadXlsxFirstQuantity(retry.FileBytes!));
         Assert.Equal(6000, await IssuedAsync(cs, fixture.OrderId));
         Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
@@ -47,6 +49,7 @@ public sealed class MarkingExcelQuantityPostgresTests
         var growth = service.Export(fixture.OrderId, ExportAt.AddMinutes(2));
         Assert.True(growth.IsSuccess, growth.Message);
         Assert.Equal(7, growth.CreatedCodeQty);
+        Assert.Equal(6007, growth.CoveredQty);
         Assert.Equal(7, ReadXlsxFirstQuantity(growth.FileBytes!));
         Assert.Equal(6007, await IssuedAsync(cs, fixture.OrderId));
         Assert.Equal(2, await CountAsync(cs, "marking_synthetic_quantity_pool", fixture.OrderId));
