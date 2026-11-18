@@ -8561,17 +8561,40 @@ order_need AS (
 ),
 task_code_stats AS (
     SELECT marking_order_id,
-           COUNT(*) FILTER (WHERE status <> @marking_code_status_voided) AS codes_total,
-           COUNT(*) FILTER (
-               WHERE status IN (@marking_code_status_reserved, @marking_code_status_printed)
-                 AND receipt_line_id IS NULL
-                 AND receipt_doc_id IS NULL
-           ) AS codes_free,
-           COUNT(*) FILTER (
-               WHERE status <> @marking_code_status_voided
-                 AND (receipt_line_id IS NOT NULL OR receipt_doc_id IS NOT NULL)
-           ) AS codes_bound
-    FROM marking_code
+           SUM(codes_total) AS codes_total,
+           SUM(codes_free) AS codes_free,
+           SUM(codes_bound) AS codes_bound
+    FROM (
+        SELECT marking_order_id,
+               COUNT(*) FILTER (WHERE status <> @marking_code_status_voided) AS codes_total,
+               COUNT(*) FILTER (
+                   WHERE status IN (@marking_code_status_reserved, @marking_code_status_printed)
+                     AND receipt_line_id IS NULL AND receipt_doc_id IS NULL
+               ) AS codes_free,
+               COUNT(*) FILTER (
+                   WHERE status <> @marking_code_status_voided
+                     AND (receipt_line_id IS NOT NULL OR receipt_doc_id IS NOT NULL)
+               ) AS codes_bound
+        FROM marking_code GROUP BY marking_order_id
+        UNION ALL
+        SELECT b.marking_order_id,
+               b.issued_quantity - b.voided_quantity,
+               b.available_quantity,
+               b.applied_quantity
+        FROM marking_synthetic_quantity_balance b
+        INNER JOIN marking_synthetic_quantity_pool p ON p.id = b.pool_id
+        INNER JOIN marking_order mo ON mo.id = p.marking_order_id
+        WHERE p.source_key = 'excel-quantity:v1'
+          AND p.source_scope = JSONB_BUILD_OBJECT(
+              'source_type', BTRIM(mo.source_type),
+              'source_order_id', mo.source_order_id, 'order_id', mo.order_id)
+          AND p.item_id = mo.item_id
+          AND p.order_line_id IS NOT DISTINCT FROM mo.order_line_id
+          AND p.normalized_gtin = BTRIM(mo.gtin)
+          AND p.source_type = BTRIM(mo.source_type)
+          AND b.available_quantity >= 0 AND b.applied_quantity >= 0
+          AND NOT EXISTS (SELECT 1 FROM marking_code c WHERE c.marking_order_id = mo.id)
+    ) evidence
     GROUP BY marking_order_id
 )
 SELECT NULL::uuid AS marking_order_id,
