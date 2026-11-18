@@ -114,10 +114,16 @@ CREATE TRIGGER trg_marking_hu_reservation_no_truncate
 CREATE FUNCTION marking_hu_guard_code_consumption() RETURNS TRIGGER
 LANGUAGE plpgsql AS $$
 BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (SELECT 1 FROM marking_hu_reservation r
+                   WHERE r.marking_code_id = OLD.id AND r.state = 'ACTIVE') THEN
+            RAISE EXCEPTION 'HU_MARKING_SOURCE_CODE_RESERVED' USING ERRCODE = '23514';
+        END IF;
+        RETURN OLD;
+    END IF;
     IF EXISTS (SELECT 1 FROM marking_hu_reservation r
                WHERE r.marking_code_id = OLD.id AND r.state = 'ACTIVE')
-       AND (TG_OP = 'DELETE'
-         OR NEW.status IS DISTINCT FROM OLD.status
+       AND (NEW.status IS DISTINCT FROM OLD.status
          OR NEW.receipt_doc_id IS DISTINCT FROM OLD.receipt_doc_id
          OR NEW.receipt_line_id IS DISTINCT FROM OLD.receipt_line_id
          OR NEW.marking_order_id IS DISTINCT FROM OLD.marking_order_id
@@ -126,7 +132,6 @@ BEGIN
          OR NEW.import_id IS DISTINCT FROM OLD.import_id) THEN
         RAISE EXCEPTION 'HU_MARKING_SOURCE_CODE_RESERVED' USING ERRCODE = '23514';
     END IF;
-    IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
     RETURN NEW;
 END;
 $$;
@@ -327,7 +332,7 @@ BEGIN
                     SELECT 1 FROM marking_hu_reservation r
                     WHERE r.marking_code_id = c.id AND r.state = 'ACTIVE'
                   )
-                ORDER BY c.id FOR UPDATE OF c
+                ORDER BY c.id LIMIT v_remaining FOR UPDATE OF c
             LOOP
                 EXIT WHEN v_remaining = 0;
                 INSERT INTO marking_hu_reservation(
