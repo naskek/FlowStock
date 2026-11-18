@@ -1015,18 +1015,36 @@ selected_marking_orders AS (
            OR mo.order_id IS NOT NULL)
 ),
 free_code_buckets AS (
-    SELECT smo.order_id,
-           COALESCE(smo.item_id, 0) AS item_id,
-           COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') AS normalized_gtin,
-           COUNT(*) AS free_qty
-    FROM selected_marking_orders smo
-    INNER JOIN marking_code c ON c.marking_order_id = smo.id
-                             AND c.status IN (@marking_code_status_reserved, @marking_code_status_printed)
-                             AND c.receipt_doc_id IS NULL
-                             AND c.receipt_line_id IS NULL
-    GROUP BY smo.order_id,
-             COALESCE(smo.item_id, 0),
-             COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '')
+    SELECT order_id, item_id, normalized_gtin, SUM(free_qty) AS free_qty
+    FROM (
+        SELECT smo.order_id,
+               COALESCE(smo.item_id, 0) AS item_id,
+               COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') AS normalized_gtin,
+               COUNT(*) AS free_qty
+        FROM selected_marking_orders smo
+        INNER JOIN marking_code c ON c.marking_order_id = smo.id
+                                 AND c.status IN (@marking_code_status_reserved, @marking_code_status_printed)
+                                 AND c.receipt_doc_id IS NULL AND c.receipt_line_id IS NULL
+        GROUP BY smo.order_id, COALESCE(smo.item_id, 0),
+                 COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '')
+        UNION ALL
+        SELECT smo.order_id, p.item_id, p.normalized_gtin, b.available_quantity
+        FROM selected_marking_orders smo
+        INNER JOIN marking_synthetic_quantity_pool p ON p.marking_order_id = smo.id
+        INNER JOIN marking_synthetic_quantity_balance b ON b.pool_id = p.id
+        INNER JOIN marking_order mo ON mo.id = p.marking_order_id
+        WHERE p.source_key = 'excel-quantity:v1'
+          AND p.source_scope = JSONB_BUILD_OBJECT(
+              'source_type', BTRIM(mo.source_type),
+              'source_order_id', mo.source_order_id, 'order_id', mo.order_id)
+          AND p.item_id = mo.item_id
+          AND p.order_line_id IS NOT DISTINCT FROM mo.order_line_id
+          AND p.normalized_gtin = BTRIM(mo.gtin)
+          AND p.source_type = BTRIM(mo.source_type)
+          AND b.available_quantity > 0 AND b.applied_quantity >= 0
+          AND NOT EXISTS (SELECT 1 FROM marking_code c WHERE c.marking_order_id = mo.id)
+    ) free_sources
+    GROUP BY order_id, item_id, normalized_gtin
 ),
 free_need_matches AS (
     SELECT need.order_id,
@@ -1058,21 +1076,44 @@ free_marking_need_coverage AS (
              gtin
 ),
 bound_code_buckets AS (
-    SELECT ols.order_id,
-           ols.item_id,
-           COALESCE(NULLIF(BTRIM(i.gtin), ''), '') AS normalized_gtin,
-           COUNT(*) AS bound_qty
-    FROM selected_marking_orders smo
-    INNER JOIN marking_code c ON c.marking_order_id = smo.id
-                             AND c.status <> @marking_code_status_voided
-                             AND c.receipt_line_id IS NOT NULL
-    INNER JOIN doc_lines dl ON dl.id = c.receipt_line_id
-    INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
+    SELECT order_id, item_id, normalized_gtin, SUM(bound_qty) AS bound_qty
+    FROM (
+        SELECT ols.order_id,
+               ols.item_id,
+               COALESCE(NULLIF(BTRIM(i.gtin), ''), '') AS normalized_gtin,
+               COUNT(*) AS bound_qty
+        FROM selected_marking_orders smo
+        INNER JOIN marking_code c ON c.marking_order_id = smo.id
+                                 AND c.status <> @marking_code_status_voided
+                                 AND c.receipt_line_id IS NOT NULL
+        INNER JOIN doc_lines dl ON dl.id = c.receipt_line_id
+        INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
                                     AND ols.order_id = smo.order_id
-    INNER JOIN items i ON i.id = ols.item_id
-    GROUP BY ols.order_id,
-             ols.item_id,
-             COALESCE(NULLIF(BTRIM(i.gtin), ''), '')
+        INNER JOIN items i ON i.id = ols.item_id
+        GROUP BY ols.order_id, ols.item_id, COALESCE(NULLIF(BTRIM(i.gtin), ''), '')
+        UNION ALL
+        SELECT ols.order_id, ols.item_id,
+               COALESCE(NULLIF(BTRIM(i.gtin), ''), ''), rb.applied_quantity
+        FROM selected_marking_orders smo
+        INNER JOIN marking_synthetic_quantity_pool p ON p.marking_order_id = smo.id
+        INNER JOIN marking_synthetic_quantity_receipt_balance rb ON rb.pool_id = p.id
+        INNER JOIN doc_lines dl ON dl.id = rb.receipt_line_id
+        INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
+                                        AND ols.order_id = smo.order_id
+        INNER JOIN items i ON i.id = ols.item_id
+        INNER JOIN marking_order mo ON mo.id = p.marking_order_id
+        WHERE p.source_key = 'excel-quantity:v1'
+          AND p.source_scope = JSONB_BUILD_OBJECT(
+              'source_type', BTRIM(mo.source_type),
+              'source_order_id', mo.source_order_id, 'order_id', mo.order_id)
+          AND p.item_id = mo.item_id AND p.item_id = ols.item_id
+          AND p.order_line_id IS NOT DISTINCT FROM mo.order_line_id
+          AND p.normalized_gtin = BTRIM(mo.gtin)
+          AND p.source_type = BTRIM(mo.source_type)
+          AND rb.applied_quantity > 0
+          AND NOT EXISTS (SELECT 1 FROM marking_code c WHERE c.marking_order_id = mo.id)
+    ) bound_sources
+    GROUP BY order_id, item_id, normalized_gtin
 ),
 bound_need_matches AS (
     SELECT need.order_id,
@@ -8561,17 +8602,40 @@ order_need AS (
 ),
 task_code_stats AS (
     SELECT marking_order_id,
-           COUNT(*) FILTER (WHERE status <> @marking_code_status_voided) AS codes_total,
-           COUNT(*) FILTER (
-               WHERE status IN (@marking_code_status_reserved, @marking_code_status_printed)
-                 AND receipt_line_id IS NULL
-                 AND receipt_doc_id IS NULL
-           ) AS codes_free,
-           COUNT(*) FILTER (
-               WHERE status <> @marking_code_status_voided
-                 AND (receipt_line_id IS NOT NULL OR receipt_doc_id IS NOT NULL)
-           ) AS codes_bound
-    FROM marking_code
+           SUM(codes_total) AS codes_total,
+           SUM(codes_free) AS codes_free,
+           SUM(codes_bound) AS codes_bound
+    FROM (
+        SELECT marking_order_id,
+               COUNT(*) FILTER (WHERE status <> @marking_code_status_voided) AS codes_total,
+               COUNT(*) FILTER (
+                   WHERE status IN (@marking_code_status_reserved, @marking_code_status_printed)
+                     AND receipt_line_id IS NULL AND receipt_doc_id IS NULL
+               ) AS codes_free,
+               COUNT(*) FILTER (
+                   WHERE status <> @marking_code_status_voided
+                     AND (receipt_line_id IS NOT NULL OR receipt_doc_id IS NOT NULL)
+               ) AS codes_bound
+        FROM marking_code GROUP BY marking_order_id
+        UNION ALL
+        SELECT b.marking_order_id,
+               b.issued_quantity - b.voided_quantity,
+               b.available_quantity,
+               b.applied_quantity
+        FROM marking_synthetic_quantity_balance b
+        INNER JOIN marking_synthetic_quantity_pool p ON p.id = b.pool_id
+        INNER JOIN marking_order mo ON mo.id = p.marking_order_id
+        WHERE p.source_key = 'excel-quantity:v1'
+          AND p.source_scope = JSONB_BUILD_OBJECT(
+              'source_type', BTRIM(mo.source_type),
+              'source_order_id', mo.source_order_id, 'order_id', mo.order_id)
+          AND p.item_id = mo.item_id
+          AND p.order_line_id IS NOT DISTINCT FROM mo.order_line_id
+          AND p.normalized_gtin = BTRIM(mo.gtin)
+          AND p.source_type = BTRIM(mo.source_type)
+          AND b.available_quantity >= 0 AND b.applied_quantity >= 0
+          AND NOT EXISTS (SELECT 1 FROM marking_code c WHERE c.marking_order_id = mo.id)
+    ) evidence
     GROUP BY marking_order_id
 )
 SELECT NULL::uuid AS marking_order_id,
@@ -9416,9 +9480,12 @@ VALUES(
             return;
         }
 
-        WithConnection(connection =>
+        // The status and compatibility preflight must use the same transaction
+        // as any generated TEMP-CHZ codes (including legacy/global exports).
+        ExecuteAtomic(scoped => scoped.WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, @"
+            scoped.EnsureLegacyMarkingTasksHaveNoQuantityPools(connection, ids);
+            using var command = scoped.CreateCommand(connection, @"
 UPDATE marking_order
 SET status = @status,
     codes_bound_at = COALESCE(codes_bound_at, @printed_at),
@@ -9429,7 +9496,7 @@ WHERE id = ANY(@ids::uuid[]);");
             command.Parameters.AddWithValue("@printed_at", ToDbDate(printedAt));
             command.ExecuteNonQuery();
             return 0;
-        });
+        }));
     }
 
     public void MarkOrdersPrinted(IReadOnlyCollection<long> orderIds, DateTime printedAt)
@@ -18917,6 +18984,33 @@ WHERE id = @id;");
             return;
         }
 
+        // The only legacy technical writer uses this prefix. Real DataMatrix
+        // imports remain unchanged; a mixed batch is protected as a whole.
+        var technicalTaskIds = codes
+            .Where(code => code.Code.StartsWith("TEMP-CHZ-", StringComparison.Ordinal))
+            .Select(code => code.MarkingOrderId)
+            .Distinct()
+            .ToArray();
+        if (technicalTaskIds.Length == 0)
+        {
+            AddMarkingCodesCore(codes);
+            return;
+        }
+
+        ExecuteAtomic(scoped =>
+        {
+            scoped.WithConnection(connection =>
+            {
+                scoped.EnsureLegacyMarkingTasksHaveNoQuantityPools(connection, technicalTaskIds);
+                return 0;
+            });
+            scoped.AddMarkingCodesCore(codes);
+            return 0;
+        });
+    }
+
+    private void AddMarkingCodesCore(IReadOnlyList<MarkingCode> codes)
+    {
         WithConnection(connection =>
         {
             var ids = codes.Select(code => code.Id).ToArray();
@@ -19020,6 +19114,51 @@ FROM unnest(
         });
     }
 
+    // Temporary bridge until all PRD/COR consumers are quantity-aware.
+    // Take exclusive task locks in a deterministic order before querying the
+    // pool table. V0048 ISSUE first takes SHARE on marking_order, so these
+    // locks serialize the legacy per-code path against a concurrent ISSUE.
+    // An existing pool is blocked even if all its quantities were VOIDed:
+    // pool provenance cannot be reclassified or safely inferred here.
+    private void EnsureLegacyMarkingTasksHaveNoQuantityPools(
+        NpgsqlConnection connection,
+        IReadOnlyCollection<Guid> markingOrderIds)
+    {
+        var ids = markingOrderIds.Distinct().OrderBy(id => id).ToArray();
+        if (ids.Length == 0)
+        {
+            return;
+        }
+
+        using (var lockCommand = CreateCommand(connection, @"
+SELECT id
+FROM marking_order
+WHERE id = ANY(@task_ids::uuid[])
+ORDER BY id
+FOR UPDATE;"))
+        {
+            lockCommand.Parameters.AddWithValue("@task_ids", ids);
+            using var reader = lockCommand.ExecuteReader();
+            while (reader.Read())
+            {
+                // Hold the row locks until the surrounding transaction ends.
+            }
+        }
+
+        using var checkCommand = CreateCommand(connection, @"
+SELECT EXISTS(
+    SELECT 1 FROM marking_synthetic_quantity_pool
+    WHERE marking_order_id = ANY(@task_ids::uuid[])
+);");
+        checkCommand.Parameters.AddWithValue("@task_ids", ids);
+        if (Convert.ToBoolean(checkCommand.ExecuteScalar()))
+        {
+            throw new InvalidOperationException(
+                "QUANTITY_POOL_LEGACY_EXPORT_CONFLICT: " +
+                "Нельзя формировать старые TEMP-CHZ для задачи с количественным пулом.");
+        }
+    }
+
     public int CountMarkingCodesByMarkingOrder(Guid markingOrderId)
     {
         return WithConnection(connection =>
@@ -19040,20 +19179,38 @@ WHERE marking_order_id = @marking_order_id
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT COUNT(*)
-FROM marking_code c
-INNER JOIN marking_order mo ON mo.id = c.marking_order_id
-WHERE c.status IN (@reserved_status, @printed_status)
-  AND c.receipt_doc_id IS NULL
-  AND c.receipt_line_id IS NULL
-  AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
-  AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
-       OR mo.order_id IS NOT NULL)
-  AND (
-      mo.item_id = @item_id
-      OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(mo.gtin), '') = @gtin::text)
-      OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(c.gtin), '') = @gtin::text)
-  );");
+SELECT
+    (SELECT COUNT(*)
+     FROM marking_code c
+     INNER JOIN marking_order mo ON mo.id = c.marking_order_id
+     WHERE c.status IN (@reserved_status, @printed_status)
+       AND c.receipt_doc_id IS NULL AND c.receipt_line_id IS NULL
+       AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+       AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
+            OR mo.order_id IS NOT NULL)
+       AND (mo.item_id = @item_id
+            OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(mo.gtin), '') = @gtin::text)
+            OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(c.gtin), '') = @gtin::text)))
+    + COALESCE((
+        SELECT SUM(b.available_quantity)
+        FROM marking_synthetic_quantity_balance b
+        INNER JOIN marking_synthetic_quantity_pool p ON p.id = b.pool_id
+        INNER JOIN marking_order mo ON mo.id = p.marking_order_id
+        WHERE b.available_quantity > 0 AND b.applied_quantity >= 0
+          AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+          AND p.source_key = 'excel-quantity:v1'
+          AND p.source_type = @production_order_source_type
+          AND p.source_type = BTRIM(mo.source_type)
+          AND p.source_scope = JSONB_BUILD_OBJECT(
+              'source_type', BTRIM(mo.source_type),
+              'source_order_id', mo.source_order_id, 'order_id', mo.order_id)
+          AND p.item_id = mo.item_id
+          AND p.order_line_id IS NOT DISTINCT FROM mo.order_line_id
+          AND p.normalized_gtin = BTRIM(mo.gtin)
+          AND NOT EXISTS (SELECT 1 FROM marking_code c WHERE c.marking_order_id = mo.id)
+          AND (p.item_id = @item_id
+               OR (@gtin::text IS NOT NULL AND p.normalized_gtin = @gtin::text))
+    ), 0);");
             command.Parameters.AddWithValue("@reserved_status", MarkingCodeStatus.Reserved);
             command.Parameters.AddWithValue("@printed_status", MarkingCodeStatus.Printed);
             command.Parameters.AddWithValue("@marking_status_cancelled", MarkingOrderStatus.Cancelled);

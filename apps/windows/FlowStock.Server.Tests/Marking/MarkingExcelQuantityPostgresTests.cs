@@ -1,0 +1,454 @@
+using System.Globalization;
+using System.IO.Compression;
+using System.Xml.Linq;
+using FlowStock.Core.Services;
+using FlowStock.Data;
+using Npgsql;
+
+namespace FlowStock.Server.Tests.Marking;
+
+/// <summary>
+/// Append-only quantity journal cannot be test-cleaned by DELETE.
+/// Run ONLY against disposable PostgreSQL (CI or explicit local opt-in);
+/// do not include this class in a restored-production-copy smoke filter.
+/// </summary>
+[Collection("Postgres marking integration")]
+[Trait("DatabaseScope", "DisposableOnly")]
+public sealed class MarkingExcelQuantityPostgresTests
+{
+    private static readonly DateTime ExportAt = new(2026, 11, 18, 11, 0, 0, DateTimeKind.Utc);
+
+    [Fact]
+    public async Task FirstExport_RetryAndGrowth_IssuesOnlyQuantityAndPreservesThreeColumnXlsx()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 6000);
+        var service = NewService(cs);
+
+        var first = service.Export(fixture.OrderId, ExportAt);
+        Assert.True(first.IsSuccess, first.Message);
+        Assert.Equal(6000, first.CreatedCodeQty);
+        Assert.Equal(6000, first.CoveredQty);
+        Assert.Equal(6000, ReadXlsxFirstQuantity(first.FileBytes!));
+        Assert.Equal(0, await CountAsync(cs, "marking_code", fixture.OrderId));
+        Assert.Equal(0, await CountAsync(cs, "marking_code_import", fixture.OrderId));
+        Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_pool", fixture.OrderId));
+        Assert.Equal(6000, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+
+        var reexportPreview = service.Preview(fixture.OrderId);
+        Assert.True(reexportPreview.IsSuccess, reexportPreview.Message);
+        Assert.Equal(6000, reexportPreview.TotalQty);
+
+        var retry = service.Export(fixture.OrderId, ExportAt.AddMinutes(1));
+        Assert.True(retry.IsSuccess, retry.Message);
+        Assert.Equal(0, retry.CreatedCodeQty);
+        Assert.Equal(6000, retry.CoveredQty);
+        Assert.Equal(6000, ReadXlsxFirstQuantity(retry.FileBytes!));
+        Assert.Equal(6000, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+
+        await ExecuteAsync(cs, "UPDATE order_lines SET qty_ordered = 6007 WHERE order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+        var deltaPreview = service.Preview(fixture.OrderId);
+        Assert.True(deltaPreview.IsSuccess, deltaPreview.Message);
+        Assert.Equal(7, deltaPreview.TotalQty);
+
+        var growth = service.Export(fixture.OrderId, ExportAt.AddMinutes(2));
+        Assert.True(growth.IsSuccess, growth.Message);
+        Assert.Equal(7, growth.CreatedCodeQty);
+        Assert.Equal(6007, growth.CoveredQty);
+        Assert.Equal(7, ReadXlsxFirstQuantity(growth.FileBytes!));
+        Assert.Equal(6007, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(2, await CountAsync(cs, "marking_synthetic_quantity_pool", fixture.OrderId));
+        Assert.Equal(2, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+        Assert.Equal(0, await CountAsync(cs, "marking_code", fixture.OrderId));
+    }
+
+    [Fact]
+    public async Task PartiallyIssuedTask_ExportsOnlyMissingQuantityAndReusesSamePool()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 50);
+        var service = NewService(cs);
+        var initial = service.Export(fixture.OrderId, ExportAt);
+        Assert.True(initial.IsSuccess, initial.Message);
+        Assert.Equal(50, ReadXlsxFirstQuantity(initial.FileBytes!));
+
+        await ExecuteAsync(cs, "UPDATE order_lines SET qty_ordered = 70 WHERE order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+        await ExecuteAsync(cs, "UPDATE marking_order SET requested_quantity = 70 WHERE source_order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+        var preview = service.Preview(fixture.OrderId);
+        Assert.True(preview.IsSuccess, preview.Message);
+        Assert.Equal(20, preview.TotalQty);
+        var second = service.Export(fixture.OrderId, ExportAt.AddSeconds(1));
+        Assert.True(second.IsSuccess, second.Message);
+        Assert.Equal(20, second.CreatedCodeQty);
+        Assert.Equal(20, ReadXlsxFirstQuantity(second.FileBytes!));
+        Assert.Equal(70, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_pool", fixture.OrderId));
+        Assert.Equal(2, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+    }
+
+    [Fact]
+    public async Task PartiallyIssuedLegacyTask_StillGeneratesMissingLegacyCodes()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 5);
+        var old = new OrderMarkingExportService(new PostgresDataStore(cs))
+            .Export(fixture.OrderId, ExportAt);
+        Assert.True(old.IsSuccess, old.Message);
+        await ExecuteAsync(cs, "UPDATE order_lines SET qty_ordered = 8 WHERE order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+        await ExecuteAsync(cs, "UPDATE marking_order SET requested_quantity = 8 WHERE source_order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+        var service = NewService(cs);
+        Assert.Equal(3, service.Preview(fixture.OrderId).TotalQty);
+        var result = service.Export(fixture.OrderId, ExportAt.AddMinutes(1));
+        Assert.True(result.IsSuccess, result.Message);
+        Assert.Equal(3, ReadXlsxFirstQuantity(result.FileBytes!));
+        Assert.Equal(8, await CountAsync(cs, "marking_code", fixture.OrderId));
+        Assert.Equal(0, await CountAsync(cs, "marking_synthetic_quantity_pool", fixture.OrderId));
+    }
+
+    [Fact]
+    public async Task ReducedOrder_DoesNotReexportHistoricalExcessOrEraseLedger()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 600);
+        var service = NewService(cs);
+        var initial = service.Export(fixture.OrderId, ExportAt);
+        Assert.True(initial.IsSuccess, initial.Message);
+        Assert.Equal(600, await IssuedAsync(cs, fixture.OrderId));
+
+        await ExecuteAsync(cs,
+            "UPDATE order_lines SET qty_ordered = 100 WHERE order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+
+        var preview = service.Preview(fixture.OrderId);
+        Assert.False(preview.IsSuccess);
+        Assert.Contains("EXCEL_REEXPORT_CHANGED_DEMAND", preview.Message);
+        var export = service.Export(fixture.OrderId, ExportAt.AddMinutes(1));
+        Assert.False(export.IsSuccess);
+        Assert.Contains("EXCEL_REEXPORT_CHANGED_DEMAND", export.Message);
+        Assert.Null(export.FileBytes);
+        Assert.Equal(600, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+    }
+
+    [Fact]
+    public async Task PartiallyIssuedTaskAfterDecrease_FailsClosedInsteadOfIssuingExcess()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 50);
+        var service = NewService(cs);
+        Assert.True(service.Export(fixture.OrderId, ExportAt).IsSuccess);
+        await ExecuteAsync(cs,
+            "UPDATE marking_order SET requested_quantity = 90 WHERE source_order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+        await ExecuteAsync(cs,
+            "UPDATE order_lines SET qty_ordered = 60 WHERE order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+
+        var preview = service.Preview(fixture.OrderId);
+        Assert.False(preview.IsSuccess);
+        Assert.Contains("EXCEL_QUANTITY_SCOPE_MISMATCH", preview.Message);
+        var result = service.Export(fixture.OrderId, ExportAt.AddMinutes(1));
+        Assert.False(result.IsSuccess);
+        Assert.Contains("EXCEL_QUANTITY_SCOPE_MISMATCH", result.Message);
+        Assert.Equal(50, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+    }
+
+    [Fact]
+    public async Task ItemGtinChangedAfterIssue_BlocksPreviewAndCannotReuseStaleQuantity()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 40);
+        var service = NewService(cs);
+        Assert.True(service.Export(fixture.OrderId, ExportAt).IsSuccess);
+        await ExecuteAsync(cs, "UPDATE items SET gtin = @gtin WHERE id = @item_id;",
+            ("gtin", "04999123456789"), ("item_id", fixture.ItemId));
+
+        var preview = service.Preview(fixture.OrderId);
+        Assert.False(preview.IsSuccess);
+        Assert.Contains("MARKING_QUANTITY_AMBIGUOUS", preview.Message);
+        var export = service.Export(fixture.OrderId, ExportAt.AddMinutes(1));
+        Assert.False(export.IsSuccess);
+        Assert.Contains("MARKING_QUANTITY_AMBIGUOUS", export.Message);
+        Assert.Equal(40, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+    }
+
+    [Fact]
+    public async Task CustomerAlreadyAppliedQuantity_RefusesToTreatReceiptAsFreeCoverage()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "CUSTOMER", 100);
+        var service = NewService(cs);
+        Assert.True(service.Export(fixture.OrderId, ExportAt).IsSuccess);
+
+        await using (var connection = new NpgsqlConnection(cs))
+        {
+            await connection.OpenAsync();
+            var docId = await InsertIdAsync(connection,
+                "INSERT INTO docs(doc_ref,type,status,order_id,created_at) VALUES(@r,'PRODUCTION_RECEIPT','DRAFT',@o,@at) RETURNING id;",
+                ("r", "QTY-APPLIED-" + Guid.NewGuid().ToString("N")),
+                ("o", fixture.OrderId),
+                ("at", "2026-11-18T11:05:00"));
+            var receiptLineId = await InsertIdAsync(connection,
+                "INSERT INTO doc_lines(doc_id,item_id,order_line_id,qty) VALUES(@d,@i,@l,30) RETURNING id;",
+                ("d", docId), ("i", fixture.ItemId), ("l", fixture.LineId));
+            var poolId = Guid.Parse(await ScalarAsync<string>(cs,
+                "SELECT p.id::text FROM marking_synthetic_quantity_pool p JOIN marking_order mo ON mo.id=p.marking_order_id WHERE mo.source_order_id=@o;",
+                ("o", fixture.OrderId)));
+            await ExecuteAsync(cs, """
+SELECT * FROM marking_synthetic_quantity_apply(
+    @operation_id, @pool_id, 'ASSIGN', 30,
+    NULL::uuid, NULL::text, @doc_id, @receipt_line_id, 'TEST-PRD'
+);
+""",
+                ("operation_id", Guid.NewGuid()), ("pool_id", poolId),
+                ("doc_id", docId), ("receipt_line_id", receiptLineId));
+        }
+
+        var preview = service.Preview(fixture.OrderId);
+        Assert.False(preview.IsSuccess);
+        Assert.Contains("EXCEL_CUSTOMER_APPLIED_SCOPE_UNVERIFIED", preview.Message);
+        var export = service.Export(fixture.OrderId, ExportAt.AddMinutes(5));
+        Assert.False(export.IsSuccess);
+        Assert.Contains("EXCEL_CUSTOMER_APPLIED_SCOPE_UNVERIFIED", export.Message);
+        Assert.Equal(100, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(2, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+    }
+
+    [Fact]
+    public async Task ParallelOrderExports_SerializeAndCannotDoubleIssue()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 900);
+        var jobs = new[]
+        {
+            Task.Run(() => NewService(cs).Export(fixture.OrderId, ExportAt)),
+            Task.Run(() => NewService(cs).Export(fixture.OrderId, ExportAt.AddSeconds(1)))
+        };
+        var results = await Task.WhenAll(jobs);
+
+        Assert.All(results, result => Assert.True(result.IsSuccess, result.Message));
+        Assert.Equal(900, results.Sum(result => result.CreatedCodeQty));
+        Assert.Equal(900, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+        Assert.Equal(0, await CountAsync(cs, "marking_code", fixture.OrderId));
+    }
+
+    [Fact]
+    public async Task InjectedIssueFailure_RollsBackTaskPoolEventAndOrderStatus()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 120);
+        var suffix = Guid.NewGuid().ToString("N");
+        var trigger = "trg_quantity_fail_" + suffix;
+        var function = "quantity_fail_" + suffix;
+        try
+        {
+            await ExecuteAsync(cs, $"""
+CREATE FUNCTION {function}() RETURNS trigger AS $$
+BEGIN
+    IF NEW.action = 'ISSUE' AND EXISTS (
+        SELECT 1 FROM marking_synthetic_quantity_pool p
+        JOIN marking_order mo ON mo.id = p.marking_order_id
+        WHERE p.id = NEW.pool_id AND mo.source_order_id = {fixture.OrderId}
+    ) THEN
+        RAISE EXCEPTION 'quantity issue injected fault';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER {trigger}
+BEFORE INSERT ON marking_synthetic_quantity_event
+FOR EACH ROW EXECUTE FUNCTION {function}();
+""");
+            var error = Assert.ThrowsAny<Exception>(
+                () => NewService(cs).Export(fixture.OrderId, ExportAt));
+            Assert.Contains("quantity issue injected fault", error.ToString());
+        }
+        finally
+        {
+            await ExecuteAsync(cs, $"DROP TRIGGER IF EXISTS {trigger} ON marking_synthetic_quantity_event; DROP FUNCTION IF EXISTS {function}();");
+        }
+
+        Assert.Equal(0, await CountAsync(cs, "marking_order", fixture.OrderId));
+        Assert.Equal(0, await CountAsync(cs, "marking_synthetic_quantity_pool", fixture.OrderId));
+        Assert.Equal(0, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+        Assert.Equal("NOT_REQUIRED",
+            await ScalarAsync<string>(cs, "SELECT marking_status FROM orders WHERE id = @order_id;",
+                ("order_id", fixture.OrderId)));
+    }
+
+    [Fact]
+    public async Task AdoptedInternalHuWithoutAttributableMarking_BlocksPreviewAndExport()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "CUSTOMER", 80);
+        await ExecuteAsync(cs, """
+WITH transfer AS (
+    INSERT INTO order_coverage_transfers(
+        transfer_type, source_order_id, source_order_ref, source_order_status,
+        target_order_id, target_order_ref,
+        source_prd_doc_id, source_prd_doc_ref,
+        target_prd_doc_id, target_prd_doc_ref,
+        production_pallet_id, hu_code, pallet_status_at_transfer,
+        transferred_qty, created_at)
+    VALUES (
+        'PLANNED_PALLET_ADOPTION', 98000001, 'SOURCE-INTERNAL', 'IN_PROGRESS',
+        @order_id, 'TARGET-CUSTOMER',
+        98000002, 'SOURCE-PRD', 98000003, 'TARGET-PRD',
+        98000004, 'HU-TEST-ADOPTED', 'PRINTED', 30, '2026-11-18T11:00:00')
+    RETURNING id
+)
+INSERT INTO order_coverage_transfer_lines(
+    transfer_id, source_order_line_id, target_order_line_id,
+    source_doc_line_id, item_id, source_qty_ordered_before,
+    transferred_qty, source_production_purpose)
+SELECT id, 98000005, @line_id, 98000006, @item_id, 30, 30, 'CUSTOMER_ORDER'
+FROM transfer;
+""",
+            ("order_id", fixture.OrderId), ("line_id", fixture.LineId), ("item_id", fixture.ItemId));
+
+        var preview = NewService(cs).Preview(fixture.OrderId);
+        Assert.False(preview.IsSuccess);
+        Assert.Contains("ADOPTED_HU_MARKING_UNVERIFIED", preview.Message);
+        var export = NewService(cs).Export(fixture.OrderId, ExportAt);
+        Assert.False(export.IsSuccess);
+        Assert.Contains("ADOPTED_HU_MARKING_UNVERIFIED", export.Message);
+        Assert.Equal(0, await CountAsync(cs, "marking_order", fixture.OrderId));
+    }
+
+    [Fact]
+    public async Task LegacyGateOff_StillGeneratesPerUnitCodes()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 4);
+        var legacy = new OrderMarkingExportService(new PostgresDataStore(cs))
+            .Export(fixture.OrderId, ExportAt);
+        Assert.True(legacy.IsSuccess, legacy.Message);
+        Assert.Equal(4, await CountAsync(cs, "marking_code", fixture.OrderId));
+        Assert.Equal(0, await CountAsync(cs, "marking_synthetic_quantity_pool", fixture.OrderId));
+    }
+
+    private static OrderMarkingExportService NewService(string cs) =>
+        new(new PostgresDataStore(cs), quantityIssueEnabled: true);
+
+    private static string ConnectionString()
+    {
+        var cs = Environment.GetEnvironmentVariable("FLOWSTOCK_POSTGRES_TEST_CONNECTION");
+        if (string.IsNullOrWhiteSpace(cs))
+            throw new InvalidOperationException("Set FLOWSTOCK_POSTGRES_TEST_CONNECTION.");
+        if (!string.Equals(Environment.GetEnvironmentVariable("CI"), "true",
+                StringComparison.OrdinalIgnoreCase)
+            && Environment.GetEnvironmentVariable("FLOWSTOCK_ALLOW_DISPOSABLE_MARKING_TESTS") != "1")
+            throw new InvalidOperationException(
+                "Quantity integration tests write immutable audit; run only on a disposable database. " +
+                "Explicitly opt in via FLOWSTOCK_ALLOW_DISPOSABLE_MARKING_TESTS=1.");
+        return cs.Trim();
+    }
+
+    private static async Task<(long OrderId, long ItemId, long LineId)> CreateOrderAsync(
+        string cs, string type, int quantity)
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var gtin = $"046{new string(suffix.Where(char.IsDigit).DefaultIfEmpty('7').ToArray())}00000000000000"[..14];
+        await using var conn = new NpgsqlConnection(cs);
+        await conn.OpenAsync();
+        var typeId = await InsertIdAsync(conn,
+            "INSERT INTO item_types(name,code,enable_marking) VALUES(@n,@c,TRUE) RETURNING id;",
+            ("n", "Quantity test " + suffix), ("c", "QTY_" + suffix));
+        var itemId = await InsertIdAsync(conn,
+            "INSERT INTO items(name,barcode,gtin,base_uom,item_type_id) VALUES(@n,@b,@g,'шт',@t) RETURNING id;",
+            ("n", "Quantity item " + suffix), ("b", "QTY-" + suffix),
+            ("g", gtin), ("t", typeId));
+        var orderId = await InsertIdAsync(conn,
+            "INSERT INTO orders(order_ref,order_type,status,created_at,marking_status) VALUES(@r,@t,'DRAFT','2026-11-18T11:00:00','NOT_REQUIRED') RETURNING id;",
+            ("r", "QTY-" + suffix), ("t", type));
+        var lineId = await InsertIdAsync(conn,
+            "INSERT INTO order_lines(order_id,item_id,qty_ordered) VALUES(@o,@i,@q) RETURNING id;",
+            ("o", orderId), ("i", itemId), ("q", (double)quantity));
+        return (orderId, itemId, lineId);
+    }
+
+    private static async Task<long> InsertIdAsync(
+        NpgsqlConnection conn, string sql, params (string Name, object Value)[] args)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (name, value) in args)
+            cmd.Parameters.AddWithValue(name, value);
+        return Convert.ToInt64(await cmd.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
+    }
+
+    private static async Task ExecuteAsync(
+        string cs, string sql, params (string Name, object Value)[] args)
+    {
+        await using var conn = new NpgsqlConnection(cs);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (name, value) in args)
+            cmd.Parameters.AddWithValue(name, value);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<T> ScalarAsync<T>(
+        string cs, string sql, params (string Name, object Value)[] args)
+    {
+        await using var conn = new NpgsqlConnection(cs);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (name, value) in args)
+            cmd.Parameters.AddWithValue(name, value);
+        return (T)Convert.ChangeType((await cmd.ExecuteScalarAsync())!, typeof(T), CultureInfo.InvariantCulture);
+    }
+
+    private static Task<long> IssuedAsync(string cs, long orderId) =>
+        ScalarAsync<long>(cs, """
+SELECT COALESCE(SUM(b.issued_quantity - b.voided_quantity), 0)::bigint
+FROM marking_synthetic_quantity_balance b
+JOIN marking_order mo ON mo.id = b.marking_order_id
+WHERE mo.source_order_id = @order_id;
+""", ("order_id", orderId));
+
+    private static Task<long> CountAsync(string cs, string table, long orderId)
+    {
+        var sql = table switch
+        {
+            "marking_order" =>
+                "SELECT COUNT(*) FROM marking_order WHERE source_order_id = @order_id;",
+            "marking_code" =>
+                "SELECT COUNT(*) FROM marking_code c JOIN marking_order mo ON mo.id=c.marking_order_id WHERE mo.source_order_id=@order_id;",
+            "marking_code_import" =>
+                "SELECT COUNT(*) FROM marking_code_import i JOIN marking_order mo ON mo.id=i.matched_marking_order_id WHERE mo.source_order_id=@order_id;",
+            "marking_synthetic_quantity_pool" =>
+                "SELECT COUNT(*) FROM marking_synthetic_quantity_pool p JOIN marking_order mo ON mo.id=p.marking_order_id WHERE mo.source_order_id=@order_id;",
+            "marking_synthetic_quantity_event" =>
+                "SELECT COUNT(*) FROM marking_synthetic_quantity_event e JOIN marking_synthetic_quantity_pool p ON p.id=e.pool_id JOIN marking_order mo ON mo.id=p.marking_order_id WHERE mo.source_order_id=@order_id;",
+            _ => throw new ArgumentException("Unsupported table", nameof(table))
+        };
+        return ScalarAsync<long>(cs, sql, ("order_id", orderId));
+    }
+
+    private static double ReadXlsxFirstQuantity(byte[] bytes)
+    {
+        using var archive = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read);
+        using var stream = archive.GetEntry("xl/worksheets/sheet1.xml")!.Open();
+        var document = XDocument.Load(stream);
+        XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        var cells = document.Descendants(ns + "c").ToArray();
+        Assert.Equal(new[] { "A1", "B1", "C1" },
+            cells.Select(cell => (string?)cell.Attribute("r")));
+        var quantity = cells.Single(cell => (string?)cell.Attribute("r") == "C1")
+            .Element(ns + "v")?.Value;
+        return double.Parse(quantity!, CultureInfo.InvariantCulture);
+    }
+}
