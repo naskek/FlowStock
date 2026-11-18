@@ -36,6 +36,10 @@ public sealed class MarkingExcelQuantityPostgresTests
         Assert.Equal(6000, await IssuedAsync(cs, fixture.OrderId));
         Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
 
+        var reexportPreview = service.Preview(fixture.OrderId);
+        Assert.True(reexportPreview.IsSuccess, reexportPreview.Message);
+        Assert.Equal(6000, reexportPreview.TotalQty);
+
         var retry = service.Export(fixture.OrderId, ExportAt.AddMinutes(1));
         Assert.True(retry.IsSuccess, retry.Message);
         Assert.Equal(0, retry.CreatedCodeQty);
@@ -46,6 +50,10 @@ public sealed class MarkingExcelQuantityPostgresTests
 
         await ExecuteAsync(cs, "UPDATE order_lines SET qty_ordered = 6007 WHERE order_id = @order_id;",
             ("order_id", fixture.OrderId));
+        var deltaPreview = service.Preview(fixture.OrderId);
+        Assert.True(deltaPreview.IsSuccess, deltaPreview.Message);
+        Assert.Equal(7, deltaPreview.TotalQty);
+
         var growth = service.Export(fixture.OrderId, ExportAt.AddMinutes(2));
         Assert.True(growth.IsSuccess, growth.Message);
         Assert.Equal(7, growth.CreatedCodeQty);
@@ -55,6 +63,53 @@ public sealed class MarkingExcelQuantityPostgresTests
         Assert.Equal(2, await CountAsync(cs, "marking_synthetic_quantity_pool", fixture.OrderId));
         Assert.Equal(2, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
         Assert.Equal(0, await CountAsync(cs, "marking_code", fixture.OrderId));
+    }
+
+    [Fact]
+    public async Task PartiallyIssuedTask_ExportsOnlyMissingQuantityAndReusesSamePool()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 50);
+        var service = NewService(cs);
+        var initial = service.Export(fixture.OrderId, ExportAt);
+        Assert.True(initial.IsSuccess, initial.Message);
+        Assert.Equal(50, ReadXlsxFirstQuantity(initial.FileBytes!));
+
+        await ExecuteAsync(cs, "UPDATE order_lines SET qty_ordered = 70 WHERE order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+        await ExecuteAsync(cs, "UPDATE marking_order SET requested_quantity = 70 WHERE source_order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+        var preview = service.Preview(fixture.OrderId);
+        Assert.True(preview.IsSuccess, preview.Message);
+        Assert.Equal(20, preview.TotalQty);
+        var second = service.Export(fixture.OrderId, ExportAt.AddSeconds(1));
+        Assert.True(second.IsSuccess, second.Message);
+        Assert.Equal(20, second.CreatedCodeQty);
+        Assert.Equal(20, ReadXlsxFirstQuantity(second.FileBytes!));
+        Assert.Equal(70, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_pool", fixture.OrderId));
+        Assert.Equal(2, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+    }
+
+    [Fact]
+    public async Task PartiallyIssuedLegacyTask_StillGeneratesMissingLegacyCodes()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 5);
+        var old = new OrderMarkingExportService(new PostgresDataStore(cs))
+            .Export(fixture.OrderId, ExportAt);
+        Assert.True(old.IsSuccess, old.Message);
+        await ExecuteAsync(cs, "UPDATE order_lines SET qty_ordered = 8 WHERE order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+        await ExecuteAsync(cs, "UPDATE marking_order SET requested_quantity = 8 WHERE source_order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+        var service = NewService(cs);
+        Assert.Equal(3, service.Preview(fixture.OrderId).TotalQty);
+        var result = service.Export(fixture.OrderId, ExportAt.AddMinutes(1));
+        Assert.True(result.IsSuccess, result.Message);
+        Assert.Equal(3, ReadXlsxFirstQuantity(result.FileBytes!));
+        Assert.Equal(8, await CountAsync(cs, "marking_code", fixture.OrderId));
+        Assert.Equal(0, await CountAsync(cs, "marking_synthetic_quantity_pool", fixture.OrderId));
     }
 
     [Fact]
