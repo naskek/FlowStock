@@ -40,6 +40,10 @@ public sealed partial class PostgresDataStore : IDataStore, IBusinessNotificatio
         bool IncludeCancelledMerged,
         string PlanText);
 
+    // Activation requires a coordinated Excel / CUSTOMER PRD / RETURN_PLAN gate.
+    // No config/env/API can enable this initial primitive.
+    private const bool ProspectiveHuMarkingAllocationEnabled = false;
+
     private readonly string _connectionString;
     private readonly NpgsqlConnection? _connection;
     private readonly NpgsqlTransaction? _transaction;
@@ -5085,7 +5089,7 @@ WHERE dl.id IN (
             foreach (var row in rows)
             {
                 GuardSelectedProductionPalletLinesForAdoption(connection, row);
-                InsertOrderCoverageTransfer(
+                var transferId = InsertOrderCoverageTransfer(
                     connection,
                     targetPrdDocId,
                     targetOrderId,
@@ -5197,6 +5201,20 @@ WHERE id = @doc_line_id
                         throw new InvalidOperationException(
                             "Нельзя перенести planned HU: строка выпуска изменилась до переноса.");
                     }
+                }
+
+                // Must happen after all transferred doc/pallet line identities
+                // have been revalidated and moved, in the SAME transaction.
+                // Without the CUSTOMER consumer, this gate stays OFF.
+                if (ProspectiveHuMarkingAllocationEnabled)
+                {
+                    using var reserve = CreateCommand(connection,
+                        "SELECT * FROM marking_hu_reserve_transfer(@transfer_id, @actor);");
+                    reserve.Parameters.AddWithValue("@transfer_id", transferId);
+                    reserve.Parameters.AddWithValue("@actor", "FLOWSTOCK-ADOPTION");
+                    using var reader = reserve.ExecuteReader();
+                    if (!reader.Read())
+                        throw new InvalidOperationException("HU marking reservation was not confirmed.");
                 }
             }
 
@@ -5543,6 +5561,15 @@ WHERE id = @transfer_id
                     "Нельзя завершить compensation: provenance уже изменился.");
             }
 
+            if (ProspectiveHuMarkingAllocationEnabled)
+            {
+                using var release = CreateCommand(connection,
+                    "SELECT marking_hu_return_transfer(@transfer_id, @actor);");
+                release.Parameters.AddWithValue("@transfer_id", compensation.TransferId);
+                release.Parameters.AddWithValue("@actor", "FLOWSTOCK-RETURN-PLAN");
+                _ = release.ExecuteScalar();
+            }
+
             return true;
         });
     }
@@ -5737,7 +5764,8 @@ INSERT INTO order_coverage_transfers(
     pallet_status_at_transfer,
     printed_at_at_transfer,
     transferred_qty,
-    created_at)
+    created_at,
+    hu_marking_allocation_version)
 VALUES(
     @transfer_type,
     @source_order_id,
@@ -5754,7 +5782,8 @@ VALUES(
     @pallet_status_at_transfer,
     @printed_at_at_transfer,
     @transferred_qty,
-    @created_at)
+    @created_at,
+    @allocation_version)
 RETURNING id;"))
         {
             insertTransfer.Parameters.AddWithValue("@transfer_type", OrderCoverageTransferType.PlannedPalletAdoption);
@@ -5775,6 +5804,8 @@ RETURNING id;"))
                 string.IsNullOrWhiteSpace(printedAt) ? DBNull.Value : printedAt);
             insertTransfer.Parameters.AddWithValue("@transferred_qty", transferredQty);
             insertTransfer.Parameters.AddWithValue("@created_at", ToDbDate(createdAt));
+            insertTransfer.Parameters.AddWithValue("@allocation_version",
+                ProspectiveHuMarkingAllocationEnabled ? "v1" : DBNull.Value);
             transferId = Convert.ToInt64(insertTransfer.ExecuteScalar() ?? 0L, CultureInfo.InvariantCulture);
             if (transferId <= 0)
             {
