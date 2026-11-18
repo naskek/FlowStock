@@ -182,6 +182,48 @@ public sealed class MarkingExcelQuantityPostgresTests
     }
 
     [Fact]
+    public async Task CustomerAlreadyAppliedQuantity_RefusesToTreatReceiptAsFreeCoverage()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "CUSTOMER", 100);
+        var service = NewService(cs);
+        Assert.True(service.Export(fixture.OrderId, ExportAt).IsSuccess);
+
+        await using (var connection = new NpgsqlConnection(cs))
+        {
+            await connection.OpenAsync();
+            var docId = await InsertIdAsync(connection,
+                "INSERT INTO docs(doc_ref,type,status,order_id,created_at) VALUES(@r,'PRODUCTION_RECEIPT','DRAFT',@o,@at) RETURNING id;",
+                ("r", "QTY-APPLIED-" + Guid.NewGuid().ToString("N")),
+                ("o", fixture.OrderId),
+                ("at", "2026-11-18T11:05:00"));
+            var receiptLineId = await InsertIdAsync(connection,
+                "INSERT INTO doc_lines(doc_id,item_id,order_line_id,qty) VALUES(@d,@i,@l,30) RETURNING id;",
+                ("d", docId), ("i", fixture.ItemId), ("l", fixture.LineId));
+            var poolId = Guid.Parse(await ScalarAsync<string>(cs,
+                "SELECT p.id::text FROM marking_synthetic_quantity_pool p JOIN marking_order mo ON mo.id=p.marking_order_id WHERE mo.source_order_id=@o;",
+                ("o", fixture.OrderId)));
+            await ExecuteAsync(cs, """
+SELECT * FROM marking_synthetic_quantity_apply(
+    @operation_id, @pool_id, 'ASSIGN', 30,
+    NULL::uuid, NULL::text, @doc_id, @receipt_line_id, 'TEST-PRD'
+);
+""",
+                ("operation_id", Guid.NewGuid()), ("pool_id", poolId),
+                ("doc_id", docId), ("receipt_line_id", receiptLineId));
+        }
+
+        var preview = service.Preview(fixture.OrderId);
+        Assert.False(preview.IsSuccess);
+        Assert.Contains("EXCEL_CUSTOMER_APPLIED_SCOPE_UNVERIFIED", preview.Message);
+        var export = service.Export(fixture.OrderId, ExportAt.AddMinutes(5));
+        Assert.False(export.IsSuccess);
+        Assert.Contains("EXCEL_CUSTOMER_APPLIED_SCOPE_UNVERIFIED", export.Message);
+        Assert.Equal(100, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(2, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+    }
+
+    [Fact]
     public async Task ParallelOrderExports_SerializeAndCannotDoubleIssue()
     {
         var cs = ConnectionString();
