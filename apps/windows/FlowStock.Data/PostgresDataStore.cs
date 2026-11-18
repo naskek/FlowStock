@@ -19179,20 +19179,38 @@ WHERE marking_order_id = @marking_order_id
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT COUNT(*)
-FROM marking_code c
-INNER JOIN marking_order mo ON mo.id = c.marking_order_id
-WHERE c.status IN (@reserved_status, @printed_status)
-  AND c.receipt_doc_id IS NULL
-  AND c.receipt_line_id IS NULL
-  AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
-  AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
-       OR mo.order_id IS NOT NULL)
-  AND (
-      mo.item_id = @item_id
-      OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(mo.gtin), '') = @gtin::text)
-      OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(c.gtin), '') = @gtin::text)
-  );");
+SELECT
+    (SELECT COUNT(*)
+     FROM marking_code c
+     INNER JOIN marking_order mo ON mo.id = c.marking_order_id
+     WHERE c.status IN (@reserved_status, @printed_status)
+       AND c.receipt_doc_id IS NULL AND c.receipt_line_id IS NULL
+       AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+       AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
+            OR mo.order_id IS NOT NULL)
+       AND (mo.item_id = @item_id
+            OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(mo.gtin), '') = @gtin::text)
+            OR (@gtin::text IS NOT NULL AND NULLIF(BTRIM(c.gtin), '') = @gtin::text)))
+    + COALESCE((
+        SELECT SUM(b.available_quantity)
+        FROM marking_synthetic_quantity_balance b
+        INNER JOIN marking_synthetic_quantity_pool p ON p.id = b.pool_id
+        INNER JOIN marking_order mo ON mo.id = p.marking_order_id
+        WHERE b.available_quantity > 0 AND b.applied_quantity >= 0
+          AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
+          AND p.source_key = 'excel-quantity:v1'
+          AND p.source_type = @production_order_source_type
+          AND p.source_type = BTRIM(mo.source_type)
+          AND p.source_scope = JSONB_BUILD_OBJECT(
+              'source_type', BTRIM(mo.source_type),
+              'source_order_id', mo.source_order_id, 'order_id', mo.order_id)
+          AND p.item_id = mo.item_id
+          AND p.order_line_id IS NOT DISTINCT FROM mo.order_line_id
+          AND p.normalized_gtin = BTRIM(mo.gtin)
+          AND NOT EXISTS (SELECT 1 FROM marking_code c WHERE c.marking_order_id = mo.id)
+          AND (p.item_id = @item_id
+               OR (@gtin::text IS NOT NULL AND p.normalized_gtin = @gtin::text))
+    ), 0);");
             command.Parameters.AddWithValue("@reserved_status", MarkingCodeStatus.Reserved);
             command.Parameters.AddWithValue("@printed_status", MarkingCodeStatus.Printed);
             command.Parameters.AddWithValue("@marking_status_cancelled", MarkingOrderStatus.Cancelled);
