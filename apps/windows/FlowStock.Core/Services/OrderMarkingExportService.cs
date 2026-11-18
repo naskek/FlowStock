@@ -10,13 +10,31 @@ public sealed class OrderMarkingExportService
 {
     private const double QtyTolerance = 0.000001;
     private readonly IDataStore _data;
+    private readonly bool _quantityIssueEnabled;
 
-    public OrderMarkingExportService(IDataStore data)
+    public OrderMarkingExportService(IDataStore data) : this(data, quantityIssueEnabled: false)
+    {
+    }
+
+    internal OrderMarkingExportService(IDataStore data, bool quantityIssueEnabled)
     {
         _data = data;
+        _quantityIssueEnabled = quantityIssueEnabled;
     }
 
     public OrderMarkingExportPreviewResult Preview(long orderId)
+    {
+        try
+        {
+            return PreviewCore(orderId);
+        }
+        catch (MarkingQuantityIssueException ex) when (_quantityIssueEnabled)
+        {
+            return OrderMarkingExportPreviewResult.Failure(ex.Message);
+        }
+    }
+
+    private OrderMarkingExportPreviewResult PreviewCore(long orderId)
     {
         var order = _data.GetOrder(orderId);
         if (order == null)
@@ -28,6 +46,8 @@ public sealed class OrderMarkingExportService
         {
             return OrderMarkingExportPreviewResult.Failure("Нельзя формировать Excel ЧЗ для выполненного заказа.");
         }
+
+        RequireResolvedAdoption(order);
 
         var huCodesByLine = order.Type == OrderType.Customer
             ? BuildProductionHuCodesByOrderLine(order.Id)
@@ -75,10 +95,15 @@ public sealed class OrderMarkingExportService
                     return;
                 }
 
-                result = new OrderMarkingExportService(scopedStore).ExportLocked(orderId, generatedAt);
+                result = new OrderMarkingExportService(scopedStore, _quantityIssueEnabled)
+                    .ExportLocked(orderId, generatedAt);
             });
         }
         catch (OrderMarkingExportRollbackException ex)
+        {
+            return OrderMarkingExportResult.Failure(ex.Message);
+        }
+        catch (MarkingQuantityIssueException ex) when (_quantityIssueEnabled)
         {
             return OrderMarkingExportResult.Failure(ex.Message);
         }
@@ -98,6 +123,8 @@ public sealed class OrderMarkingExportService
         {
             return OrderMarkingExportResult.Failure("Нельзя формировать Excel ЧЗ для выполненного заказа.");
         }
+
+        RequireResolvedAdoption(order);
 
         var lines = BuildLineSummaries(order).ToList();
         if (lines.Count == 0)
@@ -145,7 +172,7 @@ public sealed class OrderMarkingExportService
                 ? existing
                 : new List<MarkingOrder>();
             var taskRequestedQty = itemTasks.Sum(task => Math.Max(0, task.RequestedQuantity));
-            var taskCodeQtyById = itemTasks.ToDictionary(task => task.Id, task => _data.CountMarkingCodesByMarkingOrder(task.Id));
+            var taskCodeQtyById = itemTasks.ToDictionary(task => task.Id, task => CountTaskCoverage(task.Id));
             var taskCodeQty = taskCodeQtyById.Sum(pair => pair.Value);
             reusedCodeQty += Math.Min(itemRequiredQty, taskCodeQty);
             taskIdsAvailableForReexport.AddRange(itemTasks
@@ -184,7 +211,8 @@ public sealed class OrderMarkingExportService
         MarkingExcelExportResult? excelResult = null;
         if (taskIdsToExport.Count > 0)
         {
-            excelResult = new MarkingExcelService(_data).Export(taskIdsToExport, Array.Empty<long>(), generatedAt);
+            excelResult = new MarkingExcelService(_data, _quantityIssueEnabled)
+                .Export(taskIdsToExport, Array.Empty<long>(), generatedAt);
             if (!excelResult.IsSuccess || excelResult.FileBytes == null)
             {
                 throw new OrderMarkingExportRollbackException(
@@ -213,6 +241,23 @@ public sealed class OrderMarkingExportService
             reusedCodeQty,
             lines);
     }
+
+
+    private void RequireResolvedAdoption(Order order)
+    {
+        if (_quantityIssueEnabled && order.Type == OrderType.Customer)
+            RequireIssueStore().RequireResolvedCustomerAdoptedMarking(order.Id);
+    }
+
+    private IMarkingQuantityIssueStore RequireIssueStore() =>
+        _data as IMarkingQuantityIssueStore
+        ?? throw new MarkingQuantityIssueException(
+            "EXCEL_QUANTITY_STORE_UNAVAILABLE: количественный writer недоступен.");
+
+    private double CountTaskCoverage(Guid taskId) =>
+        _quantityIssueEnabled
+            ? RequireIssueStore().ReadMarkingTaskQuantityEvidence(taskId).ActiveQuantity
+            : _data.CountMarkingCodesByMarkingOrder(taskId);
 
     private IEnumerable<OrderMarkingExportLineSummary> BuildLineSummaries(Order order)
     {
@@ -245,7 +290,7 @@ public sealed class OrderMarkingExportService
             .GroupBy(task => task.ItemId!.Value)
             .ToDictionary(
                 group => group.Key,
-                group => (double)group.Sum(task => _data.CountMarkingCodesByMarkingOrder(task.Id)));
+                group => (double)group.Sum(task => CountTaskCoverage(task.Id)));
 
         var remainingCodeCoverByItem = new Dictionary<long, double>(existingOrderCodesByItem);
         foreach (var pair in markableLines)
