@@ -18,6 +18,25 @@ CREATE TRIGGER trg_marking_hu_allocation_version_immutable
     BEFORE UPDATE ON order_coverage_transfers
     FOR EACH ROW EXECUTE FUNCTION marking_hu_allocation_version_immutable();
 
+-- Even a zero-code prospective allocation has durable idempotency identity:
+-- retries must NEVER top up a formerly unmarked HU after source codes arrive.
+CREATE TABLE marking_hu_allocation_attempt (
+    transfer_line_id BIGINT PRIMARY KEY
+        REFERENCES order_coverage_transfer_lines(id) ON DELETE RESTRICT,
+    item_id BIGINT NOT NULL,
+    normalized_gtin TEXT NULL,
+    markable BOOLEAN NOT NULL,
+    planned_quantity BIGINT NOT NULL CHECK (planned_quantity > 0),
+    actor TEXT NOT NULL CHECK (BTRIM(actor) <> ''),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TRIGGER trg_marking_hu_allocation_attempt_immutable
+    BEFORE UPDATE OR DELETE ON marking_hu_allocation_attempt
+    FOR EACH ROW EXECUTE FUNCTION marking_synthetic_quantity_immutable();
+CREATE TRIGGER trg_marking_hu_allocation_attempt_no_truncate
+    BEFORE TRUNCATE ON marking_hu_allocation_attempt
+    FOR EACH STATEMENT EXECUTE FUNCTION marking_synthetic_quantity_immutable();
+
 CREATE TABLE marking_hu_reservation (
     id BIGSERIAL PRIMARY KEY,
     transfer_line_id BIGINT NOT NULL
@@ -186,6 +205,7 @@ DECLARE
     v_code RECORD;
     v_remaining BIGINT;
     v_previous BIGINT;
+    v_attempt marking_hu_allocation_attempt%ROWTYPE;
     v_free BIGINT;
     v_reserved BIGINT;
     v_take BIGINT;
@@ -259,17 +279,22 @@ BEGIN
            ) THEN
             RAISE EXCEPTION 'HU_MARKING_TRANSFER_LINE_STALE' USING ERRCODE = '23514';
         END IF;
-        IF NOT COALESCE(v_line.enable_marking,FALSE) THEN CONTINUE; END IF;
         v_gtin := NULLIF(BTRIM(v_line.current_gtin),'');
-        IF v_gtin IS NULL THEN
+        IF COALESCE(v_line.enable_marking,FALSE) AND v_gtin IS NULL THEN
             RAISE EXCEPTION 'HU_MARKING_MISSING_GTIN' USING ERRCODE = '23514';
         END IF;
         v_line_qty := ROUND(v_line.transferred_qty)::BIGINT;
         v_remaining := v_line_qty;
 
-        SELECT COUNT(*)::BIGINT INTO v_previous FROM marking_hu_reservation
+        SELECT * INTO v_attempt FROM marking_hu_allocation_attempt
           WHERE transfer_line_id = v_line.id;
-        IF v_previous > 0 THEN
+        IF FOUND THEN
+            IF v_attempt.item_id <> v_line.item_id
+               OR v_attempt.normalized_gtin IS DISTINCT FROM v_gtin
+               OR v_attempt.planned_quantity <> v_line_qty
+               OR v_attempt.markable IS DISTINCT FROM COALESCE(v_line.enable_marking,FALSE) THEN
+                RAISE EXCEPTION 'HU_MARKING_REPLAY_SCOPE_CHANGED' USING ERRCODE = '23514';
+            END IF;
             IF EXISTS (SELECT 1 FROM marking_hu_reservation
                        WHERE transfer_line_id = v_line.id AND state <> 'ACTIVE') THEN
                 RAISE EXCEPTION 'HU_MARKING_RELEASED_REPLAY' USING ERRCODE = '23514';
@@ -289,6 +314,13 @@ BEGIN
             CONTINUE;
         END IF;
 
+        INSERT INTO marking_hu_allocation_attempt(
+            transfer_line_id, item_id, normalized_gtin, markable,
+            planned_quantity, actor)
+        VALUES (v_line.id, v_line.item_id, v_gtin,
+            COALESCE(v_line.enable_marking,FALSE), v_line_qty, p_actor);
+
+        IF NOT COALESCE(v_line.enable_marking,FALSE) THEN CONTINUE; END IF;
         -- Serialise source-task writer and other transfer reservations for
         -- this item/order/line. Source tasks are never reassigned to CUSTOMER.
         FOR v_task IN
