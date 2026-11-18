@@ -25,7 +25,8 @@ public interface IMarkingQuantityIssueStore
 public sealed record MarkingTaskQuantityEvidence(
     long ActiveQuantity,
     bool HasHistoricalCodes,
-    bool HasQuantityPool);
+    bool HasQuantityPool,
+    long AppliedQuantity);
 
 public sealed class MarkingQuantityIssueException : Exception
 {
