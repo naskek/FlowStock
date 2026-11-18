@@ -1015,18 +1015,36 @@ selected_marking_orders AS (
            OR mo.order_id IS NOT NULL)
 ),
 free_code_buckets AS (
-    SELECT smo.order_id,
-           COALESCE(smo.item_id, 0) AS item_id,
-           COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') AS normalized_gtin,
-           COUNT(*) AS free_qty
-    FROM selected_marking_orders smo
-    INNER JOIN marking_code c ON c.marking_order_id = smo.id
-                             AND c.status IN (@marking_code_status_reserved, @marking_code_status_printed)
-                             AND c.receipt_doc_id IS NULL
-                             AND c.receipt_line_id IS NULL
-    GROUP BY smo.order_id,
-             COALESCE(smo.item_id, 0),
-             COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '')
+    SELECT order_id, item_id, normalized_gtin, SUM(free_qty) AS free_qty
+    FROM (
+        SELECT smo.order_id,
+               COALESCE(smo.item_id, 0) AS item_id,
+               COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') AS normalized_gtin,
+               COUNT(*) AS free_qty
+        FROM selected_marking_orders smo
+        INNER JOIN marking_code c ON c.marking_order_id = smo.id
+                                 AND c.status IN (@marking_code_status_reserved, @marking_code_status_printed)
+                                 AND c.receipt_doc_id IS NULL AND c.receipt_line_id IS NULL
+        GROUP BY smo.order_id, COALESCE(smo.item_id, 0),
+                 COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '')
+        UNION ALL
+        SELECT smo.order_id, p.item_id, p.normalized_gtin, b.available_quantity
+        FROM selected_marking_orders smo
+        INNER JOIN marking_synthetic_quantity_pool p ON p.marking_order_id = smo.id
+        INNER JOIN marking_synthetic_quantity_balance b ON b.pool_id = p.id
+        INNER JOIN marking_order mo ON mo.id = p.marking_order_id
+        WHERE p.source_key = 'excel-quantity:v1'
+          AND p.source_scope = JSONB_BUILD_OBJECT(
+              'source_type', BTRIM(mo.source_type),
+              'source_order_id', mo.source_order_id, 'order_id', mo.order_id)
+          AND p.item_id = mo.item_id
+          AND p.order_line_id IS NOT DISTINCT FROM mo.order_line_id
+          AND p.normalized_gtin = BTRIM(mo.gtin)
+          AND p.source_type = BTRIM(mo.source_type)
+          AND b.available_quantity > 0 AND b.applied_quantity >= 0
+          AND NOT EXISTS (SELECT 1 FROM marking_code c WHERE c.marking_order_id = mo.id)
+    ) free_sources
+    GROUP BY order_id, item_id, normalized_gtin
 ),
 free_need_matches AS (
     SELECT need.order_id,
@@ -1058,21 +1076,44 @@ free_marking_need_coverage AS (
              gtin
 ),
 bound_code_buckets AS (
-    SELECT ols.order_id,
-           ols.item_id,
-           COALESCE(NULLIF(BTRIM(i.gtin), ''), '') AS normalized_gtin,
-           COUNT(*) AS bound_qty
-    FROM selected_marking_orders smo
-    INNER JOIN marking_code c ON c.marking_order_id = smo.id
-                             AND c.status <> @marking_code_status_voided
-                             AND c.receipt_line_id IS NOT NULL
-    INNER JOIN doc_lines dl ON dl.id = c.receipt_line_id
-    INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
-                                    AND ols.order_id = smo.order_id
-    INNER JOIN items i ON i.id = ols.item_id
-    GROUP BY ols.order_id,
-             ols.item_id,
-             COALESCE(NULLIF(BTRIM(i.gtin), ''), '')
+    SELECT order_id, item_id, normalized_gtin, SUM(bound_qty) AS bound_qty
+    FROM (
+        SELECT ols.order_id,
+               ols.item_id,
+               COALESCE(NULLIF(BTRIM(i.gtin), ''), '') AS normalized_gtin,
+               COUNT(*) AS bound_qty
+        FROM selected_marking_orders smo
+        INNER JOIN marking_code c ON c.marking_order_id = smo.id
+                                 AND c.status <> @marking_code_status_voided
+                                 AND c.receipt_line_id IS NOT NULL
+        INNER JOIN doc_lines dl ON dl.id = c.receipt_line_id
+        INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
+                                        AND ols.order_id = smo.order_id
+        INNER JOIN items i ON i.id = ols.item_id
+        GROUP BY ols.order_id, ols.item_id, COALESCE(NULLIF(BTRIM(i.gtin), ''), '')
+        UNION ALL
+        SELECT ols.order_id, ols.item_id,
+               COALESCE(NULLIF(BTRIM(i.gtin), ''), ''), rb.applied_quantity
+        FROM selected_marking_orders smo
+        INNER JOIN marking_synthetic_quantity_pool p ON p.marking_order_id = smo.id
+        INNER JOIN marking_synthetic_quantity_receipt_balance rb ON rb.pool_id = p.id
+        INNER JOIN doc_lines dl ON dl.id = rb.receipt_line_id
+        INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
+                                        AND ols.order_id = smo.order_id
+        INNER JOIN items i ON i.id = ols.item_id
+        INNER JOIN marking_order mo ON mo.id = p.marking_order_id
+        WHERE p.source_key = 'excel-quantity:v1'
+          AND p.source_scope = JSONB_BUILD_OBJECT(
+              'source_type', BTRIM(mo.source_type),
+              'source_order_id', mo.source_order_id, 'order_id', mo.order_id)
+          AND p.item_id = mo.item_id AND p.item_id = ols.item_id
+          AND p.order_line_id IS NOT DISTINCT FROM mo.order_line_id
+          AND p.normalized_gtin = BTRIM(mo.gtin)
+          AND p.source_type = BTRIM(mo.source_type)
+          AND rb.applied_quantity > 0
+          AND NOT EXISTS (SELECT 1 FROM marking_code c WHERE c.marking_order_id = mo.id)
+    ) bound_sources
+    GROUP BY order_id, item_id, normalized_gtin
 ),
 bound_need_matches AS (
     SELECT need.order_id,
