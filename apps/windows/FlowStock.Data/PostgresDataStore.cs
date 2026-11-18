@@ -5747,7 +5747,10 @@ WHERE pp.id = @production_pallet_id
         }
 
         long transferId;
-        using (var insertTransfer = CreateCommand(connection, @"
+        // Legacy SHADOW must still be able to write V0045 transfers before
+        // the disabled V0054 feature is deployed. Emit the new column only
+        // for a future explicitly coordinated activation.
+        using (var insertTransfer = CreateCommand(connection, $@"
 INSERT INTO order_coverage_transfers(
     transfer_type,
     source_order_id,
@@ -5764,8 +5767,7 @@ INSERT INTO order_coverage_transfers(
     pallet_status_at_transfer,
     printed_at_at_transfer,
     transferred_qty,
-    created_at,
-    hu_marking_allocation_version)
+    created_at{(ProspectiveHuMarkingAllocationEnabled ? ", hu_marking_allocation_version" : "")})
 VALUES(
     @transfer_type,
     @source_order_id,
@@ -5782,8 +5784,7 @@ VALUES(
     @pallet_status_at_transfer,
     @printed_at_at_transfer,
     @transferred_qty,
-    @created_at,
-    @allocation_version)
+    @created_at{(ProspectiveHuMarkingAllocationEnabled ? ", 'v1'" : "")})
 RETURNING id;"))
         {
             insertTransfer.Parameters.AddWithValue("@transfer_type", OrderCoverageTransferType.PlannedPalletAdoption);
@@ -5804,8 +5805,6 @@ RETURNING id;"))
                 string.IsNullOrWhiteSpace(printedAt) ? DBNull.Value : printedAt);
             insertTransfer.Parameters.AddWithValue("@transferred_qty", transferredQty);
             insertTransfer.Parameters.AddWithValue("@created_at", ToDbDate(createdAt));
-            insertTransfer.Parameters.AddWithValue("@allocation_version",
-                ProspectiveHuMarkingAllocationEnabled ? "v1" : DBNull.Value);
             transferId = Convert.ToInt64(insertTransfer.ExecuteScalar() ?? 0L, CultureInfo.InvariantCulture);
             if (transferId <= 0)
             {
