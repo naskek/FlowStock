@@ -12,10 +12,16 @@ namespace FlowStock.Core.Services;
 public sealed class MarkingExcelService
 {
     private readonly IDataStore _data;
+    private readonly bool _quantityIssueEnabled;
 
-    public MarkingExcelService(IDataStore data)
+    public MarkingExcelService(IDataStore data) : this(data, quantityIssueEnabled: false)
+    {
+    }
+
+    internal MarkingExcelService(IDataStore data, bool quantityIssueEnabled)
     {
         _data = data;
+        _quantityIssueEnabled = quantityIssueEnabled;
     }
 
     public IReadOnlyList<MarkingOrderQueueRow> GetOrderQueue(bool includeCompleted)
@@ -110,8 +116,33 @@ public sealed class MarkingExcelService
 
                 if (markingOrderIdsWithRows.Length > 0)
                 {
-                    store.MarkMarkingOrdersPrinted(markingOrderIdsWithRows, generatedAt);
-                    EnsureTemporaryMarkingCodes(store, taskRows, generatedAt);
+                    if (!_quantityIssueEnabled)
+                    {
+                        store.MarkMarkingOrdersPrinted(markingOrderIdsWithRows, generatedAt);
+                        EnsureTemporaryMarkingCodes(store, taskRows, generatedAt);
+                    }
+                    else
+                    {
+                        if (store is not IMarkingQuantityIssueStore issueStore)
+                            throw new MarkingQuantityIssueException(
+                                "EXCEL_QUANTITY_STORE_UNAVAILABLE: количественный writer недоступен.");
+
+                        // Deterministic task lock order. Historical per-code tasks
+                        // never switch provenance; only code-free tasks may ISSUE.
+                        foreach (var taskRow in taskRows.OrderBy(row => row.MarkingOrderId))
+                        {
+                            var evidence = issueStore.ReadMarkingTaskQuantityEvidence(taskRow.MarkingOrderId);
+                            if (evidence.HasHistoricalCodes)
+                            {
+                                store.MarkMarkingOrdersPrinted(new[] { taskRow.MarkingOrderId }, generatedAt);
+                                EnsureTemporaryMarkingCodes(store, new[] { taskRow }, generatedAt);
+                            }
+                            else
+                            {
+                                issueStore.EnsureMarkingTaskQuantityIssued(taskRow.MarkingOrderId, generatedAt);
+                            }
+                        }
+                    }
                 }
             });
         }
