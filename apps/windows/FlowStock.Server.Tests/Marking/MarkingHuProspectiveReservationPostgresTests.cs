@@ -301,7 +301,7 @@ VALUES(@id,@code,@hash,@gtin,@task,@imp,@status,@origin,@at,@at);
     private static async Task Return(NpgsqlConnection db,NpgsqlTransaction tx,Fixture f)
     {
         await Execute(db,tx,
-            "UPDATE production_pallets SET order_id=@source,prd_doc_id=@doc WHERE id=@pallet;",
+            "UPDATE production_pallets SET order_id=@source,prd_doc_id=@doc,status='PLANNED',printed_at=NULL WHERE id=@pallet;",
             ("source",f.Source),("doc",f.SourceDoc),("pallet",f.Pallet));
         await Execute(db,tx,
             "UPDATE production_pallet_lines SET order_line_id=@line WHERE production_pallet_id=@pallet;",
