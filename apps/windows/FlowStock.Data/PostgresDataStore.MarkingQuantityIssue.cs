@@ -57,7 +57,16 @@ SELECT
             OR b.voided_quantity <> 0
             OR b.issued_quantity <> b.available_quantity + b.applied_quantity + b.voided_quantity
         )
-    ) AS invalid_pool
+    ) AS invalid_pool,
+    (SELECT COUNT(*) FROM marking_code c
+     WHERE c.marking_order_id = mo.id AND c.status <> 'Voided'
+       AND (c.receipt_doc_id IS NOT NULL OR c.receipt_line_id IS NOT NULL)
+    ) AS applied_codes,
+    COALESCE((
+        SELECT SUM(b.applied_quantity)::bigint
+        FROM marking_synthetic_quantity_balance b
+        WHERE b.marking_order_id = mo.id
+    ), 0)::bigint AS applied_quantity
 FROM marking_order mo
 WHERE mo.id = @task_id;
 """);
@@ -72,13 +81,16 @@ WHERE mo.id = @task_id;
             var poolCount = reader.GetInt64(2);
             var activeQuantity = reader.GetInt64(3);
             var invalid = reader.GetBoolean(4);
+            var appliedCodes = reader.GetInt64(5);
+            var appliedQuantity = reader.GetInt64(6);
             if (poolCount > 1 || invalid || (poolCount > 0 && historyCount > 0) || activeQuantity < 0)
                 throw new MarkingQuantityIssueException(
                     "MARKING_QUANTITY_AMBIGUOUS: несогласованная история технической маркировки. Экспорт остановлен.");
             return new MarkingTaskQuantityEvidence(
                 poolCount > 0 ? activeQuantity : activeCodes,
                 HasHistoricalCodes: historyCount > 0,
-                HasQuantityPool: poolCount > 0);
+                HasQuantityPool: poolCount > 0,
+                AppliedQuantity: poolCount > 0 ? appliedQuantity : appliedCodes);
         });
     }
 
