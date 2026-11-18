@@ -52,12 +52,22 @@ public sealed class OrderMarkingExportService
         var huCodesByLine = order.Type == OrderType.Customer
             ? BuildProductionHuCodesByOrderLine(order.Id)
             : new Dictionary<long, IReadOnlyList<string>>();
-        var lines = BuildLineSummaries(order)
+        var summaries = BuildLineSummaries(order).ToArray();
+        // Match the existing server export rule: a positive delta exports
+        // only missing units; otherwise explicit re-export reproduces the
+        // already covered task quantities. Never mix them in one XLSX.
+        var hasNewQuantity = _quantityIssueEnabled
+            && summaries.Any(summary => summary.ExportQty > QtyTolerance);
+        var lines = summaries
             .Select(summary =>
             {
                 huCodesByLine.TryGetValue(summary.OrderLineId, out var huCodes);
                 huCodes ??= Array.Empty<string>();
-                var previewQty = Math.Max(0, summary.ExportQty) + Math.Max(0, summary.ExistingCodeQty);
+                var previewQty = _quantityIssueEnabled
+                    ? hasNewQuantity
+                        ? Math.Max(0, summary.ExportQty)
+                        : Math.Max(0, summary.ExistingCodeQty)
+                    : Math.Max(0, summary.ExportQty) + Math.Max(0, summary.ExistingCodeQty);
                 return new OrderMarkingExportPreviewLine(
                     summary.OrderLineId,
                     summary.ItemId,
@@ -201,7 +211,8 @@ public sealed class OrderMarkingExportService
         }
 
         taskIdsToExport = taskIdsToExport.Distinct().ToList();
-        if (taskIdsToExport.Count == 0)
+        var reexportExisting = taskIdsToExport.Count == 0;
+        if (reexportExisting)
         {
             taskIdsToExport = taskIdsAvailableForReexport
                 .Distinct()
@@ -211,8 +222,10 @@ public sealed class OrderMarkingExportService
         MarkingExcelExportResult? excelResult = null;
         if (taskIdsToExport.Count > 0)
         {
-            excelResult = new MarkingExcelService(_data, _quantityIssueEnabled)
-                .Export(taskIdsToExport, Array.Empty<long>(), generatedAt);
+            var excelService = new MarkingExcelService(_data, _quantityIssueEnabled);
+            excelResult = _quantityIssueEnabled
+                ? excelService.ExportOrderBased(taskIdsToExport, generatedAt, reexportExisting)
+                : excelService.Export(taskIdsToExport, Array.Empty<long>(), generatedAt);
             if (!excelResult.IsSuccess || excelResult.FileBytes == null)
             {
                 throw new OrderMarkingExportRollbackException(
