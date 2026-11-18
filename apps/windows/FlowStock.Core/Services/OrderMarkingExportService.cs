@@ -223,7 +223,12 @@ public sealed class OrderMarkingExportService
         }
 
         var requiredQty = lines.Sum(line => line.RequiredQty);
-        var coveredQty = lines.Sum(line => line.CoveredQty) + reusedCodeQty + createdCodeQty;
+        // On the quantity path BuildLineSummaries already includes previously
+        // issued coverage. Adding reusedCodeQty once more would double count
+        // a successful POST replay (and could report > requiredQty).
+        var coveredQty = _quantityIssueEnabled
+            ? Math.Min(requiredQty, lines.Sum(line => line.CoveredQty) + createdCodeQty)
+            : lines.Sum(line => line.CoveredQty) + reusedCodeQty + createdCodeQty;
         var message = excelResult?.FileBytes != null
             ? $"Excel ЧЗ сформирован из заказа. Строк: {lines.Count}, строк Excel: {exportLineCount}, кодов создано: {createdCodeQty:0.###}, переиспользовано: {reusedCodeQty:0.###}."
             : "Маркировка по заказу уже проведена: новых кодов создавать не нужно.";
