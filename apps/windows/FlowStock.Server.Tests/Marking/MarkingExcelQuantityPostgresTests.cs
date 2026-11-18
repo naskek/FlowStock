@@ -113,6 +113,55 @@ public sealed class MarkingExcelQuantityPostgresTests
     }
 
     [Fact]
+    public async Task ReducedOrder_DoesNotReexportHistoricalExcessOrEraseLedger()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 600);
+        var service = NewService(cs);
+        var initial = service.Export(fixture.OrderId, ExportAt);
+        Assert.True(initial.IsSuccess, initial.Message);
+        Assert.Equal(600, await IssuedAsync(cs, fixture.OrderId));
+
+        await ExecuteAsync(cs,
+            "UPDATE order_lines SET qty_ordered = 100 WHERE order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+
+        var preview = service.Preview(fixture.OrderId);
+        Assert.False(preview.IsSuccess);
+        Assert.Contains("EXCEL_REEXPORT_CHANGED_DEMAND", preview.Message);
+        var export = service.Export(fixture.OrderId, ExportAt.AddMinutes(1));
+        Assert.False(export.IsSuccess);
+        Assert.Contains("EXCEL_REEXPORT_CHANGED_DEMAND", export.Message);
+        Assert.Null(export.FileBytes);
+        Assert.Equal(600, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+    }
+
+    [Fact]
+    public async Task PartiallyIssuedTaskAfterDecrease_FailsClosedInsteadOfIssuingExcess()
+    {
+        var cs = ConnectionString();
+        var fixture = await CreateOrderAsync(cs, "INTERNAL", 50);
+        var service = NewService(cs);
+        Assert.True(service.Export(fixture.OrderId, ExportAt).IsSuccess);
+        await ExecuteAsync(cs,
+            "UPDATE marking_order SET requested_quantity = 90 WHERE source_order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+        await ExecuteAsync(cs,
+            "UPDATE order_lines SET qty_ordered = 60 WHERE order_id = @order_id;",
+            ("order_id", fixture.OrderId));
+
+        var preview = service.Preview(fixture.OrderId);
+        Assert.False(preview.IsSuccess);
+        Assert.Contains("EXCEL_QUANTITY_SCOPE_MISMATCH", preview.Message);
+        var result = service.Export(fixture.OrderId, ExportAt.AddMinutes(1));
+        Assert.False(result.IsSuccess);
+        Assert.Contains("EXCEL_QUANTITY_SCOPE_MISMATCH", result.Message);
+        Assert.Equal(50, await IssuedAsync(cs, fixture.OrderId));
+        Assert.Equal(1, await CountAsync(cs, "marking_synthetic_quantity_event", fixture.OrderId));
+    }
+
+    [Fact]
     public async Task ParallelOrderExports_SerializeAndCannotDoubleIssue()
     {
         var cs = ConnectionString();
