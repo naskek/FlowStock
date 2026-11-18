@@ -38,6 +38,13 @@ SELECT
             OR p.order_line_id IS DISTINCT FROM mo.order_line_id
             OR p.normalized_gtin IS DISTINCT FROM BTRIM(mo.gtin)
             OR p.source_type IS DISTINCT FROM BTRIM(mo.source_type)
+            OR NOT EXISTS (
+                SELECT 1 FROM items i
+                INNER JOIN item_types it ON it.id = i.item_type_id
+                WHERE i.id = p.item_id
+                  AND COALESCE(it.enable_marking, FALSE)
+                  AND NULLIF(BTRIM(i.gtin), '') = p.normalized_gtin
+            )
             OR p.source_scope IS DISTINCT FROM JSONB_BUILD_OBJECT(
                 'source_type', BTRIM(mo.source_type),
                 'source_order_id', mo.source_order_id,
