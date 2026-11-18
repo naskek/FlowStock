@@ -230,9 +230,10 @@ INSERT INTO order_coverage_transfers(
     target_order_id,target_order_ref,source_prd_doc_id,source_prd_doc_ref,
     target_prd_doc_id,target_prd_doc_ref,production_pallet_id,hu_code,
     pallet_status_at_transfer,transferred_qty,created_at,
-    hu_marking_allocation_version)
+    hu_marking_allocation_version,hu_marking_allocation_xid)
 VALUES('PLANNED_PALLET_ADOPTION',@s,@sr,'IN_PROGRESS',
-       @t,@tr,@sd,@sdr,@td,@tdr,@p,@hu,'PRINTED',@q,@at,@v)
+       @t,@tr,@sd,@sdr,@td,@tdr,@p,@hu,'PRINTED',@q,@at,@v,
+       CASE WHEN @v::text IS NOT NULL THEN pg_current_xact_id() ELSE NULL::xid8 END)
 RETURNING id;
 """,("s",source),("sr","HU-RES-SRC-"+token),
                 ("t",target),("tr","HU-RES-TGT-"+token),("sd",sourceDoc),
