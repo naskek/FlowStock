@@ -287,7 +287,21 @@ public sealed class OrderMarkingExportService
                 continue;
 
             var itemTasks = tasks.Where(task => task.ItemId == group.Key).ToArray();
-            var covered = itemTasks.ToDictionary(task => task.Id, task => CountTaskCoverage(task.Id));
+            var evidenceById = itemTasks.ToDictionary(
+                task => task.Id,
+                task => RequireIssueStore().ReadMarkingTaskQuantityEvidence(task.Id));
+            // Applied codes belong to an immutable receipt, not to the
+            // remaining future CUSTOMER production requirement. Without
+            // receipt/shipment provenance #197/#214, reusing them as free
+            // coverage could silently under-request Excel codes.
+            if (order.Type == OrderType.Customer &&
+                evidenceById.Values.Any(evidence => evidence.AppliedQuantity > 0))
+                throw new MarkingQuantityIssueException(
+                    "EXCEL_CUSTOMER_APPLIED_SCOPE_UNVERIFIED: для заказа есть ЧЗ, " +
+                    "привязанные к выпуску. Нужно доказать покрытие новой потребности " +
+                    "по строкам PRD/HU перед формированием Excel.");
+            var covered = evidenceById.ToDictionary(
+                pair => pair.Key, pair => (double)pair.Value.ActiveQuantity);
             if (hasNewQuantity)
             {
                 var missingFromTask = itemTasks.Sum(task =>
