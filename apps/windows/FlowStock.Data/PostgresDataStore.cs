@@ -1088,7 +1088,7 @@ bound_code_buckets AS (
                                  AND c.receipt_line_id IS NOT NULL
         INNER JOIN doc_lines dl ON dl.id = c.receipt_line_id
         INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
-                                        AND ols.order_id = smo.order_id
+                                    AND ols.order_id = smo.order_id
         INNER JOIN items i ON i.id = ols.item_id
         GROUP BY ols.order_id, ols.item_id, COALESCE(NULLIF(BTRIM(i.gtin), ''), '')
         UNION ALL
