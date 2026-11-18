@@ -22,6 +22,16 @@ public sealed class MarkingHuProspectiveReservationPostgresTests
         var result = await Reserve(db, tx, f.Transfer);
         Assert.Equal((0L, 0L), result);
         Assert.Equal(0, await Count(db, tx, f.Transfer));
+        Assert.Equal(1L, await Scalar<long>(db, tx, """
+SELECT COUNT(*) FROM marking_hu_allocation_attempt a
+JOIN order_coverage_transfer_lines l ON l.id = a.transfer_line_id
+WHERE l.transfer_id = @transfer;
+""", ("transfer", f.Transfer)));
+        // A new source import after the first zero-coverage attempt cannot
+        // change the allocation or retroactively prove a printed label.
+        await CreateSourceCodes(db, tx, f, 9);
+        Assert.Equal((0L, 0L), await Reserve(db, tx, f.Transfer));
+        Assert.Equal(0, await Count(db, tx, f.Transfer));
         await tx.RollbackAsync();
     }
 
