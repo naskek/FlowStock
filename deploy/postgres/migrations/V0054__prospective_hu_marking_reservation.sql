@@ -424,11 +424,23 @@ BEGIN
         SELECT 1 FROM order_coverage_transfer_lines tl
         LEFT JOIN doc_lines dl ON dl.id = tl.source_doc_line_id
         LEFT JOIN production_pallets pp ON pp.id = v_t.production_pallet_id
+        LEFT JOIN order_lines restored ON restored.id = dl.order_line_id
         WHERE tl.transfer_id = v_t.id
           AND (dl.id IS NULL OR pp.id IS NULL
                OR dl.doc_id IS DISTINCT FROM pp.prd_doc_id
-               OR dl.order_line_id IS DISTINCT FROM tl.source_order_line_id
-               OR dl.item_id IS DISTINCT FROM tl.item_id)
+               OR dl.item_id IS DISTINCT FROM tl.item_id
+               OR restored.order_id IS DISTINCT FROM v_t.source_order_id
+               OR restored.item_id IS DISTINCT FROM tl.item_id
+               OR ABS(dl.qty - tl.transferred_qty) > 0.000001
+               OR NOT EXISTS (
+                   SELECT 1 FROM production_pallet_lines pll
+                   WHERE pll.production_pallet_id = pp.id
+                     AND pll.doc_line_id = dl.id
+                     AND pll.order_line_id = restored.id
+                     AND pll.item_id = tl.item_id
+                     AND ABS(pll.planned_qty - tl.transferred_qty) <= 0.000001
+                     AND pll.filled_qty = 0 AND pll.filled_at IS NULL
+               ))
     ) THEN
         RAISE EXCEPTION 'HU_MARKING_RETURN_OWNERSHIP_NOT_RESTORED' USING ERRCODE = '23514';
     END IF;
