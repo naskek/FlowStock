@@ -14186,6 +14186,7 @@
       var blockKey = getOperationBlockKey(doc.op) || currentClientBlockContext;
       return fetch(url, {
         method: "POST",
+        credentials: "same-origin",
         headers: createBlockHeaders({ "Content-Type": "application/json" }, blockKey),
         body: JSON.stringify(payload),
       })
@@ -15268,6 +15269,9 @@
         });
         window.addEventListener("focus", function () {
           handleAppResume("window-focus");
+        });
+        window.addEventListener("flowstock:tsd-session-expired", function () {
+          navigate("/login", { replace: true });
         });
         window.addEventListener("flowstock:block-disabled", function () {
           ensureClientBlocksLoaded(true)
