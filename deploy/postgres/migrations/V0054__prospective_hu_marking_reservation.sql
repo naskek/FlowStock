@@ -2,13 +2,18 @@
 -- HISTORICAL transfers are not enabled. No data migration/backfill and no
 -- runtime activation: the producer must explicitly mark its fresh transfer.
 ALTER TABLE order_coverage_transfers
-    ADD COLUMN hu_marking_allocation_version TEXT NULL
-    CHECK (hu_marking_allocation_version IS NULL OR hu_marking_allocation_version = 'v1');
+    ADD COLUMN hu_marking_allocation_version TEXT NULL,
+    ADD COLUMN hu_marking_allocation_xid xid8 NULL,
+    ADD CONSTRAINT ck_order_coverage_transfer_allocation_scope CHECK (
+        (hu_marking_allocation_version IS NULL AND hu_marking_allocation_xid IS NULL)
+        OR (hu_marking_allocation_version = 'v1' AND hu_marking_allocation_xid IS NOT NULL)
+    );
 
 CREATE FUNCTION marking_hu_allocation_version_immutable() RETURNS TRIGGER
 LANGUAGE plpgsql AS $$
 BEGIN
-    IF NEW.hu_marking_allocation_version IS DISTINCT FROM OLD.hu_marking_allocation_version THEN
+    IF NEW.hu_marking_allocation_version IS DISTINCT FROM OLD.hu_marking_allocation_version
+       OR NEW.hu_marking_allocation_xid IS DISTINCT FROM OLD.hu_marking_allocation_xid THEN
         RAISE EXCEPTION 'HU_MARKING_RETROACTIVE_ALLOCATION_FORBIDDEN' USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
@@ -223,6 +228,7 @@ BEGIN
     SELECT * INTO v_t FROM order_coverage_transfers
         WHERE id = p_transfer_id FOR UPDATE;
     IF NOT FOUND OR v_t.hu_marking_allocation_version IS DISTINCT FROM 'v1'
+       OR v_t.hu_marking_allocation_xid IS DISTINCT FROM pg_current_xact_id()
        OR v_t.compensation_kind IS NOT NULL
        OR v_t.transfer_type <> 'PLANNED_PALLET_ADOPTION' THEN
         RAISE EXCEPTION 'HU_MARKING_NOT_PROSPECTIVE' USING ERRCODE = '23514';
@@ -254,7 +260,7 @@ BEGIN
                dl.qty AS live_qty, ol.item_id AS target_item, ol.order_id AS target_order
         FROM order_coverage_transfer_lines l
         JOIN items i ON i.id = l.item_id
-        JOIN item_types it ON it.id = i.item_type_id
+        LEFT JOIN item_types it ON it.id = i.item_type_id
         LEFT JOIN doc_lines dl ON dl.id = l.source_doc_line_id
         LEFT JOIN order_lines ol ON ol.id = l.target_order_line_id
         WHERE l.transfer_id = v_t.id ORDER BY l.id
@@ -398,6 +404,10 @@ BEGIN
                 SELECT COALESCE(SUM(quantity),0)::BIGINT INTO v_reserved
                   FROM marking_hu_reservation
                   WHERE pool_id = v_pool.id AND state = 'ACTIVE';
+                IF v_free < 0 OR v_reserved > v_free THEN
+                    RAISE EXCEPTION 'HU_MARKING_SOURCE_QUANTITY_INVALID'
+                        USING ERRCODE = '23514';
+                END IF;
                 v_take := LEAST(v_remaining, GREATEST(0, v_free - v_reserved));
                 IF v_take > 0 THEN
                     INSERT INTO marking_hu_reservation(
