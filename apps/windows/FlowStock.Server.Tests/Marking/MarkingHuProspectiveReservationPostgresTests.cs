@@ -280,6 +280,15 @@ SELECT marking_assign_prd_close(@doc,'PRD-CLOSE',@at);
         Assert.Equal(5L, await Scalar<long>(db, tx,
             "SELECT COUNT(*) FROM marking_hu_reservation WHERE state='CONSUMED' AND marking_code_id IS NOT NULL AND transfer_line_id IN (SELECT id FROM order_coverage_transfer_lines WHERE transfer_id=@transfer);",
             ("transfer", f.Transfer)));
+        // COR preview's read predicate is scoped to the exact consumed receipt.
+        Assert.True(await Scalar<bool>(db, tx, """
+SELECT EXISTS(SELECT 1 FROM marking_hu_reservation
+              WHERE state='CONSUMED' AND consumed_doc_id=@doc);
+""", ("doc", f.TargetDoc)));
+        Assert.False(await Scalar<bool>(db, tx, """
+SELECT EXISTS(SELECT 1 FROM marking_hu_reservation
+              WHERE state='CONSUMED' AND consumed_doc_id=@doc);
+""", ("doc", f.SourceDoc)));
         Assert.Equal(5L, await Scalar<long>(db, tx,
             "SELECT COUNT(*) FROM marking_code WHERE receipt_doc_id=@doc AND receipt_line_id=@line AND status='Applied';",
             ("doc", f.TargetDoc), ("line", f.DocLine)));
