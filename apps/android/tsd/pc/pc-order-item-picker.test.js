@@ -169,6 +169,7 @@ function createActualSelector(linesState) {
 
 function testModalWorkflow() {
   const fake = fakeDocument();
+  context.document = fake.document;
   const parent = fakeElement("new-order");
   const prior = parent.getAttribute("aria-hidden");
   const linesState = [
@@ -260,8 +261,6 @@ function testModalWorkflow() {
 }
 
 testModel();
-const dom = fakeDocument();
-context.document = dom.document;
 testModalWorkflow();
 
 assert.match(indexSource, /pc-order-item-picker\.js[\s\S]*app\.js/,
