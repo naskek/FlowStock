@@ -228,8 +228,16 @@ SELECT * FROM marking_synthetic_quantity_apply(
         await using var db = await OpenTestDb();
         await using var tx = await db.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         var f = await Fixture.Create(db, tx, qty: 5);
-        await CreateSourceCodes(db, tx, f, 5);
-        Assert.Equal((3L, 0L), await ReserveSomeSourceCodes(db, tx, f, 3));
+        var reservedCodes = await CreateSourceCodes(db, tx, f, 3);
+        for (var i = 0; i < reservedCodes.Count; i++)
+            await Execute(db, tx, """
+UPDATE marking_code SET source_row_number=@row WHERE id=@id;
+""", ("row", i + 1), ("id", reservedCodes[i]));
+        Assert.Equal((3L, 0L), await Reserve(db, tx, f.Transfer));
+        // Later import of two additional codes cannot retroactively top up
+        // the transferred HU. These remain available to source production.
+        await CreateSourceCodes(db, tx, f, 2);
+        Assert.Equal((3L, 0L), await Reserve(db, tx, f.Transfer));
 
         // This INTERNAL receipt represents unrelated, newly planned source
         // production. It must not spend the three codes exclusively reserved
@@ -255,25 +263,6 @@ WHERE tl.transfer_id=@transfer AND r.state='ACTIVE'
   AND c.receipt_doc_id IS NULL AND c.receipt_line_id IS NULL;
 """, ("transfer", f.Transfer)));
         await tx.RollbackAsync();
-    }
-
-    // Create the exact transfer's reserved source code subset by limiting the
-    // number of otherwise eligible free codes BEFORE its first allocation.
-    private static async Task<(long Codes, long Quantity)> ReserveSomeSourceCodes(
-        NpgsqlConnection db, NpgsqlTransaction tx, Fixture f, int count)
-    {
-        // Existing source task contains five free codes, but only three may be
-        // eligible for this customer's HU. Temporarily narrow the transfer
-        // component, mirroring a partially adopted mixed source order.
-        await Execute(db, tx, """
-UPDATE order_coverage_transfer_lines
-SET transferred_qty=@qty WHERE transfer_id=@transfer;
-UPDATE production_pallet_lines SET planned_qty=@qty WHERE production_pallet_id=@pallet;
-UPDATE doc_lines SET qty=@qty WHERE id=@line;
-UPDATE production_pallets SET planned_qty=@qty WHERE id=@pallet;
-""", ("qty", (double)count), ("transfer", f.Transfer), ("pallet", f.Pallet),
-            ("line", f.DocLine));
-        return await Reserve(db, tx, f.Transfer);
     }
 
     [Fact]
