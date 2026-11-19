@@ -223,7 +223,7 @@ BEGIN
     END IF;
     RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER trg_marking_hu_guard_code_update
     BEFORE UPDATE OR DELETE ON marking_code
     FOR EACH ROW EXECUTE FUNCTION marking_hu_guard_code_consumption();
