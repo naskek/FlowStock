@@ -41,10 +41,12 @@ WHERE l.transfer_id = @transfer;
         await using var db = await OpenTestDb();
         await using var tx = await db.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         var f = await Fixture.Create(db, tx, qty: 9);
-        Assert.Equal(0L, await ReadCustomerCoverage(db, tx, f.Target));
         await CreateSourceCodes(db, tx, f, 6);
-        // No allocation yet: free INTERNAL task-level codes are not HU proof.
-        Assert.Equal(0L, await ReadCustomerCoverage(db, tx, f.Target));
+        // No allocation attempt yet: free INTERNAL task-level codes do not
+        // prove a specific HU, even when the quantities happen to match.
+        await AssertSqlError(db, tx, "ADOPTED_HU_MARKING_UNVERIFIED",
+            "SELECT * FROM marking_hu_customer_reserved_coverage(@target);",
+            ("target", f.Target));
         Assert.Equal((6L, 0L), await Reserve(db, tx, f.Transfer));
         Assert.Equal(6L, await ReadCustomerCoverage(db, tx, f.Target));
         Assert.Equal(6L, await ReadCustomerCoverage(db, tx, f.Target));
