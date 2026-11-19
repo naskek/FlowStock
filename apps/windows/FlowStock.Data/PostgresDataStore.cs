@@ -17084,6 +17084,21 @@ SELECT EXISTS(
         });
     }
 
+    public bool HasConsumedHuMarkingReservations(long sourcePrdDocId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT EXISTS (
+    SELECT 1 FROM marking_hu_reservation r
+    WHERE r.state = 'CONSUMED' AND r.consumed_doc_id = @doc_id
+);
+");
+            command.Parameters.AddWithValue("@doc_id", sourcePrdDocId);
+            return Convert.ToBoolean(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+        });
+    }
+
     public IReadOnlyList<ProductionPalletCorrectionMarkingCode> LockReceiptMarkingCodes(long sourcePrdDocId)
     {
         return WithConnection(connection =>
