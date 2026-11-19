@@ -36,6 +36,62 @@ WHERE l.transfer_id = @transfer;
     }
 
     [Fact]
+    public async Task CustomerCoverage_OnlyValidatedProspectiveSourceReservation_CountsOnExactTargetLine()
+    {
+        await using var db = await OpenTestDb();
+        await using var tx = await db.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        var f = await Fixture.Create(db, tx, qty: 9);
+        Assert.Equal(0L, await ReadCustomerCoverage(db, tx, f.Target));
+        await CreateSourceCodes(db, tx, f, 6);
+        // No allocation yet: free INTERNAL task-level codes are not HU proof.
+        Assert.Equal(0L, await ReadCustomerCoverage(db, tx, f.Target));
+        Assert.Equal((6L, 0L), await Reserve(db, tx, f.Transfer));
+        Assert.Equal(6L, await ReadCustomerCoverage(db, tx, f.Target));
+        Assert.Equal(6L, await ReadCustomerCoverage(db, tx, f.Target));
+
+        await Return(db, tx, f);
+        Assert.Equal(0L, await ReadCustomerCoverage(db, tx, f.Target));
+        await tx.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task CustomerCoverage_QuantityPoolIsProofOnlyWhileUnconsumedAndUnambiguous()
+    {
+        await using var db = await OpenTestDb();
+        await using var tx = await db.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        var f = await Fixture.Create(db, tx, qty: 12);
+        var pool = Guid.NewGuid();
+        await Execute(db, tx, """
+SELECT * FROM marking_synthetic_quantity_apply(
+    @operation, @pool, 'ISSUE', 8, @task, 'TEST-218', NULL::bigint,
+    NULL::bigint, 'TEST');
+""", ("operation", Guid.NewGuid()), ("pool", pool), ("task", f.Task));
+        Assert.Equal((0L, 8L), await Reserve(db, tx, f.Transfer));
+        Assert.Equal(8L, await ReadCustomerCoverage(db, tx, f.Target));
+        await tx.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task CustomerCoverage_RejectsHistoricalAndChangedGtinWithNoSilentFallback()
+    {
+        await using var db = await OpenTestDb();
+        await using var tx = await db.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        var historical = await Fixture.Create(db, tx, qty: 4, prospective: false);
+        await AssertSqlError(db, tx, "ADOPTED_HU_MARKING_UNVERIFIED",
+            "SELECT * FROM marking_hu_customer_reserved_coverage(@target);",
+            ("target", historical.Target));
+        var f = await Fixture.Create(db, tx, qty: 5);
+        await CreateSourceCodes(db, tx, f, 3);
+        await Reserve(db, tx, f.Transfer);
+        await Execute(db, tx, "UPDATE items SET gtin='04999123456789' WHERE id=@item;",
+            ("item", f.Item));
+        await AssertSqlError(db, tx, "ADOPTED_HU_MARKING_UNVERIFIED",
+            "SELECT * FROM marking_hu_customer_reserved_coverage(@target);",
+            ("target", f.Target));
+        await tx.RollbackAsync();
+    }
+
+    [Fact]
     public async Task HistoricalTransferCannotBeRetrospectivelyAttributed()
     {
         await using var db = await OpenTestDb();
@@ -297,6 +353,15 @@ VALUES(@id,@code,@hash,@gtin,@task,@imp,@status,@origin,@at,@at);
             ("hash","HU-RES-CODE-HASH-"+id.ToString("N")),
             ("gtin",gtin),("task",task),("imp",import),
             ("status",status),("origin",origin),("at","2026-11-18T12:00:00"));
+
+    private static async Task<long> ReadCustomerCoverage(
+        NpgsqlConnection db, NpgsqlTransaction tx, long customerOrderId)
+    {
+        return await Scalar<long>(db, tx, """
+SELECT COALESCE(SUM(reserved_quantity),0)::bigint
+FROM marking_hu_customer_reserved_coverage(@target);
+""", ("target", customerOrderId));
+    }
 
     private static async Task<(long Codes,long Quantity)> Reserve(
         NpgsqlConnection db,NpgsqlTransaction tx,long transfer)
