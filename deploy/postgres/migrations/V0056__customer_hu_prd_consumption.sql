@@ -505,6 +505,10 @@ BEGIN
                       AND c.receipt_doc_id IS NULL AND c.receipt_line_id IS NULL
                       AND c.status IN ('Reserved', 'Printed')
                       AND (NULLIF(BTRIM(c.gtin), '') IS NULL OR BTRIM(c.gtin) = v_line.gtin)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM marking_hu_reservation r
+                          WHERE r.marking_code_id = c.id AND r.state = 'ACTIVE'
+                      )
                     ORDER BY c.source_row_number NULLS LAST, c.created_at, c.id LIMIT v_needed
                 LOOP
                     UPDATE marking_code SET status = 'Applied', receipt_doc_id = p_doc_id,
