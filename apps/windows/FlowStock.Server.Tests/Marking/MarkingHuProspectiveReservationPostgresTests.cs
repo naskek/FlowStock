@@ -223,6 +223,60 @@ SELECT * FROM marking_synthetic_quantity_apply(
     }
 
     [Fact]
+    public async Task InternalPrdClose_UsesUnreservedSourceCodes_WhenOtherCodesAreReservedForCustomerHu()
+    {
+        await using var db = await OpenTestDb();
+        await using var tx = await db.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        var f = await Fixture.Create(db, tx, qty: 5);
+        await CreateSourceCodes(db, tx, f, 5);
+        Assert.Equal((3L, 0L), await ReserveSomeSourceCodes(db, tx, f, 3));
+
+        // This INTERNAL receipt represents unrelated, newly planned source
+        // production. It must not spend the three codes exclusively reserved
+        // for the transferred CUSTOMER HU.
+        var sourceReceiptLineId = await Scalar<long>(db, tx, """
+INSERT INTO doc_lines(doc_id,item_id,order_line_id,qty,to_hu)
+VALUES(@doc,@item,@line,2,@hu) RETURNING id;
+""", ("doc", f.SourceDoc), ("item", f.Item), ("line", f.SourceLine),
+            ("hu", "SOURCE-UNRELATED-" + Guid.NewGuid().ToString("N")));
+        Assert.Equal(2L, await Scalar<long>(db, tx,
+            "SELECT marking_assign_prd_close(@doc,'PRD-CLOSE',@at);",
+            ("doc", f.SourceDoc), ("at", "2026-11-19T13:00:00")));
+        Assert.Equal(2L, await Scalar<long>(db, tx, """
+SELECT COUNT(*) FROM marking_code
+WHERE receipt_doc_id=@doc AND receipt_line_id=@line AND status='Applied';
+""", ("doc", f.SourceDoc), ("line", sourceReceiptLineId)));
+        Assert.Equal(3L, await Scalar<long>(db, tx, """
+SELECT COUNT(*) FROM marking_hu_reservation r
+JOIN marking_code c ON c.id=r.marking_code_id
+JOIN order_coverage_transfer_lines tl ON tl.id=r.transfer_line_id
+WHERE tl.transfer_id=@transfer AND r.state='ACTIVE'
+  AND c.status IN ('Reserved','Printed')
+  AND c.receipt_doc_id IS NULL AND c.receipt_line_id IS NULL;
+""", ("transfer", f.Transfer)));
+        await tx.RollbackAsync();
+    }
+
+    // Create the exact transfer's reserved source code subset by limiting the
+    // number of otherwise eligible free codes BEFORE its first allocation.
+    private static async Task<(long Codes, long Quantity)> ReserveSomeSourceCodes(
+        NpgsqlConnection db, NpgsqlTransaction tx, Fixture f, int count)
+    {
+        // Existing source task contains five free codes, but only three may be
+        // eligible for this customer's HU. Temporarily narrow the transfer
+        // component, mirroring a partially adopted mixed source order.
+        await Execute(db, tx, """
+UPDATE order_coverage_transfer_lines
+SET transferred_qty=@qty WHERE transfer_id=@transfer;
+UPDATE production_pallet_lines SET planned_qty=@qty WHERE production_pallet_id=@pallet;
+UPDATE doc_lines SET qty=@qty WHERE id=@line;
+UPDATE production_pallets SET planned_qty=@qty WHERE id=@pallet;
+""", ("qty", (double)count), ("transfer", f.Transfer), ("pallet", f.Pallet),
+            ("line", f.DocLine));
+        return await Reserve(db, tx, f.Transfer);
+    }
+
+    [Fact]
     public async Task CustomerPrdClose_ConsumesExactSourceCodesAndIsIdempotent()
     {
         await using var db = await OpenTestDb();
