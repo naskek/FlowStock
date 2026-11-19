@@ -460,7 +460,12 @@ BEGIN
                 JOIN marking_synthetic_quantity_balance b ON b.pool_id = p.id
                 WHERE p.marking_order_id = v_task.id
                   AND p.item_id = v_line.item_id
-                  AND p.order_line_id IS NOT DISTINCT FROM v_task.order_line_id
+                  -- Canonical synthetic ASSIGN currently requires the pool's
+                  -- source order line to equal the receipt order line. After
+                  -- INTERNAL→CUSTOMER adoption they differ; do not reserve
+                  -- line-scoped pools until that consumer contract is extended.
+                  AND p.order_line_id IS NULL
+                  AND v_task.order_line_id IS NULL
                   AND p.normalized_gtin = v_gtin
                   AND p.source_type = 'PRODUCTION_ORDER'
                   AND p.source_scope = JSONB_BUILD_OBJECT(
