@@ -20,6 +20,13 @@ public interface IMarkingQuantityIssueStore
     /// attributable marking receipt; PRINTED pallet labels are not evidence.
     /// </summary>
     void RequireResolvedCustomerAdoptedMarking(long customerOrderId);
+
+    /// <summary>
+    /// Exact active prospective transfer reservations, per target order line.
+    /// Historical/ambiguous, already spent, mixed or stale evidence fails closed.
+    /// Returned amounts are never inferred from pallet PRINTED status.
+    /// </summary>
+    IReadOnlyDictionary<long, long> ReadCustomerAdoptedReservedQuantityByOrderLine(long customerOrderId);
 }
 
 public sealed record MarkingTaskQuantityEvidence(
