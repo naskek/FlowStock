@@ -85,8 +85,8 @@ SELECT * FROM marking_synthetic_quantity_apply(
         var f = await Fixture.Create(db, tx, qty: 5);
         await CreateSourceCodes(db, tx, f, 3);
         await Reserve(db, tx, f.Transfer);
-        await Execute(db, tx, "UPDATE items SET gtin='04999123456789' WHERE id=@item;",
-            ("item", f.Item));
+        await Execute(db, tx, "UPDATE items SET gtin=@new_gtin WHERE id=@item;",
+            ("new_gtin", "0499" + f.Gtin[4..]), ("item", f.Item));
         await AssertSqlError(db, tx, "ADOPTED_HU_MARKING_UNVERIFIED",
             "SELECT * FROM marking_hu_customer_reserved_coverage(@target);",
             ("target", f.Target));
