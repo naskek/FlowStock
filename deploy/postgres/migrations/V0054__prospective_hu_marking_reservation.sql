@@ -190,7 +190,7 @@ LANGUAGE plpgsql AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
         IF EXISTS (SELECT 1 FROM marking_hu_reservation r
-                   WHERE r.marking_code_id = OLD.id AND r.state = 'ACTIVE') THEN
+                   WHERE r.marking_code_id = OLD.id AND r.state IN ('ACTIVE','CONSUMED')) THEN
             RAISE EXCEPTION 'HU_MARKING_SOURCE_CODE_RESERVED' USING ERRCODE = '23514';
         END IF;
         RETURN OLD;
