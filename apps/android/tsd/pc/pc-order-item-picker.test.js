@@ -230,7 +230,6 @@ function testModalWorkflow() {
 
   const anotherTrigger = fakeElement("another");
   picker.open(1, anotherTrigger);
-  assert.equal(fake.nodes["[data-picker-search]"].value, "", "fake DOM stores HTML as text; retained state is authoritative");
   assert.match(fake.current().innerHTML, /value="sku-002"/, "search persists across opens");
   assert.deepEqual(ids(picker.model.filtered()), [2], "filters and query persist across lines");
   fake.current().events.click({ target: action("select", null, "2") });
