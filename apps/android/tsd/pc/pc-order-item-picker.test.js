@@ -229,6 +229,18 @@ function testModalWorkflow() {
   assert.equal(submitCount, 0);
 
   const anotherTrigger = fakeElement("another");
+  picker.open(0, anotherTrigger);
+  assert.match(fake.current().innerHTML, /Строка заказа № 1/,
+    "picker reopens for a different source line");
+  assert.match(fake.current().innerHTML, /value="sku-002"/,
+    "search persists when moving between order lines");
+  assert.deepEqual(ids(picker.model.filtered()), [2],
+    "selected filters persist when moving between order lines");
+  fake.current().events.click({ target: action("return") });
+  assert.equal(linesState[0].item_id, 1);
+  assert.equal(linesState[0].qty_ordered, "25",
+    "return from a different line leaves existing selection and quantity unchanged");
+
   picker.open(1, anotherTrigger);
   assert.match(fake.current().innerHTML, /value="sku-002"/, "search persists across opens");
   assert.deepEqual(ids(picker.model.filtered()), [2], "filters and query persist across lines");
