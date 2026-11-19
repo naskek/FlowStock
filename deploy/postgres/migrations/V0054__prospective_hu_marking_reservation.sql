@@ -50,16 +50,29 @@ CREATE TABLE marking_hu_reservation (
     marking_code_id UUID NULL REFERENCES marking_code(id) ON DELETE RESTRICT,
     pool_id UUID NULL REFERENCES marking_synthetic_quantity_pool(id) ON DELETE RESTRICT,
     quantity BIGINT NOT NULL CHECK (quantity > 0),
-    state TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (state IN ('ACTIVE','RELEASED')),
+    state TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (state IN ('ACTIVE','RELEASED','CONSUMED')),
+    consumed_doc_id BIGINT NULL,
+    consumed_line_id BIGINT NULL,
+    consumed_actor TEXT NULL,
+    consumed_at TIMESTAMPTZ NULL,
     created_actor TEXT NOT NULL CHECK (BTRIM(created_actor) <> ''),
     released_actor TEXT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     released_at TIMESTAMPTZ NULL,
     CHECK ((marking_code_id IS NULL) <> (pool_id IS NULL)),
     CHECK (marking_code_id IS NULL OR quantity = 1),
-    CHECK ((state = 'ACTIVE' AND released_at IS NULL AND released_actor IS NULL)
+    CHECK ((state = 'ACTIVE'
+              AND released_at IS NULL AND released_actor IS NULL
+              AND consumed_doc_id IS NULL AND consumed_line_id IS NULL
+              AND consumed_actor IS NULL AND consumed_at IS NULL)
         OR (state = 'RELEASED' AND released_at IS NOT NULL
-            AND BTRIM(COALESCE(released_actor,'')) <> ''))
+              AND BTRIM(COALESCE(released_actor,'')) <> ''
+              AND consumed_doc_id IS NULL AND consumed_line_id IS NULL
+              AND consumed_actor IS NULL AND consumed_at IS NULL)
+        OR (state = 'CONSUMED' AND released_at IS NULL AND released_actor IS NULL
+              AND consumed_doc_id > 0 AND consumed_line_id > 0
+              AND BTRIM(COALESCE(consumed_actor,'')) <> ''
+              AND consumed_at IS NOT NULL))
 );
 CREATE UNIQUE INDEX ux_marking_hu_reservation_code_active
     ON marking_hu_reservation(marking_code_id)
@@ -75,7 +88,7 @@ CREATE INDEX ix_marking_hu_reservation_pool_active
 CREATE TABLE marking_hu_reservation_event (
     id BIGSERIAL PRIMARY KEY,
     reservation_id BIGINT NOT NULL REFERENCES marking_hu_reservation(id) ON DELETE RESTRICT,
-    action TEXT NOT NULL CHECK (action IN ('RESERVE','RETURN_PLAN')),
+    action TEXT NOT NULL CHECK (action IN ('RESERVE','RETURN_PLAN','CONSUME')),
     quantity BIGINT NOT NULL CHECK (quantity > 0),
     actor TEXT NOT NULL CHECK (BTRIM(actor) <> ''),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -97,21 +110,58 @@ BEGIN
         RAISE EXCEPTION 'HU_MARKING_RESERVATION_DELETE_FORBIDDEN' USING ERRCODE = '23514';
     END IF;
     IF TG_OP = 'UPDATE' THEN
-        IF OLD.state <> 'ACTIVE' OR NEW.state <> 'RELEASED'
+        IF OLD.state <> 'ACTIVE' OR NEW.state NOT IN ('RELEASED','CONSUMED')
            OR NEW.transfer_line_id IS DISTINCT FROM OLD.transfer_line_id
            OR NEW.marking_order_id IS DISTINCT FROM OLD.marking_order_id
            OR NEW.marking_code_id IS DISTINCT FROM OLD.marking_code_id
            OR NEW.pool_id IS DISTINCT FROM OLD.pool_id
            OR NEW.quantity IS DISTINCT FROM OLD.quantity
            OR NEW.created_actor IS DISTINCT FROM OLD.created_actor
-           OR NEW.created_at IS DISTINCT FROM OLD.created_at
-           OR NEW.released_at IS NULL
-           OR BTRIM(COALESCE(NEW.released_actor,'')) = '' THEN
+           OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
             RAISE EXCEPTION 'HU_MARKING_RESERVATION_IMMUTABLE' USING ERRCODE = '23514';
         END IF;
-        INSERT INTO marking_hu_reservation_event(
-            reservation_id, action, quantity, actor, created_at)
-        VALUES(OLD.id, 'RETURN_PLAN', OLD.quantity, NEW.released_actor, NEW.released_at);
+        IF NEW.state = 'RELEASED' THEN
+            IF NEW.released_at IS NULL OR BTRIM(COALESCE(NEW.released_actor,'')) = ''
+               OR NEW.consumed_doc_id IS NOT NULL OR NEW.consumed_line_id IS NOT NULL
+               OR NEW.consumed_actor IS NOT NULL OR NEW.consumed_at IS NOT NULL THEN
+                RAISE EXCEPTION 'HU_MARKING_RESERVATION_IMMUTABLE' USING ERRCODE='23514';
+            END IF;
+            INSERT INTO marking_hu_reservation_event(
+                reservation_id, action, quantity, actor, created_at)
+            VALUES(OLD.id, 'RETURN_PLAN', OLD.quantity, NEW.released_actor, NEW.released_at);
+        ELSE
+            IF NEW.released_at IS NOT NULL OR NEW.released_actor IS NOT NULL
+               OR NEW.consumed_doc_id IS NULL OR NEW.consumed_line_id IS NULL
+               OR NEW.consumed_at IS NULL OR BTRIM(COALESCE(NEW.consumed_actor,''))='' THEN
+                RAISE EXCEPTION 'HU_MARKING_RESERVATION_IMMUTABLE' USING ERRCODE='23514';
+            END IF;
+            -- Current dedicated PRD may differ from the adoption snapshot.
+            -- The exact original transfer doc_line ID remains the identity.
+            IF NOT EXISTS (
+                SELECT 1 FROM order_coverage_transfer_lines tl
+                JOIN order_coverage_transfers t ON t.id=tl.transfer_id
+                JOIN production_pallets pp ON pp.id=t.production_pallet_id
+                JOIN docs d ON d.id=NEW.consumed_doc_id
+                JOIN doc_lines dl ON dl.id=NEW.consumed_line_id
+                WHERE tl.id=NEW.transfer_line_id
+                  AND t.compensation_kind IS NULL
+                  AND t.hu_marking_allocation_version='v1'
+                  AND pp.order_id=t.target_order_id
+                  AND pp.prd_doc_id=d.id AND pp.status='FILLED'
+                  AND pp.hu_code=t.hu_code
+                  AND d.order_id=t.target_order_id
+                  AND d.type='PRODUCTION_RECEIPT' AND d.status='DRAFT'
+                  AND dl.id=tl.source_doc_line_id
+                  AND dl.doc_id=d.id AND dl.order_line_id=tl.target_order_line_id
+                  AND dl.item_id=tl.item_id
+                  AND ABS(dl.qty-tl.transferred_qty)<=0.000001
+            ) THEN
+                RAISE EXCEPTION 'HU_MARKING_CONSUME_SCOPE_INVALID' USING ERRCODE='23514';
+            END IF;
+            INSERT INTO marking_hu_reservation_event(
+                reservation_id, action, quantity, actor, created_at)
+            VALUES(OLD.id,'CONSUME',OLD.quantity,NEW.consumed_actor,NEW.consumed_at);
+        END IF;
         RETURN NEW;
     END IF;
     INSERT INTO marking_hu_reservation_event(
@@ -156,9 +206,24 @@ BEGIN
          OR NEW.import_id IS DISTINCT FROM OLD.import_id) THEN
         RAISE EXCEPTION 'HU_MARKING_SOURCE_CODE_RESERVED' USING ERRCODE = '23514';
     END IF;
+    IF EXISTS (SELECT 1 FROM marking_hu_reservation r
+               WHERE r.marking_code_id=OLD.id AND r.state='CONSUMED')
+       AND (NEW.marking_order_id IS DISTINCT FROM OLD.marking_order_id
+            OR NEW.gtin IS DISTINCT FROM OLD.gtin
+            OR NEW.origin IS DISTINCT FROM OLD.origin
+            OR NEW.import_id IS DISTINCT FROM OLD.import_id
+            OR NOT EXISTS (
+                SELECT 1 FROM marking_hu_reservation r
+                WHERE r.marking_code_id=OLD.id AND r.state='CONSUMED'
+                  AND NEW.receipt_doc_id=r.consumed_doc_id
+                  AND NEW.receipt_line_id=r.consumed_line_id
+                  AND NEW.status IN ('Applied','Reported','Circulated')
+            )) THEN
+        RAISE EXCEPTION 'HU_MARKING_CONSUMED_CODE_IMMUTABLE' USING ERRCODE='23514';
+    END IF;
     RETURN NEW;
 END;
-$$;
+$;
 CREATE TRIGGER trg_marking_hu_guard_code_update
     BEFORE UPDATE OR DELETE ON marking_code
     FOR EACH ROW EXECUTE FUNCTION marking_hu_guard_code_consumption();
@@ -173,6 +238,15 @@ DECLARE
     v_reserved BIGINT;
     v_free BIGINT;
 BEGIN
+    IF NEW.action = 'RELEASE' AND EXISTS (
+        SELECT 1 FROM marking_hu_reservation r
+        WHERE r.pool_id=NEW.pool_id AND r.state='CONSUMED'
+          AND r.consumed_doc_id=NEW.receipt_doc_id
+          AND r.consumed_line_id=NEW.receipt_line_id
+    ) THEN
+        RAISE EXCEPTION 'HU_MARKING_CONSUMED_QUANTITY_COR_BLOCKED'
+            USING ERRCODE='23514';
+    END IF;
     IF NEW.action NOT IN ('ASSIGN', 'VOID') THEN RETURN NEW; END IF;
     PERFORM 1 FROM marking_synthetic_quantity_pool p
       WHERE p.id = NEW.pool_id FOR UPDATE;
@@ -485,6 +559,14 @@ BEGIN
                ))
     ) THEN
         RAISE EXCEPTION 'HU_MARKING_RETURN_OWNERSHIP_NOT_RESTORED' USING ERRCODE = '23514';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM marking_hu_reservation r
+        JOIN order_coverage_transfer_lines tl ON tl.id=r.transfer_line_id
+        WHERE tl.transfer_id=v_t.id AND r.state='CONSUMED'
+    ) THEN
+        RAISE EXCEPTION 'HU_MARKING_CONSUMED_RETURN_PLAN_BLOCKED'
+            USING ERRCODE='23514';
     END IF;
     SELECT COALESCE(SUM(r.quantity),0)::BIGINT INTO v_total
       FROM marking_hu_reservation r
