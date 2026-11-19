@@ -58,6 +58,8 @@ public interface IProductionPalletFillingCorrectionStore : IHuTransactionLockSto
     IReadOnlyList<LedgerEntry> GetLedgerEntriesForHu(string normalizedHu);
     bool HasActiveReservationForHu(string normalizedHu);
     bool HasActiveDraftReference(string normalizedHu, long? excludedDocId);
+    // Dedicated source PRD that consumed immutable adopted INTERNAL marking must not enter legacy COR rollback.
+    bool HasConsumedHuMarkingReservations(long sourcePrdDocId);
     IReadOnlyList<ProductionPalletCorrectionMarkingCode> LockReceiptMarkingCodes(long sourcePrdDocId);
     int RollbackReceiptMarkingCodes(
         long adjustmentId,
