@@ -357,6 +357,9 @@ public sealed class OrderMarkingExportService
         var activeProductionPalletQtyByLine = order.Type == OrderType.Customer
             ? BuildActiveProductionPalletQtyByOrderLine(order.Id)
             : new Dictionary<long, double>();
+        var verifiedAdoptedQtyByLine = _quantityIssueEnabled && order.Type == OrderType.Customer
+            ? RequireIssueStore().ReadCustomerAdoptedReservedQuantityByOrderLine(order.Id)
+            : new Dictionary<long, long>();
 
         var markableLines = orderLines
             .Select(line => (Line: line, Item: _data.FindItemById(line.ItemId)))
@@ -397,13 +400,20 @@ public sealed class OrderMarkingExportService
                     : Math.Max(0, requiredQty - stockCoveredQty);
             }
 
+            verifiedAdoptedQtyByLine.TryGetValue(line.Id, out var adoptedReservedQty);
+            if (adoptedReservedQty < 0
+                || adoptedReservedQty > productionBaseQty + QtyTolerance)
+                throw new MarkingQuantityIssueException(
+                    "ADOPTED_HU_MARKING_EXCESS_COVERAGE: доказанный резерв HU превышает " +
+                    "текущий будущий выпуск по строке заказа.");
+            var futureNeedAfterAdoption = Math.Max(0, productionBaseQty - adoptedReservedQty);
             remainingCodeCoverByItem.TryGetValue(line.ItemId, out var codeCover);
-            var codeCoveredQty = Math.Min(Math.Max(0, productionBaseQty), codeCover);
+            var codeCoveredQty = Math.Min(futureNeedAfterAdoption, codeCover);
             remainingCodeCoverByItem[line.ItemId] = Math.Max(0, codeCover - codeCoveredQty);
-            var coveredQty = stockCoveredQty + codeCoveredQty;
+            var coveredQty = stockCoveredQty + adoptedReservedQty + codeCoveredQty;
             var exportQty = order.Type == OrderType.Internal
                 ? Math.Max(0, requiredQty - codeCoveredQty)
-                : Math.Max(0, productionBaseQty - codeCoveredQty);
+                : Math.Max(0, futureNeedAfterAdoption - codeCoveredQty);
 
             yield return new OrderMarkingExportLineSummary(
                 line.Id,
