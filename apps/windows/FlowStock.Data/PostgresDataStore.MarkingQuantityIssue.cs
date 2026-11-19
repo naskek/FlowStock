@@ -1,3 +1,4 @@
+using Npgsql;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models.Marking;
 
