@@ -17,8 +17,13 @@ BEGIN
     END IF;
     SELECT * INTO v_doc FROM docs WHERE id=p_doc_id FOR UPDATE;
     IF NOT FOUND OR v_doc.type<>'PRODUCTION_RECEIPT'
-       OR v_doc.status<>'DRAFT' OR v_doc.order_id IS NULL THEN
+       OR v_doc.status<>'DRAFT' THEN
         RAISE EXCEPTION 'HU_MARKING_DRAFT_PRD_REQUIRED' USING ERRCODE='23514';
+    END IF;
+    -- Standalone PRD remains valid under the existing hybrid Close contract.
+    -- There can be no order-owned prospective HU transfer without an order.
+    IF v_doc.order_id IS NULL THEN
+        RETURN 0;
     END IF;
     -- All new transfers must have a recorded immutable zero/positive attempt.
     -- Old unallocated transfers are never silently treated as covered.
