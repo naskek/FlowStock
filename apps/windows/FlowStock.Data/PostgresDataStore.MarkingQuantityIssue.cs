@@ -94,31 +94,40 @@ WHERE mo.id = @task_id;
         });
     }
 
-    public void RequireResolvedCustomerAdoptedMarking(long customerOrderId)
+    public IReadOnlyDictionary<long, long> ReadCustomerAdoptedReservedQuantityByOrderLine(long customerOrderId)
     {
-        // Adoption has only production-plan/HU provenance. PRINTED is a label,
-        // and a free task-level legacy code cannot be attributed to an adopted
-        // HU. Until #214 supplies authoritative code-to-HU evidence, the opt-in
-        // writer must not guess the customer's new quantity.
-        var hasUnresolvedAdoption = WithConnection(connection =>
+        return WithConnection(connection =>
         {
+            // Only the V0054 prospective allocation journal can prove an adopted
+            // HU. Function validates each transfer/line and source facts, not
+            // just GTIN or pallet PRINTED state. A stale source fails closed.
             using var command = CreateCommand(connection, """
-SELECT EXISTS (
-    SELECT 1
-    FROM order_coverage_transfers t
-    INNER JOIN order_coverage_transfer_lines l ON l.transfer_id = t.id
-    WHERE t.target_order_id = @order_id
-      AND t.compensation_kind IS NULL
-      AND l.transferred_qty > 0
-);
+SELECT order_line_id, SUM(reserved_quantity)::bigint
+FROM marking_hu_customer_reserved_coverage(@order_id)
+GROUP BY order_line_id
+ORDER BY order_line_id;
 """);
             command.Parameters.AddWithValue("order_id", customerOrderId);
-            return Convert.ToBoolean(command.ExecuteScalar());
+            var result = new Dictionary<long, long>();
+            try
+            {
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                    result.Add(reader.GetInt64(0), reader.GetInt64(1));
+            }
+            catch (PostgresException ex) when (ex.SqlState is "23514" or "22023")
+            {
+                throw new MarkingQuantityIssueException(
+                    "ADOPTED_HU_MARKING_UNVERIFIED: " + ex.MessageText);
+            }
+
+            return result;
         });
-        if (hasUnresolvedAdoption)
-            throw new MarkingQuantityIssueException(
-                "ADOPTED_HU_MARKING_UNVERIFIED: перенесённые INTERNAL HU требуют подтверждения " +
-                "маркировочного покрытия по источнику (#214); печать палетного ярлыка недостаточна.");
+    }
+
+    public void RequireResolvedCustomerAdoptedMarking(long customerOrderId)
+    {
+        _ = ReadCustomerAdoptedReservedQuantityByOrderLine(customerOrderId);
     }
 
     public long EnsureMarkingTaskQuantityIssued(Guid taskId, DateTime generatedAt)
