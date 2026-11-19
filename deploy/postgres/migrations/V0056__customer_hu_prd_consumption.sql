@@ -323,7 +323,12 @@ BEGIN
                          AND r.consumed_doc_id=p_doc_id AND r.consumed_line_id=dl.id
                    ))
                OR mo.status IN ('Cancelled', 'Failed')
-               OR (mo.order_line_id IS NOT NULL AND mo.order_line_id IS DISTINCT FROM dl.order_line_id)
+               OR (mo.order_line_id IS NOT NULL AND mo.order_line_id IS DISTINCT FROM dl.order_line_id
+                   AND NOT EXISTS(
+                       SELECT 1 FROM marking_hu_reservation r
+                       WHERE r.marking_code_id=c.id AND r.state='CONSUMED'
+                         AND r.consumed_doc_id=p_doc_id AND r.consumed_line_id=dl.id
+                   ))
                OR (mo.item_id IS NOT NULL AND mo.item_id IS DISTINCT FROM dl.item_id)
                OR (NULLIF(BTRIM(mo.gtin), '') IS NOT NULL AND BTRIM(mo.gtin) IS DISTINCT FROM BTRIM(i.gtin))
                OR (NULLIF(BTRIM(c.gtin), '') IS NOT NULL AND BTRIM(c.gtin) IS DISTINCT FROM BTRIM(i.gtin)))
