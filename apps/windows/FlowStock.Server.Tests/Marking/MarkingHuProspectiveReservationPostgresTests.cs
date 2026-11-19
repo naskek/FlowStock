@@ -1,3 +1,7 @@
+using FlowStock.Core.Services;
+using FlowStock.Data;
+using System.IO.Compression;
+using System.Xml.Linq;
 using System.Data;
 using System.Globalization;
 using Npgsql;
@@ -338,6 +342,73 @@ UPDATE production_pallets SET status='FILLED',filled_at=@at WHERE id=@pallet;
 UPDATE production_pallet_lines SET filled_qty=planned_qty,filled_at=@at
 WHERE production_pallet_id=@pallet;
 """, ("pallet", f.Pallet), ("at", "2026-11-18T13:10:00"));
+
+    [Fact]
+    public async Task CustomerExcel_PartialSourceHUProof_CreatesOnlyThreeNewUnitsInActualWorkbook()
+    {
+        var cs = Environment.GetEnvironmentVariable("FLOWSTOCK_POSTGRES_TEST_CONNECTION")
+            ?? throw new InvalidOperationException("Disposable test connection required.");
+        long customerOrderId;
+        long transferId;
+        await using (var db = await OpenTestDb())
+        {
+            await using var tx = await db.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+            var f = await Fixture.Create(db, tx, qty: 9);
+            await CreateSourceCodes(db, tx, f, 6);
+            Assert.Equal((6L, 0L), await Reserve(db, tx, f.Transfer));
+            customerOrderId = f.Target;
+            transferId = f.Transfer;
+            await tx.CommitAsync();
+        }
+
+        var service = new OrderMarkingExportService(
+            new PostgresDataStore(cs), quantityIssueEnabled: true);
+        var preview = service.Preview(customerOrderId);
+        Assert.True(preview.IsSuccess, preview.Message);
+        Assert.Equal(3, preview.TotalQty);
+
+        var first = service.Export(customerOrderId,
+            new DateTime(2026, 11, 19, 9, 0, 0, DateTimeKind.Utc));
+        Assert.True(first.IsSuccess, first.Message);
+        Assert.Equal(3, first.CreatedCodeQty);
+        Assert.NotNull(first.FileBytes);
+        Assert.Equal(3, FirstXlsxQuantity(first.FileBytes!));
+
+        var repeat = service.Export(customerOrderId,
+            new DateTime(2026, 11, 19, 9, 1, 0, DateTimeKind.Utc));
+        Assert.True(repeat.IsSuccess, repeat.Message);
+        Assert.Equal(0, repeat.CreatedCodeQty);
+        Assert.Equal(3, FirstXlsxQuantity(repeat.FileBytes!));
+
+        await using var conn = await OpenTestDb();
+        await using var verify = await conn.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        Assert.Equal(6L, await Scalar<long>(conn, verify, """
+SELECT COALESCE(SUM(r.quantity),0)::bigint
+FROM marking_hu_reservation r
+JOIN order_coverage_transfer_lines tl ON tl.id=r.transfer_line_id
+WHERE tl.transfer_id=@transfer AND r.state='ACTIVE';
+""", ("transfer", transferId)));
+        Assert.Equal(3L, await Scalar<long>(conn, verify, """
+SELECT COALESCE(SUM(b.issued_quantity),0)::bigint
+FROM marking_synthetic_quantity_balance b
+JOIN marking_order mo ON mo.id=b.marking_order_id
+WHERE mo.source_order_id=@customer;
+""", ("customer", customerOrderId)));
+        await verify.RollbackAsync();
+    }
+
+    private static double FirstXlsxQuantity(byte[] bytes)
+    {
+        using var archive = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read);
+        using var stream = archive.GetEntry("xl/worksheets/sheet1.xml")!.Open();
+        var document = XDocument.Load(stream);
+        XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        var cells = document.Descendants(ns + "c").ToArray();
+        Assert.Equal(new[] { "A1", "B1", "C1" },
+            cells.Select(cell => (string?)cell.Attribute("r")));
+        return double.Parse(cells.Single(cell => (string?)cell.Attribute("r") == "C1")
+            .Element(ns + "v")!.Value, CultureInfo.InvariantCulture);
+    }
 
     private sealed record Fixture(long Source, long Target, long TargetDoc, long SourceDoc,
         long SourceLine, long TargetLine, long DocLine, long Pallet, long Transfer,
