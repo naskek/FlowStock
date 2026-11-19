@@ -248,8 +248,7 @@ BEGIN
     FOR v_task IN
         SELECT mo.id FROM marking_order mo
         WHERE (mo.source_order_id = v_doc.order_id OR mo.order_id = v_doc.order_id
-               OR (v_order.order_type = 'INTERNAL' AND mo.source_type = 'PRODUCTION_NEED'
-                   AND mo.source_order_id IS NULL))
+               OR (mo.source_type = 'PRODUCTION_NEED' AND mo.source_order_id IS NULL))
           AND (mo.source_order_id IS NULL OR mo.source_order_id = v_doc.order_id)
           AND (mo.order_id IS NULL OR mo.order_id = v_doc.order_id)
           AND (mo.source_type IN ('PRODUCTION_ORDER', 'PRODUCTION_NEED') OR mo.order_id = v_doc.order_id)
