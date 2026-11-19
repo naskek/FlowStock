@@ -218,6 +218,127 @@ SELECT * FROM marking_synthetic_quantity_apply(
         await tx.RollbackAsync();
     }
 
+    [Fact]
+    public async Task CustomerPrdClose_ConsumesExactSourceCodesAndIsIdempotent()
+    {
+        await using var db = await OpenTestDb();
+        await using var tx = await db.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        var f = await Fixture.Create(db, tx, qty: 5);
+        var sourceCodes = await CreateSourceCodes(db, tx, f, 5);
+        Assert.Equal((5L, 0L), await Reserve(db, tx, f.Transfer));
+        await MarkFilled(db, tx, f);
+        Assert.Equal(5L, await Scalar<long>(db, tx, """
+SELECT marking_assign_prd_close(@doc,'PRD-CLOSE',@at);
+""", ("doc", f.TargetDoc), ("at", "2026-11-18T13:10:00")));
+        Assert.Equal(5L, await Scalar<long>(db, tx,
+            "SELECT COUNT(*) FROM marking_hu_reservation WHERE state='CONSUMED' AND marking_code_id IS NOT NULL AND transfer_line_id IN (SELECT id FROM order_coverage_transfer_lines WHERE transfer_id=@transfer);",
+            ("transfer", f.Transfer)));
+        Assert.Equal(5L, await Scalar<long>(db, tx,
+            "SELECT COUNT(*) FROM marking_code WHERE receipt_doc_id=@doc AND receipt_line_id=@line AND status='Applied';",
+            ("doc", f.TargetDoc), ("line", f.DocLine)));
+        Assert.Equal(5L, await Scalar<long>(db, tx,
+            "SELECT COUNT(*) FROM marking_hu_reservation_event e JOIN marking_hu_reservation r ON r.id=e.reservation_id JOIN order_coverage_transfer_lines tl ON tl.id=r.transfer_line_id WHERE tl.transfer_id=@transfer AND e.action='CONSUME';",
+            ("transfer", f.Transfer)));
+        Assert.Equal(5L, await Scalar<long>(db, tx,
+            "SELECT marking_assign_prd_close(@doc,'PRD-CLOSE',@at);",
+            ("doc", f.TargetDoc), ("at", "2026-11-18T13:10:00")));
+        await AssertSqlError(db, tx, "HU_MARKING_CONSUMED_CODE_IMMUTABLE",
+            "UPDATE marking_code SET status='Reserved',receipt_doc_id=NULL,receipt_line_id=NULL WHERE id=@id;",
+            ("id", sourceCodes[0]));
+        await tx.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task CustomerPrdClose_ConsumesQuantityPoolOnceAndRefusesReleaseWithoutCOR()
+    {
+        await using var db = await OpenTestDb();
+        await using var tx = await db.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        var f = await Fixture.Create(db, tx, qty: 8);
+        var pool = Guid.NewGuid();
+        await Execute(db, tx, """
+SELECT * FROM marking_synthetic_quantity_apply(
+    @op,@pool,'ISSUE',8,@task,'TEST-218',NULL::bigint,NULL::bigint,'TEST');
+""", ("op", Guid.NewGuid()), ("pool", pool), ("task", f.Task));
+        Assert.Equal((0L, 8L), await Reserve(db, tx, f.Transfer));
+        await MarkFilled(db, tx, f);
+        Assert.Equal(8L, await Scalar<long>(db, tx,
+            "SELECT marking_assign_prd_close(@doc,'PRD-CLOSE',@at);",
+            ("doc", f.TargetDoc), ("at", "2026-11-18T13:10:00")));
+        Assert.Equal(8L, await Scalar<long>(db, tx,
+            "SELECT COALESCE(SUM(applied_quantity),0)::bigint FROM marking_synthetic_quantity_receipt_balance WHERE receipt_doc_id=@doc AND receipt_line_id=@line;",
+            ("doc", f.TargetDoc), ("line", f.DocLine)));
+        Assert.Equal(0L, await Scalar<long>(db, tx,
+            "SELECT available_quantity FROM marking_synthetic_quantity_balance WHERE pool_id=@pool;",
+            ("pool", pool)));
+        Assert.Equal(8L, await Scalar<long>(db, tx,
+            "SELECT marking_assign_prd_close(@doc,'PRD-CLOSE',@at);",
+            ("doc", f.TargetDoc), ("at", "2026-11-18T13:10:00")));
+        await AssertSqlError(db, tx, "HU_MARKING_CONSUMED_QUANTITY_COR_BLOCKED", """
+SELECT * FROM marking_synthetic_quantity_apply(
+    @op,@pool,'RELEASE',1,NULL::uuid,NULL::text,@doc,@line,'TEST');
+""", ("op", Guid.NewGuid()), ("pool", pool),
+            ("doc", f.TargetDoc), ("line", f.DocLine));
+        await tx.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task CustomerPrdClose_PartialSourceShortageRollsBackAllOrUsesOwnCustomerCodes()
+    {
+        await using var db = await OpenTestDb();
+        await using var tx = await db.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        var f = await Fixture.Create(db, tx, qty: 9);
+        await CreateSourceCodes(db, tx, f, 6);
+        Assert.Equal((6L, 0L), await Reserve(db, tx, f.Transfer));
+        await MarkFilled(db, tx, f);
+        await AssertSqlError(db, tx, "QUANTITY_PRD_SHORTAGE",
+            "SELECT marking_assign_prd_close(@doc,'PRD-CLOSE',@at);",
+            ("doc", f.TargetDoc), ("at", "2026-11-18T13:10:00"));
+        Assert.Equal(6L, await Scalar<long>(db, tx,
+            "SELECT COUNT(*) FROM marking_hu_reservation WHERE state='ACTIVE' AND transfer_line_id IN (SELECT id FROM order_coverage_transfer_lines WHERE transfer_id=@transfer);",
+            ("transfer", f.Transfer)));
+        Assert.Equal(0L, await Scalar<long>(db, tx,
+            "SELECT COUNT(*) FROM marking_code WHERE receipt_doc_id=@doc;",
+            ("doc", f.TargetDoc)));
+
+        var customerTask = Guid.NewGuid();
+        await Execute(db, tx, """
+INSERT INTO marking_order(
+    id,order_id,item_id,gtin,requested_quantity,request_number,
+    status,source_type,source_order_id,created_at,updated_at)
+VALUES(@task,@target,@item,@gtin,3,@ref,'Printed',
+       'PRODUCTION_ORDER',@target,@at,@at);
+""", ("task", customerTask), ("target", f.Target), ("item", f.Item),
+            ("gtin", f.Gtin), ("ref", "HU-RES-CUST-" + Guid.NewGuid().ToString("N")),
+            ("at", "2026-11-18T13:00:00"));
+        var imported = Guid.NewGuid();
+        await Execute(db, tx, """
+INSERT INTO marking_code_import(
+    id,original_filename,storage_path,file_hash,source_type,
+    matched_marking_order_id,status,created_at)
+VALUES(@imp,'customer.xlsx','<temporary-chz-export>',@hash,
+       'temporary-chz-export',@task,'Imported',@at);
+""", ("imp", imported), ("hash", Guid.NewGuid().ToString("N")),
+            ("task", customerTask), ("at", "2026-11-18T13:00:00"));
+        for (var i = 0; i < 3; i++)
+            await InsertCode(db, tx, Guid.NewGuid(), customerTask, imported,
+                f.Gtin, "LegacySynthetic", "Reserved", "TEMP-CHZ-");
+
+        Assert.Equal(9L, await Scalar<long>(db, tx,
+            "SELECT marking_assign_prd_close(@doc,'PRD-CLOSE',@at);",
+            ("doc", f.TargetDoc), ("at", "2026-11-18T13:10:00")));
+        Assert.Equal(9L, await Scalar<long>(db, tx,
+            "SELECT COUNT(*) FROM marking_code WHERE receipt_doc_id=@doc AND receipt_line_id=@line AND status='Applied';",
+            ("doc", f.TargetDoc), ("line", f.DocLine)));
+        await tx.RollbackAsync();
+    }
+
+    private static Task MarkFilled(NpgsqlConnection db, NpgsqlTransaction tx, Fixture f) =>
+        Execute(db, tx, """
+UPDATE production_pallets SET status='FILLED',filled_at=@at WHERE id=@pallet;
+UPDATE production_pallet_lines SET filled_qty=planned_qty,filled_at=@at
+WHERE production_pallet_id=@pallet;
+""", ("pallet", f.Pallet), ("at", "2026-11-18T13:10:00"));
+
     private sealed record Fixture(long Source, long Target, long TargetDoc, long SourceDoc,
         long SourceLine, long TargetLine, long DocLine, long Pallet, long Transfer,
         long Item, string Gtin, Guid Task, Guid Import)
