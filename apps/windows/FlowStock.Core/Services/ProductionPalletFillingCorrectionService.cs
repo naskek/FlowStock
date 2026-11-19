@@ -604,6 +604,13 @@ public sealed class ProductionPalletFillingCorrectionService
         var markingCodes = correctionStore.LockReceiptMarkingCodes(pallet.PrdDocId);
         if (action == ProductionPalletFillingCorrectionAction.CorrectFilled)
         {
+            if (correctionStore.HasConsumedHuMarkingReservations(pallet.PrdDocId))
+            {
+                AddBlocker(
+                    blockers,
+                    ProductionPalletFillingCorrectionErrorCodes.AdoptedHuMarkingConsumed,
+                    "Маркировка перенесённой INTERNAL HU уже потреблена. Без доказанного COR/rebind протокола корректировка заблокирована.");
+            }
             AddMarkingBlockers(store, pallet, currentLines, markingCodes, quantity, blockers);
         }
         else if (markingCodes.Count > 0 || quantity.Count > 0)
