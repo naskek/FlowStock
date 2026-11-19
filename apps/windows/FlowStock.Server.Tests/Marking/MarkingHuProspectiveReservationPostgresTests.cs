@@ -253,6 +253,40 @@ SELECT marking_assign_prd_close(@doc,'PRD-CLOSE',@at);
     }
 
     [Fact]
+    public async Task CustomerPrdClose_ConsumesVerifiedRealImportedCodesWithoutDuplicateSyntheticIssue()
+    {
+        await using var db = await OpenTestDb();
+        await using var tx = await db.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        var f = await Fixture.Create(db, tx, qty: 4);
+        var csvImport = Guid.NewGuid();
+        await Execute(db, tx, """
+INSERT INTO marking_code_import(
+    id,original_filename,storage_path,file_hash,source_type,
+    matched_marking_order_id,status,created_at)
+VALUES(@id,'customer-real.csv','<marking-real-import>',@hash,'csv',@task,'Imported',@at);
+""", ("id", csvImport), ("hash", Guid.NewGuid().ToString("N")),
+            ("task", f.Task), ("at", "2026-11-18T13:00:00"));
+        for (var i = 0; i < 4; i++)
+            await InsertCode(db, tx, Guid.NewGuid(), f.Task, csvImport,
+                f.Gtin, "RealImport", "Reserved", "01REAL-DM-");
+        Assert.Equal((4L, 0L), await Reserve(db, tx, f.Transfer));
+        await MarkFilled(db, tx, f);
+        Assert.Equal(4L, await Scalar<long>(db, tx,
+            "SELECT marking_assign_prd_close(@doc,'PRD-CLOSE',@at);",
+            ("doc", f.TargetDoc), ("at", "2026-11-18T13:10:00")));
+        Assert.Equal(4L, await Scalar<long>(db, tx, """
+SELECT COUNT(*) FROM marking_code c
+JOIN marking_code_import imp ON imp.id=c.import_id
+WHERE c.receipt_doc_id=@doc AND c.receipt_line_id=@line
+  AND c.status='Applied' AND c.origin='RealImport' AND imp.source_type='csv';
+""", ("doc", f.TargetDoc), ("line", f.DocLine)));
+        Assert.Equal(0L, await Scalar<long>(db, tx,
+            "SELECT COUNT(*) FROM marking_synthetic_quantity_pool p JOIN marking_order mo ON mo.id=p.marking_order_id WHERE mo.source_order_id=@source;",
+            ("source", f.Source)));
+        await tx.RollbackAsync();
+    }
+
+    [Fact]
     public async Task CustomerPrdClose_ConsumesQuantityPoolOnceAndRefusesReleaseWithoutCOR()
     {
         await using var db = await OpenTestDb();
