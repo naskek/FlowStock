@@ -38,7 +38,7 @@ public partial class OrderMarkingExportPreviewWindow : Window
     }
 
     private static string FormatQty(double qty) =>
-        qty.ToString("0.###", CultureInfo.InvariantCulture);
+        qty.ToString("0.######", CultureInfo.InvariantCulture);
 }
 
 public sealed class OrderMarkingExportPreviewRow
@@ -68,5 +68,5 @@ public sealed class OrderMarkingExportPreviewRow
     public string HuCodesDisplay { get; }
 
     private static string FormatQty(double qty) =>
-        qty.ToString("0.###", CultureInfo.InvariantCulture);
+        qty.ToString("0.######", CultureInfo.InvariantCulture);
 }

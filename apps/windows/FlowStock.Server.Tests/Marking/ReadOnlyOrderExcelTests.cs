@@ -26,6 +26,16 @@ public sealed class ReadOnlyOrderExcelTests
     }
 
     [Fact]
+    public void WpfPreview_PreservesExportQuantityPrecision()
+    {
+        var row = new FlowStock.App.OrderMarkingExportPreviewRow(new FlowStock.App.OrderMarkingExportPreviewLineApiResult(
+            10, 2, "Товар", "00123456789012", 3.125678, 0, Array.Empty<string>()));
+        Assert.Equal("3.125678", row.QtyDisplay);
+        Assert.True(row.IsSelected);
+        Assert.Equal(10, row.OrderLineId);
+    }
+
+    [Fact]
     public void PreviewSelectionRetry_UsesOnlyReadsAndPreservesExactThreeColumnWorkbook()
     {
         var (store, service) = Create();

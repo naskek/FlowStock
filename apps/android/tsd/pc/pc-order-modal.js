@@ -565,7 +565,7 @@
       lines.map(function (line) {
         return '<tr><td><input type="checkbox" data-excel-line="' + Number(line.order_line_id) + '" checked></td><td>' +
           escapeHtml(line.item_name) + '</td><td>' + escapeHtml(line.gtin) + '</td><td>' +
-          escapeHtml(formatQuantity(line.qty)) + '</td></tr>';
+          escapeHtml(String(line.qty)) + '</td></tr>';
       }).join('') + '</tbody></table>' +
       '<button type="button" class="btn primary-btn" data-excel-confirm>Скачать Excel</button> ' +
       '<button type="button" class="btn btn-outline" data-excel-cancel>Отмена</button>';
