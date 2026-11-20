@@ -39,12 +39,12 @@ RETURNING id;";
             var currentRef = $"{token}-Current";
             var cancelledRef = $"{token}-Cancelled";
             var mergedRef = $"{token}-Merged";
-            var numericRef = "000123450000";
+            var numericRef = Random.Shared.NextInt64(100_000_000_000, 900_000_000_000).ToString("D12");
             var currentId = Insert(currentRef, "ACCEPTED");
             var otherId = Insert($"{token}-Other", "DRAFT");
             Insert(cancelledRef, "CANCELLED");
             Insert(mergedRef, "MERGED");
-            var numericId = Insert($"{token}-{numericRef}", "ACCEPTED");
+            var numericId = Insert(numericRef, "ACCEPTED");
 
             var store = new PostgresDataStore(connectionString);
 
@@ -54,14 +54,14 @@ RETURNING id;";
             Assert.True(store.HasOtherOrderWithRef(currentId, cancelledRef.ToLowerInvariant()));
             Assert.True(store.HasOtherOrderWithRef(currentId, mergedRef));
             Assert.False(store.HasOtherOrderWithRef(currentId, $"{token}-Missing"));
-            Assert.False(store.HasOtherOrderWithRef(numericId, $"{token}-{numericRef}"));
+            Assert.False(store.HasOtherOrderWithRef(numericId, numericRef));
 
             // Auto-number fallback uses raw refs, not a filtered active-order model.
             var refs = store.GetAllOrderRefsForNextNumber();
             Assert.Contains(currentRef, refs);
             Assert.Contains(cancelledRef, refs);
             Assert.Contains(mergedRef, refs);
-            Assert.Contains($"{token}-{numericRef}", refs);
+            Assert.Contains(numericRef, refs);
         }
         finally
         {
