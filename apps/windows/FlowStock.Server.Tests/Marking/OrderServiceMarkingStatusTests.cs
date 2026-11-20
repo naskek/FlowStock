@@ -17,11 +17,11 @@ public sealed class OrderServiceMarkingStatusTests
         var result = Assert.Single(new OrderService(store.Object).GetOrders());
 
         Assert.Equal(MarkingStatus.Printed, result.MarkingStatus);
-        Assert.Equal(MarkingStatus.Printed, result.EffectiveMarkingStatus);
+        Assert.Equal(MarkingStatus.NotRequired, result.EffectiveMarkingStatus);
         Assert.False(result.MarkingRequired);
         Assert.Equal(printedAt, result.MarkingExcelGeneratedAt);
         Assert.Equal(printedAt, result.MarkingPrintedAt);
-        Assert.Equal("Маркировка проведена", result.MarkingStatusDisplay);
+        Assert.Empty(result.MarkingStatusDisplay);
     }
 
     [Fact]
@@ -35,11 +35,11 @@ public sealed class OrderServiceMarkingStatusTests
 
         Assert.NotNull(result);
         Assert.Equal(MarkingStatus.Printed, result.MarkingStatus);
-        Assert.Equal(MarkingStatus.Printed, result.EffectiveMarkingStatus);
+        Assert.Equal(MarkingStatus.NotRequired, result.EffectiveMarkingStatus);
         Assert.False(result.MarkingRequired);
         Assert.Equal(printedAt, result.MarkingExcelGeneratedAt);
         Assert.Equal(printedAt, result.MarkingPrintedAt);
-        Assert.Equal("Маркировка проведена", result.MarkingStatusDisplay);
+        Assert.Empty(result.MarkingStatusDisplay);
     }
 
     private static Mock<IDataStore> CreateStore(Order order)

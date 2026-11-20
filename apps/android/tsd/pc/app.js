@@ -1120,9 +1120,6 @@
           '<td class="pc-order-pallet-cell">' +
           renderOrderPalletFillingIndicator(order) +
           "</td>" +
-          '<td class="pc-order-marking-cell">' +
-          renderOrderMarkingIndicator(order) +
-          "</td>" +
           (canManagePendingRequests
             ? '<td class="pc-order-actions-cell">' +
               renderPendingOrderActions(order, canManagePendingRequests) +
@@ -1142,7 +1139,6 @@
       renderSortableHeader("orders", "shippedAt", "Факт", "pc-num pc-order-fact-header") +
       renderSortableHeader("orders", "status", "Статус", "pc-order-status-header") +
       renderSortableHeader("orders", "palletFilling", "Наполнение паллет", "pc-order-pallet-header") +
-      '<th class="pc-order-marking-header" title="Честный знак: маркировка">ЧЗ</th>' +
       (canManagePendingRequests ? '<th class="pc-order-actions-header">Действия</th>' : "") +
       "</tr></thead>" +
       "<tbody>" +
@@ -1784,72 +1780,6 @@
     }
 
     return renderStatusBadge(status.label, status.tone);
-  }
-
-  function getOrderMarkingPresentation(order) {
-    var serverLabel = String((order && order.marking_label) || "").trim();
-    if (serverLabel === "Маркировка проведена") {
-      return {
-        tone: "success",
-        label: "Маркировка проведена",
-        title: "Маркировка проведена",
-      };
-    }
-    if (serverLabel === "Маркировка не проведена") {
-      return {
-        tone: "danger",
-        label: "Маркировка не проведена",
-        title: "Маркировка не проведена",
-      };
-    }
-    if (order && order.marking_completed === true) {
-      return {
-        tone: "success",
-        label: "Маркировка проведена",
-        title: "Маркировка проведена",
-      };
-    }
-    var rawEffectiveStatus = String((order && (order.marking_effective_status || order.marking_status)) || "")
-      .trim()
-      .toUpperCase();
-    var effectiveStatus = rawEffectiveStatus;
-    var legacyExcelGenerated = effectiveStatus === "EXCEL_GENERATED";
-    if (effectiveStatus === "EXCEL_GENERATED") {
-      effectiveStatus = "PRINTED";
-    }
-    if (!effectiveStatus && order && order.marking_required === true) {
-      effectiveStatus = "REQUIRED";
-    }
-    if (effectiveStatus === "PRINTED") {
-      return {
-        tone: "success",
-        label: "Маркировка проведена",
-        title: "Маркировка проведена",
-      };
-    }
-
-    if (effectiveStatus === "REQUIRED") {
-      return {
-        tone: "danger",
-        label: "Маркировка не проведена",
-        title: "Маркировка не проведена",
-      };
-    }
-
-    return {
-      tone: "neutral",
-      label: "",
-      title: "",
-    };
-  }
-
-  function renderOrderMarkingIndicator(order) {
-    var marking = getOrderMarkingPresentation(order);
-    if (!marking.label) {
-      return "";
-    }
-
-    return wrapOrderIconCell(renderStatusIconOnly(marking.tone, "pc-marking-badge", marking.title || marking.label));
   }
 
   function isCustomerOrderFullyShipped(order) {
@@ -4298,8 +4228,6 @@
     window.FlowStockPcTestHooks.getOrderStatusPresentation = getOrderStatusPresentation;
     window.FlowStockPcTestHooks.renderAttentionModalContent = renderAttentionModalContent;
     window.FlowStockPcTestHooks.openAttentionModal = openAttentionModal;
-    window.FlowStockPcTestHooks.getOrderMarkingPresentation = getOrderMarkingPresentation;
-    window.FlowStockPcTestHooks.renderOrderMarkingIndicator = renderOrderMarkingIndicator;
     window.FlowStockPcTestHooks.getOrderPalletFillingPresentation = getOrderPalletFillingPresentation;
     window.FlowStockPcTestHooks.renderOrderPalletFillingIndicator = renderOrderPalletFillingIndicator;
     window.FlowStockPcTestHooks.applyOrderLinePalletFillingFallback = applyOrderLinePalletFillingFallback;

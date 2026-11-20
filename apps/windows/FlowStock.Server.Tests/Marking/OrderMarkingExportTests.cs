@@ -10,327 +10,56 @@ namespace FlowStock.Server.Tests.Marking;
 public sealed class OrderMarkingExportTests
 {
     [Fact]
-    public async Task FirstInternalOrderExport_With6000Codes_CreatesSingleTaskAndWorkbook()
+    public async Task HttpSelection_ExportsOnlySelectedPreviewLine()
     {
-        var harness = CreateOrderHarness(OrderType.Internal, qty: 6000);
+        var harness = CreateOrderHarness(OrderType.Internal, 5);
+        harness.SeedOrderLine(new OrderLine { Id = 101, OrderId = 10, ItemId = 1, QtyOrdered = 7 });
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
-
-        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-        var workbook = await response.Content.ReadAsByteArrayAsync();
-
+        var preview = await host.Client.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/orders/10/marking/preview");
+        var snapshot = preview.GetProperty("snapshot").GetString();
+        var response = await host.Client.PostAsJsonAsync("/api/orders/10/marking/export", new { selected_line_ids = new[] { 101L }, snapshot });
         Assert.True(response.IsSuccessStatusCode);
-        Assert.Equal(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            response.Content.Headers.ContentType?.MediaType);
-        Assert.NotEmpty(workbook);
-        var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(6000, markingOrder.RequestedQuantity);
-        Assert.Equal(6000, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
-        Assert.Single(harness.MarkingCodes.Select(code => code.ImportId).Distinct());
-    }
-
-    [Fact]
-    public void Export_RecalculatesOnlyAfterOrderLock()
-    {
-        var harness = CreateOrderHarness(OrderType.Internal, qty: 5);
-        harness.RunAfterNextLockOrdersForUpdate(() => harness.SeedOrderLine(new OrderLine
-        {
-            Id = 100,
-            OrderId = 10,
-            ItemId = 1,
-            QtyOrdered = 7
-        }));
-
-        var result = new OrderMarkingExportService(harness.Store)
-            .Export(10, new DateTime(2026, 5, 8, 13, 0, 0, DateTimeKind.Utc));
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal(12, Assert.Single(harness.MarkingOrders).RequestedQuantity);
-        Assert.Equal(12, harness.MarkingCodes.Count);
-    }
-
-    [Fact]
-    public async Task InternalOrderExport_CreatesProductionOrderSyntheticCodes()
-    {
-        var harness = CreateOrderHarness(OrderType.Internal, qty: 3600);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
-
-        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-
-        Assert.True(response.IsSuccessStatusCode);
-        var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(3600, markingOrder.RequestedQuantity);
-        Assert.Equal(MarkingNeedCreationService.ProductionOrderSourceType, markingOrder.SourceType);
-        Assert.Equal(10, markingOrder.SourceOrderId);
-        Assert.Equal(10, markingOrder.OrderId);
-        Assert.Null(markingOrder.OrderLineId);
-        Assert.Equal(3600, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
-        Assert.True(harness.GetOrder(10).MarkingCompleted);
-        Assert.Equal(MarkingStatus.Printed, harness.GetOrder(10).EffectiveMarkingStatus);
-    }
-
-    [Fact]
-    public async Task LegacyOrderExport_WithSameItemOnMultipleLines_DoesNotScopeAggregatedTaskToFirstLine()
-    {
-        var harness = CreateOrderHarness(OrderType.Internal, qty: 5);
-        harness.SeedOrderLine(new OrderLine
-        {
-            Id = 101,
-            OrderId = 10,
-            ItemId = 1,
-            QtyOrdered = 7
-        });
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
-
-        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-
-        Assert.True(response.IsSuccessStatusCode);
-        var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(12, markingOrder.RequestedQuantity);
-        Assert.Null(markingOrder.OrderLineId);
-        Assert.Equal(12, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
-    }
-
-    [Fact]
-    public async Task LegacyOrderExport_RepeatedExport_KeepsTaskUnscopedForActiveLineUniqueIndexCompatibility()
-    {
-        var harness = CreateOrderHarness(OrderType.Internal, qty: 5);
-        harness.SeedOrderLine(new OrderLine
-        {
-            Id = 101,
-            OrderId = 10,
-            ItemId = 1,
-            QtyOrdered = 7
-        });
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
-
-        var first = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-        var second = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-
-        Assert.True(first.IsSuccessStatusCode);
-        Assert.True(second.IsSuccessStatusCode);
-        var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Null(markingOrder.OrderLineId);
-        Assert.Equal(12, markingOrder.RequestedQuantity);
-    }
-
-    [Fact]
-    public async Task ShippedOrderExport_IsRejectedAndCreatesNoMarkingData()
-    {
-        var harness = CreateOrderHarness(OrderType.Customer, qty: 3600, status: OrderStatus.Shipped);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
-
-        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-        var body = await response.Content.ReadAsStringAsync();
-
-        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("Нельзя формировать Excel ЧЗ для выполненного заказа.", body, StringComparison.Ordinal);
+        await AssertWorkbookQty(response, 7);
+        var invalid = await host.Client.PostAsJsonAsync("/api/orders/10/marking/export", new { selected_line_ids = Array.Empty<long>(), snapshot });
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, invalid.StatusCode);
         Assert.Empty(harness.MarkingOrders);
         Assert.Empty(harness.MarkingCodes);
     }
 
-    [Fact]
-    public async Task AcceptedCustomerOrderExport_IsAllowed()
+    [Theory]
+    [InlineData(OrderType.Internal, OrderStatus.Draft)]
+    [InlineData(OrderType.Customer, OrderStatus.InProgress)]
+    [InlineData(OrderType.Customer, OrderStatus.Accepted)]
+    public async Task Export_RetryProducesSameRowsWithoutAnyWrites(OrderType type, OrderStatus status)
     {
-        var harness = CreateOrderHarness(OrderType.Customer, qty: 3600, status: OrderStatus.Accepted);
+        var harness = CreateOrderHarness(type, 6000, status);
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
-
-        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-
-        Assert.True(response.IsSuccessStatusCode);
-        Assert.Single(harness.MarkingOrders);
-    }
-
-    [Fact]
-    public async Task InProgressInternalOrderExport_IsAllowed()
-    {
-        var harness = CreateOrderHarness(OrderType.Internal, qty: 3600, status: OrderStatus.InProgress);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
-
-        var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-
-        Assert.True(response.IsSuccessStatusCode);
-        Assert.Single(harness.MarkingOrders);
-    }
-
-    [Fact]
-    public void NewInternalMarkingOrder_WithoutExcelOrCodes_IsNotCompleted()
-    {
-        var harness = CreateOrderHarness(OrderType.Internal, qty: 3600, status: OrderStatus.InProgress);
-
-        var order = harness.GetOrder(10);
-
-        Assert.True(order.MarkingApplies);
-        Assert.True(order.MarkingRequired);
-        Assert.False(order.MarkingCompleted);
-        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
-        Assert.Equal("Маркировка не проведена", order.MarkingLabel);
-    }
-
-    [Fact]
-    public void NewInternalMarkingOrder_WithZeroNeedAndNoCodes_IsNotCompleted()
-    {
-        var harness = CreateOrderHarness(OrderType.Internal, qty: 0, status: OrderStatus.InProgress);
-
-        var order = harness.GetOrder(10);
-
-        Assert.True(order.MarkingApplies);
-        Assert.True(order.MarkingRequired);
-        Assert.False(order.MarkingCompleted);
-        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
-        Assert.Equal("Маркировка не проведена", order.MarkingLabel);
-    }
-
-    [Fact]
-    public void NewInternalMarkingOrder_WithUnrelatedFreeCodes_IsNotCompleted()
-    {
-        var harness = CreateOrderHarness(OrderType.Internal, qty: 3600, status: OrderStatus.InProgress);
-        var markingOrderId = Guid.NewGuid();
-        harness.SeedMarkingOrder(new MarkingOrder
+        var original = harness.GetOrder(10);
+        var before = harness.TransactionExecutionCount;
+        foreach (var _ in Enumerable.Range(0, 2))
         {
-            Id = markingOrderId,
-            OrderId = null,
-            SourceOrderId = null,
-            SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
-            ItemId = 1,
-            Gtin = "04601234567890",
-            RequestedQuantity = 3600,
-            Status = MarkingOrderStatus.Printed,
-            CreatedAt = new DateTime(2026, 5, 20, 10, 0, 0, DateTimeKind.Utc),
-            UpdatedAt = new DateTime(2026, 5, 20, 10, 0, 0, DateTimeKind.Utc)
-        });
-        harness.SeedMarkingCodes(markingOrderId, count: 3600, gtin: "04601234567890");
-
-        var order = harness.GetOrder(10);
-
-        Assert.True(order.MarkingApplies);
-        Assert.True(order.MarkingRequired);
-        Assert.False(order.MarkingCompleted);
-        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
+            var response = await host.Client.PostAsync("/api/orders/10/marking/export", null);
+            Assert.True(response.IsSuccessStatusCode);
+            await AssertWorkbookQty(response, 6000);
+        }
+        Assert.Empty(harness.MarkingOrders);
+        Assert.Empty(harness.MarkingCodes);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(original), System.Text.Json.JsonSerializer.Serialize(harness.GetOrder(10)));
+        Assert.Equal(before, harness.TransactionExecutionCount);
     }
 
-    [Fact]
-    public void FilledPallet_DoesNotMakeInternalOrderMarkingCompleted()
+    [Theory]
+    [InlineData(OrderStatus.Shipped)]
+    [InlineData(OrderStatus.Cancelled)]
+    [InlineData(OrderStatus.Merged)]
+    public void TerminalOrders_CannotExport(OrderStatus status)
     {
-        var harness = CreateOrderHarness(OrderType.Internal, qty: 3600, status: OrderStatus.InProgress);
-        harness.SeedDoc(new Doc
-        {
-            Id = 20,
-            DocRef = "PRD-2026-000020",
-            Type = DocType.ProductionReceipt,
-            Status = DocStatus.Draft,
-            OrderId = 10,
-            OrderRef = "INT-010",
-            CreatedAt = new DateTime(2026, 5, 8, 12, 0, 0, DateTimeKind.Utc)
-        });
-        harness.SeedLine(new DocLine
-        {
-            Id = 21,
-            DocId = 20,
-            OrderLineId = 100,
-            ItemId = 1,
-            Qty = 3600,
-            ToLocationId = 1,
-            ToHu = "HU-FILLED-CHZ-001"
-        });
-        harness.SeedProductionPallet(new ProductionPallet
-        {
-            Id = 2001,
-            PrdDocId = 20,
-            DocLineId = 21,
-            OrderId = 10,
-            OrderLineId = 100,
-            ItemId = 1,
-            HuCode = "HU-FILLED-CHZ-001",
-            PlannedQty = 3600,
-            ToLocationId = 1,
-            Status = ProductionPalletStatus.Filled,
-            FilledAt = new DateTime(2026, 5, 8, 13, 0, 0, DateTimeKind.Utc),
-            CreatedAt = new DateTime(2026, 5, 8, 12, 0, 0, DateTimeKind.Utc)
-        });
-
-        var order = harness.GetOrder(10);
-
-        Assert.True(order.MarkingApplies);
-        Assert.True(order.MarkingRequired);
-        Assert.False(order.MarkingCompleted);
-        Assert.Equal(MarkingStatus.Required, order.EffectiveMarkingStatus);
-    }
-
-    [Fact]
-    public async Task InternalOrderExport_IsIdempotent()
-    {
-        var harness = CreateOrderHarness(OrderType.Internal, qty: 3600);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
-
-        var first = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-        var second = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-
-        Assert.True(first.IsSuccessStatusCode);
-        Assert.True(second.IsSuccessStatusCode);
-        Assert.Equal(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            second.Content.Headers.ContentType?.MediaType);
-        var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(3600, markingOrder.RequestedQuantity);
-        Assert.Equal(3600, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
-    }
-
-    [Fact]
-    public async Task CustomerOrderExport_WhenCodesAlreadyExist_StillRegeneratesExcelWithoutCreatingNewCodes()
-    {
-        var harness = CreateOrderHarness(OrderType.Customer, qty: 3600, status: OrderStatus.Accepted);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
-
-        var first = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-        var codeCountAfterFirst = harness.MarkingCodes.Count;
-
-        var second = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-
-        Assert.True(first.IsSuccessStatusCode);
-        Assert.True(second.IsSuccessStatusCode);
-        Assert.Equal(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            second.Content.Headers.ContentType?.MediaType);
-        Assert.Single(harness.MarkingOrders);
-        Assert.Equal(codeCountAfterFirst, harness.MarkingCodes.Count);
-        Assert.True(harness.GetOrder(10).MarkingCompleted);
-        Assert.Equal("Маркировка проведена", harness.GetOrder(10).MarkingLabel);
-    }
-
-    [Fact]
-    public async Task InternalProductionReceipt_AfterOrderExport_ClosesAndCompletesOrder()
-    {
-        var harness = CreateOrderHarness(OrderType.Internal, qty: 5);
-        harness.SeedDoc(new Doc
-        {
-            Id = 20,
-            DocRef = "PRD-2026-000020",
-            Type = DocType.ProductionReceipt,
-            Status = DocStatus.Draft,
-            OrderId = 10,
-            OrderRef = "INT-010",
-            CreatedAt = new DateTime(2026, 5, 8, 12, 0, 0, DateTimeKind.Utc)
-        });
-        harness.SeedLine(new DocLine
-        {
-            Id = 21,
-            DocId = 20,
-            OrderLineId = 100,
-            ItemId = 1,
-            Qty = 5,
-            ToLocationId = 1,
-            ToHu = "HU-ORD-CHZ-001"
-        });
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
-
-        var export = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-        var close = harness.CreateService().TryCloseDoc(20, allowNegative: false);
-
-        Assert.True(export.IsSuccessStatusCode);
-        Assert.True(close.Success, string.Join("; ", close.Errors));
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 21));
-        Assert.Equal(OrderStatus.Shipped, harness.GetOrder(10).Status);
+        var harness = CreateOrderHarness(OrderType.Customer, 10, status);
+        var service = new OrderMarkingExportService(harness.Store);
+        Assert.False(service.Preview(10).IsSuccess);
+        Assert.False(service.Export(10, DateTime.UtcNow).IsSuccess);
+        Assert.Empty(harness.MarkingOrders);
     }
 
     [Fact]
@@ -351,9 +80,9 @@ public sealed class OrderMarkingExportTests
         var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
 
         Assert.True(response.IsSuccessStatusCode);
-        var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(3600, markingOrder.RequestedQuantity);
-        Assert.Equal(3600, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
+        await AssertWorkbookQty(response, 3600);
+        Assert.Empty(harness.MarkingOrders);
+        Assert.Empty(harness.MarkingCodes);
     }
 
     [Fact]
@@ -372,14 +101,10 @@ public sealed class OrderMarkingExportTests
         await using var host = await CloseDocumentHttpHost.StartAsync(harness, new InMemoryApiDocStore());
 
         var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
-        var payload = await response.Content.ReadFromJsonAsync<OrderMarkingExportPayload>();
-
-        Assert.True(response.IsSuccessStatusCode);
-        Assert.NotNull(payload);
-        Assert.Equal(0, payload.CreatedCodeQty);
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Empty(harness.MarkingOrders);
         Assert.Empty(harness.MarkingCodes);
-        Assert.True(harness.GetOrder(10).MarkingCompleted);
+        Assert.False(harness.GetOrder(10).MarkingCompleted);
     }
 
     [Fact]
@@ -435,9 +160,9 @@ public sealed class OrderMarkingExportTests
         var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
 
         Assert.True(response.IsSuccessStatusCode);
-        var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(100, markingOrder.RequestedQuantity);
-        Assert.Equal(100, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrder.Id));
+        await AssertWorkbookQty(response, 100);
+        Assert.Empty(harness.MarkingOrders);
+        Assert.Empty(harness.MarkingCodes);
     }
 
     [Fact]
@@ -491,8 +216,9 @@ public sealed class OrderMarkingExportTests
         var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
 
         Assert.True(response.IsSuccessStatusCode);
-        var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(200, markingOrder.RequestedQuantity);
+        await AssertWorkbookQty(response, 200);
+        Assert.Empty(harness.MarkingOrders);
+        Assert.Empty(harness.MarkingCodes);
     }
 
     [Fact]
@@ -539,8 +265,9 @@ public sealed class OrderMarkingExportTests
         var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
 
         Assert.True(response.IsSuccessStatusCode);
-        var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(100, markingOrder.RequestedQuantity);
+        await AssertWorkbookQty(response, 100);
+        Assert.Empty(harness.MarkingOrders);
+        Assert.Empty(harness.MarkingCodes);
     }
 
     [Fact]
@@ -587,22 +314,12 @@ public sealed class OrderMarkingExportTests
         var response = await host.Client.PostAsync("/api/orders/10/marking/export", content: null);
 
         Assert.True(response.IsSuccessStatusCode);
-        var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Equal(600, markingOrder.RequestedQuantity);
-        Assert.True(harness.GetOrder(10).MarkingCompleted);
-        Assert.Equal(MarkingStatus.Printed, harness.GetOrder(10).EffectiveMarkingStatus);
-        Assert.Equal("Маркировка проведена", harness.GetOrder(10).MarkingLabel);
-    }
-
-    [Fact]
-    public void PostgresOrderReadModel_UsesWarehouseReservedHuForCustomerMarkingStatus()
-    {
-        var source = ReadRepoFile("apps", "windows", "FlowStock.Data", "PostgresDataStore.cs");
-
-        Assert.Contains("reserved_stock_hu_by_line", source);
-        Assert.Contains("SUM(LEAST(p.qty_planned, ls.qty)) AS reserved_stock_hu_qty", source);
-        Assert.Contains("COALESCE(rsh.reserved_stock_hu_qty, 0)", source);
-        Assert.DoesNotContain("COALESCE(rff.reserved_filled_hu_qty, 0)", source);
+        await AssertWorkbookQty(response, 600);
+        Assert.Empty(harness.MarkingOrders);
+        Assert.Empty(harness.MarkingCodes);
+        Assert.False(harness.GetOrder(10).MarkingCompleted);
+        Assert.Equal(MarkingStatus.NotRequired, harness.GetOrder(10).EffectiveMarkingStatus);
+        Assert.Empty(harness.GetOrder(10).MarkingLabel);
     }
 
     [Fact]
@@ -622,6 +339,20 @@ public sealed class OrderMarkingExportTests
         Assert.DoesNotContain("ON CONFLICT", method, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("foreach (var code in codes)", method);
         Assert.Equal(1, CountOccurrences(method, "ExecuteNonQuery()"));
+    }
+
+    private static async Task AssertWorkbookQty(HttpResponseMessage response, double expected)
+    {
+        using var stream = new MemoryStream(await response.Content.ReadAsByteArrayAsync());
+        using var zip = new System.IO.Compression.ZipArchive(stream);
+        using var sheet = zip.GetEntry("xl/worksheets/sheet1.xml")!.Open();
+        var xml = System.Xml.Linq.XDocument.Load(sheet);
+        System.Xml.Linq.XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        var cells = xml.Descendants(ns + "row").SelectMany(row => row.Elements(ns + "c")).ToArray();
+        Assert.Equal(0, cells.Length % 3);
+        var qty = cells.Where(cell => cell.Attribute("r")!.Value.StartsWith("C"))
+            .Sum(cell => double.Parse(cell.Element(ns + "v")!.Value, System.Globalization.CultureInfo.InvariantCulture));
+        Assert.Equal(expected, qty);
     }
 
     private static void SeedFilledHuReservation(

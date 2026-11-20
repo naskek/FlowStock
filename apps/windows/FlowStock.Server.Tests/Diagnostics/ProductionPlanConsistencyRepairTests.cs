@@ -74,7 +74,7 @@ public sealed class ProductionPlanConsistencyRepairTests
     }
 
     [Fact]
-    public void Repair_Apply_AssignsMarkingCodesToReceiptLines()
+    public void Repair_Apply_LeavesHistoricalMarkingCodesUntouched()
     {
         var harness = SeedRepairScenario();
 
@@ -84,9 +84,9 @@ public sealed class ProductionPlanConsistencyRepairTests
         var applied = harness.MarkingCodes
             .Where(code => code.ReceiptDocId == 171)
             .ToArray();
-        Assert.Equal(1200, applied.Length);
-        Assert.Equal(600, applied.Count(code => code.ReceiptLineId == 17101));
-        Assert.Equal(600, applied.Count(code => code.ReceiptLineId == 17102));
+        Assert.Empty(applied);
+        Assert.Equal(0, applied.Count(code => code.ReceiptLineId == 17101));
+        Assert.Equal(0, applied.Count(code => code.ReceiptLineId == 17102));
     }
 
     [Fact]

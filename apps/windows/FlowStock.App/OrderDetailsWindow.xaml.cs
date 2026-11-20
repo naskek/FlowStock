@@ -401,15 +401,7 @@ public partial class OrderDetailsWindow : Window
 
         if (!_orderId.HasValue || _hasUnsavedChanges)
         {
-            if (!TrySaveOrder(showFeedback: false))
-            {
-                return;
-            }
-        }
-
-        if (!_orderId.HasValue)
-        {
-            MessageBox.Show("Сначала сохраните заказ.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Сначала сохраните заказ. Excel формируется по сохранённым данным.", "Excel ЧЗ");
             return;
         }
 
@@ -438,7 +430,7 @@ public partial class OrderDetailsWindow : Window
                 return;
             }
 
-            var result = await _services.WpfMarkingApi.TryExportOrderAsync(_orderId.Value).ConfigureAwait(true);
+            var result = await _services.WpfMarkingApi.TryExportOrderAsync(_orderId.Value, selectedLineIds: previewDialog.SelectedLineIds, snapshot: preview.Snapshot).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
                 MessageBox.Show(result.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -457,13 +449,19 @@ public partial class OrderDetailsWindow : Window
                 };
                 if (dialog.ShowDialog(this) == true)
                 {
-                    File.WriteAllBytes(dialog.FileName, result.FileBytes);
+                    try { File.WriteAllBytes(dialog.FileName, result.FileBytes); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        MessageBox.Show("Не удалось сохранить файл. Данные не изменены; можно повторить формирование.\n" + ex.Message,
+                            "Excel ЧЗ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return;
+                    }
                 }
                 else
                 {
                     MessageBox.Show(
                         "Формирование Excel ЧЗ на сервере завершено, но локальный файл не сохранён. "
-                        + "Повторное формирование безопасно и не создаст новые коды.",
+                        + "Данные не изменены. Можно сформировать файл повторно.",
                         "Маркировка",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information);
@@ -973,19 +971,7 @@ public partial class OrderDetailsWindow : Window
 
         _services.AppLogger.Info($"Selected production pallet delete for order_id={_orderId.Value}: pallet_ids={string.Join(",", selectedPalletIds)}");
 
-        if (dialog.SelectedRowsHaveMarkingWarning)
-        {
-            var confirmMarking = MessageBox.Show(
-                "Для выбранных PRINTED паллет уже могла быть сформирована ЧЗ/маркировка. После удаления плана старые этикетки и выгрузки нельзя использовать без проверки. Удалить выбранные паллеты?",
-                "Паллеты",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Warning,
-                MessageBoxResult.No);
-            if (confirmMarking != MessageBoxResult.Yes)
-            {
-                return;
-            }
-        }
+
 
         DeletePalletPlanButton.IsEnabled = false;
         PlanPalletsButton.IsEnabled = false;

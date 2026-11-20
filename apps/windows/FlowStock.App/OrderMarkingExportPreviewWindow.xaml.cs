@@ -9,15 +9,24 @@ public partial class OrderMarkingExportPreviewWindow : Window
     {
         InitializeComponent();
         HeaderText.Text = $"Заказ {preview.OrderRef} (id {preview.OrderId})";
-        LinesGrid.ItemsSource = preview.Lines
+        _rows = preview.Lines
             .Select(line => new OrderMarkingExportPreviewRow(line))
             .ToList();
+        LinesGrid.ItemsSource = _rows;
         SummaryText.Text =
-            $"Строк: {preview.LineCount} | всего к маркировке: {FormatQty(preview.TotalQty)}";
+            $"Строк: {preview.LineCount} | всего: {FormatQty(preview.TotalQty)}";
     }
+
+    private readonly List<OrderMarkingExportPreviewRow> _rows;
+    public long[] SelectedLineIds => _rows.Where(row => row.IsSelected).Select(row => row.OrderLineId).ToArray();
 
     private void Confirm_Click(object sender, RoutedEventArgs e)
     {
+        if (SelectedLineIds.Length == 0)
+        {
+            MessageBox.Show(this, "Выберите хотя бы одну строку.", "Excel ЧЗ");
+            return;
+        }
         DialogResult = true;
         Close();
     }
@@ -29,13 +38,14 @@ public partial class OrderMarkingExportPreviewWindow : Window
     }
 
     private static string FormatQty(double qty) =>
-        qty.ToString("0.###", CultureInfo.InvariantCulture);
+        qty.ToString("0.######", CultureInfo.InvariantCulture);
 }
 
 public sealed class OrderMarkingExportPreviewRow
 {
     public OrderMarkingExportPreviewRow(OrderMarkingExportPreviewLineApiResult line)
     {
+        OrderLineId = line.OrderLineId;
         ItemName = line.ItemName;
         Gtin = line.Gtin;
         QtyDisplay = FormatQty(line.Qty);
@@ -45,6 +55,8 @@ public sealed class OrderMarkingExportPreviewRow
             : string.Join(", ", line.HuCodes);
     }
 
+    public long OrderLineId { get; }
+    public bool IsSelected { get; set; } = true;
     public string ItemName { get; }
 
     public string Gtin { get; }
@@ -56,5 +68,5 @@ public sealed class OrderMarkingExportPreviewRow
     public string HuCodesDisplay { get; }
 
     private static string FormatQty(double qty) =>
-        qty.ToString("0.###", CultureInfo.InvariantCulture);
+        qty.ToString("0.######", CultureInfo.InvariantCulture);
 }

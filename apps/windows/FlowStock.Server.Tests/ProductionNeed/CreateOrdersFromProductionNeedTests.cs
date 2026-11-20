@@ -732,62 +732,8 @@ public sealed class CreateOrdersFromProductionNeedTests
         Assert.Empty(harness.MarkingOrders);
     }
 
-    [Fact]
-    public async Task CreateMarkingFromProductionNeeds_CreatesMarkingForCurrentNeed()
-    {
-        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
 
-        var payload = await CreateMarkingAsync(host.Client);
 
-        Assert.True(payload.Ok);
-        Assert.Equal(1, payload.CreatedTaskCount);
-        Assert.Equal(4800, payload.CreatedQty);
-        Assert.Equal(4800, Assert.Single(harness.MarkingOrders).RequestedQuantity);
-        Assert.DoesNotContain(harness.Store.GetOrders(), order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft);
-    }
-
-    [Fact]
-    public async Task CreateOrdersFromProductionNeed_RequiresExplicitMarkingCreation()
-    {
-        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
-
-        var orderPayload = await CreateOrdersAsync(host.Client);
-
-        Assert.True(orderPayload.Ok);
-        Assert.Equal(1, orderPayload.InternalDraftCount);
-        Assert.Empty(harness.MarkingOrders);
-
-        var markingPayload = await CreateMarkingAsync(host.Client);
-
-        Assert.True(markingPayload.Ok);
-        Assert.Equal(1, markingPayload.CreatedTaskCount);
-        Assert.Equal(3600, markingPayload.CreatedQty);
-        var markingOrder = Assert.Single(harness.MarkingOrders);
-        Assert.Null(markingOrder.OrderId);
-        Assert.Equal(MarkingNeedCreationService.ProductionNeedSourceType, markingOrder.SourceType);
-        Assert.Equal(3600, markingOrder.RequestedQuantity);
-    }
-
-    [Fact]
-    public async Task CreateMarkingFromProductionNeeds_SecondPost_DoesNotDuplicateActiveTask()
-    {
-        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
-
-        var firstPayload = await CreateMarkingAsync(host.Client);
-        var secondPayload = await CreateMarkingAsync(host.Client);
-
-        Assert.True(firstPayload.Ok);
-        Assert.Equal(1, firstPayload.CreatedTaskCount);
-        Assert.Equal(4800, firstPayload.CreatedQty);
-        Assert.True(secondPayload.Ok);
-        Assert.Equal(0, secondPayload.CreatedTaskCount);
-        Assert.Equal(0, secondPayload.CreatedQty);
-        Assert.Single(harness.MarkingOrders);
-        Assert.Equal(4800, Assert.Single(harness.MarkingOrders).RequestedQuantity);
-    }
 
     [Fact]
     public async Task CreateOrdersFromProductionNeed_BeforeManualMarking_OrderDtoShowsMarkingNotCompleted()
@@ -800,303 +746,19 @@ public sealed class CreateOrdersFromProductionNeedTests
         var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
         var json = SerializeOrderDto(new OrderService(harness.Store).GetOrder(internalDraft.Id));
 
-        Assert.True(json.GetProperty("marking_applies").GetBoolean());
-        Assert.False(json.GetProperty("marking_completed").GetBoolean());
-        Assert.Equal("REQUIRED", json.GetProperty("marking_effective_status").GetString());
-        Assert.Equal("Маркировка не проведена", json.GetProperty("marking_label").GetString());
+        Assert.DoesNotContain(json.EnumerateObject(), property => property.Name.StartsWith("marking_"));
     }
 
-    [Fact]
-    public async Task CreateMarkingFromProductionNeeds_WithoutCodes_OrderDtoRemainsNotCompleted()
-    {
-        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
 
-        await CreateOrdersAsync(host.Client);
-        var payload = await CreateMarkingAsync(host.Client);
 
-        Assert.True(payload.Ok);
-        Assert.Single(harness.MarkingOrders);
-        Assert.Empty(harness.MarkingCodes);
 
-        var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
-        var json = SerializeOrderDto(new OrderService(harness.Store).GetOrder(internalDraft.Id));
 
-        Assert.False(json.GetProperty("marking_completed").GetBoolean());
-        Assert.Equal("REQUIRED", json.GetProperty("marking_effective_status").GetString());
-        Assert.Equal("Маркировка не проведена", json.GetProperty("marking_label").GetString());
-    }
 
-    [Fact]
-    public async Task ExportProductionNeedMarkingExcel_DoesNotCompleteUnlinkedInternalOrder()
-    {
-        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
 
-        await CreateOrdersAsync(host.Client);
-        await CreateMarkingAsync(host.Client);
-        var task = Assert.Single(harness.MarkingOrders);
 
-        var export = new MarkingExcelService(harness.Store).Export(new[] { task.Id }, Array.Empty<long>(), new DateTime(2026, 5, 8, 12, 0, 0, DateTimeKind.Utc));
 
-        Assert.True(export.IsSuccess);
-        Assert.True(harness.MarkingCodes.Count >= task.RequestedQuantity);
 
-        var internalDraft = Assert.Single(harness.Store.GetOrders().Where(order => order.Type == OrderType.Internal && order.Status == OrderStatus.Draft));
-        var json = SerializeOrderDto(new OrderService(harness.Store).GetOrder(internalDraft.Id));
 
-        Assert.False(json.GetProperty("marking_completed").GetBoolean());
-        Assert.Equal("REQUIRED", json.GetProperty("marking_effective_status").GetString());
-        Assert.Equal("Маркировка не проведена", json.GetProperty("marking_label").GetString());
-    }
-
-    [Fact]
-    public async Task CreateMarkingFromProductionNeeds_IncludesOpenInternalDraft_WhenMinStockNeedWasReduced()
-    {
-        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
-        harness.SeedOrder(new Order
-        {
-            Id = 30,
-            OrderRef = "030",
-            Type = OrderType.Internal,
-            Status = OrderStatus.Draft,
-            CreatedAt = new DateTime(2026, 5, 7, 12, 0, 0, DateTimeKind.Utc)
-        });
-        harness.SeedOrderLine(new OrderLine
-        {
-            Id = 301,
-            OrderId = 30,
-            ItemId = 1001,
-            QtyOrdered = 3600,
-            ProductionPurpose = ProductionLinePurpose.InternalStock
-        });
-
-        var needRow = Assert.Single(new ProductionNeedService(harness.Store).GetRows(includeZeroNeed: true));
-        Assert.Equal(1200, needRow.ToCloseOrdersQty);
-        Assert.Equal(0, needRow.ToMinStockQty);
-        Assert.Equal(1200, needRow.TotalToMakeQty);
-
-        var payload = await CreateMarkingAsync(host.Client);
-
-        Assert.True(payload.Ok);
-        Assert.Equal(1, payload.CreatedTaskCount);
-        Assert.Equal(3600, payload.CreatedQty);
-        Assert.Equal(3600, Assert.Single(harness.MarkingOrders).RequestedQuantity);
-        Assert.Contains(payload.DebugSummary, line => line.Contains("production_need_qty=1200", StringComparison.Ordinal));
-        Assert.Contains(payload.DebugSummary, line => line.Contains("open_internal_remaining_qty=3600", StringComparison.Ordinal));
-        Assert.Contains(payload.DebugSummary, line => line.Contains("required_marking_qty=3600", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task CreateMarkingFromProductionNeeds_WithReservedProducedStock_BeforeCreateOrders_CreatesOnlyCurrentNeed()
-    {
-        var (harness, apiStore) = CreateReservedMarkedCustomerNeedScenario();
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
-
-        var needRow = Assert.Single(new ProductionNeedService(harness.Store).GetRows(includeZeroNeed: false));
-        Assert.Equal(3600, needRow.TotalToMakeQty);
-
-        var payload = await CreateMarkingAsync(host.Client);
-
-        Assert.True(payload.Ok);
-        Assert.Equal(1, payload.CreatedTaskCount);
-        Assert.Equal(3600, payload.CreatedQty);
-        Assert.Equal(3600, Assert.Single(harness.MarkingOrders).RequestedQuantity);
-        Assert.Contains(payload.DebugSummary, line => line.Contains("production_need_qty=3600", StringComparison.Ordinal));
-        Assert.Contains(payload.DebugSummary, line => line.Contains("open_internal_remaining_qty=0", StringComparison.Ordinal));
-        Assert.Contains(payload.DebugSummary, line => line.Contains("required_marking_qty=3600", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task CreateMarkingFromProductionNeeds_AfterCreateOrders_DoesNotDoubleCountReportAndDraft()
-    {
-        var (harness, apiStore) = CreateReservedStockWithMinStockMarkingScenario();
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
-
-        var createOrdersPayload = await CreateOrdersAsync(host.Client);
-        Assert.True(createOrdersPayload.Ok);
-        Assert.Equal(1, createOrdersPayload.InternalDraftCount);
-        Assert.Equal(3600, createOrdersPayload.CreatedQty);
-
-        var needRow = Assert.Single(new ProductionNeedService(harness.Store).GetRows(includeZeroNeed: false));
-        Assert.Equal(3600, needRow.TotalToMakeQty);
-
-        var payload = await CreateMarkingAsync(host.Client);
-
-        Assert.True(payload.Ok);
-        Assert.Equal(1, payload.CreatedTaskCount);
-        Assert.Equal(3600, payload.CreatedQty);
-        Assert.Equal(3600, Assert.Single(harness.MarkingOrders).RequestedQuantity);
-        Assert.Contains(payload.DebugSummary, line => line.Contains("production_need_qty=3600", StringComparison.Ordinal));
-        Assert.Contains(payload.DebugSummary, line => line.Contains("open_internal_remaining_qty=3600", StringComparison.Ordinal));
-        Assert.Contains(payload.DebugSummary, line => line.Contains("required_marking_qty=3600", StringComparison.Ordinal));
-        Assert.Contains(payload.DebugSummary, line => line.Contains("created_qty=3600", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task CreateMarkingFromProductionNeeds_OldCompletedGlobalMarking_DoesNotBlockCurrentNeed()
-    {
-        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
-        harness.SeedMarkingOrder(new MarkingOrder
-        {
-            Id = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-            OrderId = null,
-            ItemId = 1001,
-            Gtin = "04607186951520",
-            RequestedQuantity = 10000,
-            RequestNumber = "OLD-10000",
-            Status = MarkingOrderStatus.Completed,
-            CreatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-            UpdatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)
-        });
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
-
-        var payload = await CreateMarkingAsync(host.Client);
-
-        Assert.True(payload.Ok);
-        Assert.Equal(1, payload.CreatedTaskCount);
-        Assert.Equal(4800, payload.CreatedQty);
-        Assert.Equal(2, harness.MarkingOrders.Count);
-        Assert.Contains(harness.MarkingOrders, order =>
-            order.SourceType == MarkingNeedCreationService.ProductionNeedSourceType
-            && order.RequestedQuantity == 4800);
-    }
-
-    [Fact]
-    public async Task CreateMarkingFromProductionNeeds_BoundCodesDoNotCoverNewNeed()
-    {
-        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 600, minStockQty: 0);
-        var oldTaskId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
-        harness.SeedMarkingOrder(new MarkingOrder
-        {
-            Id = oldTaskId,
-            OrderId = null,
-            ItemId = 1001,
-            Gtin = "04607186951520",
-            RequestedQuantity = 600,
-            RequestNumber = "OLD-BOUND-600",
-            Status = MarkingOrderStatus.Printed,
-            SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
-            CreatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-            UpdatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)
-        });
-        harness.SeedMarkingCodes(oldTaskId, count: 600, gtin: "04607186951520", receiptLineId: 5000);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
-
-        var payload = await CreateMarkingAsync(host.Client);
-
-        Assert.True(payload.Ok);
-        Assert.Equal(1, payload.CreatedTaskCount);
-        Assert.Equal(600, payload.CreatedQty);
-        Assert.Equal(2, harness.MarkingOrders.Count);
-        Assert.Contains(harness.MarkingOrders, order =>
-            order.Id != oldTaskId
-            && order.SourceType == MarkingNeedCreationService.ProductionNeedSourceType
-            && order.RequestedQuantity == 600);
-    }
-
-    [Fact]
-    public async Task CreateMarkingFromProductionNeeds_FreeCodesDoNotReduceRequestedQuantity()
-    {
-        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 3600, minStockQty: 0);
-        var oldTaskId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
-        harness.SeedMarkingOrder(new MarkingOrder
-        {
-            Id = oldTaskId,
-            OrderId = null,
-            ItemId = 1001,
-            Gtin = "04607186951520",
-            RequestedQuantity = 600,
-            RequestNumber = "OLD-FREE-600",
-            Status = MarkingOrderStatus.Printed,
-            SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
-            CreatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-            UpdatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)
-        });
-        harness.SeedMarkingCodes(oldTaskId, count: 600, gtin: "04607186951520");
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
-
-        var payload = await CreateMarkingAsync(host.Client);
-
-        Assert.True(payload.Ok);
-        Assert.Equal(1, payload.CreatedTaskCount);
-        Assert.Equal(3600, payload.CreatedQty);
-        Assert.Equal(2, harness.MarkingOrders.Count);
-        Assert.Contains(harness.MarkingOrders, order =>
-            order.Id != oldTaskId
-            && order.SourceType == MarkingNeedCreationService.ProductionNeedSourceType
-            && order.RequestedQuantity == 3600);
-    }
-
-    [Fact]
-    public async Task CreateMarkingFromProductionNeeds_FreeCodesCoverCurrentNeed_AfterExport_DoesNotCreateNewTask()
-    {
-        var (harness, apiStore) = CreateReservedStockWithMinStockMarkingScenario();
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
-
-        await CreateOrdersAsync(host.Client);
-        var firstPayload = await CreateMarkingAsync(host.Client);
-
-        Assert.True(firstPayload.Ok);
-        Assert.Equal(1, firstPayload.CreatedTaskCount);
-        Assert.Equal(3600, firstPayload.CreatedQty);
-
-        var task = Assert.Single(harness.MarkingOrders);
-        var export = new MarkingExcelService(harness.Store).Export(new[] { task.Id }, Array.Empty<long>(), new DateTime(2026, 5, 8, 12, 0, 0, DateTimeKind.Utc));
-        Assert.True(export.IsSuccess);
-
-        var secondPayload = await CreateMarkingAsync(host.Client);
-
-        Assert.True(secondPayload.Ok);
-        Assert.Equal(0, secondPayload.CreatedTaskCount);
-        Assert.Equal(0, secondPayload.CreatedQty);
-        Assert.Single(harness.MarkingOrders);
-        Assert.Contains(secondPayload.DebugSummary, line => line.Contains("free_code_qty=3600", StringComparison.Ordinal));
-        Assert.Contains(secondPayload.DebugSummary, line => line.Contains("created_qty=0", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task CreateMarkingFromProductionNeeds_AfterReceiptBoundCodes_CreatesNewTask()
-    {
-        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 600, minStockQty: 0);
-        var oldTaskId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
-        harness.SeedMarkingOrder(new MarkingOrder
-        {
-            Id = oldTaskId,
-            OrderId = null,
-            ItemId = 1001,
-            Gtin = "04607186951520",
-            RequestedQuantity = 600,
-            RequestNumber = "OLD-RECEIPT-600",
-            Status = MarkingOrderStatus.Printed,
-            SourceType = MarkingNeedCreationService.ProductionNeedSourceType,
-            CreatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-            UpdatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)
-        });
-        harness.SeedMarkingCodes(oldTaskId, count: 600, gtin: "04607186951520", receiptLineId: 6000);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
-
-        var payload = await CreateMarkingAsync(host.Client);
-
-        Assert.True(payload.Ok);
-        Assert.Equal(1, payload.CreatedTaskCount);
-        Assert.Equal(600, payload.CreatedQty);
-        Assert.Equal(2, harness.MarkingOrders.Count);
-    }
-
-    [Fact]
-    public async Task CreateMarkingFromProductionNeeds_SkipsNonMarkableItems()
-    {
-        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600, enableMarking: false);
-        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
-
-        var payload = await CreateMarkingAsync(host.Client);
-
-        Assert.True(payload.Ok);
-        Assert.Equal(0, payload.CreatedTaskCount);
-        Assert.Empty(harness.MarkingOrders);
-    }
 
     [Fact]
     public async Task CreateOrdersFromProductionNeed_ForMarkableItem_InternalReceiptClosesWithoutKmCodes()
@@ -1203,6 +865,17 @@ public sealed class CreateOrdersFromProductionNeedTests
 
         Assert.True(result.Success);
         Assert.Equal(DocStatus.Closed, harness.GetDoc(51).Status);
+    }
+
+    [Fact]
+    public async Task LegacyMarkingCreation_IsRejectedWithoutWrites()
+    {
+        var (harness, apiStore) = CreateMarkingNeedScenario(customerQty: 1200, minStockQty: 3600);
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+        var response = await host.Client.PostAsJsonAsync("/api/marking/create-from-production-needs", new { });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(harness.MarkingOrders);
+        Assert.Empty(harness.MarkingCodes);
     }
 
     private static async Task<CreateProductionNeedOrdersResponse> CreateOrdersAsync(HttpClient client, object? body = null)

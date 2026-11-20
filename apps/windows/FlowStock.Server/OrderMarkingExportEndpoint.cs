@@ -47,8 +47,9 @@ public static class OrderMarkingExportEndpoint
         }
     }
 
-    private static IResult HandleExport(
+    private static async Task<IResult> HandleExport(
         long orderId,
+        HttpRequest request,
         HttpResponse response,
         IDataStore store,
         ILoggerFactory loggerFactory)
@@ -57,7 +58,14 @@ public static class OrderMarkingExportEndpoint
         var logger = loggerFactory.CreateLogger("FlowStock.Server.OrderMarkingExportEndpoint");
         try
         {
-            var result = new OrderMarkingExportService(store).Export(orderId, DateTime.Now);
+            ExportSelection? selection = null;
+            if (request.ContentLength != 0)
+            {
+                try { selection = await request.ReadFromJsonAsync<ExportSelection>(); }
+                catch (System.Text.Json.JsonException) { return Results.BadRequest(new ApiResult(false, "Некорректный выбор строк.")); }
+            }
+            var result = new OrderMarkingExportService(store).Export(orderId, DateTime.Now,
+                selection?.SelectedLineIds, selection?.Snapshot);
             LogOperation(
                 logger,
                 "export",
@@ -141,6 +149,7 @@ public static class OrderMarkingExportEndpoint
             order_ref = result.OrderRef,
             line_count = result.LineCount,
             total_qty = result.TotalQty,
+            snapshot = result.Snapshot,
             message = result.Message,
             lines = result.Lines.Select(line => new
             {
@@ -181,3 +190,7 @@ public static class OrderMarkingExportEndpoint
         };
     }
 }
+
+public sealed record ExportSelection(
+    [property: System.Text.Json.Serialization.JsonPropertyName("selected_line_ids")] long[]? SelectedLineIds,
+    [property: System.Text.Json.Serialization.JsonPropertyName("snapshot")] string? Snapshot);
