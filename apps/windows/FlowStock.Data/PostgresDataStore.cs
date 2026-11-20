@@ -6609,18 +6609,16 @@ WHERE d.id = pp.prd_doc_id
         {
             // Only read the reference column. GetOrders() materializes the entire
             // HU/marking/production read model and is not appropriate for validation.
+            // Compare in .NET to preserve OrdinalIgnoreCase even for refs that
+            // PostgreSQL's locale-dependent LOWER() would fold differently.
             using var command = CreateCommand(connection, @"
 SELECT order_ref
 FROM orders
-WHERE id <> @excluded_order_id
-  AND LOWER(order_ref) = LOWER(@order_ref);");
+WHERE id <> @excluded_order_id;");
             command.Parameters.AddWithValue("@excluded_order_id", excludedOrderId);
-            command.Parameters.AddWithValue("@order_ref", orderRef);
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
-                // Retain the original endpoint's OrdinalIgnoreCase contract,
-                // even when database collation folds more characters.
                 if (string.Equals(reader.GetString(0), orderRef, StringComparison.OrdinalIgnoreCase))
                 {
                     return true;
