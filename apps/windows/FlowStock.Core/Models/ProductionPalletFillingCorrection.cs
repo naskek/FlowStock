@@ -43,6 +43,7 @@ public static class ProductionPalletFillingCorrectionErrorCodes
     public const string ActiveDraftReference = "ACTIVE_DRAFT_REFERENCE";
     public const string CustomerShipped = "CUSTOMER_SHIPPED";
     public const string MarkingRollbackBlocked = "MARKING_ROLLBACK_BLOCKED";
+    public const string AdoptedHuMarkingConsumed = "ADOPTED_HU_MARKING_CONSUMED";
     public const string AmbiguousReplacementPrd = "AMBIGUOUS_REPLACEMENT_PRD";
     public const string CorPostingFailed = "COR_POSTING_FAILED";
     public const string CorLedgerMismatch = "COR_LEDGER_MISMATCH";
@@ -150,6 +151,7 @@ public sealed class ProductionPalletFillingAdjustment
 
 public sealed class ProductionPalletCorrectionMarkingCode
 {
+    public bool AdoptedReservationProven { get; init; }
     public Guid Id { get; init; }
     public Guid MarkingOrderId { get; init; }
     public Guid ImportId { get; init; }

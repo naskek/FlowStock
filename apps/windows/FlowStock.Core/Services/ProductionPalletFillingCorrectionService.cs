@@ -13,10 +13,18 @@ public sealed class ProductionPalletFillingCorrectionService
     private const string PayloadVersion = "v1";
     private const int ReasonTextMaxLength = 1000;
     private readonly IDataStore _data;
+    private readonly bool _quantityCorrectionEnabled;
+    private readonly bool _adoptedCorrectionEnabled;
 
-    public ProductionPalletFillingCorrectionService(IDataStore data)
+    public ProductionPalletFillingCorrectionService(IDataStore data) : this(data, quantityCorrectionEnabled: false)
+    {
+    }
+
+    internal ProductionPalletFillingCorrectionService(IDataStore data, bool quantityCorrectionEnabled, bool adoptedCorrectionEnabled = false)
     {
         _data = data;
+        _quantityCorrectionEnabled = quantityCorrectionEnabled;
+        _adoptedCorrectionEnabled = adoptedCorrectionEnabled && quantityCorrectionEnabled;
     }
 
     public ProductionPalletFillingCorrectionPreview Preview(string? huCode)
@@ -126,6 +134,8 @@ public sealed class ProductionPalletFillingCorrectionService
                 }
 
                 txCorrectionStore.LockDocumentsForUpdate(new[] { pallet.PrdDocId });
+                if (_quantityCorrectionEnabled)
+                    ReadQuantity(store, pallet.PrdDocId, lockData: true);
                 var preview = Analyze(store, txCorrectionStore, normalizedHu, lockData: true);
                 if (!preview.CanConfirm || preview.SourcePalletId != pallet.Id)
                 {
@@ -194,7 +204,7 @@ public sealed class ProductionPalletFillingCorrectionService
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
     }
 
-    private static ProductionPalletFillingCorrectionResult ExecuteCorrectFilled(
+    private ProductionPalletFillingCorrectionResult ExecuteCorrectFilled(
         IDataStore store,
         IProductionPalletFillingCorrectionStore correctionStore,
         long adjustmentId,
@@ -240,8 +250,9 @@ public sealed class ProductionPalletFillingCorrectionService
 
         correctionStore.LockDocumentsForUpdate(new[] { corDocId });
         var targetPrd = SelectOrCreateReplacementPrd(store, correctionStore, pallet, sourceDoc, documents);
+        var quantity = ReadQuantity(store, pallet.PrdDocId, lockData: true);
         var markingCodes = correctionStore.LockReceiptMarkingCodes(pallet.PrdDocId);
-        ValidateMarkingOrAbort(store, pallet, markingCodes);
+        ValidateMarkingOrAbort(store, pallet, markingCodes, quantity);
 
         var close = documents.TryCloseDoc(corDocId, allowNegative: false);
         if (!close.Success)
@@ -273,23 +284,6 @@ public sealed class ProductionPalletFillingCorrectionService
                 inversion,
                 corLineId,
                 generated.LedgerEntryId);
-        }
-
-        if (markingCodes.Count > 0
-            && correctionStore.RollbackReceiptMarkingCodes(
-                adjustmentId,
-                pallet.PrdDocId,
-                corDocId,
-                markingCodes,
-                reason,
-                TrimToNull(request.ActorName),
-                TrimToNull(request.DeviceName),
-                DateTime.Now) != markingCodes.Count)
-        {
-            Abort(
-                ProductionPalletFillingCorrectionErrorCodes.MarkingRollbackBlocked,
-                "Не удалось атомарно откатить полный набор кодов маркировки.",
-                pallet.HuCode);
         }
 
         var replacementLineByComponent = new Dictionary<long, long>();
@@ -327,6 +321,32 @@ public sealed class ProductionPalletFillingCorrectionService
                 replacementLineByComponent[component.Id],
                 replacement.BySourceComponentId[component.Id].ComponentId);
         }
+
+        if (_adoptedCorrectionEnabled)
+            RequireHuStore(store).PrepareHuReceiptCorrection(adjustmentId, pallet.Id, replacement.PalletId, corDocId);
+
+        if (markingCodes.Count > 0
+            && correctionStore.RollbackReceiptMarkingCodes(
+                adjustmentId,
+                pallet.PrdDocId,
+                corDocId,
+                markingCodes,
+                reason,
+                TrimToNull(request.ActorName),
+                TrimToNull(request.DeviceName),
+                DateTime.Now) != markingCodes.Count)
+        {
+            Abort(
+                ProductionPalletFillingCorrectionErrorCodes.MarkingRollbackBlocked,
+                "Не удалось атомарно откатить полный набор кодов маркировки.",
+                pallet.HuCode);
+        }
+
+        if (_quantityCorrectionEnabled)
+            RequireQuantityStore(store).ReleaseReceiptQuantityCorrection(adjustmentId, pallet.PrdDocId, corDocId);
+
+        if (_adoptedCorrectionEnabled)
+            RequireHuStore(store).FinishHuReceiptCorrection(adjustmentId);
 
         if (pallet.OrderId.HasValue)
         {
@@ -509,7 +529,7 @@ public sealed class ProductionPalletFillingCorrectionService
             && Math.Abs(line.Qty - row.Qty) <= StockQuantityRules.QtyTolerance);
     }
 
-    private static ProductionPalletFillingCorrectionPreview Analyze(
+    private ProductionPalletFillingCorrectionPreview Analyze(
         IDataStore store,
         IProductionPalletFillingCorrectionStore correctionStore,
         string normalizedHu,
@@ -588,12 +608,21 @@ public sealed class ProductionPalletFillingCorrectionService
             AnalyzeSharedBlockers(store, correctionStore, pallet, sourceDoc, normalizedHu, blockers, pallet.PrdDocId);
         }
 
+        var quantity = ReadQuantity(store, pallet.PrdDocId, lockData);
         var markingCodes = correctionStore.LockReceiptMarkingCodes(pallet.PrdDocId);
         if (action == ProductionPalletFillingCorrectionAction.CorrectFilled)
         {
-            AddMarkingBlockers(store, pallet, currentLines, markingCodes, blockers);
+            if (correctionStore.HasConsumedHuMarkingReservations(pallet.PrdDocId)
+                && (!_adoptedCorrectionEnabled || !RequireHuStore(store).IsConsumedHuReceiptCorrectionProven(pallet.PrdDocId)))
+            {
+                AddBlocker(
+                    blockers,
+                    ProductionPalletFillingCorrectionErrorCodes.AdoptedHuMarkingConsumed,
+                    "Маркировка перенесённой INTERNAL HU уже потреблена. Без доказанного COR/rebind протокола корректировка заблокирована.");
+            }
+            AddMarkingBlockers(store, pallet, currentLines, markingCodes, quantity, blockers);
         }
-        else if (markingCodes.Count > 0)
+        else if (markingCodes.Count > 0 || quantity.Count > 0)
         {
             AddBlocker(
                 blockers,
@@ -843,10 +872,11 @@ public sealed class ProductionPalletFillingCorrectionService
         }
     }
 
-    private static void ValidateMarkingOrAbort(
+    private void ValidateMarkingOrAbort(
         IDataStore store,
         ProductionPallet pallet,
-        IReadOnlyList<ProductionPalletCorrectionMarkingCode> codes)
+        IReadOnlyList<ProductionPalletCorrectionMarkingCode> codes,
+        IReadOnlyList<ReceiptQuantityCorrectionSlice> quantity)
     {
         var blockers = new List<ProductionPalletFillingCorrectionBlocker>();
         AddMarkingBlockers(
@@ -854,6 +884,7 @@ public sealed class ProductionPalletFillingCorrectionService
             pallet,
             CurrentLines(store.GetDocLines(pallet.PrdDocId)).ToArray(),
             codes,
+            quantity,
             blockers);
         if (blockers.Count > 0)
         {
@@ -861,13 +892,21 @@ public sealed class ProductionPalletFillingCorrectionService
         }
     }
 
-    private static void AddMarkingBlockers(
+    private void AddMarkingBlockers(
         IDataStore store,
         ProductionPallet pallet,
         IReadOnlyList<DocLine> currentLines,
         IReadOnlyList<ProductionPalletCorrectionMarkingCode> codes,
+        IReadOnlyList<ReceiptQuantityCorrectionSlice> quantity,
         ICollection<ProductionPalletFillingCorrectionBlocker> blockers)
     {
+        if (quantity.Count > 0 && (!_quantityCorrectionEnabled || quantity.Any(slice => !slice.IsValid)))
+        {
+            AddBlocker(blockers, ProductionPalletFillingCorrectionErrorCodes.MarkingRollbackBlocked,
+                "Количественная маркировка не подтверждена для корректировки source PRD.");
+            return;
+        }
+
         var items = pallet.Lines
             .Select(line => line.ItemId)
             .Distinct()
@@ -883,10 +922,10 @@ public sealed class ProductionPalletFillingCorrectionService
         {
             var rounded = Math.Round(line.Qty);
             var expected = Math.Abs(line.Qty - rounded) <= StockQuantityRules.QtyTolerance
-                ? (int)rounded
+                ? rounded
                 : -1;
             var bound = codes.Where(code => code.ReceiptLineId == line.Id).ToArray();
-            if (expected < 0 || bound.Length != expected)
+            if (expected < 0 || bound.LongLength + quantity.Where(slice => slice.ReceiptLineId == line.Id).Sum(slice => (decimal)slice.Quantity) != (decimal)expected)
             {
                 AddBlocker(
                     blockers,
@@ -896,7 +935,8 @@ public sealed class ProductionPalletFillingCorrectionService
         }
 
         var markedLineIds = markedLines.Select(line => line.Id).ToHashSet();
-        if (codes.Any(code => !code.ReceiptLineId.HasValue || !markedLineIds.Contains(code.ReceiptLineId.Value)))
+        if (codes.Any(code => !code.ReceiptLineId.HasValue || !markedLineIds.Contains(code.ReceiptLineId.Value))
+            || quantity.Any(slice => !markedLineIds.Contains(slice.ReceiptLineId)))
         {
             AddBlocker(
                 blockers,
@@ -910,7 +950,8 @@ public sealed class ProductionPalletFillingCorrectionService
                 || code.ReceiptDocId != pallet.PrdDocId
                 || !code.ReceiptLineId.HasValue
                 || !lineById.TryGetValue(code.ReceiptLineId.Value, out var line)
-                || code.MarkingOrderLineId != line.OrderLineId
+                || (code.MarkingOrderLineId != line.OrderLineId
+                    && !(_adoptedCorrectionEnabled && code.AdoptedReservationProven))
                 || code.ReportedAt.HasValue
                 || code.IntroducedAt.HasValue))
         {
@@ -920,6 +961,23 @@ public sealed class ProductionPalletFillingCorrectionService
                 "Маркировка имеет недопустимое состояние, связь или последующее событие.");
         }
     }
+
+    private IReadOnlyList<ReceiptQuantityCorrectionSlice> ReadQuantity(IDataStore store, long docId, bool lockData)
+    {
+        if (store is IProductionReceiptQuantityCorrectionStore quantityStore)
+            return quantityStore.ReadReceiptQuantityCorrection(docId, lockData && _quantityCorrectionEnabled);
+        if (_quantityCorrectionEnabled)
+            throw new InvalidOperationException("Quantity correction store required.");
+        return Array.Empty<ReceiptQuantityCorrectionSlice>();
+    }
+
+    private static IProductionReceiptQuantityCorrectionStore RequireQuantityStore(IDataStore store) =>
+        store as IProductionReceiptQuantityCorrectionStore
+        ?? throw new InvalidOperationException("Quantity correction store required.");
+
+    private static IProductionReceiptHuCorrectionStore RequireHuStore(IDataStore store) =>
+        store as IProductionReceiptHuCorrectionStore
+        ?? throw new InvalidOperationException("Adopted HU correction store required.");
 
     private static IReadOnlyList<DocLine> CurrentLines(IReadOnlyList<DocLine> lines)
     {

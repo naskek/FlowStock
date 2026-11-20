@@ -78,7 +78,7 @@ public sealed class ProductionFillCloseService
         }
 
         var closeDocId = ResolveDedicatedPrdDocId(store, pallet, doc);
-        var documents = ReferenceEquals(store, _data) ? _documents : new DocumentService(store);
+        var documents = ReferenceEquals(store, _data) ? _documents : _documents.ForStore(store);
         var closeResult = documents.TryCloseDoc(closeDocId, allowNegative: false);
         if (!closeResult.Success)
         {
