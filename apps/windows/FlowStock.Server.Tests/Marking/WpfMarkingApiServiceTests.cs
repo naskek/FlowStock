@@ -111,8 +111,8 @@ public sealed class WpfMarkingApiServiceTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal(OrderMarkingExportOutcome.OutcomeUnknown, result.Outcome);
-        Assert.Contains("Сервер мог уже завершить или всё ещё выполнять", result.Message);
-        Assert.Contains("Автоматический повтор не выполнен", result.Message);
+        Assert.Contains("не меняет данные", result.Message);
+        Assert.Contains("можно повторить", result.Message);
         Assert.DoesNotContain("raw timeout in English", result.Message);
         Assert.Equal(1, handler.CallCount);
         Assert.Contains("raw timeout in English", File.ReadAllText(fixture.LogPath));
@@ -173,7 +173,7 @@ public sealed class WpfMarkingApiServiceTests
         var result = await fixture.CreateService(handler).TryExportOrderAsync(10, cancellation.Token);
 
         Assert.Equal(OrderMarkingExportOutcome.CancelledOutcomeUnknown, result.Outcome);
-        Assert.Contains("результат неизвестен", result.Message);
+        Assert.Contains("Данные не изменены", result.Message);
         Assert.DoesNotContain("caller cancelled", result.Message);
         Assert.Equal(1, handler.CallCount);
     }
@@ -212,8 +212,8 @@ public sealed class WpfMarkingApiServiceTests
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
 
         Assert.Contains("Формирование Excel ЧЗ на сервере завершено, но локальный файл не сохранён.", source);
-        Assert.Contains("Повторное формирование безопасно и не создаст новые коды.", source);
-        Assert.Equal(1, CountOccurrences(source, "TryExportOrderAsync(_orderId.Value)"));
+        Assert.Contains("Данные не изменены. Можно сформировать файл повторно.", source);
+        Assert.Equal(1, CountOccurrences(source, "TryExportOrderAsync(_orderId.Value,"));
     }
 
     private static string ReadRepoFile(params string[] parts)

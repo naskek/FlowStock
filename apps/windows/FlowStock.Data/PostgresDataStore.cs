@@ -14,7 +14,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed partial class PostgresDataStore : IDataStore, IBusinessNotificationJournalStore, IOrderRequestManagementStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore, IPrePlanRelevantInternalOrdersStore
+public sealed partial class PostgresDataStore : IDataStore, IReadOnlySnapshotStore, IBusinessNotificationJournalStore, IOrderRequestManagementStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore, IPrePlanRelevantInternalOrdersStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -954,197 +954,6 @@ pallet_summary AS (
     INNER JOIN order_scope os ON os.id = ps.order_id
     GROUP BY ps.order_id
 ),
-" + MarkingReservedFilledLedgerStockCte + @",
-reserved_stock_hu_by_line AS (
-    SELECT p.order_line_id,
-           SUM(LEAST(p.qty_planned, ls.qty)) AS reserved_stock_hu_qty
-    FROM order_receipt_plan_lines p
-    INNER JOIN order_lines_scope ols ON ols.id = p.order_line_id
-    INNER JOIN order_base ob ON ob.id = p.order_id AND ob.order_type = 'CUSTOMER'
-    INNER JOIN ledger_stock_by_hu ls ON ls.item_id = p.item_id
-                                    AND ls.hu_code = UPPER(BTRIM(p.to_hu))
-    WHERE p.qty_planned > 0
-      AND p.to_hu IS NOT NULL
-      AND BTRIM(p.to_hu) <> ''
-    GROUP BY p.order_line_id
-),
-markable_line_need AS (
-    SELECT olm.order_id,
-           olm.item_id,
-           olm.qty_ordered,
-           NULLIF(BTRIM(i.gtin), '') AS gtin,
-           CASE
-               WHEN olm.order_type = 'INTERNAL' THEN GREATEST(0, olm.qty_ordered)
-               ELSE GREATEST(0, olm.qty_ordered - olm.qty_shipped - COALESCE(rsh.reserved_stock_hu_qty, 0))
-           END AS qty_for_marking
-    FROM order_line_metrics olm
-    INNER JOIN items i ON i.id = olm.item_id
-    INNER JOIN item_types it ON it.id = i.item_type_id
-    LEFT JOIN reserved_stock_hu_by_line rsh ON rsh.order_line_id = olm.order_line_id
-    WHERE COALESCE(it.enable_marking, FALSE) = TRUE
-      AND NULLIF(BTRIM(i.gtin), '') IS NOT NULL
-),
-markable_item_need AS (
-    SELECT order_id,
-           item_id,
-           gtin,
-           SUM(qty_for_marking) AS qty_for_marking
-    FROM markable_line_need
-    GROUP BY order_id, item_id, gtin
-),
-needed_marking_keys AS (
-    SELECT DISTINCT item_id,
-           gtin
-    FROM markable_item_need
-    WHERE qty_for_marking > 0
-),
-selected_marking_orders AS (
-    SELECT mo.id,
-           COALESCE(mo.order_id, mo.source_order_id) AS order_id,
-           mo.item_id,
-           mo.gtin
-    FROM marking_order mo
-    WHERE COALESCE(mo.order_id, mo.source_order_id) IS NOT NULL
-      AND EXISTS (
-          SELECT 1
-          FROM order_scope os
-          WHERE os.id = COALESCE(mo.order_id, mo.source_order_id)
-      )
-      AND mo.status NOT IN (@marking_status_cancelled, @marking_status_failed)
-      AND (mo.source_type IN (@production_need_source_type, @production_order_source_type)
-           OR mo.order_id IS NOT NULL)
-),
-free_code_buckets AS (
-    SELECT smo.order_id,
-           COALESCE(smo.item_id, 0) AS item_id,
-           COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '') AS normalized_gtin,
-           COUNT(*) AS free_qty
-    FROM selected_marking_orders smo
-    INNER JOIN marking_code c ON c.marking_order_id = smo.id
-                             AND c.status IN (@marking_code_status_reserved, @marking_code_status_printed)
-                             AND c.receipt_doc_id IS NULL
-                             AND c.receipt_line_id IS NULL
-    GROUP BY smo.order_id,
-             COALESCE(smo.item_id, 0),
-             COALESCE(NULLIF(BTRIM(COALESCE(smo.gtin, c.gtin)), ''), '')
-),
-free_need_matches AS (
-    SELECT need.order_id,
-           need.item_id,
-           COALESCE(need.gtin, '') AS gtin,
-           bucket.free_qty AS matched_qty
-    FROM markable_item_need need
-    INNER JOIN free_code_buckets bucket ON bucket.order_id = need.order_id
-                                       AND bucket.item_id = need.item_id
-    UNION ALL
-    SELECT need.order_id,
-           need.item_id,
-           COALESCE(need.gtin, '') AS gtin,
-           bucket.free_qty AS matched_qty
-    FROM markable_item_need need
-    INNER JOIN free_code_buckets bucket ON bucket.order_id = need.order_id
-                                       AND bucket.item_id <> need.item_id
-                                       AND NULLIF(BTRIM(need.gtin), '') IS NOT NULL
-                                       AND bucket.normalized_gtin = COALESCE(need.gtin, '')
-),
-free_marking_need_coverage AS (
-    SELECT order_id,
-           item_id,
-           gtin,
-           SUM(matched_qty) AS codes_total
-    FROM free_need_matches
-    GROUP BY order_id,
-             item_id,
-             gtin
-),
-bound_code_buckets AS (
-    SELECT ols.order_id,
-           ols.item_id,
-           COALESCE(NULLIF(BTRIM(i.gtin), ''), '') AS normalized_gtin,
-           COUNT(*) AS bound_qty
-    FROM selected_marking_orders smo
-    INNER JOIN marking_code c ON c.marking_order_id = smo.id
-                             AND c.status <> @marking_code_status_voided
-                             AND c.receipt_line_id IS NOT NULL
-    INNER JOIN doc_lines dl ON dl.id = c.receipt_line_id
-    INNER JOIN order_lines_scope ols ON ols.id = dl.order_line_id
-                                    AND ols.order_id = smo.order_id
-    INNER JOIN items i ON i.id = ols.item_id
-    GROUP BY ols.order_id,
-             ols.item_id,
-             COALESCE(NULLIF(BTRIM(i.gtin), ''), '')
-),
-bound_need_matches AS (
-    SELECT need.order_id,
-           need.item_id,
-           COALESCE(need.gtin, '') AS gtin,
-           bucket.bound_qty AS matched_qty
-    FROM markable_item_need need
-    INNER JOIN bound_code_buckets bucket ON bucket.order_id = need.order_id
-                                        AND bucket.item_id = need.item_id
-    UNION ALL
-    SELECT need.order_id,
-           need.item_id,
-           COALESCE(need.gtin, '') AS gtin,
-           bucket.bound_qty AS matched_qty
-    FROM markable_item_need need
-    INNER JOIN bound_code_buckets bucket ON bucket.order_id = need.order_id
-                                        AND bucket.item_id <> need.item_id
-                                        AND NULLIF(BTRIM(need.gtin), '') IS NOT NULL
-                                        AND bucket.normalized_gtin = COALESCE(need.gtin, '')
-),
-bound_marking_need_coverage AS (
-    SELECT order_id,
-           item_id,
-           gtin,
-           SUM(matched_qty) AS codes_total
-    FROM bound_need_matches
-    GROUP BY order_id,
-             item_id,
-             gtin
-),
-marking_need_coverage AS (
-    SELECT need.order_id,
-           need.item_id,
-           need.gtin,
-           need.qty_for_marking,
-           COALESCE(free.codes_total, 0) AS free_qty,
-           COALESCE(bound.codes_total, 0) AS bound_qty,
-           COALESCE(free.codes_total, 0) + COALESCE(bound.codes_total, 0) AS covered_qty
-    FROM markable_item_need need
-    LEFT JOIN free_marking_need_coverage free ON free.order_id = need.order_id
-                                             AND free.item_id = need.item_id
-                                             AND free.gtin = COALESCE(need.gtin, '')
-    LEFT JOIN bound_marking_need_coverage bound ON bound.order_id = need.order_id
-                                               AND bound.item_id = need.item_id
-                                               AND bound.gtin = COALESCE(need.gtin, '')
-),
-markable_order_flags AS (
-    SELECT order_id,
-           TRUE AS marking_applies,
-           BOOL_OR(qty_for_marking > 0) AS marking_required,
-           BOOL_OR(qty_ordered > 0) AS has_ordered_markable_qty
-    FROM markable_line_need
-    GROUP BY order_id
-),
-marking_code_covered_by_order AS (
-    SELECT order_id,
-           BOOL_OR(qty_for_marking > 0
-                   AND covered_qty + 0.000001 < qty_for_marking) AS has_uncovered_positive_need
-    FROM marking_need_coverage
-    GROUP BY order_id
-),
-marking_rollup AS (
-    SELECT ob.id AS order_id,
-           COALESCE(mof.marking_applies, FALSE) AS marking_applies,
-           COALESCE(mof.marking_required, FALSE) AS marking_required,
-           COALESCE(mof.marking_applies, FALSE)
-           AND COALESCE(mof.has_ordered_markable_qty, FALSE)
-           AND NOT COALESCE(mcb.has_uncovered_positive_need, FALSE) AS marking_completed
-    FROM order_base ob
-    LEFT JOIN markable_order_flags mof ON mof.order_id = ob.id
-    LEFT JOIN marking_code_covered_by_order mcb ON mcb.order_id = ob.id
-),
 active_order_control AS (
     SELECT DISTINCT ON (oto.order_id)
            oto.order_id,
@@ -1171,8 +980,7 @@ SELECT ob.id,
                WHEN ob.persisted_status = 'DRAFT'
                     AND NOT COALESCE(ss.any_produced, FALSE)
                     AND NOT COALESCE(opa.has_open_production_receipt, FALSE)
-                    AND COALESCE(ps.active_pallet_count, 0) = 0
-                    AND UPPER(BTRIM(COALESCE(ob.marking_status, ''))) NOT IN ('PRINTED', 'EXCEL_GENERATED') THEN 'DRAFT'
+                    AND COALESCE(ps.active_pallet_count, 0) = 0 THEN 'DRAFT'
                ELSE 'IN_PROGRESS'
            END
            ELSE CASE
@@ -1190,9 +998,9 @@ SELECT ob.id,
        ob.marking_status,
        ob.marking_excel_generated_at,
        ob.marking_printed_at,
-       COALESCE(mr.marking_required, FALSE),
-       COALESCE(mr.marking_applies, FALSE),
-       COALESCE(mr.marking_completed, FALSE),
+       FALSE AS marking_required,
+       FALSE AS marking_applies,
+       FALSE AS marking_completed,
        CASE
            WHEN ob.persisted_status = 'CANCELLED' THEN NULL
            WHEN ob.order_type = 'INTERNAL'
@@ -1221,7 +1029,6 @@ FROM order_base ob
 LEFT JOIN status_summary ss ON ss.order_id = ob.id
 LEFT JOIN doc_summary ds ON ds.order_id = ob.id
 LEFT JOIN open_production_activity_by_order opa ON opa.order_id = ob.id
-LEFT JOIN marking_rollup mr ON mr.order_id = ob.id
 LEFT JOIN order_list_flags olf ON olf.order_id = ob.id
 LEFT JOIN pallet_summary ps ON ps.order_id = ob.id
 LEFT JOIN active_order_control aoc ON aoc.order_id = ob.id";
@@ -1254,6 +1061,20 @@ LEFT JOIN active_order_control aoc ON aoc.order_id = ob.id";
         using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
         EnsureSchemaReady(connection);
+    }
+
+    public T ReadSnapshot<T>(Func<IDataStore, T> read)
+    {
+        // A separate read-only transaction also rejects accidental writes in called helpers.
+        using var connection = new NpgsqlConnection(_connectionString);
+        connection.Open();
+        using var transaction = connection.BeginTransaction(System.Data.IsolationLevel.RepeatableRead);
+        using (var command = new NpgsqlCommand("SET TRANSACTION READ ONLY", connection, transaction))
+            command.ExecuteNonQuery();
+        var result = read(new PostgresDataStore(connection, transaction,
+            _orderSqlDiagnosticsSink, _orderSqlExplainDiagnosticsSink));
+        transaction.Commit();
+        return result;
     }
 
     public void ExecuteInTransaction(Action<IDataStore> work)
@@ -6986,8 +6807,7 @@ effective_orders AS (
                    WHEN co.persisted_status = 'DRAFT'
                         AND NOT COALESCE(ss.any_produced, FALSE)
                         AND NOT COALESCE(opa.has_open_production_receipt, FALSE)
-                        AND COALESCE(ps.active_pallet_count, 0) = 0
-                        AND UPPER(BTRIM(COALESCE(co.marking_status, ''))) NOT IN ('PRINTED', 'EXCEL_GENERATED') THEN 'DRAFT'
+                        AND COALESCE(ps.active_pallet_count, 0) = 0 THEN 'DRAFT'
                    ELSE 'IN_PROGRESS'
                END
                ELSE CASE

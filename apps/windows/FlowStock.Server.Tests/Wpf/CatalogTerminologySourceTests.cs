@@ -37,8 +37,8 @@ public sealed class CatalogTerminologySourceTests
         Assert.Contains("MinStockQtyBox.Visibility = minStockVisibility;", code, StringComparison.Ordinal);
         Assert.Contains("MaxQtyPerHuLabel.Visibility = maxQtyPerHuVisibility;", code, StringComparison.Ordinal);
         Assert.Contains("MaxQtyPerHuBox.Visibility = maxQtyPerHuVisibility;", code, StringComparison.Ordinal);
-        Assert.Contains("MarkingStatusLabel.Visibility = visibility;", code, StringComparison.Ordinal);
-        Assert.Contains("MarkingStatusText.Visibility = visibility;", code, StringComparison.Ordinal);
+        Assert.Contains("MarkingStatusLabel.Visibility = Visibility.Collapsed;", code, StringComparison.Ordinal);
+        Assert.Contains("MarkingStatusText.Visibility = Visibility.Collapsed;", code, StringComparison.Ordinal);
     }
 
     [Fact]

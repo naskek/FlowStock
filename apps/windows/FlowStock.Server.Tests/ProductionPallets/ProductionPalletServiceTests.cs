@@ -3326,7 +3326,7 @@ public sealed class ProductionPalletServiceTests
 
         Assert.Null(option.DisabledReason);
         Assert.True(option.IsSelectable);
-        Assert.True(option.HasMarkingWarning);
+        Assert.False(option.HasMarkingWarning);
         Assert.Equal(1, cancel.RemovedPalletCount);
         Assert.False(harness.Store.HasProductionPallets(plan.PrdDocId));
         var replan = service.PlanOrder(10);

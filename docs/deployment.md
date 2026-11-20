@@ -932,8 +932,8 @@ $DC restart nginx
 
 Процедуры, привязанные к конкретным миграциям или разовым переходам, описаны отдельно:
 
-- Cutover ЧЗ real-code workflow (`V0027`, `marking_cutover_state`, preflight, enforcement) — `deploy/docs/operations/marking-cutover.md`
-- Production backfill статусов ЧЗ (`backfill_marking_status.sh`) — `deploy/docs/operations/marking-backfill.md`
+- Исторический cutover ЧЗ (`V0027`) — `deploy/docs/operations/marking-cutover.md`; не применять к Excel-only: operational marking/cutover endpoints отключены, исторические данные сохраняются.
+- Исторический backfill статусов ЧЗ — `deploy/docs/operations/marking-backfill.md`; в Excel-only сервере эта maintenance-команда отключена.
 - Полная проверка UDP discovery — `deploy/docs/operations/discovery-smoke.md`
 
 Общее правило для любой миграции, помеченной в release notes как чувствительная: свежий backup перед применением обязателен и создаётся каноническим PowerShell deploy-процессом.

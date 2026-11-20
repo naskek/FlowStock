@@ -6,7 +6,7 @@ public static class OrderMarkingExportUiPolicy
 {
     public static bool CanExport(Order? order, IReadOnlyCollection<OrderLineView> lines)
     {
-        return order?.Status is not OrderStatus.Cancelled and not OrderStatus.Shipped
+        return order?.Status is not OrderStatus.Cancelled and not OrderStatus.Shipped and not OrderStatus.Merged
                && lines.Any(line => !string.IsNullOrWhiteSpace(line.Gtin));
     }
 }

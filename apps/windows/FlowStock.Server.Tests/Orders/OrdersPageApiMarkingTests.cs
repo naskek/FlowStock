@@ -46,14 +46,7 @@ public sealed class OrdersPageApiMarkingTests
         var row = rows.EnumerateArray().Single();
 
         Assert.Equal(77, row.GetProperty("id").GetInt64());
-        Assert.True(row.GetProperty("marking_required").GetBoolean());
-        Assert.False(row.GetProperty("marking_completed").GetBoolean());
-        Assert.NotEqual("PRINTED", row.GetProperty("marking_status").GetString());
-        Assert.Equal("REQUIRED", row.GetProperty("marking_effective_status").GetString());
-        Assert.Equal("Маркировка не проведена", row.GetProperty("marking_label").GetString());
-        Assert.Equal("Маркировка не проведена", row.GetProperty("marking_status_display").GetString());
-        Assert.Equal(string.Empty, row.GetProperty("marking_excel_generated_at").GetString() ?? string.Empty);
-        Assert.Equal(string.Empty, row.GetProperty("marking_printed_at").GetString() ?? string.Empty);
+        Assert.DoesNotContain(row.EnumerateObject(), property => property.Name.StartsWith("marking_"));
     }
 
     private sealed class OrdersPageHost : IAsyncDisposable

@@ -16,10 +16,6 @@ public static class OrderApiMapper
         OrderPalletFillPresentation? palletFill = null,
         OrderShipmentProgress? shipmentProgress = null)
     {
-        var markingStatus = order.MarkingCompleted
-            ? MarkingStatus.Printed
-            : order.EffectiveMarkingStatus;
-        var markingLabel = order.MarkingLabel;
         palletSummary ??= new ProductionPalletSummary();
         palletFill ??= OrderPalletFillPresentationService.ResolveOrderFill(
             order,
@@ -54,16 +50,6 @@ public static class OrderApiMapper
             comment = order.Comment,
             bind_reserved_stock = order.UseReservedStock,
             allow_partial_outbound = order.EffectiveAllowPartialOutbound,
-            marking_status = MarkingStatusMapper.ToString(markingStatus),
-            marking_required = order.MarkingRequired,
-            marking_applies = order.MarkingApplies,
-            marking_completed = order.MarkingCompleted,
-            marking_label = markingLabel,
-            marking_effective_status = MarkingStatusMapper.ToString(markingStatus),
-            marking_status_display = markingLabel,
-            marking_status_label = markingLabel,
-            marking_excel_generated_at = order.MarkingExcelGeneratedAt?.ToString("O", CultureInfo.InvariantCulture),
-            marking_printed_at = order.MarkingPrintedAt?.ToString("O", CultureInfo.InvariantCulture),
             created_at = order.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
             shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture),
             has_shipment_remaining = hasShipmentRemaining,

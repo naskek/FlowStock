@@ -1,6 +1,5 @@
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
-using FlowStock.Core.Models.Marking;
 
 namespace FlowStock.Core.Services;
 
@@ -170,16 +169,6 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
             return RepairScenarioContext.Empty;
         }
 
-        var markingOrder = store.GetMarkingOrdersByItemIds(new[] { MustardItemId })
-            .Where(order => order.OrderId == order067.Id || order.SourceOrderId == order067.Id)
-            .OrderByDescending(order => order.CreatedAt)
-            .FirstOrDefault();
-        if (markingOrder == null)
-        {
-            validationErrors.Add("Для 067/item 6 не найден marking_order.");
-            return RepairScenarioContext.Empty;
-        }
-
         return new RepairScenarioContext(
             order067,
             order072,
@@ -189,8 +178,7 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
             openPrd072,
             pallets067,
             pallets072Cancel,
-            pallets072Keep,
-            markingOrder);
+            pallets072Keep);
     }
 
     private static void PlanOrder067Restore(
@@ -233,12 +221,7 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
             }
         }
 
-        var reservedCount = store.CountMarkingCodesByMarkingOrder(context.MarkingOrder.Id);
-        steps.Add(Step(
-            "assign_marking_codes",
-            context.MarkingOrder.RequestNumber,
-            $"Reserved codes {reservedCount} -> PRD {context.DraftPrd067.DocRef} lines for {string.Join(", ", Pallets067Fill)}",
-            skipped: reservedCount <= 0));
+
     }
 
     private static void PlanOrder072EmptyPallets(
@@ -326,44 +309,6 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
             }
         }
 
-        var docLinesByHu = store.GetDocLines(context.DraftPrd067.Id)
-            .Where(line => line.ItemId == MustardItemId && line.Qty > StockQuantityRules.QtyTolerance)
-            .GroupBy(line => NormalizeHu(line.ToHu), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.OrderBy(line => line.Id).First(), StringComparer.OrdinalIgnoreCase);
-
-        foreach (var pallet in context.Pallets067)
-        {
-            if (!docLinesByHu.TryGetValue(NormalizeHu(pallet.HuCode), out var docLine))
-            {
-                continue;
-            }
-
-            var required = (int)Math.Round(PalletQty);
-            var assigned = store.CountProductionMarkingCodesByReceiptLine(docLine.Id);
-            var missing = required - assigned;
-            if (missing <= 0)
-            {
-                continue;
-            }
-
-            var item = store.FindItemById(MustardItemId);
-            var codeIds = store is ILineScopedMarkingCodeStore scopedStore
-                ? scopedStore.GetAvailableProductionMarkingCodeIdsForReceipt(
-                    context.Order067.Id,
-                    MustardItemId,
-                    item?.Gtin,
-                    missing,
-                    docLine.OrderLineId)
-                : store.GetAvailableProductionMarkingCodeIdsForReceipt(
-                    context.Order067.Id,
-                    MustardItemId,
-                    item?.Gtin,
-                    missing);
-            if (codeIds.Count > 0)
-            {
-                store.AssignProductionMarkingCodesToReceipt(codeIds, context.DraftPrd067.Id, docLine.Id, appliedAt);
-            }
-        }
     }
 
     private static void ApplyOrder072EmptyPallets(
@@ -542,8 +487,7 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
         Doc OpenPrd072,
         IReadOnlyList<ResolvedPallet> Pallets067,
         IReadOnlyList<ResolvedPallet> Pallets072Cancel,
-        IReadOnlyList<ResolvedPallet> Pallets072Keep,
-        MarkingOrder MarkingOrder)
+        IReadOnlyList<ResolvedPallet> Pallets072Keep)
     {
         public static RepairScenarioContext Empty { get; } = new(
             new Order(),
@@ -554,8 +498,7 @@ public sealed class ProductionPlanConsistencyRepairService(IDataStore dataStore)
             new Doc(),
             Array.Empty<ResolvedPallet>(),
             Array.Empty<ResolvedPallet>(),
-            Array.Empty<ResolvedPallet>(),
-            new MarkingOrder());
+            Array.Empty<ResolvedPallet>());
     }
 
     private sealed record ResolvedPallet(
