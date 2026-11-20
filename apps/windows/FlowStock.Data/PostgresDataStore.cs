@@ -14,7 +14,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed partial class PostgresDataStore : IDataStore, IBusinessNotificationJournalStore, IOrderRequestManagementStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore
+public sealed partial class PostgresDataStore : IDataStore, IBusinessNotificationJournalStore, IOrderRequestManagementStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore, IPrePlanRelevantInternalOrdersStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -6686,6 +6686,78 @@ WHERE d.id = pp.prd_doc_id
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadOrder(reader) : null;
         });
+    }
+
+    public IReadOnlyList<Order> GetPrePlanRelevantInternalOrders(IReadOnlyCollection<long> itemIds)
+    {
+        var ids = itemIds.Where(id => id > 0).Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return Array.Empty<Order>();
+        }
+
+        // Candidate superset: matching INTERNAL order lines for expected supply,
+        // plus PRD pallets/components for adoption and skipped-candidate reasons.
+        // Do not filter by persisted SHIPPED: effective INTERNAL status can become
+        // IN_PROGRESS when its production demand changes.
+        var relevantOrderIds = WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+WITH relevant_order_ids AS (
+    SELECT ol.order_id
+    FROM order_lines ol
+    WHERE ol.item_id = ANY(@item_ids)
+    UNION
+    SELECT d.order_id
+    FROM docs d
+    INNER JOIN production_pallets pp ON pp.prd_doc_id = d.id
+    WHERE d.type = @prd_type
+      AND d.order_id IS NOT NULL
+      AND (
+          pp.item_id = ANY(@item_ids)
+          OR EXISTS (
+              SELECT 1
+              FROM production_pallet_lines pll
+              WHERE pll.production_pallet_id = pp.id
+                AND pll.item_id = ANY(@item_ids)
+          )
+      )
+)
+SELECT o.id
+FROM relevant_order_ids relevant
+INNER JOIN orders o ON o.id = relevant.order_id
+WHERE o.order_type = @internal_type
+  AND o.status NOT IN (@cancelled_status, @merged_status)
+ORDER BY o.id;
+");
+            command.Parameters.Add("@item_ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint).Value = ids;
+            command.Parameters.AddWithValue("@internal_type", OrderStatusMapper.TypeToString(OrderType.Internal));
+            command.Parameters.AddWithValue("@prd_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            command.Parameters.AddWithValue("@cancelled_status", OrderStatusMapper.StatusToString(OrderStatus.Cancelled));
+            command.Parameters.AddWithValue("@merged_status", OrderStatusMapper.StatusToString(OrderStatus.Merged));
+            using var reader = command.ExecuteReader();
+            var result = new List<long>();
+            while (reader.Read())
+            {
+                result.Add(reader.GetInt64(0));
+            }
+
+            return result;
+        });
+
+        // Reuse the canonical GetOrder effective status / projection. A plain
+        // SQL orders.status read here would change Draft/InProgress semantics.
+        var orders = new List<Order>(relevantOrderIds.Count);
+        foreach (var orderId in relevantOrderIds)
+        {
+            var order = GetOrder(orderId);
+            if (order?.Type == OrderType.Internal)
+            {
+                orders.Add(order);
+            }
+        }
+
+        return orders;
     }
 
     public IReadOnlyList<Order> GetOrders()

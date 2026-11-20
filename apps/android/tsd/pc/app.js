@@ -2730,6 +2730,15 @@
       return { item_id: 0, qty_ordered: "", query: "", locked: false };
     }
     var linesState = [createEmptyLine()];
+    var catalogPicker = window.FlowStockPcOrderItemPicker.create({
+      items: items,
+      parentModal: modal,
+      escapeHtml: escapeHtml,
+      bindModalDismiss: bindModalDismiss,
+      onSelect: function (index, selectedId) {
+        applySuggestedItem(index, selectedId);
+      }
+    });
     var restoreDraft = initialDraft && typeof initialDraft === "object" ? initialDraft : null;
     var activeLineIndex = 0;
     var selectedPartnerId = 0;
@@ -2985,6 +2994,7 @@
         return;
       }
       closed = true;
+      catalogPicker.dispose();
       if (activeNewOrderDraftController && activeNewOrderDraftController.modal === modal) {
         activeNewOrderDraftController = null;
       }
@@ -3497,6 +3507,12 @@
               index +
               '"></div>';
           }
+          itemCellHtml +=
+            '<button class="btn btn-outline line-catalog-picker-btn" type="button" data-index="' +
+            index +
+            '">' + (line.locked && Number(line.item_id) > 0
+              ? "Заменить из каталога" : "Выбрать из каталога") +
+            "</button>";
           var rowHtml =
             '<div class="pc-order-line-row' +
             (line.isDuplicateTarget ? " is-duplicate-target" : "") +
@@ -3575,6 +3591,17 @@
           window.setTimeout(function () {
             updateLineControls(index);
           }, 120);
+        });
+      });
+
+      var catalogButtons = refs.linesWrap.querySelectorAll(".line-catalog-picker-btn");
+      catalogButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+          var index = Number(button.getAttribute("data-index"));
+          if (!linesState[index]) return;
+          hideSuggestionOverlay();
+          hidePartnerSuggestionOverlay();
+          catalogPicker.open(index, button);
         });
       });
 
@@ -3832,6 +3859,7 @@
           var right = String(b.name || "").toLowerCase();
           return left < right ? -1 : left > right ? 1 : 0;
         });
+        catalogPicker.setItems(items);
 
         if (restoreDraft) {
           if (refs.internalInput) {

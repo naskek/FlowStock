@@ -3610,3 +3610,166 @@ body.pc-modal-open {
   flex: 0 0 auto;
   margin-top: 3px;
 }
+
+/* Новый заказ: выбор позиции из каталога, без изменения базовой модалки. */
+.line-catalog-picker-btn {
+  justify-self: start;
+  padding: 5px 9px;
+  min-height: 28px;
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: normal;
+  text-align: left;
+}
+
+.pc-order-picker-modal {
+  z-index: 25;
+}
+
+.pc-order-picker-card {
+  max-width: 1100px;
+  max-height: 88vh;
+}
+
+.pc-order-picker-line,
+.pc-order-picker-meta,
+.pc-order-picker-empty-option {
+  font-size: 12px;
+  color: #66788a;
+}
+
+.pc-order-picker-tools {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.pc-order-picker-tools .form-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.pc-order-picker-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.pc-order-picker-filter {
+  min-width: 0;
+  margin: 0;
+  padding: 9px 10px 10px;
+  border: 1px solid #dfe7ee;
+  border-radius: 10px;
+}
+
+.pc-order-picker-filter legend {
+  padding: 0 5px;
+  color: #163349;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pc-order-picker-filter-actions {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+
+.pc-order-picker-filter-actions .btn {
+  padding: 3px 7px;
+  min-height: 24px;
+  font-size: 11px;
+}
+
+.pc-order-picker-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 136px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.pc-order-picker-options .pc-inline-check {
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.pc-order-picker-count {
+  margin: 0 0 8px;
+  color: #40566a;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pc-order-picker-results {
+  overflow: auto;
+  border: 1px solid #dfe7ee;
+  border-radius: 10px;
+  max-height: 36vh;
+}
+
+.pc-order-picker-table {
+  width: 100%;
+  min-width: 650px;
+}
+
+.pc-order-picker-table th {
+  position: sticky;
+  top: 0;
+  background: #f5f8fa;
+  z-index: 1;
+}
+
+.pc-order-picker-table td {
+  vertical-align: middle;
+  font-size: 12px;
+}
+
+.pc-order-picker-table td:first-child {
+  min-width: 190px;
+}
+
+.pc-order-picker-table .pc-order-picker-select {
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 5px 9px;
+}
+
+.pc-order-picker-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: #66788a;
+}
+
+@media (max-width: 700px) {
+  .pc-order-picker-card {
+    max-height: 92vh;
+  }
+
+  .pc-order-picker-tools {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pc-order-picker-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .pc-order-picker-options {
+    max-height: 90px;
+  }
+
+  .pc-order-picker-results {
+    max-height: 34vh;
+  }
+
+  .pc-order-picker-card .pc-modal-header {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+}
