@@ -1281,6 +1281,18 @@ public sealed class ProductionPalletService
         };
     }
 
+    private static IReadOnlyList<Order> GetRelevantPrePlanInternalOrders(
+        IDataStore store,
+        IReadOnlyCollection<long> itemIds)
+    {
+        // Keep the existing in-memory/mock-store semantics. PostgreSQL avoids
+        // materializing every order and calling expensive per-order reads on
+        // sources whose items cannot contribute to the preview.
+        return store is IPrePlanRelevantInternalOrdersStore optimized
+            ? optimized.GetPrePlanRelevantInternalOrders(itemIds)
+            : store.GetOrders();
+    }
+
     private sealed record InternalPlanAdoptionMutationResult(
         int TransferredPalletCount,
         IReadOnlyDictionary<long, InternalOrderMergeResult> SourceMergeResults);
@@ -1324,7 +1336,7 @@ public sealed class ProductionPalletService
 
         var neededItemIds = linesToPlan.Select(line => line.ItemId).ToHashSet();
         var expectedByInternalOrder = new List<(Order InternalOrder, Dictionary<long, double> ExpectedByItem)>();
-        foreach (var internalOrder in store.GetOrders()
+        foreach (var internalOrder in GetRelevantPrePlanInternalOrders(store, neededItemIds)
                      .Where(candidate => candidate.Type == OrderType.Internal
                                          && candidate.Status is not OrderStatus.Shipped
                                              and not OrderStatus.Cancelled
@@ -1467,7 +1479,7 @@ public sealed class ProductionPalletService
         var adoptable = new List<ProductionPalletProjectedAdoptionHu>();
         var skipped = new List<ProductionPalletAdoptionSkippedCandidate>();
 
-        foreach (var sourceOrder in store.GetOrders()
+        foreach (var sourceOrder in GetRelevantPrePlanInternalOrders(store, neededItems)
                      .Where(order => order.Type == OrderType.Internal)
                      .Where(order => order.Status is OrderStatus.Draft or OrderStatus.InProgress)
                      .Where(order => allowedSourceOrderIdSet == null || allowedSourceOrderIdSet.Contains(order.Id))
