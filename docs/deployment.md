@@ -948,3 +948,9 @@ $DC restart nginx
 - Держите server-side clone репозитория чистым: канонический PowerShell deploy-процесс должен остановиться при неожиданных tracked изменениях.
 - Метаданные релизов хранятся в `deploy/runtime/releases/`.
 - `deploy/nginx/gen_cert.sh` остаётся только как быстрый self-signed fallback; рекомендуемый режим для внутреннего production — `FLOWSTOCK_TLS_MODE=local_ca`.
+
+## Отключение исторических operational marking hooks
+
+Перед запуском Excel-only версии штатный migrator применяет `V0059__disable_operational_marking_hooks.sql`. Это DDL-only отключение трёх известных hooks на физических таблицах, без cleanup/backfill/изменения исторических строк. На свежей active-main БД без исторической V0036 — no-op; имена/функции существующих hooks проверяются. Исторические номера V0047–V0058 заняты параллельной линией и не переиспользуются. Миграция не включает код или quantity-pool той линии.
+
+Обязателен isolated production-copy smoke после миграции: сравнить не только marking_order/code/import, но и все marking subject/coverage/consumption/audit таблицы через plan, GTIN edit, fill, HU binding, OUT, COR/refill. Исторические definitions и данные сохраняются; неизвестные дополнительные hooks требуют проверки до deploy. Canonical backup/deploy gates сохраняются. При app rollback hooks сами не включаются: старое marking-поведение не считается безопасным rollback-контрактом.

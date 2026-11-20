@@ -612,3 +612,5 @@ Preview/export не выполняют DB writes, не создают marking re
 ## Исторические данные маркировки
 
 Старые таблицы `km_code_batch`, `km_code`, `marking_order`, `marking_code_import`, `marking_code`, `marking_import_batch`, print/audit/cutover таблицы и marking поля сохранены без destructive cleanup. Они не участвуют в рабочих расчётах и не изменяются Excel, PRD Close или коррекцией HU. Рабочие marking endpoints, очереди, backfill и ENFORCED cutover не включены. Любое последующее архивирование требует отдельной безопасной процедуры с backup.
+
+Исторические operational marking hooks отключаются миграцией V0059 без изменения данных. Контракт совместимости — в `spec_orders.md`, порядок применения и rollback gate — в `deployment.md`.
