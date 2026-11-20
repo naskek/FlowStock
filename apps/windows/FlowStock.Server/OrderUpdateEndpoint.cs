@@ -193,9 +193,11 @@ public static class OrderUpdateEndpoint
         }
 
         if (!string.IsNullOrWhiteSpace(requestedOrderRef)
-            && store.GetOrders().Any(order =>
-                order.Id != orderId
-                && string.Equals(order.OrderRef, authoritativeOrderRef, StringComparison.OrdinalIgnoreCase)))
+            && (store is IOrderRefLookupStore optimizedRefs
+                ? optimizedRefs.HasOtherOrderWithRef(orderId, authoritativeOrderRef)
+                : store.GetOrders().Any(order =>
+                    order.Id != orderId
+                    && string.Equals(order.OrderRef, authoritativeOrderRef, StringComparison.OrdinalIgnoreCase))))
         {
             authoritativeOrderRef = GenerateNextOrderRef(store);
             orderRefChanged = true;
@@ -348,9 +350,13 @@ public static class OrderUpdateEndpoint
     private static string GenerateNextOrderRef(IDataStore store)
     {
         long max = 0;
-        foreach (var order in store.GetOrders())
+        var refs = store is IOrderRefLookupStore optimizedRefs
+            ? optimizedRefs.GetAllOrderRefsForNextNumber()
+            : store.GetOrders().Select(order => order.OrderRef).ToArray();
+
+        foreach (var rawRef in refs)
         {
-            var orderRef = order.OrderRef?.Trim();
+            var orderRef = rawRef?.Trim();
             if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
             {
                 continue;
