@@ -9,6 +9,145 @@ public sealed class ProductionPalletPostgresRegressionTests
 {
 
     [Fact]
+    public void PrePlanScope_Postgres_IgnoresUnrelatedOrders_AndKeepsPalletOnlySources()
+    {
+        var connectionString = ResolvePostgresTestConnectionString();
+        if (connectionString == null)
+        {
+            return;
+        }
+
+        var token = $"preplan-scope-{Guid.NewGuid():N}";
+        long wantedItemId = 0, unrelatedItemId = 0, customerOrderId = 0;
+        long unrelatedInternalId = 0, matchingInternalId = 0, cancelledInternalId = 0;
+        long sourceDocId = 0, sourceDocLineId = 0, sourcePalletId = 0, locationId = 0;
+        using var connection = new NpgsqlConnection(connectionString);
+        connection.Open();
+
+        long Scalar(string sql, params (string Name, object Value)[] parameters)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            foreach (var parameter in parameters)
+            {
+                command.Parameters.AddWithValue(parameter.Name, parameter.Value);
+            }
+
+            return Convert.ToInt64(command.ExecuteScalar());
+        }
+
+        long InsertOrder(string suffix, string type, string status)
+        {
+            return Scalar(
+                @"INSERT INTO orders(order_ref, order_type, status, created_at)
+VALUES (@ref, @type, @status, @created) RETURNING id;",
+                ("ref", $"{token}-{suffix}"), ("type", type), ("status", status),
+                ("created", "2042-01-01T00:00:00"));
+        }
+
+        void InsertOrderLine(long orderId, long itemId, string purpose)
+        {
+            Scalar(
+                @"INSERT INTO order_lines(order_id, item_id, qty_ordered, production_purpose)
+VALUES (@order_id, @item_id, 10, @purpose) RETURNING id;",
+                ("order_id", orderId), ("item_id", itemId), ("purpose", purpose));
+        }
+
+        try
+        {
+            wantedItemId = Scalar(
+                "INSERT INTO items(name, barcode, base_uom, max_qty_per_hu) VALUES (@name, @barcode, 'шт', 100) RETURNING id;",
+                ("name", token + "-wanted"), ("barcode", token + "-wanted"));
+            unrelatedItemId = Scalar(
+                "INSERT INTO items(name, barcode, base_uom, max_qty_per_hu) VALUES (@name, @barcode, 'шт', 100) RETURNING id;",
+                ("name", token + "-unrelated"), ("barcode", token + "-unrelated"));
+            locationId = Scalar(
+                "INSERT INTO locations(code, name) VALUES (@code, @name) RETURNING id;",
+                ("code", token), ("name", token));
+
+            customerOrderId = InsertOrder("customer", "CUSTOMER", "IN_PROGRESS");
+            unrelatedInternalId = InsertOrder("unrelated", "INTERNAL", "IN_PROGRESS");
+            InsertOrderLine(customerOrderId, wantedItemId, "CUSTOMER_ORDER");
+            InsertOrderLine(unrelatedInternalId, unrelatedItemId, "INTERNAL_STOCK");
+
+            var store = new PostgresDataStore(connectionString);
+            Assert.Empty(store.GetPrePlanRelevantInternalOrders([wantedItemId]));
+            var initialPreview = new ProductionPalletService(store)
+                .GetCustomerPrePlanCoveragePreview(customerOrderId);
+            Assert.False(initialPreview.HasWarning);
+            Assert.Empty(initialPreview.InternalPlannedHuCandidates);
+
+            // A source pallet can contain a required item even when the source
+            // INTERNAL order line is for a different item. Do not filter it out:
+            // the existing projection must still report ineligible candidates.
+            sourceDocId = Scalar(
+                @"INSERT INTO docs(doc_ref, type, status, created_at, order_id, order_ref)
+VALUES (@ref, 'PRODUCTION_RECEIPT', 'DRAFT', @created, @order_id, @order_ref) RETURNING id;",
+                ("ref", token + "-prd"), ("created", "2042-01-01T00:00:00"),
+                ("order_id", unrelatedInternalId), ("order_ref", token + "-unrelated"));
+            sourceDocLineId = Scalar(
+                @"INSERT INTO doc_lines(doc_id, item_id, qty, to_location_id, to_hu)
+VALUES (@doc_id, @item_id, 1, @location_id, @hu) RETURNING id;",
+                ("doc_id", sourceDocId), ("item_id", wantedItemId),
+                ("location_id", locationId), ("hu", token + "-hu"));
+            sourcePalletId = Scalar(
+                @"INSERT INTO production_pallets(prd_doc_id, doc_line_id, order_id, item_id, hu_code,
+planned_qty, to_location_id, status, created_at)
+VALUES (@doc_id, @doc_line_id, @order_id, @item_id, @hu, 1, @location_id, 'PLANNED', @created)
+RETURNING id;",
+                ("doc_id", sourceDocId), ("doc_line_id", sourceDocLineId),
+                ("order_id", unrelatedInternalId), ("item_id", wantedItemId),
+                ("hu", token + "-hu"), ("location_id", locationId),
+                ("created", "2042-01-01T00:00:00"));
+
+            Assert.Contains(store.GetPrePlanRelevantInternalOrders([wantedItemId]),
+                order => order.Id == unrelatedInternalId);
+            var palletPreview = new ProductionPalletService(store)
+                .GetCustomerPrePlanCoveragePreview(customerOrderId);
+            Assert.False(palletPreview.HasWarning);
+            Assert.NotEmpty(palletPreview.AdoptionSkippedCandidates);
+
+            matchingInternalId = InsertOrder("matching", "INTERNAL", "IN_PROGRESS");
+            InsertOrderLine(matchingInternalId, wantedItemId, "INTERNAL_STOCK");
+            cancelledInternalId = InsertOrder("cancelled", "INTERNAL", "CANCELLED");
+            InsertOrderLine(cancelledInternalId, wantedItemId, "INTERNAL_STOCK");
+
+            var relevant = store.GetPrePlanRelevantInternalOrders([wantedItemId]);
+            Assert.Equal(
+                new[] { matchingInternalId, unrelatedInternalId }.Order().ToArray(),
+                relevant.Select(order => order.Id).Order().ToArray());
+            var finalPreview = new ProductionPalletService(store)
+                .GetCustomerPrePlanCoveragePreview(customerOrderId);
+            Assert.True(finalPreview.HasWarning);
+            Assert.Single(finalPreview.Lines);
+            Assert.Equal(matchingInternalId, finalPreview.Lines[0].InternalOrderId);
+        }
+        finally
+        {
+            using var cleanup = connection.CreateCommand();
+            cleanup.CommandText = @"
+DELETE FROM production_pallet_lines WHERE production_pallet_id = @pallet_id;
+DELETE FROM production_pallets WHERE id = @pallet_id;
+DELETE FROM doc_lines WHERE doc_id = @doc_id;
+DELETE FROM docs WHERE id = @doc_id;
+DELETE FROM order_lines WHERE order_id IN (@customer_order_id, @unrelated_internal_id, @matching_internal_id, @cancelled_internal_id);
+DELETE FROM orders WHERE id IN (@customer_order_id, @unrelated_internal_id, @matching_internal_id, @cancelled_internal_id);
+DELETE FROM items WHERE id IN (@wanted_item_id, @unrelated_item_id);
+DELETE FROM locations WHERE id = @location_id;";
+            cleanup.Parameters.AddWithValue("pallet_id", sourcePalletId);
+            cleanup.Parameters.AddWithValue("doc_id", sourceDocId);
+            cleanup.Parameters.AddWithValue("customer_order_id", customerOrderId);
+            cleanup.Parameters.AddWithValue("unrelated_internal_id", unrelatedInternalId);
+            cleanup.Parameters.AddWithValue("matching_internal_id", matchingInternalId);
+            cleanup.Parameters.AddWithValue("cancelled_internal_id", cancelledInternalId);
+            cleanup.Parameters.AddWithValue("wanted_item_id", wantedItemId);
+            cleanup.Parameters.AddWithValue("unrelated_item_id", unrelatedItemId);
+            cleanup.Parameters.AddWithValue("location_id", locationId);
+            cleanup.ExecuteNonQuery();
+        }
+    }
+
+    [Fact]
     public void PlanOrder_CustomCapacityOverride_Postgres_CreatesExactHuAndPreservesCatalogCapacity()
     {
         var connectionString = ResolvePostgresTestConnectionString();
