@@ -15,7 +15,7 @@ namespace FlowStock.Server.Tests.Marking;
 /// </summary>
 [Collection("Postgres marking integration")]
 [Trait("DatabaseScope", "DisposableOnly")]
-public sealed class MarkingHuProspectiveReservationPostgresTests
+public sealed partial class MarkingHuProspectiveReservationPostgresTests
 {
     [Fact]
     public async Task PrintedHuWithoutSourceCode_HasZeroVerifiedReservation()

@@ -151,6 +151,7 @@ public sealed class ProductionPalletFillingAdjustment
 
 public sealed class ProductionPalletCorrectionMarkingCode
 {
+    public bool AdoptedReservationProven { get; init; }
     public Guid Id { get; init; }
     public Guid MarkingOrderId { get; init; }
     public Guid ImportId { get; init; }

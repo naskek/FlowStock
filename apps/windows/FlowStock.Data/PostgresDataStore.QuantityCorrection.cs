@@ -49,14 +49,16 @@ ORDER BY p.id FOR UPDATE;
 SELECT e.id, e.pool_id, e.receipt_line_id, e.quantity,
  COALESCE(e.action='ASSIGN' AND e.receipt_doc_id=@doc AND dl.doc_id=@doc
  AND d.type='PRODUCTION_RECEIPT' AND d.status='CLOSED'
- AND o.order_type='INTERNAL' AND ol.order_id=d.order_id AND ol.item_id=dl.item_id
+ AND o.order_type IN ('INTERNAL','CUSTOMER') AND ol.order_id=d.order_id AND ol.item_id=dl.item_id
  AND dl.qty > 0 AND dl.qty::numeric=TRUNC(dl.qty::numeric)
  AND dl.qty::text NOT IN ('NaN','Infinity','-Infinity')
  AND NOT EXISTS (SELECT 1 FROM doc_lines n WHERE n.replaces_line_id=dl.id)
  AND it.enable_marking AND NULLIF(BTRIM(i.gtin),'') IS NOT NULL
  AND p.item_id=dl.item_id AND p.item_id=mo.item_id
  AND p.order_line_id IS NOT DISTINCT FROM mo.order_line_id
- AND (p.order_line_id IS NULL OR p.order_line_id=dl.order_line_id)
+ AND ((p.order_line_id IS NULL OR p.order_line_id=dl.order_line_id)
+      OR EXISTS(SELECT 1 FROM marking_hu_current_reservation r WHERE r.pool_id=p.id
+         AND r.consumed_doc_id=d.id AND r.consumed_line_id=dl.id AND marking_hu_consumed_proven(r.id)))
  AND p.normalized_gtin=BTRIM(i.gtin) AND p.normalized_gtin=BTRIM(mo.gtin)
  AND p.source_type=BTRIM(mo.source_type)
  AND p.source_scope=JSONB_BUILD_OBJECT('source_type',BTRIM(mo.source_type),
@@ -64,7 +66,10 @@ SELECT e.id, e.pool_id, e.receipt_line_id, e.quantity,
  AND ((p.source_type='PRODUCTION_ORDER' AND mo.source_order_id=d.order_id
        AND (mo.order_id IS NULL OR mo.order_id=d.order_id))
       OR (p.source_type='PRODUCTION_NEED' AND mo.source_order_id IS NULL
-          AND mo.order_id IS NULL AND p.order_line_id IS NULL))
+          AND mo.order_id IS NULL AND p.order_line_id IS NULL AND o.order_type='INTERNAL')
+      OR (o.order_type='CUSTOMER' AND EXISTS(
+          SELECT 1 FROM marking_hu_current_reservation r WHERE r.pool_id=p.id
+            AND r.consumed_doc_id=d.id AND r.consumed_line_id=dl.id AND marking_hu_consumed_proven(r.id))))
  AND NOT EXISTS (SELECT 1 FROM marking_code c WHERE c.marking_order_id=p.marking_order_id)
  AND NOT EXISTS (SELECT 1 FROM marking_code c WHERE c.receipt_line_id IN
      (SELECT id FROM doc_lines WHERE doc_id=@doc) AND c.receipt_doc_id IS DISTINCT FROM @doc)

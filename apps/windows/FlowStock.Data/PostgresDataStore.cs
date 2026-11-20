@@ -17178,7 +17178,10 @@ SELECT EXISTS (
             var lockClause = _transaction == null ? string.Empty : "FOR UPDATE OF c";
             using var command = CreateCommand(connection, $@"
 SELECT c.id, c.marking_order_id, c.import_id, c.origin, mo.order_line_id, c.status,
-       c.receipt_doc_id, c.receipt_line_id, c.applied_at, c.reported_at, c.introduced_at
+       c.receipt_doc_id, c.receipt_line_id, c.applied_at, c.reported_at, c.introduced_at,
+       EXISTS(SELECT 1 FROM marking_hu_current_reservation r
+          WHERE r.marking_code_id=c.id AND r.consumed_doc_id=c.receipt_doc_id
+            AND r.consumed_line_id=c.receipt_line_id AND marking_hu_consumed_proven(r.id))
 FROM marking_code c
 INNER JOIN marking_order mo ON mo.id = c.marking_order_id
 WHERE c.receipt_doc_id = @doc_id
@@ -17203,7 +17206,8 @@ ORDER BY c.id
                     AppliedAtRaw = reader.IsDBNull(8) ? null : reader.GetString(8),
                     AppliedAt = FromDbDate(reader.IsDBNull(8) ? null : reader.GetString(8)),
                     ReportedAt = FromDbDate(reader.IsDBNull(9) ? null : reader.GetString(9)),
-                    IntroducedAt = FromDbDate(reader.IsDBNull(10) ? null : reader.GetString(10))
+                    IntroducedAt = FromDbDate(reader.IsDBNull(10) ? null : reader.GetString(10)),
+                    AdoptedReservationProven = reader.GetBoolean(11)
                 });
             }
             return result;
