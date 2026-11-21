@@ -12,10 +12,16 @@ namespace FlowStock.Core.Services;
 public sealed class MarkingExcelService
 {
     private readonly IDataStore _data;
+    private readonly bool _quantityIssueEnabled;
 
-    public MarkingExcelService(IDataStore data)
+    public MarkingExcelService(IDataStore data) : this(data, quantityIssueEnabled: false)
+    {
+    }
+
+    internal MarkingExcelService(IDataStore data, bool quantityIssueEnabled)
     {
         _data = data;
+        _quantityIssueEnabled = quantityIssueEnabled;
     }
 
     public IReadOnlyList<MarkingOrderQueueRow> GetOrderQueue(bool includeCompleted)
@@ -34,7 +40,23 @@ public sealed class MarkingExcelService
     public MarkingExcelExportResult Export(
         IReadOnlyCollection<Guid> markingOrderIds,
         IReadOnlyCollection<long> orderIds,
-        DateTime generatedAt)
+        DateTime generatedAt) =>
+        ExportCore(markingOrderIds, orderIds, generatedAt, reexportExisting: true);
+
+    // Only the order-scoped quantity path requests a *delta* workbook.
+    // A no-shortage operator re-export intentionally reproduces the existing
+    // task quantities instead; the operator must distinguish the two modes.
+    internal MarkingExcelExportResult ExportOrderBased(
+        IReadOnlyCollection<Guid> markingOrderIds,
+        DateTime generatedAt,
+        bool reexportExisting) =>
+        ExportCore(markingOrderIds, Array.Empty<long>(), generatedAt, reexportExisting);
+
+    private MarkingExcelExportResult ExportCore(
+        IReadOnlyCollection<Guid> markingOrderIds,
+        IReadOnlyCollection<long> orderIds,
+        DateTime generatedAt,
+        bool reexportExisting)
     {
         var normalizedOrderIds = orderIds
             .Where(id => id > 0)
@@ -57,7 +79,7 @@ public sealed class MarkingExcelService
                                && !string.IsNullOrWhiteSpace(line.Gtin)
                                && line.QtyForMarking > 0)
                 .ToList();
-        var taskRows = BuildTaskRows(normalizedMarkingOrderIds);
+        var taskRows = BuildTaskRows(normalizedMarkingOrderIds, reexportExisting);
         var exportRows = orderRows
             .Select(line => new MarkingExportRow
             {
@@ -110,8 +132,43 @@ public sealed class MarkingExcelService
 
                 if (markingOrderIdsWithRows.Length > 0)
                 {
-                    store.MarkMarkingOrdersPrinted(markingOrderIdsWithRows, generatedAt);
-                    EnsureTemporaryMarkingCodes(store, taskRows, generatedAt);
+                    if (!_quantityIssueEnabled)
+                    {
+                        store.MarkMarkingOrdersPrinted(markingOrderIdsWithRows, generatedAt);
+                        EnsureTemporaryMarkingCodes(store, taskRows, generatedAt);
+                    }
+                    else
+                    {
+                        if (store is not IMarkingQuantityIssueStore issueStore)
+                            throw new MarkingQuantityIssueException(
+                                "EXCEL_QUANTITY_STORE_UNAVAILABLE: количественный writer недоступен.");
+
+                        // Deterministic task lock order. Historical per-code tasks
+                        // never switch provenance; only code-free tasks may ISSUE.
+                        foreach (var taskRow in taskRows.OrderBy(row => row.MarkingOrderId))
+                        {
+                            var evidence = issueStore.ReadMarkingTaskQuantityEvidence(taskRow.MarkingOrderId);
+                            if (evidence.HasHistoricalCodes)
+                            {
+                                store.MarkMarkingOrdersPrinted(new[] { taskRow.MarkingOrderId }, generatedAt);
+                                EnsureTemporaryMarkingCodes(store, new[] { taskRow }, generatedAt);
+                            }
+                            else
+                            {
+                                var issued = issueStore.EnsureMarkingTaskQuantityIssued(
+                                    taskRow.MarkingOrderId, generatedAt);
+                                // Another quantity writer may have changed the journal
+                                // since BuildTaskRows. Do not send a workbook containing
+                                // more units than this transaction actually issued.
+                                if (!reexportExisting &&
+                                    (taskRow.Qty <= 0 ||
+                                     Math.Abs(issued - taskRow.Qty) > 0.000001))
+                                    throw new MarkingQuantityIssueException(
+                                        "EXCEL_QUANTITY_STALE_PLAN: фактически выпущенное количество " +
+                                        "не совпадает с Excel. Транзакция полностью отменена.");
+                            }
+                        }
+                    }
                 }
             });
         }
@@ -125,7 +182,9 @@ public sealed class MarkingExcelService
             MarkedMarkingOrderIds: markingOrderIdsWithRows);
     }
 
-    private IReadOnlyList<MarkingTaskExportRow> BuildTaskRows(IReadOnlyCollection<Guid> markingOrderIds)
+    private IReadOnlyList<MarkingTaskExportRow> BuildTaskRows(
+        IReadOnlyCollection<Guid> markingOrderIds,
+        bool reexportExisting)
     {
         if (markingOrderIds.Count == 0)
         {
@@ -144,12 +203,23 @@ public sealed class MarkingExcelService
                 var gtin = string.IsNullOrWhiteSpace(pair.Order.Gtin)
                     ? pair.Item!.Gtin!.Trim()
                     : pair.Order.Gtin!.Trim();
+                var qty = pair.Order.RequestedQuantity;
+                if (_quantityIssueEnabled && !reexportExisting)
+                {
+                    if (_data is not IMarkingQuantityIssueStore issueStore)
+                        throw new MarkingQuantityIssueException(
+                            "EXCEL_QUANTITY_STORE_UNAVAILABLE: количественный writer недоступен.");
+                    var evidence = issueStore.ReadMarkingTaskQuantityEvidence(pair.Order.Id);
+                    qty = checked((int)Math.Max(0, (long)qty - evidence.ActiveQuantity));
+                }
+
                 return new MarkingTaskExportRow(
                     MarkingOrderId: pair.Order.Id,
                     OrderId: pair.Order.OrderId,
                     ItemName: pair.Item!.Name,
                     Gtin: gtin,
-                    Qty: pair.Order.RequestedQuantity);
+                    Qty: qty,
+                    RequestedQty: pair.Order.RequestedQuantity);
             })
             .ToList();
     }
@@ -161,7 +231,7 @@ public sealed class MarkingExcelService
     {
         foreach (var row in taskRows)
         {
-            var requested = (int)Math.Ceiling(Math.Max(0, row.Qty));
+            var requested = (int)Math.Ceiling(Math.Max(0, row.RequestedQty));
             if (requested <= 0)
             {
                 continue;
@@ -396,7 +466,8 @@ internal sealed record MarkingTaskExportRow(
     long? OrderId,
     string ItemName,
     string Gtin,
-    double Qty);
+    double Qty,
+    double RequestedQty);
 
 public sealed record MarkingExcelExportResult(
     bool IsSuccess,

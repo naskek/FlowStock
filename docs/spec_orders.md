@@ -11,6 +11,7 @@
 - source и replacement образуют revision edge в `production_pallet_filling_adjustments`; predecessor находится строго по `previous.replacement_pallet_id = current.source_pallet_id`, а не по совпадению HU. Повторно наполненный replacement может быть source следующей коррекции, независимые исторические цепочки с тем же HU не объединяются;
 - один COR и одна replacement pallet могут принадлежать только одному committed/provisional adjustment; один target DRAFT PRD может содержать несколько replacement pallets и поэтому не является уникальным;
 - `RESET_PARTIAL` replacement после предыдущей COR допустим, если текущий DRAFT PRD не имеет ledger, а исторические source/COR movements дают нулевой физический balance по component item/location;
+- quantitative RELEASE при `CORRECT_FILLED` имеет отдельный выключенный внутренний gate и выполняется по exact source receipt doc/line/pool в общей COR transaction; правила доказательства, immutable audit и блокировки описаны в [спецификации сервера](spec.md#wpf-корректировка-наполнения-hu). Любая quantity history текущего DRAFT PRD блокирует `RESET_PARTIAL`, но история предыдущей ревизии не переносится на replacement;
 - `CORRECTED` означает историческую, более не operational ревизию паллеты. Она подтверждает существование palletized history, но не считается открытым планом, новым выпуском или shipment-ready stock.
 
 ## Модель данных
@@ -409,7 +410,9 @@ Production Docker Compose wrapper:
 
 Задача маркировки считается выполненной/обеспеченной, когда `codes_total >= requested_quantity`. В активном списке `Маркировка` такие задачи скрываются, если не включен режим `Показать выполненные`; в режиме выполненных они отображаются как обеспеченные.
 
-При закрытии `INTERNAL PRODUCTION_RECEIPT` маркируемой продукции сервер использует свободные ЧЗ/КМ-коды из `marking_code`, включая временные synthetic-коды до реализации настоящего импорта: товар и GTIN должны совпадать, код не должен быть уже привязан к другой строке выпуска, `PRODUCTION_ORDER` сопоставляется по `source_order_id`, а `PRODUCTION_NEED` без `source_order_id` может покрывать выпуск по `item_id`/GTIN. Недостающие коды автопривязываются к `doc_lines.id` в транзакции закрытия до записи `ledger`; при нехватке кодов закрытие блокируется.
+При закрытии `INTERNAL PRODUCTION_RECEIPT` маркируемой продукции сервер использует свободные ЧЗ/КМ-коды из `marking_code`, включая временные synthetic-коды до реализации настоящего импорта: код не должен быть уже привязан к другой строке выпуска, `PRODUCTION_ORDER` сопоставляется по `source_order_id`, а `PRODUCTION_NEED` без `source_order_id` может покрывать выпуск по `item_id`/GTIN. В действующем `SHADOW` недостающие доступные коды автопривязываются к `doc_lines.id` в транзакции закрытия до записи `ledger`, но hard shortage gate ещё не включён. Отказ Close при недостатке покрытия является целевым контрактом после отдельного operational cutover.
+
+Quantity-only primitive и отдельный hybrid consumer реального Close описаны в [спецификации сервера](spec.md#маркировка-чз). Consumer связан с общей транзакцией Close и TSD dedicated PRD, но закрыт выключенным внутренним gate без публичной конфигурации. Под gate quantity назначается только активному INTERNAL по точным receipt doc+line и source scope; нехватка откатывает назначение, ledger, статусы и fill. Legacy TEMP и real per-code сохраняются. Само применение миграций не включает этот путь, quantity writer, hard gate или HU correction; активация требует готовности Excel ISSUE/COR и сквозного smoke точного дерева.
 
 Legacy production-based `marking_order` может иметь `order_id = NULL` и `source_type = PRODUCTION_NEED`; ее нельзя складывать с open `INTERNAL` draft как две независимые потребности, если это один и тот же будущий выпуск. Уже использованные/привязанные коды не гасят новую будущую потребность.
 
@@ -443,8 +446,12 @@ Legacy-расчет задач маркировки из производств�
 Повторное формирование доступно в WPF через `Показать выполненные`, где отображаются ранее обработанные `PRINTED` заказы. Legacy `EXCEL_GENERATED` отображается в этом режиме как `PRINTED`.
 
 Формирование Excel ЧЗ не меняет `ledger`, `docs`, `doc_lines`, не редактирует закрытые документы и не запускает автоматический backfill.
+- Внутренний выключенный quantity-режим order-based Excel использует проверенный `ISSUE` для новых технических задач без per-unit `TEMP-CHZ`; неизменяемые реальные KM, legacy задачи, общий закрытый PRD/леджер и трёхколоночный XLSX сохраняют прежние инварианты. Публичный SHADOW writer остаётся поштучным; quantity writer отдельно не активируется после merge.
+- Для внутреннего quantity Excel preview соответствует фактическому XLSX: при приросте экспортируется только новая дельта, при неизменном полном покрытии возможна явная повторная выдача; устаревший объём или изменённая потребность блокируют выгрузку (`EXCEL_REEXPORT_CHANGED_DEMAND`, `EXCEL_QUANTITY_SCOPE_MISMATCH`) без изменения immutable журнала. Общая legacy-проблема #105 остаётся открытой.
+- В `CUSTOMER` активном quantity gate наличие уже применённых `Applied` КМ/quantity по связанной задаче требует точного line/receipt/shipment provenance; без него Excel останавливается с `EXCEL_CUSTOMER_APPLIED_SCOPE_UNVERIFIED`, чтобы не вычитать из новой заявки коды, уже использованные в выпущенной продукции.
+- Для принятых `CUSTOMER` planned HU из INTERNAL `PRINTED` означает только состояние ярлыка HU. До доказуемого HU-specific marking lineage внутренний quantity gate консервативно блокирует preview/export (`ADOPTED_HU_MARKING_UNVERIFIED`), вместо того чтобы вычитать весь объём или засчитывать старую INTERNAL task без связи с конкретной HU (#214). Текущий production source и исторические маркировочные коды не переносить и не переписывать эвристикой.
 
-Закрытие `PRODUCTION_RECEIPT` с фактическими строками маркируемой продукции разрешено только при достаточном количестве КМ/DM-кодов по строкам выпуска:
+Целевой hard gate после operational cutover (пока не активен в `SHADOW`): закрытие `PRODUCTION_RECEIPT` с фактическими строками маркируемой продукции разрешено только при достаточном количестве КМ/DM-кодов по строкам выпуска:
 - маркируемость определяется товаром: `item_types.enable_marking = true` и непустой `items.gtin`;
 - тип заказа `CUSTOMER`/`INTERNAL`, контрагент, `production_purpose` и наличие `order_line_id` не отменяют требование маркировки;
 - внутренний выпуск на склад маркируемого товара требует КМ/DM-коды так же, как выпуск под клиентский заказ;
