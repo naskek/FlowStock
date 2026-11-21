@@ -10,13 +10,31 @@ public sealed class OrderMarkingExportService
 {
     private const double QtyTolerance = 0.000001;
     private readonly IDataStore _data;
+    private readonly bool _quantityIssueEnabled;
 
-    public OrderMarkingExportService(IDataStore data)
+    public OrderMarkingExportService(IDataStore data) : this(data, quantityIssueEnabled: false)
+    {
+    }
+
+    internal OrderMarkingExportService(IDataStore data, bool quantityIssueEnabled)
     {
         _data = data;
+        _quantityIssueEnabled = quantityIssueEnabled;
     }
 
     public OrderMarkingExportPreviewResult Preview(long orderId)
+    {
+        try
+        {
+            return PreviewCore(orderId);
+        }
+        catch (MarkingQuantityIssueException ex) when (_quantityIssueEnabled)
+        {
+            return OrderMarkingExportPreviewResult.Failure(ex.Message);
+        }
+    }
+
+    private OrderMarkingExportPreviewResult PreviewCore(long orderId)
     {
         var order = _data.GetOrder(orderId);
         if (order == null)
@@ -29,15 +47,28 @@ public sealed class OrderMarkingExportService
             return OrderMarkingExportPreviewResult.Failure("Нельзя формировать Excel ЧЗ для выполненного заказа.");
         }
 
+        RequireResolvedAdoption(order);
+
         var huCodesByLine = order.Type == OrderType.Customer
             ? BuildProductionHuCodesByOrderLine(order.Id)
             : new Dictionary<long, IReadOnlyList<string>>();
-        var lines = BuildLineSummaries(order)
+        var summaries = BuildLineSummaries(order).ToArray();
+        ValidateQuantityExportPlan(order, summaries);
+        // Match the existing server export rule: a positive delta exports
+        // only missing units; otherwise explicit re-export reproduces the
+        // already covered task quantities. Never mix them in one XLSX.
+        var hasNewQuantity = _quantityIssueEnabled
+            && summaries.Any(summary => summary.ExportQty > QtyTolerance);
+        var lines = summaries
             .Select(summary =>
             {
                 huCodesByLine.TryGetValue(summary.OrderLineId, out var huCodes);
                 huCodes ??= Array.Empty<string>();
-                var previewQty = Math.Max(0, summary.ExportQty) + Math.Max(0, summary.ExistingCodeQty);
+                var previewQty = _quantityIssueEnabled
+                    ? hasNewQuantity
+                        ? Math.Max(0, summary.ExportQty)
+                        : Math.Max(0, summary.ExistingCodeQty)
+                    : Math.Max(0, summary.ExportQty) + Math.Max(0, summary.ExistingCodeQty);
                 return new OrderMarkingExportPreviewLine(
                     summary.OrderLineId,
                     summary.ItemId,
@@ -75,10 +106,15 @@ public sealed class OrderMarkingExportService
                     return;
                 }
 
-                result = new OrderMarkingExportService(scopedStore).ExportLocked(orderId, generatedAt);
+                result = new OrderMarkingExportService(scopedStore, _quantityIssueEnabled)
+                    .ExportLocked(orderId, generatedAt);
             });
         }
         catch (OrderMarkingExportRollbackException ex)
+        {
+            return OrderMarkingExportResult.Failure(ex.Message);
+        }
+        catch (MarkingQuantityIssueException ex) when (_quantityIssueEnabled)
         {
             return OrderMarkingExportResult.Failure(ex.Message);
         }
@@ -99,7 +135,10 @@ public sealed class OrderMarkingExportService
             return OrderMarkingExportResult.Failure("Нельзя формировать Excel ЧЗ для выполненного заказа.");
         }
 
+        RequireResolvedAdoption(order);
+
         var lines = BuildLineSummaries(order).ToList();
+        ValidateQuantityExportPlan(order, lines);
         if (lines.Count == 0)
         {
             return new OrderMarkingExportResult(
@@ -145,7 +184,7 @@ public sealed class OrderMarkingExportService
                 ? existing
                 : new List<MarkingOrder>();
             var taskRequestedQty = itemTasks.Sum(task => Math.Max(0, task.RequestedQuantity));
-            var taskCodeQtyById = itemTasks.ToDictionary(task => task.Id, task => _data.CountMarkingCodesByMarkingOrder(task.Id));
+            var taskCodeQtyById = itemTasks.ToDictionary(task => task.Id, task => CountTaskCoverage(task.Id));
             var taskCodeQty = taskCodeQtyById.Sum(pair => pair.Value);
             reusedCodeQty += Math.Min(itemRequiredQty, taskCodeQty);
             taskIdsAvailableForReexport.AddRange(itemTasks
@@ -174,7 +213,8 @@ public sealed class OrderMarkingExportService
         }
 
         taskIdsToExport = taskIdsToExport.Distinct().ToList();
-        if (taskIdsToExport.Count == 0)
+        var reexportExisting = taskIdsToExport.Count == 0;
+        if (reexportExisting)
         {
             taskIdsToExport = taskIdsAvailableForReexport
                 .Distinct()
@@ -184,7 +224,10 @@ public sealed class OrderMarkingExportService
         MarkingExcelExportResult? excelResult = null;
         if (taskIdsToExport.Count > 0)
         {
-            excelResult = new MarkingExcelService(_data).Export(taskIdsToExport, Array.Empty<long>(), generatedAt);
+            var excelService = new MarkingExcelService(_data, _quantityIssueEnabled);
+            excelResult = _quantityIssueEnabled
+                ? excelService.ExportOrderBased(taskIdsToExport, generatedAt, reexportExisting)
+                : excelService.Export(taskIdsToExport, Array.Empty<long>(), generatedAt);
             if (!excelResult.IsSuccess || excelResult.FileBytes == null)
             {
                 throw new OrderMarkingExportRollbackException(
@@ -195,7 +238,12 @@ public sealed class OrderMarkingExportService
         }
 
         var requiredQty = lines.Sum(line => line.RequiredQty);
-        var coveredQty = lines.Sum(line => line.CoveredQty) + reusedCodeQty + createdCodeQty;
+        // On the quantity path BuildLineSummaries already includes previously
+        // issued coverage. Adding reusedCodeQty once more would double count
+        // a successful POST replay (and could report > requiredQty).
+        var coveredQty = _quantityIssueEnabled
+            ? Math.Min(requiredQty, lines.Sum(line => line.CoveredQty) + createdCodeQty)
+            : lines.Sum(line => line.CoveredQty) + reusedCodeQty + createdCodeQty;
         var message = excelResult?.FileBytes != null
             ? $"Excel ЧЗ сформирован из заказа. Строк: {lines.Count}, строк Excel: {exportLineCount}, кодов создано: {createdCodeQty:0.###}, переиспользовано: {reusedCodeQty:0.###}."
             : "Маркировка по заказу уже проведена: новых кодов создавать не нужно.";
@@ -213,6 +261,89 @@ public sealed class OrderMarkingExportService
             reusedCodeQty,
             lines);
     }
+
+
+    // This validation is shared by read-only preview and locked export.
+    // Never produce a workbook for a different quantity than the operator
+    // confirmed, including after order decrease, HU changes or partial ISSUE.
+    private void ValidateQuantityExportPlan(
+        Order order,
+        IReadOnlyList<OrderMarkingExportLineSummary> lines)
+    {
+        if (!_quantityIssueEnabled || lines.Count == 0)
+            return;
+
+        var hasNewQuantity = lines.Any(line => line.ExportQty > QtyTolerance);
+        var tasks = _data.GetMarkingOrdersByItemIds(lines.Select(line => line.ItemId).Distinct().ToArray())
+            .Where(task => task.ItemId.HasValue
+                           && !IsTerminalFailed(task.Status)
+                           && IsOrderLinkedTask(task, order.Id))
+            .ToArray();
+
+        foreach (var group in lines.GroupBy(line => line.ItemId))
+        {
+            var required = group.Sum(line => Math.Max(0, line.ExportQty + line.ExistingCodeQty));
+            if (required <= QtyTolerance)
+                continue;
+
+            var itemTasks = tasks.Where(task => task.ItemId == group.Key).ToArray();
+            var evidenceById = itemTasks.ToDictionary(
+                task => task.Id,
+                task => RequireIssueStore().ReadMarkingTaskQuantityEvidence(task.Id));
+            // Applied codes belong to an immutable receipt, not to the
+            // remaining future CUSTOMER production requirement. Without
+            // receipt/shipment provenance #197/#214, reusing them as free
+            // coverage could silently under-request Excel codes.
+            if (order.Type == OrderType.Customer &&
+                evidenceById.Values.Any(evidence => evidence.AppliedQuantity > 0))
+                throw new MarkingQuantityIssueException(
+                    "EXCEL_CUSTOMER_APPLIED_SCOPE_UNVERIFIED: для заказа есть ЧЗ, " +
+                    "привязанные к выпуску. Нужно доказать покрытие новой потребности " +
+                    "по строкам PRD/HU перед формированием Excel.");
+            var covered = evidenceById.ToDictionary(
+                pair => pair.Key, pair => (double)pair.Value.ActiveQuantity);
+            if (hasNewQuantity)
+            {
+                var missingFromTask = itemTasks.Sum(task =>
+                    Math.Max(0, task.RequestedQuantity - covered[task.Id]));
+                var missingNewTask = Math.Max(0, required - itemTasks.Sum(task =>
+                    Math.Max(0, task.RequestedQuantity)));
+                var projected = missingFromTask + Math.Ceiling(missingNewTask - QtyTolerance);
+                var expected = group.Sum(line => line.ExportQty);
+                if (Math.Abs(projected - expected) > QtyTolerance)
+                    throw new MarkingQuantityIssueException(
+                        "EXCEL_QUANTITY_SCOPE_MISMATCH: текущая потребность не совпадает с количеством " +
+                        "недовыпущенных задач. Нельзя повторно заказывать лишние коды.");
+            }
+            else
+            {
+                var reexportQty = itemTasks
+                    .Where(task => covered[task.Id] > QtyTolerance)
+                    .Sum(task => Math.Max(0, task.RequestedQuantity));
+                var expected = group.Sum(line => line.ExistingCodeQty);
+                if (Math.Abs(reexportQty - expected) > QtyTolerance)
+                    throw new MarkingQuantityIssueException(
+                        "EXCEL_REEXPORT_CHANGED_DEMAND: количество заказа изменилось после выпуска ЧЗ; " +
+                        "повторный Excel из исторических задач не соответствует текущей потребности.");
+            }
+        }
+    }
+
+    private void RequireResolvedAdoption(Order order)
+    {
+        if (_quantityIssueEnabled && order.Type == OrderType.Customer)
+            RequireIssueStore().RequireResolvedCustomerAdoptedMarking(order.Id);
+    }
+
+    private IMarkingQuantityIssueStore RequireIssueStore() =>
+        _data as IMarkingQuantityIssueStore
+        ?? throw new MarkingQuantityIssueException(
+            "EXCEL_QUANTITY_STORE_UNAVAILABLE: количественный writer недоступен.");
+
+    private double CountTaskCoverage(Guid taskId) =>
+        _quantityIssueEnabled
+            ? RequireIssueStore().ReadMarkingTaskQuantityEvidence(taskId).ActiveQuantity
+            : _data.CountMarkingCodesByMarkingOrder(taskId);
 
     private IEnumerable<OrderMarkingExportLineSummary> BuildLineSummaries(Order order)
     {
@@ -245,7 +376,7 @@ public sealed class OrderMarkingExportService
             .GroupBy(task => task.ItemId!.Value)
             .ToDictionary(
                 group => group.Key,
-                group => (double)group.Sum(task => _data.CountMarkingCodesByMarkingOrder(task.Id)));
+                group => (double)group.Sum(task => CountTaskCoverage(task.Id)));
 
         var remainingCodeCoverByItem = new Dictionary<long, double>(existingOrderCodesByItem);
         foreach (var pair in markableLines)
