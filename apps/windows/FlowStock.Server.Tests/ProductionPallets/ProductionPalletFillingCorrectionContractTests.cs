@@ -218,6 +218,7 @@ public sealed class ProductionPalletFillingCorrectionContractTests
     [InlineData(ProductionPalletFillingCorrectionErrorCodes.SourcePrdNotDedicated, StatusCodes.Status409Conflict)]
     [InlineData(ProductionPalletFillingCorrectionErrorCodes.LedgerMismatch, StatusCodes.Status409Conflict)]
     [InlineData(ProductionPalletFillingCorrectionErrorCodes.CustomerShipped, StatusCodes.Status409Conflict)]
+    [InlineData(ProductionPalletFillingCorrectionErrorCodes.AdoptedHuMarkingConsumed, StatusCodes.Status409Conflict)]
     [InlineData(ProductionPalletFillingCorrectionErrorCodes.CorLedgerMismatch, StatusCodes.Status409Conflict)]
     [InlineData(ProductionPalletFillingCorrectionErrorCodes.PalletNotFound, StatusCodes.Status409Conflict)]
     public void ConfirmError_HttpStatusSeparatesFormatBlockAndStateConflicts(
@@ -227,6 +228,46 @@ public sealed class ProductionPalletFillingCorrectionContractTests
         Assert.Equal(
             expectedStatus,
             FlowStock.Server.ProductionPalletEndpoints.ResolveFillingCorrectionErrorStatus(errorCode));
+    }
+
+    [Fact]
+    public void Preview_ConsumedAdoptedSourceMarking_BlocksLegacyCorBeforeLedgerMutation()
+    {
+        var data = new Mock<IDataStore>();
+        var correction = data.As<IProductionPalletFillingCorrectionStore>();
+        var pallet = new ProductionPallet
+        {
+            Id = 70,
+            PrdDocId = 80,
+            OrderId = 90,
+            HuCode = "HU-ADOPTED-CONSUMED",
+            Status = ProductionPalletStatus.Filled
+        };
+        data.Setup(store => store.GetProductionPalletByHu("HU-ADOPTED-CONSUMED"))
+            .Returns(pallet);
+        data.Setup(store => store.GetDoc(80)).Returns(new Doc
+        {
+            Id = 80,
+            Status = DocStatus.Closed,
+            Type = DocType.ProductionReceipt
+        });
+        data.Setup(store => store.GetDocLines(80)).Returns(Array.Empty<DocLine>());
+        data.Setup(store => store.GetProductionPalletsByDoc(80))
+            .Returns(new[] { pallet });
+        correction.Setup(store => store.GetLedgerEntriesForHu("HU-ADOPTED-CONSUMED"))
+            .Returns(Array.Empty<LedgerEntry>());
+        correction.Setup(store => store.LockReceiptMarkingCodes(80))
+            .Returns(Array.Empty<ProductionPalletCorrectionMarkingCode>());
+        correction.Setup(store => store.HasConsumedHuMarkingReservations(80)).Returns(true);
+
+        var preview = new ProductionPalletFillingCorrectionService(data.Object)
+            .Preview("HU-ADOPTED-CONSUMED");
+
+        Assert.Equal(ProductionPalletFillingCorrectionAction.CorrectFilled, preview.Action);
+        Assert.Contains(preview.Blockers, blocker =>
+            blocker.Code == ProductionPalletFillingCorrectionErrorCodes.AdoptedHuMarkingConsumed);
+        Assert.False(preview.CanConfirm);
+        correction.Verify(store => store.HasConsumedHuMarkingReservations(80), Times.Once);
     }
 
     [Fact]

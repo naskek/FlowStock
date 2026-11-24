@@ -61,7 +61,7 @@ public sealed class TsdOutboundEligibilityPostgresTests
                 Code = $"P211-{suffix}", Name = "Partial shipment customer",
                 PartnerRole = "CLIENT", CreatedAt = DateTime.UtcNow
             });
-            var location = store.AddLocation(new Location
+            _ = store.AddLocation(new Location
             {
                 Code = $"L211-{suffix}", Name = "Production destination",
                 AutoHuDistributionEnabled = true
@@ -94,12 +94,25 @@ public sealed class TsdOutboundEligibilityPostgresTests
                 .Select(pallet => pallet.HuCode)
                 .ToArray();
             Assert.Equal(6, hus.Length);
+            // The server picks the first auto-distribution location by code.
+            // Do not assume the new fixture location is the selected destination.
+            var plannedLocations = hus
+                .Select(hu => store.GetProductionPalletByHu(hu)?.ToLocationId)
+                .Distinct()
+                .ToArray();
+            var plannedLocationId = Assert.Single(plannedLocations);
+            Assert.True(plannedLocationId.HasValue, "Planned HU must have a destination location.");
 
             foreach (var hu in hus.Take(3))
             {
                 var filled = filling.Fill(hu, "TSD-211", orderId: orderId);
                 Assert.True(filled.Success, filled.Error);
             }
+
+            // New receipts and the preceding partial shipment must use the same
+            // planned stock destination, even when other eligible locations exist.
+            Assert.All(hus.Take(3), hu =>
+                Assert.Equal(1800, store.GetLedgerBalance(item, plannedLocationId.Value, hu), 3));
 
             store.UpdateOrderPartialOutboundPermission(orderId, true);
             var picking = new OutboundPickingService(store, documents);
@@ -120,17 +133,18 @@ public sealed class TsdOutboundEligibilityPostgresTests
                 Assert.True(filled.Success, filled.Error);
                 Assert.True(filled.PrdAutoClosed);
                 Assert.Equal(DocStatus.Closed, store.GetDoc(filled.ClosedPrdDocId!.Value)!.Status);
-                Assert.Equal(1800, store.GetLedgerBalance(item, location, hu), 3);
+                Assert.Equal(1800, store.GetLedgerBalance(item, plannedLocationId.Value, hu), 3);
 
                 var metrics = Assert.Single(store.GetFilledProductionPalletStockMetrics(),
                     row => row.HuCode == hu && row.ItemId == item);
+                Assert.Equal(plannedLocationId.Value, metrics.ToLocationId);
                 Assert.Equal(0, metrics.OutboundBySameHuQty, 3);
                 Assert.Equal(5400, metrics.OutboundByOrderItemQty, 3);
                 Assert.Equal(1800, metrics.CurrentLedgerQty, 3);
             }
 
             Assert.All(hus.Take(3), hu =>
-                Assert.Equal(0, store.GetLedgerBalance(item, location, hu), 3));
+                Assert.Equal(0, store.GetLedgerBalance(item, plannedLocationId.Value, hu), 3));
         });
     }
 
