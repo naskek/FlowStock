@@ -2770,6 +2770,7 @@
       ? { key: restoredPending.key, body: restoredPending.body }
       : null;
     var lockedSubmissionControls = null;
+    var confirmedSubmission = false;
     var activeLineIndex = 0;
     var selectedPartnerId = 0;
     var activeSuggestIndex = -1;
@@ -3744,6 +3745,7 @@
     }
 
     function submit() {
+      if (confirmedSubmission) return;
       if (pendingSubmission) {
         submitPreparedOrder(null, true);
         return;
@@ -3840,6 +3842,7 @@
               throw new Error("INVALID_ORDER_CREATE_RESPONSE");
             }
             pendingSubmission = null;
+            confirmedSubmission = true;
             clearPersistedNewOrderDraft();
             var status = String(result.status || "").toUpperCase();
             setStatus("Заявка #" + result.request_id + " отправлена." +
@@ -3876,7 +3879,7 @@
           setUncertainSubmissionMode();
         })
         .finally(function () {
-          if (!closed && modal.isConnected !== false && refs.submitBtn) {
+          if (!closed && !confirmedSubmission && modal.isConnected !== false && refs.submitBtn) {
             refs.submitBtn.disabled = false;
           }
         });
