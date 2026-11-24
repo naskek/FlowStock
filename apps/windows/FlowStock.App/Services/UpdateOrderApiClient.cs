@@ -10,6 +10,10 @@ namespace FlowStock.App;
 
 public sealed class UpdateOrderApiClient
 {
+    private readonly Action<string>? _trace;
+
+    public UpdateOrderApiClient(Action<string>? trace = null) => _trace = trace;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -40,58 +44,77 @@ public sealed class UpdateOrderApiClient
             BaseAddress = baseUri
         };
 
-        using var responseMessage = await client.PutAsJsonAsync(
-                $"/api/orders/{orderId}",
-                request,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        if (responseMessage.StatusCode == HttpStatusCode.OK)
+        var requestId = Guid.NewGuid().ToString("N");
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        using var message = new HttpRequestMessage(HttpMethod.Put, $"/api/orders/{orderId}")
         {
+            Content = JsonContent.Create(request)
+        };
+        message.Headers.Add("X-FlowStock-Request-Id", requestId);
+        _trace?.Invoke($"order_put request_id={requestId} order_id={orderId} phase=send");
+        try
+        {
+            return await SendAndReadAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _trace?.Invoke($"order_put request_id={requestId} order_id={orderId} phase=finished elapsed_ms={elapsed.ElapsedMilliseconds} cancelled={cancellationToken.IsCancellationRequested}");
+        }
+
+        async Task<UpdateOrderApiCallResult> SendAndReadAsync()
+        {
+            using var responseMessage = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+            _trace?.Invoke($"order_put request_id={requestId} order_id={orderId} phase=headers elapsed_ms={elapsed.ElapsedMilliseconds} status={(int)responseMessage.StatusCode}");
             var responseBody = await responseMessage.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(responseBody))
+            _trace?.Invoke($"order_put request_id={requestId} order_id={orderId} phase=body elapsed_ms={elapsed.ElapsedMilliseconds} chars={responseBody.Length}");
+
+            if (responseMessage.StatusCode == HttpStatusCode.OK)
             {
-                return UpdateOrderApiCallResult.Success(BuildEmptySuccessFallback(orderId, request), responseBody);
+                if (string.IsNullOrWhiteSpace(responseBody))
+                {
+                    return UpdateOrderApiCallResult.Success(BuildEmptySuccessFallback(orderId, request), responseBody);
+                }
+
+                UpdateOrderApiResponse? payload;
+                try
+                {
+                    payload = JsonSerializer.Deserialize<UpdateOrderApiResponse>(responseBody, JsonOptions);
+                }
+                catch (JsonException ex)
+                {
+                    return UpdateOrderApiCallResult.TransportFailure(
+                        UpdateOrderTransportFailureKind.InvalidResponse,
+                        "Сервер вернул некорректный ответ при обновлении заказа.",
+                        ex);
+                }
+
+                if (payload == null)
+                {
+                    return UpdateOrderApiCallResult.TransportFailure(
+                        UpdateOrderTransportFailureKind.InvalidResponse,
+                        "Сервер вернул пустой ответ при обновлении заказа.");
+                }
+
+                return UpdateOrderApiCallResult.Success(payload, responseBody);
             }
 
-            UpdateOrderApiResponse? payload;
-            try
+            var errorBody = responseBody;
+            ApiErrorResponse? error = null;
+            if (!string.IsNullOrWhiteSpace(errorBody))
             {
-                payload = JsonSerializer.Deserialize<UpdateOrderApiResponse>(responseBody, JsonOptions);
-            }
-            catch (JsonException ex)
-            {
-                return UpdateOrderApiCallResult.TransportFailure(
-                    UpdateOrderTransportFailureKind.InvalidResponse,
-                    "Сервер вернул некорректный ответ при обновлении заказа.",
-                    ex);
-            }
-
-            if (payload == null)
-            {
-                return UpdateOrderApiCallResult.TransportFailure(
-                    UpdateOrderTransportFailureKind.InvalidResponse,
-                    "Сервер вернул пустой ответ при обновлении заказа.");
+                try
+                {
+                    error = JsonSerializer.Deserialize<ApiErrorResponse>(errorBody, JsonOptions);
+                }
+                catch (JsonException)
+                {
+                    error = null;
+                }
             }
 
-            return UpdateOrderApiCallResult.Success(payload, responseBody);
+            return UpdateOrderApiCallResult.HttpError(responseMessage.StatusCode, error, errorBody);
         }
-
-        var errorBody = await responseMessage.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        ApiErrorResponse? error = null;
-        if (!string.IsNullOrWhiteSpace(errorBody))
-        {
-            try
-            {
-                error = JsonSerializer.Deserialize<ApiErrorResponse>(errorBody, JsonOptions);
-            }
-            catch (JsonException)
-            {
-                error = null;
-            }
-        }
-
-        return UpdateOrderApiCallResult.HttpError(responseMessage.StatusCode, error, errorBody);
     }
 
     private static UpdateOrderApiResponse BuildEmptySuccessFallback(long orderId, UpdateOrderApiRequest request)

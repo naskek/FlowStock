@@ -14,7 +14,7 @@ public sealed class WpfUpdateOrderService
     {
         _settings = settings;
         _logger = logger;
-        _apiClient = new UpdateOrderApiClient();
+        _apiClient = new UpdateOrderApiClient(logger.Info);
     }
 
     public WpfServerUpdateOrderConfiguration GetEffectiveConfiguration()

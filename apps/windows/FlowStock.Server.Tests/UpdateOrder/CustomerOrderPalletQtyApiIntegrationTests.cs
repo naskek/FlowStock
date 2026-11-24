@@ -10,6 +10,78 @@ namespace FlowStock.Server.Tests.UpdateOrder;
 [Collection("UpdateOrder")]
 public sealed class CustomerOrderPalletQtyApiIntegrationTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteThreeOfFive1800Pallets_ThenDecrease9000To3600_ReopenAndReplan(bool printed)
+    {
+        var fixture = CreateCustomerFixture(9000, capacity: 1800);
+        var pallets = fixture.Harness.CreateAtomicProductionPalletService();
+        var plan = pallets.PlanOrder(fixture.OrderId);
+        var original = fixture.Harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).OrderBy(x => x.Id).ToArray();
+        Assert.Equal(5, original.Length);
+        if (printed) pallets.MarkPrinted(fixture.OrderId, original.Select(x => x.Id).ToArray(), DateTime.UtcNow);
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+        using var deleteResponse = await host.Client.PostAsync(
+            $"/api/orders/{fixture.OrderId}/production-pallets/cancel-plan",
+            new StringContent(JsonSerializer.Serialize(new { pallet_ids = original.Skip(2).Select(x => x.Id) }), System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.OK, deleteResponse.StatusCode);
+        Assert.Equal(9000, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered);
+
+        for (var save = 0; save < 2; save++)
+        {
+            var result = await UpdateOrderHttpApi.UpdateAsync(host.Client, fixture.OrderId, BuildUpdateRequest(fixture, 3600));
+            Assert.True(result.Ok);
+            using var response = await host.Client.GetAsync($"/api/orders/{fixture.OrderId}/lines");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var line = Assert.Single(json.RootElement.EnumerateArray());
+            Assert.Equal(3600, line.GetProperty("qty_ordered").GetDouble());
+            var remaining = fixture.Harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
+                .Where(x => x.Status != ProductionPalletStatus.Cancelled).OrderBy(x => x.Id).ToArray();
+            Assert.Equal(original.Take(2).Select(x => x.Id), remaining.Select(x => x.Id));
+            Assert.Equal(3600, remaining.Sum(x => x.PlannedQty));
+        }
+        pallets.PlanOrder(fixture.OrderId);
+        var active = fixture.Harness.Store.GetProductionPalletsByDoc(plan.PrdDocId)
+            .Where(x => x.Status != ProductionPalletStatus.Cancelled).OrderBy(x => x.Id).ToArray();
+        Assert.Equal(original.Take(2).Select(x => x.Id), active.Select(x => x.Id));
+        Assert.Equal(3600, active.Sum(x => x.PlannedQty));
+        Assert.Equal(3600, fixture.Harness.Store.GetDocLines(plan.PrdDocId).Sum(x => x.Qty));
+        Assert.Empty(fixture.Harness.Store.GetOrderReceiptPlanLines(fixture.OrderId));
+        Assert.Equal(0, fixture.Harness.Store.CountLedgerEntriesByDocId(plan.PrdDocId));
+    }
+    [Fact]
+    public async Task PartialDelete_ThenDecreaseBelowFilledQty_RejectsWithoutChangingRemainingPlan()
+    {
+        var fixture = CreateCustomerFixture(9000, capacity: 1800);
+        var pallets = fixture.Harness.CreateAtomicProductionPalletService();
+        var plan = pallets.PlanOrder(fixture.OrderId);
+        var original = fixture.Harness.Store.GetProductionPalletsByDoc(plan.PrdDocId).OrderBy(x => x.Id).ToArray();
+        pallets.CancelOrderPlan(fixture.OrderId, original.Skip(2).Select(x => x.Id).ToArray());
+        Assert.True(pallets.Fill(original[0].HuCode, "TSD-test").Success);
+        var docs = fixture.Harness.Store.GetDocsByOrder(fixture.OrderId).OrderBy(x => x.Id).ToArray();
+        var before = JsonSerializer.Serialize(docs.Select(doc => new
+        {
+            doc, lines = fixture.Harness.Store.GetDocLines(doc.Id),
+            ledger = fixture.Harness.Store.CountLedgerEntriesByDocId(doc.Id)
+        }));
+        await using var host = await CloseDocumentHttpHost.StartAsync(fixture.Harness, fixture.ApiStore);
+        using var response = await UpdateOrderHttpApi.PutRawAsync(host.Client, fixture.OrderId, BuildRawJson(fixture, 1000));
+        var error = await UpdateOrderHttpApi.ReadApiErrorResultAsync(response, HttpStatusCode.BadRequest);
+        Assert.Equal("ORDER_LINE_QTY_BELOW_COVERAGE", error.Error);
+        Assert.Equal(9000, Assert.Single(fixture.Harness.Store.GetOrderLines(fixture.OrderId)).QtyOrdered);
+        var remaining = docs.SelectMany(doc => fixture.Harness.Store.GetProductionPalletsByDoc(doc.Id)).OrderBy(x => x.Id).ToArray();
+        Assert.Equal(original.Take(2).Select(x => x.Id), remaining.Select(x => x.Id));
+        Assert.Equal(ProductionPalletStatus.Filled, remaining[0].Status);
+        Assert.Equal(ProductionPalletStatus.Planned, remaining[1].Status);
+        Assert.Equal(before, JsonSerializer.Serialize(docs.Select(doc => new
+        {
+            doc, lines = fixture.Harness.Store.GetDocLines(doc.Id),
+            ledger = fixture.Harness.Store.CountLedgerEntriesByDocId(doc.Id)
+        })));
+    }
+
     [Fact]
     public async Task DecreaseWithUnfilledProductionPlan_PersistsQtyAndCancelsObsoletePallets()
     {
@@ -489,7 +561,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
                  """;
     }
 
-    private static CustomerFixture CreateCustomerFixture(double orderedQty)
+    private static CustomerFixture CreateCustomerFixture(double orderedQty, double capacity = 600)
     {
         var harness = new CloseDocumentHarness();
         const long orderId = 55;
@@ -509,7 +581,7 @@ public sealed class CustomerOrderPalletQtyApiIntegrationTests
             Id = itemId,
             Name = "Аджика",
             BaseUom = "шт",
-            MaxQtyPerHu = 600
+            MaxQtyPerHu = capacity
         });
         harness.SeedOrder(new Order
         {

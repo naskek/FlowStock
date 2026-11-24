@@ -305,7 +305,13 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        LoadOrder(reselectLineId);
+        var elapsed = Stopwatch.StartNew();
+        _services.AppLogger.Info($"order_reload order_id={_orderId.Value} phase=start");
+        try { LoadOrder(reselectLineId); }
+        finally
+        {
+            _services.AppLogger.Info($"order_reload order_id={_orderId} phase=finished elapsed_ms={elapsed.ElapsedMilliseconds} closed={_isClosed}");
+        }
     }
 
     private void LoadOrder(long? reselectLineId = null)
