@@ -19,6 +19,7 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
         ProductionNeedOrderCreationResult? result = null;
         _dataStore.ExecuteInTransaction(store =>
         {
+            OrderReferenceAllocator.Lock(store);
             result = CreateDraftOrdersInTransaction(store, requestedLines);
         });
 
@@ -163,32 +164,6 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
             .ToList();
     }
 
-    private static string GenerateNextOrderRef(IDataStore dataStore)
-    {
-        long max = 0;
-        foreach (var order in dataStore.GetOrders())
-        {
-            var orderRef = order.OrderRef?.Trim();
-            if (string.IsNullOrWhiteSpace(orderRef))
-            {
-                continue;
-            }
-
-            if (!orderRef.All(char.IsDigit))
-            {
-                continue;
-            }
-
-            if (long.TryParse(orderRef, NumberStyles.None, CultureInfo.InvariantCulture, out var value)
-                && value > max)
-            {
-                max = value;
-            }
-        }
-
-        return (max + 1).ToString("D3", CultureInfo.InvariantCulture);
-    }
-
     // Debug-only mirror for response diagnostics; ProductionNeedService owns the actual planned subtraction.
     private static Dictionary<long, double> BuildDebugOpenInternalProductionByItem(IDataStore dataStore)
     {
@@ -249,7 +224,7 @@ public sealed class ProductionNeedOrderCreationService(IDataStore dataStore)
     {
         return OrderService.CreateDraftOrderInTransaction(
             dataStore,
-            GenerateNextOrderRef(dataStore),
+            OrderReferenceAllocator.Resolve(dataStore, null),
             partnerId: null,
             dueDate: null,
             comment: "Автосформировано из потребности производства.",

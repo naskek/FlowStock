@@ -447,6 +447,9 @@ public sealed class OrderService
             throw new ArgumentException("Номер заказа обязателен.", nameof(orderRef));
         }
 
+        OrderReferenceAllocator.Lock(store);
+        orderRef = OrderReferenceAllocator.Resolve(store, orderRef);
+
         if (type == OrderType.Customer)
         {
             if (!partnerId.HasValue)
@@ -525,7 +528,8 @@ public sealed class OrderService
         IReadOnlyList<OrderLineView> lines,
         OrderType type = OrderType.Customer,
         bool? bindReservedStockForCustomer = null,
-        IReadOnlyDictionary<long, IReadOnlyList<string>>? customerReservedHuSelectionsByOrderLineId = null)
+        IReadOnlyDictionary<long, IReadOnlyList<string>>? customerReservedHuSelectionsByOrderLineId = null,
+        bool preserveOrderRef = false)
     {
         if (string.IsNullOrWhiteSpace(orderRef))
         {
@@ -538,12 +542,17 @@ public sealed class OrderService
 
         _data.ExecuteInTransaction(store =>
         {
+            // Global reference lock precedes sorted coverage/order locks and item/HU locks.
+            OrderReferenceAllocator.Lock(store);
             IReadOnlyList<OrderCoverageTransfer> lockedCoverageTransfers;
             using (OperationTimings.Measure("coverage_lock"))
                 lockedCoverageTransfers = OrderCoveragePlanCompensationService.LockAndLoadForTarget(store, orderId);
 
             var existing = store.GetOrder(orderId)
                 ?? throw new InvalidOperationException("Заказ не найден.");
+            orderRef = preserveOrderRef
+                ? existing.OrderRef
+                : OrderReferenceAllocator.Resolve(store, orderRef, orderId);
             var existingLines = store.GetOrderLines(orderId);
 
             if (existing.Status is OrderStatus.Shipped or OrderStatus.Cancelled)

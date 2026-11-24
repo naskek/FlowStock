@@ -208,25 +208,10 @@ public static class OrderUpdateEndpoint
 
         var requestedOrderRef = NormalizeOrderRef(updateRequest.OrderRef);
         var authoritativeOrderRef = requestedOrderRef ?? existing.OrderRef;
-        var orderRefChanged = false;
 
         if (string.IsNullOrWhiteSpace(authoritativeOrderRef))
         {
             return Results.BadRequest(new ApiResult(false, "MISSING_ORDER_REF"));
-        }
-
-        using (OperationTimings.Measure("ref_lookup"))
-        {
-        if (!string.IsNullOrWhiteSpace(requestedOrderRef)
-            && (store is IOrderRefLookupStore optimizedRefs
-                ? optimizedRefs.HasOtherOrderWithRef(orderId, authoritativeOrderRef)
-                : store.GetOrders().Any(order =>
-                    order.Id != orderId
-                    && string.Equals(order.OrderRef, authoritativeOrderRef, StringComparison.OrdinalIgnoreCase))))
-        {
-            authoritativeOrderRef = GenerateNextOrderRef(store);
-            orderRefChanged = true;
-        }
         }
 
         var orderService = new OrderService(store);
@@ -241,7 +226,8 @@ public static class OrderUpdateEndpoint
                 lines,
                 orderType.Value,
                 updateRequest.BindReservedStock,
-                selectedHuByLineId.Count == 0 ? null : selectedHuByLineId);
+                selectedHuByLineId.Count == 0 ? null : selectedHuByLineId,
+                preserveOrderRef: requestedOrderRef == null);
         }
         catch (OrderItemActivityException ex)
         {
@@ -280,7 +266,8 @@ public static class OrderUpdateEndpoint
             Result = "UPDATED",
             OrderId = updated.Id,
             OrderRef = updated.OrderRef,
-            OrderRefChanged = orderRefChanged,
+            OrderRefChanged = requestedOrderRef != null
+                && !string.Equals(requestedOrderRef, updated.OrderRef, StringComparison.Ordinal),
             Type = OrderStatusMapper.TypeToString(updated.Type),
             Status = OrderStatusMapper.StatusToString(updated.Status),
             LineCount = store.GetOrderLines(updated.Id).Count
@@ -373,45 +360,6 @@ public static class OrderUpdateEndpoint
         using var reader = new StreamReader(request.Body);
         return await reader.ReadToEndAsync();
     }
-
-    private static string GenerateNextOrderRef(IDataStore store)
-    {
-        long max = 0;
-        var refs = store is IOrderRefLookupStore optimizedRefs
-            ? optimizedRefs.GetAllOrderRefsForNextNumber()
-            : store.GetOrders().Select(order => order.OrderRef).ToArray();
-
-        foreach (var rawRef in refs)
-        {
-            var orderRef = rawRef?.Trim();
-            if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
-            {
-                continue;
-            }
-
-            if (long.TryParse(orderRef, NumberStyles.None, CultureInfo.InvariantCulture, out var value)
-                && value > max)
-            {
-                max = value;
-            }
-        }
-
-        return (max + 1).ToString("D3", CultureInfo.InvariantCulture);
-    }
-
-    private static bool IsDigitsOnly(string value)
-    {
-        foreach (var ch in value)
-        {
-            if (!char.IsDigit(ch))
-            {
-                return false;
-            }
-        }
-
-        return value.Length > 0;
-    }
-
 }
 
 public sealed class OrderUpdateEndpointMarker

@@ -148,30 +148,16 @@ public static class OrderCreateEndpoint
         }
 
         var requestedOrderRef = NormalizeOrderRef(createRequest.OrderRef);
-        var authoritativeOrderRef = requestedOrderRef;
-        var orderRefChanged = false;
-        if (string.IsNullOrWhiteSpace(authoritativeOrderRef))
-        {
-            authoritativeOrderRef = GenerateNextOrderRef(store);
-        }
-        else if (store.GetOrders().Any(order => string.Equals(order.OrderRef, authoritativeOrderRef, StringComparison.OrdinalIgnoreCase)))
-        {
-            authoritativeOrderRef = GenerateNextOrderRef(store);
-            orderRefChanged = true;
-        }
-
-        var orderService = new OrderService(store);
-        long orderId;
+        long orderId = 0;
         try
         {
-            orderId = orderService.CreateOrder(
-                authoritativeOrderRef!,
-                partnerId,
-                dueDate,
-                createRequest.Comment,
-                lines,
-                orderType.Value,
-                createRequest.BindReservedStock);
+            store.ExecuteInTransaction(scoped =>
+            {
+                var orderRef = OrderReferenceAllocator.Resolve(scoped, requestedOrderRef);
+                orderId = OrderService.CreateOrderInTransaction(
+                    scoped, orderRef, partnerId, dueDate, createRequest.Comment,
+                    lines, orderType.Value, createRequest.BindReservedStock);
+            });
         }
         catch (OrderItemActivityException ex)
         {
@@ -202,7 +188,8 @@ public static class OrderCreateEndpoint
             Result = "CREATED",
             OrderId = created.Id,
             OrderRef = created.OrderRef,
-            OrderRefChanged = orderRefChanged,
+            OrderRefChanged = requestedOrderRef != null
+                && !string.Equals(requestedOrderRef, created.OrderRef, StringComparison.Ordinal),
             Type = OrderStatusMapper.TypeToString(created.Type),
             Status = OrderStatusMapper.StatusToString(created.Status),
             LineCount = store.GetOrderLines(created.Id).Count
@@ -223,40 +210,6 @@ public static class OrderCreateEndpoint
     {
         using var reader = new StreamReader(request.Body);
         return await reader.ReadToEndAsync();
-    }
-
-    private static string GenerateNextOrderRef(IDataStore store)
-    {
-        long max = 0;
-        foreach (var order in store.GetOrders())
-        {
-            var orderRef = order.OrderRef?.Trim();
-            if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
-            {
-                continue;
-            }
-
-            if (long.TryParse(orderRef, NumberStyles.None, CultureInfo.InvariantCulture, out var value)
-                && value > max)
-            {
-                max = value;
-            }
-        }
-
-        return (max + 1).ToString("D3", CultureInfo.InvariantCulture);
-    }
-
-    private static bool IsDigitsOnly(string value)
-    {
-        foreach (var ch in value)
-        {
-            if (!char.IsDigit(ch))
-            {
-                return false;
-            }
-        }
-
-        return value.Length > 0;
     }
 
     private static string MapKnownArgumentError(ArgumentException ex)

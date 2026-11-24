@@ -14,7 +14,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed partial class PostgresDataStore : IDataStore, IReadOnlySnapshotStore, IOrderRequestIdempotencyStore, IBusinessNotificationJournalStore, IOrderRequestManagementStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore, IPrePlanRelevantInternalOrdersStore, IOrderRefLookupStore
+public sealed partial class PostgresDataStore : IDataStore, IReadOnlySnapshotStore, IOrderRequestIdempotencyStore, IBusinessNotificationJournalStore, IOrderRequestManagementStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore, IPrePlanRelevantInternalOrdersStore, IOrderRefLookupStore, IOrderRefSerializationStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -6423,6 +6423,24 @@ WHERE d.id = pp.prd_doc_id
             command.Parameters.AddWithValue("@pallet_ids", ids);
             return command.ExecuteNonQuery();
         });
+    }
+
+    private bool _orderReferencesLocked;
+
+    public void LockOrderReferences()
+    {
+        if (_connection == null || _transaction == null
+            || _transaction.IsolationLevel != System.Data.IsolationLevel.ReadCommitted)
+            throw new InvalidOperationException("Order reference allocation requires a READ COMMITTED transaction.");
+        if (_orderReferencesLocked) return;
+        using var timing = OperationTimings.Measure("order_ref_lock");
+        // One namespace for explicit refs AND numeric fallback. A per-ref lock
+        // cannot serialize different colliding refs that choose the same fallback.
+        // Keep this statement separate from the lookup: its READ COMMITTED snapshot
+        // must be taken after the previous owner commits, not before the wait.
+        using var command = CreateCommand(_connection, "SELECT pg_advisory_xact_lock(73422, 1);");
+        command.ExecuteNonQuery();
+        _orderReferencesLocked = true;
     }
 
     public bool HasOtherOrderWithRef(long excludedOrderId, string orderRef)

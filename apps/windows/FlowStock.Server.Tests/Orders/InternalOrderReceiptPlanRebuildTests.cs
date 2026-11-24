@@ -175,6 +175,7 @@ public sealed class InternalOrderReceiptPlanRebuildTests
                 It.Is<IReadOnlyCollection<long>>(ids => ids.Count == 1 && ids.Contains(order.Id))))
             .Returns(true);
         store.Setup(s => s.GetOrder(order.Id)).Returns(order);
+        store.Setup(s => s.GetOrders()).Returns([order]);
         store.Setup(s => s.GetOrderLines(order.Id))
             .Returns(() =>
             [

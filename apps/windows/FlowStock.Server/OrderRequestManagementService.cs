@@ -36,6 +36,9 @@ public sealed class OrderRequestManagementService(IDataStore dataStore, PartnerR
                     throw new InvalidOperationException("IDataStore не поддерживает атомарное управление заявками.");
                 }
 
+                // Before the request row lock: canonical create uses the same lock.
+                if (approve) OrderReferenceAllocator.Lock(store);
+
                 var request = requestStore.GetOrderRequestForUpdate(requestId)
                     ?? throw new RequestManagementException(OrderRequestManagementResultKind.NotFound, "ORDER_REQUEST_NOT_FOUND");
                 if (!string.Equals(request.Status, OrderRequestStatus.Pending, StringComparison.OrdinalIgnoreCase))
