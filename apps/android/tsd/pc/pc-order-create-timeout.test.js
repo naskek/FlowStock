@@ -49,5 +49,10 @@ async function timeoutScenario(timeoutOverride, expectedDelay) {
   assert.match(app, /body: submission\.body,/);
   assert.match(app, /pending_submission: pendingSubmission/);
   assert.match(app, /setUncertainSubmissionMode\(\)/);
+  assert.match(app, /if \(confirmedSubmission\) return;/);
+  assert.match(app, /confirmedSubmission = true;/);
+  assert.match(app, /!confirmedSubmission && modal\.isConnected/);
+  assert.match(app, /lockSubmissionControls\(\);\s*setStatus\("Проверка сессии/);
+  assert.match(app, /unlockSubmissionControls\(\)/);
   console.log("PC order create timeout and retry contract passed.");
 })().catch(error => { console.error(error); process.exitCode = 1; });
