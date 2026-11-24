@@ -47,16 +47,23 @@
     if (typeof AbortController !== "undefined") {
       controller = new AbortController();
     }
-    var opts = options || {};
+    // Preserve the 8s default for reads while allowing an explicit timeout for
+    // non-idempotent writes. Do not forward the custom option to native fetch().
+    var opts = Object.assign({}, options || {});
+    var timeoutMs = Number(opts.timeoutMs);
+    if (!isFinite(timeoutMs) || timeoutMs <= 0) timeoutMs = 8000;
+    delete opts.timeoutMs;
+    var timedOut = false;
     if (controller) {
       opts.signal = controller.signal;
     }
     opts.headers = createRequestHeaders(opts.headers, url);
     timer = window.setTimeout(function () {
       if (controller) {
+        timedOut = true;
         controller.abort();
       }
-    }, 8000);
+    }, timeoutMs);
     return fetch(url, opts)
       .then(function (response) {
         return response
@@ -92,6 +99,14 @@
             }
             return payload;
           });
+      })
+      .catch(function (error) {
+        if (timedOut) {
+          var timeoutError = new Error("REQUEST_TIMEOUT");
+          timeoutError.code = "REQUEST_TIMEOUT";
+          throw timeoutError;
+        }
+        throw error;
       })
       .finally(function () {
         if (timer) {

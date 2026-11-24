@@ -14,7 +14,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed partial class PostgresDataStore : IDataStore, IBusinessNotificationJournalStore, IOrderRequestManagementStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore, IPrePlanRelevantInternalOrdersStore
+public sealed partial class PostgresDataStore : IDataStore, IOrderRequestIdempotencyStore, IBusinessNotificationJournalStore, IOrderRequestManagementStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore, IPrePlanRelevantInternalOrdersStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -18719,6 +18719,79 @@ RETURNING id;");
             command.Parameters.AddWithValue("@applied_order_id", request.AppliedOrderId.HasValue ? request.AppliedOrderId.Value : DBNull.Value);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
+    }
+
+    public OrderRequestIdempotencyResult? FindCreateOrderRequest(
+        Guid requestKey, string payloadHash, string? actorLogin, string? actorDeviceId)
+    {
+        return WithConnection(connection =>
+            FindCreateOrderRequestOnConnection(connection, requestKey, payloadHash, actorLogin, actorDeviceId));
+    }
+
+    public OrderRequestIdempotencyResult AddCreateOrderRequest(
+        OrderRequest request, Guid requestKey, string payloadHash)
+    {
+        return WithConnection(connection =>
+        {
+            // The unique index serializes concurrent submissions of one operation key.
+            // ON CONFLICT does not mutate the original request or enqueue notifications.
+            using var command = CreateCommand(connection, @"
+INSERT INTO order_requests(
+    request_type, payload_json, status, created_at, created_by_login, created_by_device_id,
+    resolved_at, resolved_by, resolution_note, applied_order_id, client_request_key, client_payload_hash)
+VALUES(
+    @request_type, @payload_json, @status, @created_at, @created_by_login, @created_by_device_id,
+    @resolved_at, @resolved_by, @resolution_note, @applied_order_id, @client_request_key, @client_payload_hash)
+ON CONFLICT (client_request_key) DO NOTHING
+RETURNING id;");
+            command.Parameters.AddWithValue("@request_type", request.RequestType);
+            command.Parameters.AddWithValue("@payload_json", request.PayloadJson);
+            command.Parameters.AddWithValue("@status", string.IsNullOrWhiteSpace(request.Status) ? OrderRequestStatus.Pending : request.Status.Trim());
+            command.Parameters.AddWithValue("@created_at", ToDbDate(request.CreatedAt));
+            command.Parameters.AddWithValue("@created_by_login", string.IsNullOrWhiteSpace(request.CreatedByLogin) ? DBNull.Value : request.CreatedByLogin.Trim());
+            command.Parameters.AddWithValue("@created_by_device_id", string.IsNullOrWhiteSpace(request.CreatedByDeviceId) ? DBNull.Value : request.CreatedByDeviceId.Trim());
+            command.Parameters.AddWithValue("@resolved_at", request.ResolvedAt.HasValue ? ToDbDate(request.ResolvedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@resolved_by", string.IsNullOrWhiteSpace(request.ResolvedBy) ? DBNull.Value : request.ResolvedBy);
+            command.Parameters.AddWithValue("@resolution_note", string.IsNullOrWhiteSpace(request.ResolutionNote) ? DBNull.Value : request.ResolutionNote);
+            command.Parameters.AddWithValue("@applied_order_id", request.AppliedOrderId.HasValue ? request.AppliedOrderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@client_request_key", requestKey);
+            command.Parameters.AddWithValue("@client_payload_hash", payloadHash);
+            var insertedId = command.ExecuteScalar();
+            if (insertedId != null && insertedId != DBNull.Value)
+            {
+                return new OrderRequestIdempotencyResult(
+                    Convert.ToInt64(insertedId), request.Status, true, false);
+            }
+
+            // After ON CONFLICT waits for the winner to commit, a fresh READ COMMITTED
+            // statement can safely retrieve its row and verify actor/payload identity.
+            return FindCreateOrderRequestOnConnection(
+                       connection, requestKey, payloadHash, request.CreatedByLogin, request.CreatedByDeviceId)
+                   ?? throw new InvalidOperationException("IDEMPOTENCY_RESULT_NOT_FOUND");
+        });
+    }
+
+    private OrderRequestIdempotencyResult? FindCreateOrderRequestOnConnection(
+        NpgsqlConnection connection, Guid requestKey, string payloadHash,
+        string? actorLogin, string? actorDeviceId)
+    {
+        using var command = CreateCommand(connection, @"
+SELECT id, status, request_type, client_payload_hash, created_by_login, created_by_device_id
+FROM order_requests WHERE client_request_key = @client_request_key;");
+        command.Parameters.AddWithValue("@client_request_key", requestKey);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        var valid = string.Equals(reader.GetString(2), OrderRequestType.CreateOrder, StringComparison.Ordinal)
+            && string.Equals(reader.IsDBNull(3) ? null : reader.GetString(3), payloadHash, StringComparison.Ordinal)
+            && string.Equals(reader.IsDBNull(4) ? null : reader.GetString(4), actorLogin?.Trim(), StringComparison.Ordinal)
+            && string.Equals(reader.IsDBNull(5) ? null : reader.GetString(5), actorDeviceId?.Trim(), StringComparison.Ordinal);
+        return valid
+            ? new OrderRequestIdempotencyResult(reader.GetInt64(0), reader.GetString(1), false, false)
+            : new OrderRequestIdempotencyResult(0, "", false, true);
     }
 
     public IReadOnlyList<OrderRequest> GetOrderRequests(bool includeResolved)

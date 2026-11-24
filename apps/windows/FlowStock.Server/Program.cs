@@ -2351,6 +2351,41 @@ app.MapPost("/api/orders/requests/create", async (
         return Results.BadRequest(new ApiResult(false, "INVALID_TYPE"));
     }
 
+    // A retry must be recognized before revalidating mutable catalog data or
+    // generating a new order reference: the original request may already be committed.
+    var operationKeyHeader = request.Headers["X-FlowStock-Order-Create-Key"].ToString();
+    Guid? operationKey = null;
+    if (!string.IsNullOrWhiteSpace(operationKeyHeader))
+    {
+        if (!Guid.TryParseExact(operationKeyHeader, "D", out var parsedKey))
+        {
+            return Results.BadRequest(new ApiResult(false, "INVALID_IDEMPOTENCY_KEY"));
+        }
+        operationKey = parsedKey;
+    }
+    var payloadHash = operationKey.HasValue
+        ? Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(rawJson)))
+        : null;
+    IOrderRequestIdempotencyStore? idempotencyStore = null;
+    if (operationKey.HasValue)
+    {
+        idempotencyStore = store as IOrderRequestIdempotencyStore
+            ?? throw new InvalidOperationException("ORDER_REQUEST_IDEMPOTENCY_STORE_UNAVAILABLE");
+        var previous = idempotencyStore.FindCreateOrderRequest(
+            operationKey.Value, payloadHash!, identity.Login, identity.DeviceId);
+        if (previous != null)
+        {
+            return previous.IsConflict
+                ? Results.Conflict(new ApiResult(false, "ORDER_REQUEST_IDEMPOTENCY_CONFLICT"))
+                : Results.Ok(new
+                {
+                    ok = true,
+                    request_id = previous.RequestId,
+                    status = previous.Status
+                });
+        }
+    }
+
     var orderRef = GenerateNextOrderRef(store);
 
     if (orderType.Value == OrderType.Customer)
@@ -2437,7 +2472,7 @@ app.MapPost("/api/orders/requests/create", async (
         lines = normalizedLines
     });
 
-    var requestId = store.AddOrderRequest(new OrderRequest
+    var newRequest = new OrderRequest
     {
         RequestType = OrderRequestType.CreateOrder,
         PayloadJson = payloadJson,
@@ -2445,15 +2480,26 @@ app.MapPost("/api/orders/requests/create", async (
         CreatedAt = DateTime.Now,
         CreatedByLogin = identity.Login,
         CreatedByDeviceId = identity.DeviceId
-    });
-    telegramNotifications.TryEnqueue();
+    };
+    var creation = operationKey.HasValue
+        ? idempotencyStore!.AddCreateOrderRequest(newRequest, operationKey.Value, payloadHash!)
+        : new OrderRequestIdempotencyResult(
+            store.AddOrderRequest(newRequest), OrderRequestStatus.Pending, true, false);
+    if (creation.IsConflict)
+    {
+        return Results.Conflict(new ApiResult(false, "ORDER_REQUEST_IDEMPOTENCY_CONFLICT"));
+    }
+    if (creation.WasCreated)
+    {
+        telegramNotifications.TryEnqueue();
+    }
 
     return Results.Ok(new
     {
         ok = true,
-        request_id = requestId,
-        status = OrderRequestStatus.Pending
-        });
+        request_id = creation.RequestId,
+        status = creation.Status
+    });
 });
 
 app.MapPost("/api/orders/requests/status", () =>

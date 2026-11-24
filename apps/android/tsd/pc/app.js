@@ -105,6 +105,29 @@
     }
   }
 
+  function createOrderRequestKey() {
+    var cryptoApi = window.crypto;
+    if (!cryptoApi) return null;
+    if (typeof cryptoApi.randomUUID === "function") return cryptoApi.randomUUID();
+    if (typeof cryptoApi.getRandomValues !== "function") return null;
+    var bytes = new Uint8Array(16);
+    cryptoApi.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    var hex = Array.prototype.map.call(bytes, function (value) {
+      return ("0" + value.toString(16)).slice(-2);
+    });
+    return hex.slice(0, 4).join("") + "-" + hex.slice(4, 6).join("") + "-" +
+      hex.slice(6, 8).join("") + "-" + hex.slice(8, 10).join("") + "-" +
+      hex.slice(10).join("");
+  }
+
+  function clearPersistedNewOrderDraft() {
+    var storage = getDraftStorage();
+    if (!storage) return;
+    try { storage.removeItem(NEW_ORDER_DRAFT_STORAGE_KEY); } catch (_error) {}
+  }
+
   function isMeaningfulNewOrderDraft(draft) {
     if (!draft || typeof draft !== "object") {
       return false;
@@ -2740,6 +2763,14 @@
       }
     });
     var restoreDraft = initialDraft && typeof initialDraft === "object" ? initialDraft : null;
+    var restoredPending = restoreDraft && restoreDraft.pending_submission;
+    var pendingSubmission = restoredPending &&
+      typeof restoredPending.key === "string" &&
+      typeof restoredPending.body === "string"
+      ? { key: restoredPending.key, body: restoredPending.body }
+      : null;
+    var lockedSubmissionControls = null;
+    var confirmedSubmission = false;
     var activeLineIndex = 0;
     var selectedPartnerId = 0;
     var activeSuggestIndex = -1;
@@ -2971,8 +3002,38 @@
       }
     }
 
+    function lockSubmissionControls() {
+      if (lockedSubmissionControls) return;
+      lockedSubmissionControls = [];
+      Array.prototype.forEach.call(modal.querySelectorAll("input, select, textarea, button"), function (element) {
+        if (element !== refs.submitBtn && element !== refs.closeBtn) {
+          lockedSubmissionControls.push({ element: element, wasDisabled: element.disabled });
+          element.disabled = true;
+        }
+      });
+    }
+
+    function unlockSubmissionControls() {
+      if (lockedSubmissionControls) {
+        lockedSubmissionControls.forEach(function (entry) {
+          entry.element.disabled = entry.wasDisabled;
+        });
+        lockedSubmissionControls = null;
+      }
+      if (refs.submitBtn) refs.submitBtn.textContent = "Отправить";
+    }
+
+    function setUncertainSubmissionMode() {
+      if (!pendingSubmission) return;
+      lockSubmissionControls();
+      if (refs.submitBtn) refs.submitBtn.textContent = "Проверить отправку";
+    }
+
     function snapshotDraft() {
       return {
+        pending_submission: pendingSubmission
+          ? { key: pendingSubmission.key, body: pendingSubmission.body }
+          : null,
         internal_order: isInternalOrderRequested(),
         partner_id: selectedPartnerId,
         partner_query: refs.partnerInput ? String(refs.partnerInput.value || "") : "",
@@ -2990,9 +3051,11 @@
     }
 
     function close() {
-      if (closed) {
-        return;
-      }
+      if (closed) return;
+      if (pendingSubmission && !window.confirm(
+        "Результат отправки неизвестен. Перед новым заказом проверьте список заявок. Закрыть форму?"
+      )) return;
+      clearPersistedNewOrderDraft();
       closed = true;
       catalogPicker.dispose();
       if (activeNewOrderDraftController && activeNewOrderDraftController.modal === modal) {
@@ -3682,6 +3745,11 @@
     }
 
     function submit() {
+      if (confirmedSubmission) return;
+      if (pendingSubmission) {
+        submitPreparedOrder(null, true);
+        return;
+      }
       var internalOrder = isInternalOrderRequested();
       var selectedPartner = selectedPartnerId ? getPartnerById(selectedPartnerId) : null;
       if (!internalOrder && !selectedPartner && refs.partnerInput) {
@@ -3731,36 +3799,65 @@
         return;
       }
 
-      if (refs.submitBtn) {
-        refs.submitBtn.disabled = true;
-      }
-      setStatus("Проверка сессии...");
+      submitPreparedOrder(JSON.stringify({
+        order_type: internalOrder ? "INTERNAL" : "CUSTOMER",
+        partner_id: internalOrder ? null : partnerId,
+        due_date: dueDate || null,
+        comment: comment || null,
+        lines: lines,
+      }), false);
+    }
 
+    function submitPreparedOrder(body, isRetry) {
+      var submission = pendingSubmission;
+      if (!isRetry) {
+        var key = createOrderRequestKey();
+        if (!key) {
+          setStatus("Не удалось создать идентификатор заявки. Проверьте защищённое соединение.");
+          return;
+        }
+        submission = { key: key, body: body };
+      }
+      if (!submission) return;
+      if (refs.submitBtn) refs.submitBtn.disabled = true;
+      // Freeze the captured business payload throughout the session check too.
+      lockSubmissionControls();
+      setStatus("Проверка сессии...");
       refreshSessionForActivity(true)
         .then(function (account) {
           if (closed || !account) {
+            unlockSubmissionControls();
             return null;
           }
-          if (!window.confirm("Полностью ли заполнен заказ?")) {
+          if (!isRetry && !window.confirm("Полностью ли заполнен заказ?")) {
+            unlockSubmissionControls();
             return null;
           }
-
-          setStatus("Отправка заявки...");
+          pendingSubmission = submission;
+          persistActiveNewOrderDraft();
+          setStatus(isRetry ? "Проверка результата отправки..." : "Отправка заявки...");
           return fetchJson("/api/orders/requests/create", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              order_type: internalOrder ? "INTERNAL" : "CUSTOMER",
-              partner_id: internalOrder ? null : partnerId,
-              due_date: dueDate || null,
-              comment: comment || null,
-              lines: lines,
-            }),
+            headers: {
+              "Content-Type": "application/json",
+              "X-FlowStock-Order-Create-Key": submission.key,
+            },
+            body: submission.body,
+            timeoutMs: 30000,
           }).then(function (result) {
-            var requestId = result && result.request_id ? String(result.request_id) : "-";
-            setStatus("Заявка #" + requestId + " отправлена. Ожидается подтверждение.");
+            if (!result || result.ok !== true || !(Number(result.request_id) > 0)) {
+              throw new Error("INVALID_ORDER_CREATE_RESPONSE");
+            }
+            pendingSubmission = null;
+            confirmedSubmission = true;
+            clearPersistedNewOrderDraft();
+            var status = String(result.status || "").toUpperCase();
+            setStatus("Заявка #" + result.request_id + " отправлена." +
+              (status === "PENDING" ? " Ожидается подтверждение." : " Статус: " + status));
             if (typeof onSubmitted === "function") {
-              onSubmitted();
+              try { onSubmitted(); } catch (callbackError) {
+                if (window.console && window.console.error) window.console.error(callbackError);
+              }
             }
             window.setTimeout(close, 500);
             return result;
@@ -3768,13 +3865,32 @@
         })
         .catch(function (error) {
           if (error && error.status === 401) {
+            if (!pendingSubmission) unlockSubmissionControls();
             return;
           }
           var message = error && error.message ? error.message : "REQUEST_FAILED";
-          setStatus("Ошибка отправки: " + message);
+          if (!pendingSubmission) {
+            unlockSubmissionControls();
+            setStatus("Ошибка перед отправкой: " + message);
+            return;
+          }
+          if (error && (error.status === 400 || error.status === 422)) {
+            pendingSubmission = null;
+            clearPersistedNewOrderDraft();
+            unlockSubmissionControls();
+            setStatus("Заявка отклонена сервером: " + message);
+            return;
+          }
+          if (error && error.status === 409) {
+            setStatus("Конфликт идентификатора заявки. Обратитесь к администратору.");
+          } else {
+            setStatus("Результат неизвестен: заявка могла быть сохранена. " +
+              "Нажмите «Проверить отправку» — повтор не создаст дубликат.");
+          }
+          setUncertainSubmissionMode();
         })
         .finally(function () {
-          if (!closed && modal.isConnected !== false && refs.submitBtn) {
+          if (!closed && !confirmedSubmission && modal.isConnected !== false && refs.submitBtn) {
             refs.submitBtn.disabled = false;
           }
         });
@@ -3900,6 +4016,12 @@
           if (typeof onDraftRestored === "function") {
             onDraftRestored();
           }
+          if (pendingSubmission) {
+            setUncertainSubmissionMode();
+            setStatus("Результат предыдущей отправки неизвестен. " +
+              "Нажмите «Проверить отправку» для безопасного повтора.");
+            persistActiveNewOrderDraft();
+          }
         } else {
           updatePartnerHint();
           if (refs.internalInput) {
@@ -3914,7 +4036,13 @@
       })
       .catch(function () {
         if (!closed && modal.isConnected !== false) {
-          setStatus("Ошибка загрузки справочников.");
+          if (pendingSubmission) {
+            setUncertainSubmissionMode();
+            setStatus("Справочники недоступны, но можно безопасно проверить предыдущую отправку.");
+            persistActiveNewOrderDraft();
+          } else {
+            setStatus("Ошибка загрузки справочников.");
+          }
         }
       });
 
