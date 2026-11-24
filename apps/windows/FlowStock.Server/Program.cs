@@ -2221,12 +2221,15 @@ app.MapGet("/api/orders/candidates", (HttpRequest request, IDataStore store) =>
     return Results.Ok(MapOrdersWithShipmentRemaining(orders, store));
 });
 
-app.MapGet("/api/orders/next-ref", (IDataStore store) =>
+app.MapGet("/api/orders/next-ref", (IDataStore store, ILoggerFactory loggerFactory) =>
 {
-    return Results.Ok(new
+    using var timing = new OperationTimings();
+    try { return Results.Ok(new { order_ref = GenerateNextOrderRef(store) }); }
+    finally
     {
-        order_ref = GenerateNextOrderRef(store)
-    });
+        loggerFactory.CreateLogger("OrderReferencePreview").LogInformation(
+            "order_next_ref elapsed_ms={ElapsedMs} stages={Stages}", timing.ElapsedMs, timing.Summary);
+    }
 });
 
 app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store) =>
@@ -3233,43 +3236,7 @@ static object MapOrderRequest(OrderRequest request)
 
 static string GenerateNextOrderRef(IDataStore store)
 {
-    long max = 0;
-    foreach (var order in store.GetOrders())
-    {
-        var orderRef = order.OrderRef?.Trim();
-        if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
-        {
-            continue;
-        }
-
-        if (long.TryParse(orderRef, NumberStyles.None, CultureInfo.InvariantCulture, out var value)
-            && value > max)
-        {
-            max = value;
-        }
-    }
-
-    foreach (var request in store.GetOrderRequests(includeResolved: false))
-    {
-        if (!string.Equals(request.RequestType, OrderRequestType.CreateOrder, StringComparison.OrdinalIgnoreCase))
-        {
-            continue;
-        }
-
-        var orderRef = TryReadJsonString(request.PayloadJson, "order_ref")?.Trim();
-        if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
-        {
-            continue;
-        }
-
-        if (long.TryParse(orderRef, NumberStyles.None, CultureInfo.InvariantCulture, out var value)
-            && value > max)
-        {
-            max = value;
-        }
-    }
-
-    return (max + 1).ToString("D3", CultureInfo.InvariantCulture);
+    return OrderReferencePreview.GetNext(store);
 }
 
 static List<object> GetPendingCreateOrderRows(IDataStore store, string? normalizedQuery)
@@ -3492,24 +3459,6 @@ static string? TryReadJsonElementString(JsonElement element, string propertyName
     return property.ValueKind == JsonValueKind.String
         ? property.GetString()
         : null;
-}
-
-static bool IsDigitsOnly(string value)
-{
-    if (string.IsNullOrEmpty(value))
-    {
-        return false;
-    }
-
-    foreach (var ch in value)
-    {
-        if (!char.IsDigit(ch))
-        {
-            return false;
-        }
-    }
-
-    return true;
 }
 
 static object MapDoc(
