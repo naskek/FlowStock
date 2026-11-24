@@ -151,7 +151,7 @@ Updater не выполняет migrations, не изменяет production DB,
 - `taras(id, name)`
 - `item_requests(id, barcode, comment, device_id, login, status, created_at, resolved_at)`
 - `write_off_reasons(id, code, name)`
-- `order_requests(id, request_type, payload_json, status, created_at, created_by_login, created_by_device_id, resolved_at, resolved_by, resolution_note, applied_order_id)`
+- `order_requests(id, request_type, payload_json, status, created_at, created_by_login, created_by_device_id, resolved_at, resolved_by, resolution_note, applied_order_id, client_request_key NULL, client_payload_hash NULL)` — optional уникальный ключ операции PC Web и SHA-256 исходного create-body; retry не создаёт вторую заявку.
 - `locations(id, code, name)`
 - `partners(id, name, inn, ... )`
 - `orders(id, order_ref, order_type, partner_id NULL, due_date, status, comment, created_at, bind_reserved_stock, marking_status, marking_excel_generated_at, marking_printed_at, marking_responsibility)` // canonical схема и семантика полей — в [`spec_orders.md`](spec_orders.md)
