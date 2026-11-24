@@ -51,7 +51,6 @@ class WorkerRecoveryTests(unittest.TestCase):
       PGDATABASE: recovery_fixture
       PGUSER: postgres
       PGPASSWORD: isolated_ci_only
-      BACKUP_INTERVAL_SECONDS: 2
       BACKUP_EXPECTED_BYTES: 1048576
     volumes:
       - pgbackups:/backups
@@ -138,6 +137,13 @@ networks:
         self.assertEqual("pre_deploy:fixture", state["pause_reason"])
 
     def test_managed_recovery_validates_before_resume_and_schedules_after(self):
+        self.scheduler_python("/backups", '''
+core.utc_now = lambda: backup_scheduler.stamp(time.time() - 25 * 3600)
+store.create("scheduled", 1048576)
+config = engine.bootstrap()["config"]
+config["scheduler"]["enabled"] = True
+engine.configure(config, engine.requested(engine.bootstrap())["revision"])
+''')
         self.manager("pause", "--reason", "pre_deploy:fixture")
         self.run_command("up", "-d", "--no-deps", "--no-build", "--pull", "never", "pgbackup")
         self.run_command("exec", "-T", "pgbackup", "sh", "/usr/local/bin/pg_backup.sh", "--check-runtime")
@@ -164,6 +170,114 @@ networks:
             self.fail("resumed worker did not create a new scheduled backup")
         logs = self.run_command("logs", "pgbackup")
         self.assertIn('"origin": "scheduled"', logs.stdout)
+
+    @classmethod
+    def scheduler_python(cls, root, body, *, now=None):
+        script = '''import json,pathlib,time,sys
+sys.path.insert(0, "/usr/local/bin")
+import managed_backup as core
+import backup_scheduler
+root = ''' + repr(root) + '''
+pathlib.Path(root).mkdir(mode=0o700, exist_ok=True)
+store = core.Store(root)
+engine = backup_scheduler.Scheduler(store, expected_bytes=1048576)
+with store.lock(10):
+''' + "\n".join("    " + line for line in body.strip().splitlines())
+        if now is not None:
+            script = script.replace("with store.lock(10):", "engine.clock = lambda: " + repr(now) + "\nwith store.lock(10):")
+        return cls.run_command("run", "--rm", "--no-deps", "-T", "--entrypoint", "python3", "pgbackup", "-c", script)
+
+    def test_scheduler_real_recreate_reuses_persistent_deadline_and_config(self):
+        root = "/backups/recreate-" + uuid.uuid4().hex
+        self.scheduler_python(root, '''
+store.create("scheduled", 1048576)
+config = engine.bootstrap()["config"]
+config["scheduler"]["enabled"] = True
+engine.configure(config, 0)
+print(json.dumps(engine.tick()))
+''')
+        # Run the actual entrypoint, then force-recreate it against the same volume.
+        # The root is fixed for each disposable case; no production root is used.
+        self.run_command("run", "-d", "--no-deps", "-e", "BACKUP_DIR=" + root,
+                         "--name", "fs123-" + root.rsplit("-", 1)[1], "pgbackup")
+        container = "fs123-" + root.rsplit("-", 1)[1]
+        try:
+            for _ in range(2):
+                result = self.scheduler_python(root, '''
+print(json.dumps(engine.tick()))
+print(len(engine.records()))
+''')
+                self.assertEqual("1", result.stdout.strip().splitlines()[-1])
+                subprocess.run(["docker", "restart", container], check=True, capture_output=True, timeout=30)
+            # Recreate (not only restart): remove only this disposable test worker.
+            subprocess.run(["docker", "rm", "-f", container], check=True, capture_output=True, timeout=30)
+            self.run_command("run", "-d", "--no-deps", "-e", "BACKUP_DIR=" + root, "--name", container, "pgbackup")
+            result = self.scheduler_python(root, '''
+print(json.dumps(engine.tick()))
+print(len(engine.records()))
+''')
+            self.assertEqual("1", result.stdout.strip().splitlines()[-1])
+            observation = json.loads(result.stdout.strip().splitlines()[-2])
+            self.assertEqual("HEALTHY", observation["health"])
+            self.assertEqual(1, observation["applied_revision"])
+        finally:
+            subprocess.run(["docker", "rm", "-f", container], check=True, capture_output=True, timeout=30)
+
+    def test_overdue_restart_catches_up_once_and_state_loss_reconciles_real_archive(self):
+        root = "/backups/catchup-" + uuid.uuid4().hex
+        result = self.scheduler_python(root, '''
+original = core.utc_now
+core.utc_now = lambda: backup_scheduler.stamp(time.time() - 25 * 3600)
+store.create("scheduled", 1048576)
+core.utc_now = original
+config = engine.bootstrap()["config"]
+config["scheduler"]["enabled"] = True
+engine.configure(config, 0)
+print(json.dumps(engine.tick()))
+''')
+        self.assertEqual("HEALTHY", json.loads(result.stdout.strip().splitlines()[-1])["health"])
+        result = self.scheduler_python(root, '''
+(engine.folder / "state.json").unlink()
+print(json.dumps(engine.tick()))
+print(len(engine.records()))
+''')
+        self.assertEqual("2", result.stdout.strip().splitlines()[-1])
+        self.assertEqual("HEALTHY", json.loads(result.stdout.strip().splitlines()[-2])["health"])
+        self.scheduler_python(root, '''
+(engine.folder / "state.json").write_text("{broken")
+print(json.dumps(engine.tick()))
+assert len(engine.records()) == 2
+assert len(list(engine.folder.glob("*.invalid"))) == 1
+''')
+
+    def test_real_dump_failure_persists_retry_and_keeps_validated_archive(self):
+        root = "/backups/failure-" + uuid.uuid4().hex
+        result = self.scheduler_python(root, '''
+import os
+original = core.utc_now
+core.utc_now = lambda: backup_scheduler.stamp(time.time() - 25 * 3600)
+first = store.create("scheduled", 1048576)
+core.utc_now = original
+config = engine.bootstrap()["config"]
+config["scheduler"]["enabled"] = True
+engine.configure(config, 0)
+os.environ["PGDATABASE"] = "does_not_exist"
+result = engine.tick()
+assert result["error_code"] == "DUMP_FAILED", result
+assert result["schedule"]["last_scheduled_backup_id"] == first["backup_id"]
+assert not list(store.jobs.glob("*.json"))
+print(json.dumps(result))
+''')
+        state = json.loads(result.stdout.strip().splitlines()[-1])["schedule"]
+        self.assertEqual(1, state["failures"])
+        result = self.scheduler_python(root, '''
+result = engine.tick()
+assert len(engine.records()) == 1
+print(json.dumps(result))
+''')
+        restarted = json.loads(result.stdout.strip().splitlines()[-1])["schedule"]
+        self.assertEqual(state["next_retry_at_utc"], restarted["next_retry_at_utc"])
+        self.assertEqual(1, restarted["failures"])
 
 
 if __name__ == "__main__":

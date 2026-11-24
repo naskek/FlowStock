@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""FlowStock managed PostgreSQL 16 dump primitive (not wired into production callers).
+"""FlowStock managed PostgreSQL 16 dump primitive.
 
 Requires Python 3 on the execution host plus PostgreSQL 16 pg_dump, pg_restore,
-and (optionally) psql. Runtime packaging/wiring into pgbackup is Issue #122.
-No business DB, HTTP API, scheduler, retention deletion or remote I/O.
+and (optionally) psql. Shared by worker and operator/deploy/restore callers.
+No HTTP API, scheduler, retention deletion or remote I/O.
 """
 from __future__ import annotations
 
@@ -311,7 +311,9 @@ class Store:
                 "pg_major": 16, "schema_migrations_fingerprint": ready["schema_migrations_fingerprint"],
                 "schema_migrations_state": ready["schema_migrations_state"],
                 "structural_validated": True, "restore_test_at_utc": None,
-                "local_state": "LOCAL_VALID", "remote_state": "DISABLED",
+                "local_state": "LOCAL_VALID", "local_presence": "PRESENT",
+                "pins": ["safety"] if item["origin"] in {"pre_deploy", "pre_restore"} else [],
+                "remote_state": "DISABLED",
                 "destination_revision": None,
                 "legacy_source": item.get("legacy_source")}
             _write_new(record_path, record)

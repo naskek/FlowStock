@@ -2,6 +2,10 @@
 
 ## Совместимость и recovery backup worker
 
+`pgbackup` использует durable local scheduler в `managed/scheduler` и config revisions в `managed/config` прежнего volume. Новая установка начинает с `enabled=false`; включение — отдельный операторский cutover, legacy env cadence/retention не импортируются автоматически. Срок считается от последнего проверенного `scheduled` success, restart не создаёт лишний dump, overdue даёт один catch-up. Manual/pre-deploy/pre-restore не меняют scheduled deadline. Ошибки сохраняют success и повторяются через 5/15/60 минут, далее не чаще часа. Shared lock и durable pause действуют на dump, recovery, config и retention.
+
+Local retention удаляет только проверенные managed archives при превышении count **или** age; сохраняет последнюю проверенную и последнюю scheduled копию, safety, явные pins, legacy imports и remote backlog. Сначала проверяются кандидаты и keeper, затем durable intent → unlink/fsync → catalog `local_presence=PRUNED` и tombstone; crash требует reconciliation. Legacy вне catalog не удаляются, нехватка места не запускает emergency cleanup. Снижение лимитов требует актуальный preview и явное подтверждение конфигурации. `status` читает durable observation без записи/DB/remote; worker heartbeat старше 90 секунд означает `WORKER_UNAVAILABLE`, runtime healthcheck не доказывает operational success. Формат и операторские команды — в `deployment.md`.
+
 Scheduled backup worker требует Python 3, исполняемый managed primitive и PostgreSQL 16 clients. Несовместимый image, включая legacy-контейнер с новым bind-mounted скриптом после checkout, завершается с `INCOMPATIBLE_BACKUP_RUNTIME` и кодом `78` до scheduled loop. Runtime healthcheck подтверждает только совместимость; operational recovery требует нового `LOCAL_VALID` архива. Прерванный deploy сохраняет worker остановленным либо в durable pause; автоматического запуска legacy-контейнера и снятия чужой maintenance pause нет. Recovery проходит через канонический deploy с fresh backup, всеми health/identity/TSD gates и проверкой нового архива фактически развёрнутым worker до resume. Детали — в `deployment.md`.
 
 ## Изолированный remote backup adapter
