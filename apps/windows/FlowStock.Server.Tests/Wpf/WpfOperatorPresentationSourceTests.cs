@@ -88,13 +88,13 @@ public sealed class WpfOperatorPresentationSourceTests
     }
 
     [Fact]
-    public void MarkingList_UsesAdditiveOrderStatusPresentation()
+    public void MarkingList_IsNotMappedAsOperationalEndpoint()
     {
         var server = ReadRepoFile("apps", "windows", "FlowStock.Server", "Program.cs");
         var client = ReadRepoFile("apps", "windows", "FlowStock.App", "Services", "WpfMarkingApiService.cs");
         var window = ReadRepoFile("apps", "windows", "FlowStock.App", "MarkingWindow.xaml.cs");
 
-        Assert.Contains("order_status_presentation = OrderOperatorStatusResolver.Resolve", server, StringComparison.Ordinal);
+        Assert.DoesNotContain("app.MapGet(\"/api/marking/orders\"", server, StringComparison.Ordinal);
         Assert.Contains("OperatorStatusPresentation = MapOrderStatusPresentation(element)", client, StringComparison.Ordinal);
         Assert.Contains("_row.OperatorStatusPresentation.Label", window, StringComparison.Ordinal);
         Assert.DoesNotContain("?? OrderStatusMapper.StatusToDisplayName(_row.OrderStatus)", window, StringComparison.Ordinal);

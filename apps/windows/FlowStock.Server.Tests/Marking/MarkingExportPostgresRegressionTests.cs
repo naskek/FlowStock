@@ -164,7 +164,7 @@ WHERE code = @code;
     }
 
     [Fact]
-    public async Task OrderExport_FaultDuringCodeInsert_RollsBackEntireTransaction()
+    public async Task OrderExport_WithWritesForbidden_PreservesEntireSnapshot()
     {
         var connectionString = ResolveRequiredPostgresTestConnectionString();
         await using var fixture = await OrderFixture.CreateAsync(connectionString, quantity: 7);
@@ -177,10 +177,18 @@ WHERE code = @code;
             var before = await fixture.ReadSnapshotAsync();
             var store = new PostgresDataStore(connectionString);
 
-            Assert.Throws<PostgresException>(() =>
-                new OrderMarkingExportService(store).Export(
-                    fixture.OrderId,
-                    new DateTime(2026, 7, 27, 12, 0, 0, DateTimeKind.Utc)));
+            var service = new OrderMarkingExportService(store);
+            var preview = service.Preview(fixture.OrderId);
+            Assert.True(preview.IsSuccess);
+            foreach (var _ in Enumerable.Range(0, 2))
+                Assert.NotNull(service.Export(fixture.OrderId, DateTime.UtcNow,
+                    preview.Lines.Select(line => line.OrderLineId).ToArray(), preview.Snapshot).FileBytes);
+            var error = Assert.Throws<PostgresException>(() => store.ReadSnapshot<int>(read =>
+            {
+                read.UpdateOrderStatus(fixture.OrderId, FlowStock.Core.Models.OrderStatus.InProgress);
+                return 0;
+            }));
+            Assert.Equal("25006", error.SqlState);
 
             var after = await fixture.ReadSnapshotAsync();
             Assert.Equal(before, after);
@@ -201,7 +209,7 @@ WHERE code = @code;
     }
 
     [Fact]
-    public async Task ConcurrentHttpExports_WaitForOrderLockAndReturnIdempotentResults()
+    public async Task ConcurrentHttpExports_DoNotWaitForOrderWriteLockOrMutateData()
     {
         var baseConnectionString = ResolveRequiredPostgresTestConnectionString();
         await using var fixture = await OrderFixture.CreateAsync(baseConnectionString, quantity: 6000);
@@ -221,7 +229,7 @@ WHERE code = @code;
 
         var firstTask = host.Client.PostAsync($"/api/orders/{fixture.OrderId}/marking/export", content: null);
         var secondTask = host.Client.PostAsync($"/api/orders/{fixture.OrderId}/marking/export", content: null);
-        await WaitUntilSessionsWaitForLock(baseConnectionString, applicationName, expectedCount: 2);
+        await Task.WhenAll(firstTask, secondTask).WaitAsync(TimeSpan.FromSeconds(10));
         await gateTransaction.CommitAsync();
 
         using var first = await firstTask;
@@ -239,14 +247,14 @@ WHERE code = @code;
             ReadDoubleHeader(first, "X-FlowStock-Marking-Reused-Qty"),
             ReadDoubleHeader(second, "X-FlowStock-Marking-Reused-Qty")
         };
-        Assert.Equal(new[] { 0d, 6000d }, created.Order().ToArray());
-        Assert.Equal(new[] { 0d, 6000d }, reused.Order().ToArray());
+        Assert.Equal(new[] { 0d, 0d }, created);
+        Assert.Equal(new[] { 0d, 0d }, reused);
 
         var snapshot = await fixture.ReadSnapshotAsync();
-        Assert.Equal(1, snapshot.MarkingOrders);
-        Assert.Equal(1, snapshot.Imports);
-        Assert.Equal(6000, snapshot.Codes);
-        Assert.Equal(6000, await fixture.CountDistinctCodesAsync());
+        Assert.Equal(0, snapshot.MarkingOrders);
+        Assert.Equal(0, snapshot.Imports);
+        Assert.Equal(0, snapshot.Codes);
+        Assert.Equal(0, await fixture.CountDistinctCodesAsync());
         Assert.Equal(0, snapshot.Ledger);
         Assert.Equal(0, snapshot.Docs);
         Assert.Equal(0, snapshot.DocLines);
@@ -507,7 +515,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 CREATE TRIGGER {triggerName}
-BEFORE INSERT ON marking_code
+BEFORE INSERT OR UPDATE OR DELETE ON marking_code
 FOR EACH ROW EXECUTE FUNCTION {functionName}();
 """;
             await command.ExecuteNonQueryAsync();

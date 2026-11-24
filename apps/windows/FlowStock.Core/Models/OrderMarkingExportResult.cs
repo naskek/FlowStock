@@ -49,6 +49,8 @@ public sealed record OrderMarkingExportPreviewResult(
     double TotalQty,
     IReadOnlyList<OrderMarkingExportPreviewLine> Lines)
 {
+    public string Snapshot { get; init; } = string.Empty;
+
     public static OrderMarkingExportPreviewResult Failure(string message)
     {
         return new OrderMarkingExportPreviewResult(

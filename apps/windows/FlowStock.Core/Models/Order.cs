@@ -61,40 +61,11 @@ public sealed class Order
     private bool HasCompleteOperatorStatusPresentation =>
         !string.IsNullOrWhiteSpace(OperatorStatusPresentation?.Code)
         && !string.IsNullOrWhiteSpace(OperatorStatusPresentation.Label);
-    public MarkingStatus EffectiveMarkingStatus
-    {
-        get
-        {
-            if (Status == OrderStatus.Cancelled)
-            {
-                return MarkingCodeCovered || (!MarkingApplies && MarkingStatus == MarkingStatus.Printed)
-                    ? MarkingStatus.Printed
-                    : MarkingStatus.NotRequired;
-            }
-
-            if (MarkingCodeCovered)
-            {
-                return MarkingStatus.Printed;
-            }
-
-            if (MarkingApplies)
-            {
-                return MarkingStatus.Required;
-            }
-
-            return MarkingStatusResolver.Resolve(MarkingStatus, MarkingRequired, Status);
-        }
-    }
-
-    public bool MarkingCompleted => MarkingCodeCovered
-                                    || (!MarkingApplies && EffectiveMarkingStatus == MarkingStatus.Printed);
-    public string MarkingLabel => MarkingCompleted
-        ? "Маркировка проведена"
-        : Status != OrderStatus.Cancelled && (MarkingRequired || MarkingApplies)
-            ? "Маркировка не проведена"
-            : string.Empty;
-    public string MarkingStatusDisplay => MarkingStatusMapper.ToDisplayName(EffectiveMarkingStatus);
-    public string MarkingStatusShortDisplay => MarkingStatusMapper.ToShortDisplayName(EffectiveMarkingStatus);
+    public MarkingStatus EffectiveMarkingStatus => MarkingStatus.NotRequired;
+    public bool MarkingCompleted => false;
+    public string MarkingLabel => string.Empty;
+    public string MarkingStatusDisplay => string.Empty;
+    public string MarkingStatusShortDisplay => string.Empty;
     public string ProductionPalletPlanShortDisplay
     {
         get

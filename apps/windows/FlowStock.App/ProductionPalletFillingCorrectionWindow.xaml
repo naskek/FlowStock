@@ -25,7 +25,6 @@
             <StackPanel>
                 <TextBlock x:Name="ActionText" FontWeight="SemiBold" FontSize="15" />
                 <TextBlock x:Name="SourceText" Margin="0,4,0,0" TextWrapping="Wrap" />
-                <TextBlock x:Name="MarkingText" Margin="0,4,0,0" />
                 <TextBlock x:Name="LedgerText" Margin="0,4,0,0" TextWrapping="Wrap" />
                 <TextBlock x:Name="BlockersText" Margin="0,6,0,0" Foreground="#B42318" TextWrapping="Wrap" />
             </StackPanel>

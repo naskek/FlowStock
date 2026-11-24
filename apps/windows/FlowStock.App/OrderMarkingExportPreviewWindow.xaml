@@ -29,15 +29,20 @@
                   AutoGenerateColumns="False"
                   CanUserAddRows="False"
                   CanUserDeleteRows="False"
-                  IsReadOnly="True"
+                  IsReadOnly="False"
                   HeadersVisibility="Column"
                   GridLinesVisibility="Horizontal">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" MinWidth="220" />
-                <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="150" />
-                <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyDisplay}" Width="90" />
-                <DataGridTextColumn Header="HU" Binding="{Binding HuDisplay}" Width="80" />
-                <DataGridTextColumn Header="Коды HU" Binding="{Binding HuCodesDisplay}" Width="*" MinWidth="200" />
+                <DataGridTemplateColumn Header="Выбрать" Width="80">
+                    <DataGridTemplateColumn.CellTemplate><DataTemplate>
+                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" />
+                    </DataTemplate></DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn IsReadOnly="True" Header="Товар" Binding="{Binding ItemName}" Width="*" MinWidth="220" />
+                <DataGridTextColumn IsReadOnly="True" Header="GTIN" Binding="{Binding Gtin}" Width="150" />
+                <DataGridTextColumn IsReadOnly="True" Header="Кол-во" Binding="{Binding QtyDisplay}" Width="90" />
+                <DataGridTextColumn IsReadOnly="True" Header="HU" Binding="{Binding HuDisplay}" Width="80" />
+                <DataGridTextColumn IsReadOnly="True" Header="Коды HU" Binding="{Binding HuCodesDisplay}" Width="*" MinWidth="200" />
             </DataGrid.Columns>
         </DataGrid>
 

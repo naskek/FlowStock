@@ -559,6 +559,64 @@
     );
   }
 
+  function renderExcelPreview(preview) {
+    var lines = Array.isArray(preview.lines) ? preview.lines : [];
+    return '<table class="pc-table"><thead><tr><th>Выбрать</th><th>Товар</th><th>GTIN</th><th>Кол-во</th></tr></thead><tbody>' +
+      lines.map(function (line) {
+        return '<tr><td><input type="checkbox" data-excel-line="' + Number(line.order_line_id) + '" checked></td><td>' +
+          escapeHtml(line.item_name) + '</td><td>' + escapeHtml(line.gtin) + '</td><td>' +
+          escapeHtml(String(line.qty)) + '</td></tr>';
+      }).join('') + '</tbody></table>' +
+      '<button type="button" class="btn primary-btn" data-excel-confirm>Скачать Excel</button> ' +
+      '<button type="button" class="btn btn-outline" data-excel-cancel>Отмена</button>';
+  }
+
+  function bindExcelExport(modal, order) {
+    var button = modal.querySelector('#orderExcelBtn');
+    var previewArea = modal.querySelector('#orderExcelPreview');
+    var status = modal.querySelector('#orderExcelStatus');
+    if (!button || !previewArea || !status) return;
+    var baseUrl = '/api/orders/' + encodeURIComponent(order.id) + '/marking/';
+    button.addEventListener('click', function () {
+      button.disabled = true;
+      status.textContent = 'Загрузка предпросмотра...';
+      fetchJson(baseUrl + 'preview').then(function (preview) {
+        if (!modal.isConnected) return;
+        status.textContent = preview.lines && preview.lines.length ? '' : 'Нет строк для Excel ЧЗ.';
+        if (!preview.lines || !preview.lines.length) return;
+        previewArea.innerHTML = renderExcelPreview(preview);
+        previewArea.querySelector('[data-excel-cancel]').addEventListener('click', function () { previewArea.innerHTML = ''; });
+        var confirm = previewArea.querySelector('[data-excel-confirm]');
+        confirm.addEventListener('click', function () {
+          var ids = Array.prototype.filter.call(previewArea.querySelectorAll('[data-excel-line]'), function (box) {
+            return box.checked;
+          }).map(function (box) { return Number(box.getAttribute('data-excel-line')); });
+          if (!ids.length) { status.textContent = 'Выберите хотя бы одну строку.'; return; }
+          confirm.disabled = true;
+          status.textContent = 'Формирование Excel...';
+          fetch(baseUrl + 'export', {
+            method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ selected_line_ids: ids, snapshot: preview.snapshot })
+          }).then(function (response) {
+            if (!response.ok) return response.json().then(function (payload) { throw new Error(payload.error || payload.message || 'Ошибка Excel'); });
+            return response.blob();
+          }).then(function (blob) {
+            if (!modal.isConnected) return;
+            var url = URL.createObjectURL(blob);
+            var link = document.createElement('a');
+            link.href = url; link.download = 'chestny_znak_order_' + Number(order.id) + '.xlsx';
+            document.body.appendChild(link); link.click(); document.body.removeChild(link);
+            setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+            status.textContent = 'Excel сформирован. Данные не изменены.';
+          }).catch(function (error) {
+            status.textContent = error.message + ' Данные не изменены; можно повторить запрос.';
+          }).then(function () { confirm.disabled = false; });
+        });
+      }).catch(function (error) { status.textContent = error.message; })
+        .then(function () { button.disabled = false; });
+    });
+  }
+
   function openOrderModal(order, onSubmitted) {
     var isPending = order && order.is_pending_confirmation;
     var canManage = canManagePendingOrder(order);
@@ -595,6 +653,7 @@
         : "Статус формируется автоматически по выпуску и отгрузке.") +
       "</div>" +
       "  </div>" +
+      (!isPending ? '<button class="btn btn-outline" type="button" id="orderExcelBtn">Сформировать Excel ЧЗ</button><div id="orderExcelStatus" role="status"></div><div id="orderExcelPreview"></div>' : '') +
       '  <div id="partialOutboundPermissionWrap"></div>' +
       '  <div id="orderLinesWrap" class="pc-status" style="margin-top:12px;">Загрузка строк...</div>' +
       (canManage
@@ -697,11 +756,14 @@
       close: close,
     };
 
+    bindExcelExport(modal, order);
     refreshOrderModalContent();
   }
 
   window.FlowStockPcOrderModal = {
     init: init,
+    renderExcelPreview: renderExcelPreview,
+    bindExcelExport: bindExcelExport,
     openOrderModal: openOrderModal,
     renderOrderLinesTable: renderOrderLinesTable,
     getOrderModalContentUpdates: getOrderModalContentUpdates,

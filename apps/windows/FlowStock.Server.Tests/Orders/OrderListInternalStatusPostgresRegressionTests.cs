@@ -169,7 +169,7 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
     }
 
     [Fact]
-    public async Task OrderListMarkingReadModel_ScopedMarkingCodeAggregates_PreserveCoverageSemantics()
+    public async Task OrderListReadModel_HistoricalCodeScopesDoNotAffectOperations()
     {
         var connectionString = ResolvePostgresTestConnectionString();
         if (connectionString == null)
@@ -258,11 +258,11 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
             var printed = SeedMarkableOrder(scopedStore, $"{prefix}-printed", itemId, qty: 1);
             scopedStore.MarkOrdersPrinted([printed.OrderId], DateTime.UtcNow);
 
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, covered.OrderRef), required: true, covered: true);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, missing.OrderRef), required: true, covered: false);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, bound.OrderRef), required: true, covered: true);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, cancelled.OrderRef), required: true, covered: false);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, sourceLinked.OrderRef), required: true, covered: true);
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, covered.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, missing.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, bound.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, cancelled.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, sourceLinked.OrderRef));
 
             var printedRow = ReadSingleOrderPageRow(scopedStore, printed.OrderRef);
             Assert.Equal(MarkingStatus.Printed, printedRow.MarkingStatus);
@@ -273,7 +273,7 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
     }
 
     [Fact]
-    public async Task OrderListMarkingReadModel_SetBasedCoverage_PreservesNeedEdgeCases()
+    public async Task OrderListReadModel_HistoricalMarkingNeedEdgeCasesAreInert()
     {
         var connectionString = ResolvePostgresTestConnectionString();
         if (connectionString == null)
@@ -396,22 +396,22 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
                 (itemD, 1));
             SeedReservedLedgerHu(scopedStore, reservedCustomer, itemD, qty: 1, huCode: $"{prefix}-HU");
 
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, gtinFallback.OrderRef), required: true, covered: true);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, itemMatchMultipleBuckets.OrderRef), required: true, covered: true);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, singleFreeCodeWithMultipleNeeds.OrderRef), required: true, covered: false);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, singleBoundCodeWithMultipleNeeds.OrderRef), required: true, covered: false);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, emptyGtinDoesNotFallback.OrderRef), required: true, covered: false);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, sharedNeed.OrderRef), required: true, covered: false);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, multiNeed.OrderRef), required: true, covered: false);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, freeAndBound.OrderRef), required: true, covered: true);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, boundOnlyNeedsTwo.OrderRef), required: true, covered: false);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, voidedBound.OrderRef), required: true, covered: false);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, failedTaskOrder.OrderRef), required: true, covered: false);
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, reservedCustomer.OrderRef), required: false, covered: true);
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, gtinFallback.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, itemMatchMultipleBuckets.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, singleFreeCodeWithMultipleNeeds.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, singleBoundCodeWithMultipleNeeds.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, emptyGtinDoesNotFallback.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, sharedNeed.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, multiNeed.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, freeAndBound.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, boundOnlyNeedsTwo.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, voidedBound.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, failedTaskOrder.OrderRef));
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, reservedCustomer.OrderRef));
 
             var multiNeedTaskC = AddMarkingOrder(scopedStore, multiNeed.OrderId, itemC, requestedQty: 1);
             AddMarkingCode(scopedStore, importId, multiNeedTaskC, "MULTI-C", MarkingCodeStatus.Printed, gtin: "04607186951522");
-            AssertMarking(ReadSingleOrderPageRow(scopedStore, multiNeed.OrderRef), required: true, covered: true);
+            AssertNoOperationalMarking(ReadSingleOrderPageRow(scopedStore, multiNeed.OrderRef));
             return Task.CompletedTask;
         });
     }
@@ -710,11 +710,13 @@ public sealed class OrderListInternalStatusPostgresRegressionTests
         ]);
     }
 
-    private static void AssertMarking(Order order, bool required, bool covered)
+    private static void AssertNoOperationalMarking(Order order)
     {
-        Assert.True(order.MarkingApplies);
-        Assert.Equal(required, order.MarkingRequired);
-        Assert.Equal(covered, order.MarkingCodeCovered);
+        Assert.False(order.MarkingRequired);
+        Assert.False(order.MarkingApplies);
+        Assert.False(order.MarkingCodeCovered);
+        Assert.False(order.MarkingCompleted);
+        Assert.Empty(order.MarkingLabel);
     }
 
     private static void SeedCustomerOrder(IDataStore store, string orderRef, DateTime createdAt)

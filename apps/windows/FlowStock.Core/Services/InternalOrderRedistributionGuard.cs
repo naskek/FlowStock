@@ -59,28 +59,9 @@ public static class InternalOrderRedistributionGuard
             }
         }
 
-        var itemIds = store.GetOrderLines(sourceInternalOrderId)
-            .Select(line => line.ItemId)
-            .Distinct()
-            .ToArray();
-        var markingOrders = store.GetMarkingOrdersByItemIds(itemIds)
-            .Where(order => order.OrderId == sourceInternalOrderId || order.SourceOrderId == sourceInternalOrderId)
-            .Where(order => !string.Equals(order.Status, MarkingOrderStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
-                            && !string.Equals(order.Status, MarkingOrderStatus.Failed, StringComparison.OrdinalIgnoreCase))
-            .Select(order => new InternalOrderRedistributionGuardMarkingRow
-            {
-                MarkingOrderId = order.Id,
-                RequestNumber = order.RequestNumber,
-                Status = order.Status,
-                ItemId = order.ItemId,
-                ReservedCodeCount = store.CountMarkingCodesByMarkingOrder(order.Id)
-            })
-            .ToList();
-
         var isBlocked = draftPrdDocs.Count > 0
                         || activePallets.Count > 0
-                        || prdDocsWithLedger.Count > 0
-                        || markingOrders.Count > 0;
+                        || prdDocsWithLedger.Count > 0;
 
         return new InternalOrderRedistributionGuardResult
         {
@@ -90,7 +71,7 @@ public static class InternalOrderRedistributionGuard
             DraftPrdDocs = draftPrdDocs,
             ActivePallets = activePallets,
             PrdDocsWithLedger = prdDocsWithLedger,
-            MarkingOrders = markingOrders
+            MarkingOrders = Array.Empty<InternalOrderRedistributionGuardMarkingRow>()
         };
     }
 }

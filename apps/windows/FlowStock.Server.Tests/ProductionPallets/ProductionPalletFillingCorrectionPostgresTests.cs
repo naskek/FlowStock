@@ -528,7 +528,7 @@ SELECT
     }
 
     [Fact]
-    public async Task CorrectFilled_RollsBackCompleteAppliedMarkingSetAndWritesImmutableAudit()
+    public async Task CorrectFilled_PreservesHistoricalMarkingSetThroughCorrectionAndRefill()
     {
         var connectionString = ResolveRequiredPostgresTestConnectionString();
 
@@ -611,10 +611,10 @@ VALUES(
             command.CommandText = @"
 SELECT
     COUNT(*) FILTER (
-        WHERE status = 'Reserved'
-          AND receipt_doc_id IS NULL
-          AND receipt_line_id IS NULL
-          AND applied_at IS NULL),
+        WHERE status = 'Applied'
+          AND receipt_doc_id = @source_prd_doc_id
+          AND receipt_line_id = @source_doc_line_id
+          AND applied_at IS NOT NULL),
     (SELECT COUNT(*)
      FROM production_marking_transition_audit
      WHERE adjustment_id = @adjustment_id
@@ -644,7 +644,7 @@ WHERE marking_order_id = @marking_order_id;
             await using var reader = await command.ExecuteReaderAsync();
             Assert.True(await reader.ReadAsync());
             Assert.Equal(10L, reader.GetInt64(0));
-            Assert.Equal(10L, reader.GetInt64(1));
+            Assert.Equal(0L, reader.GetInt64(1));
         }
 
         var store = new PostgresDataStore(connectionString);
@@ -667,13 +667,13 @@ SELECT COUNT(*)
 FROM marking_code
 WHERE marking_order_id = @marking_order_id
   AND status = 'Applied'
-  AND receipt_doc_id = @replacement_prd_doc_id
+  AND receipt_doc_id = @source_prd_doc_id
   AND receipt_line_id IN (
-      SELECT id FROM doc_lines WHERE doc_id = @replacement_prd_doc_id AND order_line_id = @order_line_id
+      SELECT id FROM doc_lines WHERE doc_id = @source_prd_doc_id AND order_line_id = @order_line_id
   );
 ";
         reapplyCommand.Parameters.AddWithValue("@marking_order_id", markingOrderId);
-        reapplyCommand.Parameters.AddWithValue("@replacement_prd_doc_id", result.ReplacementPrdDocId!.Value);
+        reapplyCommand.Parameters.AddWithValue("@source_prd_doc_id", fixture.SourcePrdDocId);
         reapplyCommand.Parameters.AddWithValue("@order_line_id", fixture.OrderLineId);
         Assert.Equal(10L, Convert.ToInt64(await reapplyCommand.ExecuteScalarAsync()));
     }
@@ -686,7 +686,7 @@ WHERE marking_order_id = @marking_order_id
     [InlineData("UnexpectedLifecycle", false, false)]
     [InlineData("Applied", true, false)]
     [InlineData("Applied", false, true)]
-    public async Task CorrectFilled_DownstreamMarkingStatusOrHiddenTimestampBlocksWholeCorrection(
+    public async Task CorrectFilled_HistoricalMarkingStatusDoesNotBlockCorrection(
         string status,
         bool hasReportedAt,
         bool hasIntroducedAt)
@@ -759,7 +759,7 @@ VALUES(
 
         var service = new ProductionPalletFillingCorrectionService(new PostgresDataStore(connectionString));
         var preview = service.Preview(fixture.Hu);
-        Assert.Contains(
+        Assert.DoesNotContain(
             preview.Blockers,
             blocker => blocker.Code == ProductionPalletFillingCorrectionErrorCodes.MarkingRollbackBlocked);
 
@@ -770,8 +770,8 @@ VALUES(
             ExpectedAction = ProductionPalletFillingCorrectionAction.CorrectFilled,
             ReasonText = "Must be blocked"
         });
-        Assert.False(result.Success);
-        Assert.Equal(ProductionPalletFillingCorrectionErrorCodes.MarkingRollbackBlocked, result.ErrorCode);
+        Assert.True(result.Success);
+        Assert.Null(result.ErrorCode);
 
         await using var verify = new NpgsqlConnection(connectionString);
         await verify.OpenAsync();
@@ -790,7 +790,7 @@ WHERE id = @code_id;
         Assert.Equal(status, reader.GetString(0));
         Assert.Equal(fixture.SourcePrdDocId, reader.GetInt64(1));
         Assert.Equal(fixture.SourceDocLineId, reader.GetInt64(2));
-        Assert.Equal(0L, reader.GetInt64(3));
+        Assert.Equal(1L, reader.GetInt64(3));
     }
 
     [Fact]
@@ -1768,7 +1768,7 @@ WHERE id = @order_id;",
     }
 
     [Fact]
-    public async Task CorrectFilled_ConcurrentMarkingTransition_BlocksWholeRollback()
+    public async Task CorrectFilled_ConcurrentHistoricalMarkingTransitionDoesNotBlockCorrection()
     {
         var connectionString = ResolveRequiredPostgresTestConnectionString();
         await using var fixture = await Fixture.Create(
@@ -1806,17 +1806,9 @@ WHERE id = ANY(@ids);";
                     ExpectedAction = ProductionPalletFillingCorrectionAction.CorrectFilled,
                     ReasonText = "Concurrent marking transition"
                 }));
-        await WaitUntilPostgresSessionWaitsForLock(
-            connectionString,
-            correctionBuilder.ApplicationName!,
-            TimeSpan.FromSeconds(10));
-        await transitionTx.CommitAsync();
         var correction = await correctionTask.WaitAsync(TimeSpan.FromSeconds(10));
-
-        Assert.False(correction.Success);
-        Assert.Equal(
-            ProductionPalletFillingCorrectionErrorCodes.MarkingRollbackBlocked,
-            correction.ErrorCode);
+        Assert.True(correction.Success, correction.Message);
+        await transitionTx.CommitAsync();
         await using var verify = new NpgsqlConnection(connectionString);
         await verify.OpenAsync();
         await using var command = verify.CreateCommand();
@@ -1830,7 +1822,7 @@ SELECT
         await using var reader = await command.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
         Assert.Equal(10L, reader.GetInt64(0));
-        Assert.Equal(0L, reader.GetInt64(1));
+        Assert.Equal(1L, reader.GetInt64(1));
     }
 
     [Fact]
