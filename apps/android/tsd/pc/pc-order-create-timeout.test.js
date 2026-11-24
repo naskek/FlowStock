@@ -10,6 +10,7 @@ async function timeoutScenario(timeoutOverride, expectedDelay) {
     Headers,
     AbortController,
     console,
+    clearTimeout() {},
     fetch(url, options) {
       requests.push({ url, options });
       return new Promise((_resolve, reject) => {
