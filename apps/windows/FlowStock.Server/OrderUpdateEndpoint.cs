@@ -24,10 +24,13 @@ public static class OrderUpdateEndpoint
         ILogger<OrderUpdateEndpointMarker> logger)
     {
         using var timings = new OperationTimings();
+        var rawRequestId = request.Headers["X-FlowStock-Request-Id"].ToString();
+        var requestId = Guid.TryParseExact(rawRequestId, "N", out var clientId)
+            ? clientId.ToString("N") : request.HttpContext.TraceIdentifier;
         request.HttpContext.Response.OnCompleted(() =>
         {
-            logger.LogInformation("order_update_http order_id={OrderId} status={Status} elapsed_ms={ElapsedMs} aborted={Aborted}",
-                orderId, request.HttpContext.Response.StatusCode, timings.ElapsedMs, request.HttpContext.RequestAborted.IsCancellationRequested);
+            logger.LogInformation("order_update_http order_id={OrderId} request_id={RequestId} status={Status} elapsed_ms={ElapsedMs} aborted={Aborted}",
+                orderId, requestId, request.HttpContext.Response.StatusCode, timings.ElapsedMs, request.HttpContext.RequestAborted.IsCancellationRequested);
             return Task.CompletedTask;
         });
         try
@@ -36,8 +39,8 @@ public static class OrderUpdateEndpoint
         }
         finally
         {
-            logger.LogInformation("order_update order_id={OrderId} elapsed_ms={ElapsedMs} stages={Stages}",
-                orderId, timings.ElapsedMs, timings.Summary);
+            logger.LogInformation("order_update order_id={OrderId} request_id={RequestId} elapsed_ms={ElapsedMs} stages={Stages}",
+                orderId, requestId, timings.ElapsedMs, timings.Summary);
         }
     }
 
