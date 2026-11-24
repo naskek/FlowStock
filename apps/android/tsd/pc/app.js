@@ -3820,13 +3820,20 @@
       }
       if (!submission) return;
       if (refs.submitBtn) refs.submitBtn.disabled = true;
+      // Freeze the captured business payload throughout the session check too.
+      lockSubmissionControls();
       setStatus("Проверка сессии...");
       refreshSessionForActivity(true)
         .then(function (account) {
-          if (closed || !account) return null;
-          if (!isRetry && !window.confirm("Полностью ли заполнен заказ?")) return null;
+          if (closed || !account) {
+            unlockSubmissionControls();
+            return null;
+          }
+          if (!isRetry && !window.confirm("Полностью ли заполнен заказ?")) {
+            unlockSubmissionControls();
+            return null;
+          }
           pendingSubmission = submission;
-          lockSubmissionControls();
           persistActiveNewOrderDraft();
           setStatus(isRetry ? "Проверка результата отправки..." : "Отправка заявки...");
           return fetchJson("/api/orders/requests/create", {
@@ -3857,9 +3864,13 @@
           });
         })
         .catch(function (error) {
-          if (error && error.status === 401) return;
+          if (error && error.status === 401) {
+            if (!pendingSubmission) unlockSubmissionControls();
+            return;
+          }
           var message = error && error.message ? error.message : "REQUEST_FAILED";
           if (!pendingSubmission) {
+            unlockSubmissionControls();
             setStatus("Ошибка перед отправкой: " + message);
             return;
           }
@@ -4025,7 +4036,13 @@
       })
       .catch(function () {
         if (!closed && modal.isConnected !== false) {
-          setStatus("Ошибка загрузки справочников.");
+          if (pendingSubmission) {
+            setUncertainSubmissionMode();
+            setStatus("Справочники недоступны, но можно безопасно проверить предыдущую отправку.");
+            persistActiveNewOrderDraft();
+          } else {
+            setStatus("Ошибка загрузки справочников.");
+          }
         }
       });
 
