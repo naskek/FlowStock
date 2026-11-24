@@ -69,8 +69,10 @@ public partial class OrderDetailsWindow : Window
         InitializeComponent();
         InitializeData();
         _liveRefreshSubscription = RegisterLiveRefresh();
-        LoadPartners();
-        PrepareNewOrder();
+        Title = "Новый заказ";
+        ((UIElement)Content).IsEnabled = false;
+        SaveStatusText.Text = "Загрузка заказа…";
+        Loaded += InitializeNewOrderAsync;
     }
 
     public OrderDetailsWindow(AppServices services, long orderId)
@@ -265,15 +267,54 @@ public partial class OrderDetailsWindow : Window
         RestoreComboText(PartnerCombo, text);
     }
 
-    private void PrepareNewOrder()
+    private async void InitializeNewOrderAsync(object sender, RoutedEventArgs e)
+    {
+        Loaded -= InitializeNewOrderAsync;
+        var elapsed = Stopwatch.StartNew();
+        try
+        {
+            // The synchronous read clients run off the dispatcher. Only plain
+            // reference data crosses back to the UI; no controls leave this thread.
+            var references = await Task.Run(() =>
+            {
+                var stage = Stopwatch.StartNew();
+                var partnersOk = _services.WpfPartnerApi.TryGetPartners(out var partners);
+                _services.AppLogger.Info($"new_order_load partners_ms={stage.ElapsedMilliseconds} ok={partnersOk}");
+                stage.Restart();
+                var refOk = _services.WpfReadApi.TryGenerateNextOrderRef(out var orderRef);
+                _services.AppLogger.Info($"new_order_load next_ref_ms={stage.ElapsedMilliseconds} ok={refOk}");
+                if (!partnersOk || !refOk)
+                    throw new InvalidOperationException("Не удалось загрузить новый заказ. Откройте «Новый заказ» повторно.");
+                return (Partners: partners, OrderRef: orderRef);
+            });
+            if (_isClosed) return;
+            _partnersAll.Clear();
+            _partnersAll.AddRange(references.Partners
+                .Where(entry => entry.Status != PartnerStatus.Supplier).Select(entry => entry.Partner));
+            ApplyPartnerFilter();
+            PrepareNewOrder(references.OrderRef);
+            ((UIElement)Content).IsEnabled = true;
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("New order initialization failed", ex);
+            if (_isClosed) return;
+            MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Close();
+        }
+        finally
+        {
+            _services.AppLogger.Info($"new_order_load completed_ms={elapsed.ElapsedMilliseconds} closed={_isClosed}");
+        }
+    }
+
+    private void PrepareNewOrder(string orderRef)
     {
         BeginLoad();
         Title = "Новый заказ";
         _order = null;
         _orderId = null;
-        OrderRefBox.Text = _services.WpfReadApi.TryGenerateNextOrderRef(out var orderRef)
-            ? orderRef
-            : GenerateNextOrderRef();
+        OrderRefBox.Text = orderRef;
         TypeCombo.SelectedItem = _typeOptions.First(option => option.Type == OrderType.Customer);
         PartnerCombo.SelectedItem = null;
         DueDatePicker.SelectedDate = null;
@@ -312,7 +353,6 @@ public partial class OrderDetailsWindow : Window
     {
         if (!_orderId.HasValue)
         {
-            PrepareNewOrder();
             return;
         }
 
@@ -2534,6 +2574,7 @@ public partial class OrderDetailsWindow : Window
 
     private void RefreshLineMetrics()
     {
+        if (_lines.Count == 0) return;
         var type = GetSelectedOrderType();
         if (_orderId.HasValue && !_hasUnsavedChanges && TryRefreshPersistedOrderLineMetricsFromApi(type))
         {
@@ -3427,63 +3468,6 @@ public partial class OrderDetailsWindow : Window
         }
 
         return TrySaveOrder(showFeedback: true);
-    }
-
-    private string GenerateNextOrderRef()
-    {
-        var max = 0L;
-        const int pageSize = 200;
-        var offset = 0;
-        while (_services.WpfReadApi.TryGetOrdersPage(
-                   includeInternal: true,
-                   search: null,
-                   limit: pageSize,
-                   offset: offset,
-                   includeCancelledMerged: true,
-                   out var apiOrders)
-               && apiOrders.Count > 0)
-        {
-            foreach (var order in apiOrders)
-            {
-                var orderRef = order.OrderRef?.Trim();
-                if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
-                {
-                    continue;
-                }
-
-                if (long.TryParse(orderRef, NumberStyles.None, CultureInfo.InvariantCulture, out var value) && value > max)
-                {
-                    max = value;
-                }
-            }
-
-            if (apiOrders.Count < pageSize)
-            {
-                break;
-            }
-
-            offset += apiOrders.Count;
-        }
-
-        return (max + 1).ToString("D3", CultureInfo.InvariantCulture);
-    }
-
-    private static bool IsDigitsOnly(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return false;
-        }
-
-        foreach (var ch in value)
-        {
-            if (!char.IsDigit(ch))
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static string FormatQty(double value)
