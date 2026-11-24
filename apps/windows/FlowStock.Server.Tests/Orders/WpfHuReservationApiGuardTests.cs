@@ -434,7 +434,7 @@ public sealed class WpfHuReservationApiGuardTests
 
         var methodStart = source.IndexOf("private void LoadOrder(long? reselectLineId = null)", StringComparison.Ordinal);
         Assert.True(methodStart >= 0);
-        var methodEnd = source.IndexOf("private void Save_Click", methodStart, StringComparison.Ordinal);
+        var methodEnd = source.IndexOf("private async void Save_Click", methodStart, StringComparison.Ordinal);
         Assert.True(methodEnd > methodStart);
         var method = source[methodStart..methodEnd];
 

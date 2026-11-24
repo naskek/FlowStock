@@ -56,9 +56,16 @@ internal sealed class CloseDocumentHarness
     private bool _failNextUpdateOrder;
     private int _transactionExecutionCount;
 
-    public CloseDocumentHarness()
+    public CloseDocumentHarness(bool optimizedOrderRefs = false)
     {
         _store = new Mock<IDataStore>(MockBehavior.Strict);
+        if (optimizedOrderRefs)
+        {
+            var lookup = _store.As<IOrderRefLookupStore>();
+            lookup.Setup(s => s.HasOtherOrderWithRef(It.IsAny<long>(), It.IsAny<string>()))
+                .Returns<long, string>((id, value) => _orders.Values.Any(o => o.Id != id && string.Equals(o.OrderRef, value, StringComparison.OrdinalIgnoreCase)));
+            lookup.Setup(s => s.GetAllOrderRefsForNextNumber()).Returns(() => _orders.Values.Select(o => o.OrderRef).ToArray());
+        }
         ConfigureStore();
     }
 

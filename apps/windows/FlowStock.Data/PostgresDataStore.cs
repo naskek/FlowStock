@@ -1079,6 +1079,7 @@ LEFT JOIN active_order_control aoc ON aoc.order_id = ob.id";
 
     public void ExecuteInTransaction(Action<IDataStore> work)
     {
+        using var transactionTiming = OperationTimings.Measure("transaction");
         if (_connection != null && _transaction != null)
         {
             work(this);
@@ -1086,13 +1087,12 @@ LEFT JOIN active_order_control aoc ON aoc.order_id = ob.id";
         }
 
         using var connection = new NpgsqlConnection(_connectionString);
-        connection.Open();
+        using (OperationTimings.Measure("connection_open")) connection.Open();
         using var transaction = connection.BeginTransaction();
 
         var scoped = new PostgresDataStore(connection, transaction, _orderSqlDiagnosticsSink, _orderSqlExplainDiagnosticsSink);
-        work(scoped);
-
-        transaction.Commit();
+        using (OperationTimings.Measure("transaction_work")) work(scoped);
+        using (OperationTimings.Measure("commit")) transaction.Commit();
     }
 
     private T ExecuteAtomic<T>(Func<PostgresDataStore, T> work)
@@ -1210,6 +1210,7 @@ HAVING COUNT(*) FILTER (WHERE UPPER(COALESCE(p.status, '')) <> 'CANCELLED') > 0
 
     public bool LockOrdersForUpdate(IReadOnlyCollection<long> orderIds)
     {
+        using var lockTiming = OperationTimings.Measure("order_lock");
         var ids = NormalizePositiveDistinctIds(orderIds)
             .OrderBy(id => id)
             .ToArray();
@@ -16580,6 +16581,7 @@ RETURNING id;
 
     public void LockNormalizedHus(IReadOnlyCollection<string> normalizedHus)
     {
+        using var lockTiming = OperationTimings.Measure("hu_advisory_lock");
         if (_transaction == null)
         {
             throw new InvalidOperationException("HU lock разрешён только внутри транзакции.");

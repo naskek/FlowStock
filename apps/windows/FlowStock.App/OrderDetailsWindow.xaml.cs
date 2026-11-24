@@ -35,6 +35,7 @@ public partial class OrderDetailsWindow : Window
     private long? _orderId;
     private bool _isLoading;
     private bool _hasUnsavedChanges;
+    private bool _saveInProgress;
     private bool _allowCloseWithoutPrompt;
     private bool _suppressPartnerFilter;
     private bool _productionPalletHuLocked;
@@ -117,6 +118,7 @@ public partial class OrderDetailsWindow : Window
                && IsActive
                && !_isLoading
                && !_hasUnsavedChanges
+               && !_saveInProgress
                && !_isQtyPersistInProgress
                && !_liveRefreshInProgress
                && !IsOrderLinesGridInteracting();
@@ -380,15 +382,46 @@ public partial class OrderDetailsWindow : Window
         RestoreOrderLinesGridColumnWidthsDeferred(columnWidths);
     }
 
-    private void Save_Click(object sender, RoutedEventArgs e)
+    private async void Save_Click(object sender, RoutedEventArgs e)
     {
-        if (!TrySaveOrder(showFeedback: false))
-        {
+        if (_saveInProgress || !TryGetHeaderValues(false, out var orderRef, out var type, out var partnerId, out var dueDate, out var comment))
             return;
-        }
 
-        _allowCloseWithoutPrompt = true;
-        Close();
+        _saveInProgress = true;
+        var content = (UIElement)Content;
+        content.IsEnabled = false;
+        SaveStatusText.Text = "Сохранение…";
+        try
+        {
+            bool saved;
+            if (_orderId.HasValue)
+            {
+                var result = await _services.WpfUpdateOrders.UpdateOrderAsync(new WpfUpdateOrderContext(
+                    _orderId.Value, orderRef, type, partnerId, dueDate, OrderStatus.InProgress,
+                    comment, _lines.ToList(), false));
+                saved = ApplyUpdateOrderResult(result, showFeedback: false, reloadAfterPersist: false);
+            }
+            else
+            {
+                saved = TryCreateOrderViaServer(orderRef, type, partnerId, dueDate, comment, showFeedback: false);
+            }
+
+            if (saved)
+            {
+                _allowCloseWithoutPrompt = true;
+                Close();
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _saveInProgress = false;
+            content.IsEnabled = true;
+            SaveStatusText.Text = string.Empty;
+        }
     }
 
     private async void ExportMarking_Click(object sender, RoutedEventArgs e)
@@ -1182,12 +1215,16 @@ public partial class OrderDetailsWindow : Window
         IReadOnlyList<OrderLineView>? linesOverride = null)
     {
         var result = UpdateOrderViaServerRaw(orderId, orderRef, type, partnerId, dueDate, comment, linesOverride);
+        return ApplyUpdateOrderResult(result, showFeedback);
+    }
 
+    private bool ApplyUpdateOrderResult(WpfUpdateOrderResult result, bool showFeedback, bool reloadAfterPersist = true)
+    {
         if (!result.IsSuccess)
         {
             if (OrderLineEditPrevalidation.ShouldReloadLineMetricsAfterFailedPersist(false))
             {
-                TryRefreshPersistedOrderLineMetricsFromApi(type);
+                TryRefreshPersistedOrderLineMetricsFromApi(GetSelectedOrderType());
             }
 
             ShowUpdateOrderError(result);
@@ -1202,7 +1239,10 @@ public partial class OrderDetailsWindow : Window
 
         _orderId = result.Response.OrderId;
 
-        ReloadCanonicalOrderStateAfterPersist(_selectedLine?.Id);
+        if (reloadAfterPersist)
+            ReloadCanonicalOrderStateAfterPersist(_selectedLine?.Id);
+        else
+            _hasUnsavedChanges = false;
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
@@ -3351,6 +3391,12 @@ public partial class OrderDetailsWindow : Window
 
     private void OrderDetailsWindow_Closing(object? sender, CancelEventArgs e)
     {
+        if (_saveInProgress && !_allowCloseWithoutPrompt)
+        {
+            e.Cancel = true;
+            return;
+        }
+
         if (_allowCloseWithoutPrompt)
         {
             return;

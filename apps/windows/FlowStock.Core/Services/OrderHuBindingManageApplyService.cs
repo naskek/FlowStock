@@ -27,6 +27,7 @@ public sealed class OrderHuBindingManageApplyService
 
     public OrderHuBindingManageApplyResult ApplyFinal(OrderHuBindingManageApplyRequest request)
     {
+        using var applyTiming = OperationTimings.Measure("hu_manage_service");
         ArgumentNullException.ThrowIfNull(request);
 
         OrderHuBindingManageApplyResult? result = null;
@@ -48,10 +49,12 @@ public sealed class OrderHuBindingManageApplyService
                 .Cast<string>()
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            var factsStore = HuMutationEligibilityService.LockMutationScope(store, orderIds, huCodes);
+            IHuOperatorFactsStore factsStore;
+            using (OperationTimings.Measure("hu_mutation_lock"))
+                factsStore = HuMutationEligibilityService.LockMutationScope(store, orderIds, huCodes);
             EnsureFinalHusEligible(factsStore, request);
 
-            result = ApplyFinalCore(store, request);
+            using (OperationTimings.Measure("hu_apply_core")) result = ApplyFinalCore(store, request);
         });
 
         return result ?? ApplyFinalCore(_dataStore, request);
@@ -137,7 +140,8 @@ public sealed class OrderHuBindingManageApplyService
         }
 
         // Единственная запись по всем затронутым строкам (delete-all-then-insert поддерживает циклы).
-        store.ReplaceOrderReceiptPlanLinesBatch(scopeSet, replacementLines);
+        using (OperationTimings.Measure("hu_replace_bindings"))
+            store.ReplaceOrderReceiptPlanLinesBatch(scopeSet, replacementLines);
 
         // UseReservedStock ставится по существующей семантике и никогда не снимается.
         foreach (var orderId in snapshot.AffectedOrderIds)
@@ -189,7 +193,8 @@ public sealed class OrderHuBindingManageApplyService
         // Статус каждого затронутого заказа пересчитывается один раз.
         foreach (var orderId in snapshot.AffectedOrderIds)
         {
-            new OrderService(store).RefreshPersistedStatus(orderId);
+            using (OperationTimings.Measure("hu_status_sync"))
+                new OrderService(store).RefreshPersistedStatus(orderId);
         }
 
         return BuildResult(perLine, cancelledCountByLine, restoredByLine);

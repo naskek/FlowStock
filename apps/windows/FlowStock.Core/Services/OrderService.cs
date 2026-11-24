@@ -532,14 +532,15 @@ public sealed class OrderService
             throw new ArgumentException("Номер заказа обязателен.", nameof(orderRef));
         }
 
+        using var updateTiming = OperationTimings.Measure("update_service");
         ValidateIncomingLineQuantities(lines, type);
         var normalized = NormalizeLines(lines, type);
 
         _data.ExecuteInTransaction(store =>
         {
-            var lockedCoverageTransfers = OrderCoveragePlanCompensationService.LockAndLoadForTarget(
-                store,
-                orderId);
+            IReadOnlyList<OrderCoverageTransfer> lockedCoverageTransfers;
+            using (OperationTimings.Measure("coverage_lock"))
+                lockedCoverageTransfers = OrderCoveragePlanCompensationService.LockAndLoadForTarget(store, orderId);
 
             var existing = store.GetOrder(orderId)
                 ?? throw new InvalidOperationException("Заказ не найден.");
@@ -958,10 +959,12 @@ public sealed class OrderService
                 QueueAffectedPalletLines(store, orderId, linesNeedingPalletSync, additionallyAffectedPalletLineIds);
                 foreach (var (orderLineId, orderedQty, oldOrderedQty) in linesNeedingPalletSync)
                 {
+                    using var palletTiming = OperationTimings.Measure("pallet_sync");
                     TrySyncProductionPalletPlanForOrderLine(store, orderId, orderLineId, orderedQty, oldOrderedQty);
                 }
 
-                new OrderService(store).RefreshPersistedStatus(orderId);
+                using (OperationTimings.Measure("status_sync"))
+                    new OrderService(store).RefreshPersistedStatus(orderId);
             }
             else
             {
@@ -981,6 +984,7 @@ public sealed class OrderService
                 }
                 foreach (var (orderLineId, orderedQty, oldOrderedQty) in linesNeedingPalletSync)
                 {
+                    using var palletTiming = OperationTimings.Measure("pallet_sync");
                     TrySyncProductionPalletPlanForOrderLine(store, orderId, orderLineId, orderedQty, oldOrderedQty);
                 }
 
@@ -991,7 +995,8 @@ public sealed class OrderService
 
                 if (type == OrderType.Internal)
                 {
-                    new OrderService(store).RefreshPersistedStatus(orderId);
+                    using (OperationTimings.Measure("status_sync"))
+                        new OrderService(store).RefreshPersistedStatus(orderId);
                 }
             }
         });

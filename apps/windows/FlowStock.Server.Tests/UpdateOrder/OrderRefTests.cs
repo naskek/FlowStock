@@ -75,6 +75,25 @@ public sealed class OrderRefTests
         Assert.Equal("Mixed-Case-Ref", harness.GetOrder(55).OrderRef);
     }
 
+    [Theory]
+    [InlineData("001")]
+    [InlineData("UNIQUE")]
+    [InlineData("BULK-1000")]
+    public async Task OptimizedPut_WithManyOrders_DoesNotReadFullOrderList(string requestedRef)
+    {
+        var (harness, apiStore, orderId) = UpdateOrderHttpScenario.CreateCustomerScenario(optimizedOrderRefs: true);
+        for (var i = 1; i <= 2000; i++)
+            harness.SeedOrder(new Order { Id = 10000 + i, OrderRef = $"BULK-{i}", Type = OrderType.Internal, Status = OrderStatus.Draft });
+        await using var host = await CloseDocumentHttpHost.StartAsync(harness, apiStore);
+        var result = await UpdateOrderHttpApi.UpdateAsync(host.Client, orderId, CreateRequest(requestedRef));
+        Assert.True(result.Ok);
+        Assert.Equal(requestedRef == "BULK-1000", result.OrderRefChanged);
+        Moq.Mock.Get(harness.Store).Verify(s => s.GetOrders(), Moq.Times.Never);
+        Assert.Empty(harness.LedgerEntries);
+        Assert.Empty(harness.MarkingOrders);
+        Assert.Empty(harness.MarkingCodes);
+    }
+
     private static UpdateOrderHttpApi.UpdateOrderRequest CreateRequest(string requestedRef) => new()
     {
         OrderRef = requestedRef,

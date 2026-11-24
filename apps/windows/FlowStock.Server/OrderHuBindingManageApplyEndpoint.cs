@@ -15,7 +15,21 @@ public static class OrderHuBindingManageApplyEndpoint
         app.MapPost("/api/orders/hu-bindings/manage/apply-final", HandleAsync);
     }
 
-    private static async Task<IResult> HandleAsync(HttpRequest request, IDataStore store)
+    private static async Task<IResult> HandleAsync(HttpRequest request, IDataStore store, ILogger<OrderHuBindingManageApplyService> logger)
+    {
+        using var timings = new OperationTimings();
+        try
+        {
+            return await HandleCoreAsync(request, store);
+        }
+        finally
+        {
+            logger.LogInformation("hu_manage_apply elapsed_ms={ElapsedMs} stages={Stages} aborted={Aborted}",
+                timings.ElapsedMs, timings.Summary, request.HttpContext.RequestAborted.IsCancellationRequested);
+        }
+    }
+
+    private static async Task<IResult> HandleCoreAsync(HttpRequest request, IDataStore store)
     {
         RequestBody? body;
         try

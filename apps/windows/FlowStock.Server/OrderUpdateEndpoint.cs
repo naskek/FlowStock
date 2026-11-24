@@ -23,7 +23,30 @@ public static class OrderUpdateEndpoint
         PartnerRoleResolver partnerRoles,
         ILogger<OrderUpdateEndpointMarker> logger)
     {
-        var existing = store.GetOrder(orderId);
+        using var timings = new OperationTimings();
+        request.HttpContext.Response.OnCompleted(() =>
+        {
+            logger.LogInformation("order_update_http order_id={OrderId} status={Status} elapsed_ms={ElapsedMs} aborted={Aborted}",
+                orderId, request.HttpContext.Response.StatusCode, timings.ElapsedMs, request.HttpContext.RequestAborted.IsCancellationRequested);
+            return Task.CompletedTask;
+        });
+        try
+        {
+            return await HandleUpdateCoreAsync(request, orderId, store, partnerRoles, logger);
+        }
+        finally
+        {
+            logger.LogInformation("order_update order_id={OrderId} elapsed_ms={ElapsedMs} stages={Stages}",
+                orderId, timings.ElapsedMs, timings.Summary);
+        }
+    }
+
+    private static async Task<IResult> HandleUpdateCoreAsync(
+        HttpRequest request, long orderId, IDataStore store,
+        PartnerRoleResolver partnerRoles, ILogger<OrderUpdateEndpointMarker> logger)
+    {
+        Order? existing;
+        using (OperationTimings.Measure("initial_order_read")) existing = store.GetOrder(orderId);
         if (existing == null)
         {
             return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
@@ -192,6 +215,8 @@ public static class OrderUpdateEndpoint
             return Results.BadRequest(new ApiResult(false, "MISSING_ORDER_REF"));
         }
 
+        using (OperationTimings.Measure("ref_lookup"))
+        {
         if (!string.IsNullOrWhiteSpace(requestedOrderRef)
             && (store is IOrderRefLookupStore optimizedRefs
                 ? optimizedRefs.HasOtherOrderWithRef(orderId, authoritativeOrderRef)
@@ -201,6 +226,7 @@ public static class OrderUpdateEndpoint
         {
             authoritativeOrderRef = GenerateNextOrderRef(store);
             orderRefChanged = true;
+        }
         }
 
         var orderService = new OrderService(store);
@@ -241,7 +267,8 @@ public static class OrderUpdateEndpoint
                 statusCode: StatusCodes.Status500InternalServerError);
         }
 
-        var updated = store.GetOrder(orderId);
+        Order? updated;
+        using (OperationTimings.Measure("response_order_read")) updated = store.GetOrder(orderId);
         if (updated == null)
         {
             return Results.Json(new ApiResult(false, "ORDER_UPDATE_FAILED"), statusCode: StatusCodes.Status500InternalServerError);
