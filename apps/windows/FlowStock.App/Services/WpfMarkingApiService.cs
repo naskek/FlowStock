@@ -130,7 +130,7 @@ public sealed class WpfMarkingApiService
                 payload.OrderRef ?? string.Empty,
                 payload.LineCount,
                 payload.TotalQty,
-                payload.Lines?.Select(MapPreviewLine).ToArray() ?? Array.Empty<OrderMarkingExportPreviewLineApiResult>());
+                payload.Lines?.Select(MapPreviewLine).ToArray() ?? Array.Empty<OrderMarkingExportPreviewLineApiResult>()) { Snapshot = payload.Snapshot ?? string.Empty };
         }
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
@@ -164,7 +164,8 @@ public sealed class WpfMarkingApiService
 
     public async Task<OrderMarkingExportApiResult> TryExportOrderAsync(
         long orderId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyCollection<long>? selectedLineIds = null, string? snapshot = null)
     {
         if (cancellationToken.IsCancellationRequested)
         {
@@ -189,7 +190,7 @@ public sealed class WpfMarkingApiService
                 BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
                 Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             };
-            using var response = await client.PostAsJsonAsync($"/api/orders/{orderId}/marking/export", new { }, cancellationToken)
+            using var response = await client.PostAsJsonAsync($"/api/orders/{orderId}/marking/export", new { selected_line_ids = selectedLineIds, snapshot }, cancellationToken)
                 .ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
@@ -422,20 +423,11 @@ public sealed class WpfMarkingApiService
         return $"Сервер вернул ошибку HTTP {(int)response.StatusCode}.";
     }
 
-    private static string BuildOutcomeUnknownMessage()
-    {
-        return "Ответ сервера не получен. Сервер мог уже завершить или всё ещё выполнять формирование Excel ЧЗ. "
-               + "Автоматический повтор не выполнен. Подождите и обновите либо переоткройте заказ. "
-               + "После завершения операции ручной повтор безопасен благодаря серверной идемпотентности.";
-    }
+    private static string BuildOutcomeUnknownMessage() =>
+        "Ответ сервера не получен. Формирование Excel не меняет данные; запрос можно повторить.";
 
-    private static string BuildCancelledOutcomeUnknownMessage()
-    {
-        return "Запрос формирования Excel ЧЗ был отменён после отправки, поэтому результат неизвестен. "
-               + "Сервер мог уже завершить или всё ещё выполнять формирование. Автоматический повтор не выполнен. "
-               + "Подождите и обновите либо переоткройте заказ. После завершения операции ручной повтор безопасен "
-               + "благодаря серверной идемпотентности.";
-    }
+    private static string BuildCancelledOutcomeUnknownMessage() =>
+        "Получение Excel отменено. Данные не изменены; запрос можно повторить.";
 
     private static HttpMessageHandler CreateHandler(WpfMarkingApiConfiguration configuration)
     {
@@ -638,6 +630,9 @@ public sealed class WpfMarkingApiService
 
     private sealed class OrderMarkingExportPreviewResponse
     {
+        [JsonPropertyName("snapshot")]
+        public string? Snapshot { get; init; }
+
         [JsonPropertyName("message")]
         public string? Message { get; init; }
 
@@ -714,6 +709,8 @@ public sealed record OrderMarkingExportPreviewApiResult(
     double TotalQty,
     IReadOnlyList<OrderMarkingExportPreviewLineApiResult> Lines)
 {
+    public string Snapshot { get; init; } = string.Empty;
+
     public static OrderMarkingExportPreviewApiResult Failure(string message)
     {
         return new OrderMarkingExportPreviewApiResult(

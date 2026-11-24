@@ -1282,7 +1282,7 @@
         '<label class="pc-checkbox"><input name="min_stock_uses_order_binding" type="checkbox"' + checkedAttribute(current.min_stock_uses_order_binding, false) + '> Учитывать привязки заказов в min stock</label>' +
         '<label class="pc-checkbox"><input name="enable_order_reservation" type="checkbox"' + checkedAttribute(current.enable_order_reservation, false) + '> Резервирование заказов</label>' +
         '<label class="pc-checkbox"><input name="enable_hu_distribution" type="checkbox"' + checkedAttribute(current.enable_hu_distribution, false) + '> Распределение по HU</label>' +
-        '<label class="pc-checkbox"><input name="enable_marking" type="checkbox"' + checkedAttribute(current.enable_marking, false) + '> Маркировка</label></div>';
+        '<label class="pc-checkbox"><input name="enable_marking" type="checkbox"' + checkedAttribute(current.enable_marking, false) + '> Включать в Excel ЧЗ</label></div>';
     }
     return '<div class="pc-modal-card pc-reference-editor-card"><div class="pc-modal-header"><div class="pc-modal-title">' + title + '</div>' +
       '<button class="btn btn-outline" data-reference-editor-close type="button">Закрыть</button></div>' +

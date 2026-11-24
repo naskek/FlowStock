@@ -932,8 +932,8 @@ $DC restart nginx
 
 Процедуры, привязанные к конкретным миграциям или разовым переходам, описаны отдельно:
 
-- Cutover ЧЗ real-code workflow (`V0027`, `marking_cutover_state`, preflight, enforcement) — `deploy/docs/operations/marking-cutover.md`
-- Production backfill статусов ЧЗ (`backfill_marking_status.sh`) — `deploy/docs/operations/marking-backfill.md`
+- Исторический cutover ЧЗ (`V0027`) — `deploy/docs/operations/marking-cutover.md`; не применять к Excel-only: operational marking/cutover endpoints отключены, исторические данные сохраняются.
+- Исторический backfill статусов ЧЗ — `deploy/docs/operations/marking-backfill.md`; в Excel-only сервере эта maintenance-команда отключена.
 - Полная проверка UDP discovery — `deploy/docs/operations/discovery-smoke.md`
 
 Общее правило для любой миграции, помеченной в release notes как чувствительная: свежий backup перед применением обязателен и создаётся каноническим PowerShell deploy-процессом.
@@ -948,3 +948,14 @@ $DC restart nginx
 - Держите server-side clone репозитория чистым: канонический PowerShell deploy-процесс должен остановиться при неожиданных tracked изменениях.
 - Метаданные релизов хранятся в `deploy/runtime/releases/`.
 - `deploy/nginx/gen_cert.sh` остаётся только как быстрый self-signed fallback; рекомендуемый режим для внутреннего production — `FLOWSTOCK_TLS_MODE=local_ca`.
+
+## Отключение исторических operational marking hooks
+
+Перед запуском Excel-only версии штатный migrator применяет `V0059__disable_operational_marking_hooks.sql`. Это DDL-only отключение трёх известных hooks на физических таблицах, без cleanup/backfill/изменения исторических строк. На свежей active-main БД без исторической V0036 — no-op; имена/функции существующих hooks проверяются. Исторические номера V0047–V0058 заняты параллельной линией и не переиспользуются. Миграция не включает код или quantity-pool той линии.
+
+Обязателен isolated production-copy smoke после миграции: сравнить не только marking_order/code/import, но и все marking subject/coverage/consumption/audit таблицы через plan, GTIN edit, fill, HU binding, OUT, COR/refill. Исторические definitions и данные сохраняются; неизвестные дополнительные hooks требуют проверки до deploy. Canonical backup/deploy gates сохраняются. При app rollback hooks сами не включаются: старое marking-поведение не считается безопасным rollback-контрактом.
+
+
+## Сериализация номеров заказов
+
+Runtime writers номера используют общий transaction-level advisory lock, описанный в `spec_orders.md`. Это кооперативный протокол без нового unique constraint и без изменения исторических данных. Перед rollout проверить существующие дубли через `.NET StringComparer.OrdinalIgnoreCase` (SQL `lower` не эквивалентен), сохранить результат аудита и исключить параллельные старые writers/прямые SQL imports. Перезапуск сервера сам по себе не обновляет старые WPF-клиенты с прямой записью в БД. Rollback runtime возвращает прежний риск конкурентных дублей; очистка или переименование истории не выполняется. Canonical backup, isolated production-copy exact-tree smoke и отдельный deploy gate сохраняются.

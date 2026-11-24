@@ -138,7 +138,7 @@ public sealed class OrderMarkingExportPreviewTests
         Assert.True(export.IsSuccessStatusCode);
         Assert.NotNull(previewPayload);
         Assert.Equal(600, Assert.Single(previewPayload.Lines).Qty);
-        Assert.Equal(600, Assert.Single(harness.MarkingOrders).RequestedQuantity);
+        Assert.Empty(harness.MarkingOrders);
     }
 
     [Fact]
@@ -222,8 +222,8 @@ public sealed class OrderMarkingExportPreviewTests
 
         var service = new OrderMarkingExportService(harness.Store);
         var summary = Assert.Single(service.Export(10, new DateTime(2026, 5, 8, 13, 0, 0, DateTimeKind.Utc)).Lines);
-        Assert.Equal(0, summary.ExportQty);
-        Assert.Equal(1890, summary.ExistingCodeQty);
+        Assert.Equal(1890, summary.ExportQty);
+        Assert.Equal(0, summary.ExistingCodeQty);
 
         var preview = service.Preview(10);
 
@@ -279,7 +279,7 @@ public sealed class OrderMarkingExportPreviewTests
             "0",
             secondExport.Headers.GetValues("X-FlowStock-Marking-Created-Qty").Single());
         Assert.Equal(
-            "600",
+            "0",
             secondExport.Headers.GetValues("X-FlowStock-Marking-Reused-Qty").Single());
     }
 

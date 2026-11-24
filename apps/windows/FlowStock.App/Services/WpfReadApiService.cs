@@ -780,6 +780,7 @@ public sealed class WpfReadApiService
         result = null;
         error = null;
 
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             var configuration = LoadConfiguration();
@@ -813,10 +814,24 @@ public sealed class WpfReadApiService
             using var payload = JsonDocument.Parse(json);
             return TryMapHuBindingManageApplySuccess(payload.RootElement, out result);
         }
+        catch (OperationCanceledException ex)
+        {
+            _logger.Error("WPF hu-bindings-manage-apply-final timed out; persisted state must be checked before retry", ex);
+            error = new WpfHuBindingManageApplyError
+            {
+                ErrorCode = "HU_BINDING_TIMEOUT",
+                Message = "Сервер не ответил вовремя. Обновите привязки HU и проверьте фактическое состояние перед повтором."
+            };
+            return false;
+        }
         catch (Exception ex)
         {
             _logger.Error("WPF read API failed for hu-bindings-manage-apply-final", ex);
             return false;
+        }
+        finally
+        {
+            _logger.Info($"WPF hu-bindings-manage-apply-final completed elapsed_ms={elapsed.ElapsedMilliseconds}");
         }
     }
 
@@ -922,16 +937,20 @@ public sealed class WpfReadApiService
             request.Content = new StringContent(string.Empty);
         }
 
-        using var response = client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead)
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(configuration.TimeoutSeconds));
+        _logger.Info($"WPF mutation request path={relativePath} timeout_seconds={configuration.TimeoutSeconds}");
+        using var response = client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
             .ConfigureAwait(false)
             .GetAwaiter()
             .GetResult();
         statusCode = (int)response.StatusCode;
-        json = response.Content.ReadAsStringAsync()
+        json = response.Content.ReadAsStringAsync(timeout.Token)
             .ConfigureAwait(false)
             .GetAwaiter()
             .GetResult();
 
+        _logger.Info($"WPF mutation response path={relativePath} status={statusCode} elapsed_ms={elapsed.ElapsedMilliseconds}");
         if (!response.IsSuccessStatusCode)
         {
             _logger.Warn($"WPF read API request failed: {relativePath} -> {statusCode} {response.ReasonPhrase}");

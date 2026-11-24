@@ -76,7 +76,7 @@ public sealed class MarkingValidationTests
     }
 
     [Fact]
-    public void ProductionReceiptWithProductionNeedMarkingOrder_AutoBindsCodesAndCloses()
+    public void ProductionReceiptWithProductionNeedMarkingOrder_LeavesHistoricalCodesUnboundAndCloses()
     {
         var harness = CreateHarnessWithOrder(OrderType.Internal);
         var markingOrderId = SeedProductionNeedMarkingOrder(harness, requestedQuantity: 5);
@@ -86,7 +86,7 @@ public sealed class MarkingValidationTests
 
         Assert.True(result.Success);
         Assert.Empty(result.Errors);
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Equal(0, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
         Assert.Single(harness.LedgerEntries);
         Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
     }
@@ -96,18 +96,12 @@ public sealed class MarkingValidationTests
     {
         var harness = CreateHarnessWithOrder(OrderType.Internal);
         var markingOrderId = SeedProductionNeedMarkingOrder(harness, requestedQuantity: 5);
-        var export = new FlowStock.Core.Services.MarkingExcelService(harness.Store)
-            .Export(new[] { markingOrderId }, Array.Empty<long>(), DateTime.Parse("2026-05-01T10:00:00"));
-
-        Assert.True(export.IsSuccess);
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.MarkingOrderId == markingOrderId));
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.Status == FlowStock.Core.Models.Marking.MarkingCodeStatus.Reserved));
-
+        harness.SeedMarkingCodes(markingOrderId, count: 5, gtin: "04601234567890");
         var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
 
         Assert.True(result.Success);
         Assert.Empty(result.Errors);
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Equal(0, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
         Assert.Single(harness.LedgerEntries);
         Assert.Equal(DocStatus.Closed, harness.GetDoc(1).Status);
     }
@@ -164,12 +158,12 @@ public sealed class MarkingValidationTests
 
         Assert.True(result.Success);
         Assert.Empty(result.Errors);
-        Assert.Equal(3, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Equal(0, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
         Assert.Single(harness.LedgerEntries);
     }
 
     [Fact]
-    public void ProductionReceiptWithProductionNeedMarkingOrder_BindsOnlyFreeCodesAndCloses()
+    public void ProductionReceiptWithProductionNeedMarkingOrder_LeavesFreeCodesUntouchedAndCloses()
     {
         var harness = CreateHarnessWithOrder(OrderType.Internal);
         var markingOrderId = SeedProductionNeedMarkingOrder(harness, requestedQuantity: 5);
@@ -180,13 +174,13 @@ public sealed class MarkingValidationTests
 
         Assert.True(result.Success);
         Assert.Empty(result.Errors);
-        Assert.Equal(4, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Equal(0, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
         Assert.Equal(1, harness.MarkingCodes.Count(code => code.ReceiptLineId == 777));
         Assert.Single(harness.LedgerEntries);
     }
 
     [Fact]
-    public void ProductionReceiptWithPartiallyBoundProductionCodes_BindsOnlyMissingCodes()
+    public void ProductionReceiptWithPartiallyBoundProductionCodes_LeavesExistingBindingsUnchanged()
     {
         var harness = CreateHarnessWithOrder(OrderType.Internal);
         var markingOrderId = SeedProductionNeedMarkingOrder(harness, requestedQuantity: 5);
@@ -196,7 +190,7 @@ public sealed class MarkingValidationTests
         var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
 
         Assert.True(result.Success);
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Equal(2, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
         Assert.Single(harness.LedgerEntries);
     }
 
@@ -222,7 +216,7 @@ public sealed class MarkingValidationTests
         var result = harness.CreateService().TryCloseDoc(1, allowNegative: false);
 
         Assert.True(result.Success);
-        Assert.Equal(5, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
+        Assert.Equal(0, harness.MarkingCodes.Count(code => code.ReceiptLineId == 100));
         Assert.Single(harness.LedgerEntries);
     }
 

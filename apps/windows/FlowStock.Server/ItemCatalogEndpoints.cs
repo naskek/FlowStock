@@ -327,7 +327,6 @@ LEFT JOIN vat_rates vr ON vr.id = i.default_sale_vat_rate_id
             item_type_is_visible_in_product_catalog = item.ItemTypeIsVisibleInProductCatalog,
             item_type_enable_min_stock_control = item.ItemTypeEnableMinStockControl,
             item_type_enable_marking = item.ItemTypeEnableMarking,
-            cz_marking_required = item.IsChestnyZnakMarkingRequired,
             min_stock_qty = item.MinStockQty,
             default_sale_price_gross = item.DefaultSalePriceGross,
             default_sale_vat_rate_id = item.DefaultSaleVatRateId,

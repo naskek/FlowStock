@@ -6,9 +6,9 @@ namespace FlowStock.Server.Tests.UpdateOrder.Infrastructure;
 internal static class UpdateOrderHttpScenario
 {
     public static (CloseDocumentHarness Harness, InMemoryApiDocStore ApiStore, long OrderId) CreateCustomerScenario(
-        decimal? firstLineUnitPriceGross = 100m)
+        decimal? firstLineUnitPriceGross = 100m, bool optimizedOrderRefs = false)
     {
-        var harness = new CloseDocumentHarness();
+        var harness = new CloseDocumentHarness(optimizedOrderRefs);
         harness.SeedPartner(new Partner
         {
             Id = 200,

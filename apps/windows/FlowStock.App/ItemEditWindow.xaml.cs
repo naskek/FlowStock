@@ -519,27 +519,9 @@ public partial class ItemEditWindow : Window
 
     private void UpdateMarkingStatusText()
     {
-        if (MarkingStatusText == null)
-        {
-            return;
-        }
-
-        var selectedType = ItemTypeCombo.SelectedItem as ItemTypeOption;
-        var visibility = selectedType?.EnableMarking == true
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        MarkingStatusLabel.Visibility = visibility;
-        MarkingStatusText.Visibility = visibility;
-
-        if (selectedType?.EnableMarking == true)
-        {
-            MarkingStatusText.Text = string.IsNullOrWhiteSpace(GtinBox.Text)
-                ? "нет, GTIN не заполнен"
-                : "да";
-            return;
-        }
-
-        MarkingStatusText.Text = string.Empty;
+        if (MarkingStatusText == null) return;
+        MarkingStatusLabel.Visibility = Visibility.Collapsed;
+        MarkingStatusText.Visibility = Visibility.Collapsed;
     }
 
     private sealed record TaraOption(long? Id, string Name)

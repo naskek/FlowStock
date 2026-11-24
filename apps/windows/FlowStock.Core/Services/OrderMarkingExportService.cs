@@ -1,8 +1,8 @@
-using System.Globalization;
 using System.Text;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
-using FlowStock.Core.Models.Marking;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace FlowStock.Core.Services;
 
@@ -16,7 +16,12 @@ public sealed class OrderMarkingExportService
         _data = data;
     }
 
-    public OrderMarkingExportPreviewResult Preview(long orderId)
+    public OrderMarkingExportPreviewResult Preview(long orderId) =>
+        _data is IReadOnlySnapshotStore snapshots
+            ? snapshots.ReadSnapshot(store => new OrderMarkingExportService(store).PreviewSnapshot(orderId))
+            : PreviewSnapshot(orderId);
+
+    private OrderMarkingExportPreviewResult PreviewSnapshot(long orderId)
     {
         var order = _data.GetOrder(orderId);
         if (order == null)
@@ -24,9 +29,9 @@ public sealed class OrderMarkingExportService
             return OrderMarkingExportPreviewResult.Failure("Заказ не найден.");
         }
 
-        if (order.Status == OrderStatus.Shipped)
+        if (order.Status is OrderStatus.Shipped or OrderStatus.Cancelled or OrderStatus.Merged)
         {
-            return OrderMarkingExportPreviewResult.Failure("Нельзя формировать Excel ЧЗ для выполненного заказа.");
+            return OrderMarkingExportPreviewResult.Failure("Нельзя формировать Excel ЧЗ для завершённого или отменённого заказа.");
         }
 
         var huCodesByLine = order.Type == OrderType.Customer
@@ -37,7 +42,7 @@ public sealed class OrderMarkingExportService
             {
                 huCodesByLine.TryGetValue(summary.OrderLineId, out var huCodes);
                 huCodes ??= Array.Empty<string>();
-                var previewQty = Math.Max(0, summary.ExportQty) + Math.Max(0, summary.ExistingCodeQty);
+                var previewQty = Math.Max(0, summary.ExportQty);
                 return new OrderMarkingExportPreviewLine(
                     summary.OrderLineId,
                     summary.ItemId,
@@ -59,159 +64,39 @@ public sealed class OrderMarkingExportService
             order.OrderRef,
             lines.Count,
             lines.Sum(line => line.Qty),
-            lines);
+            lines) { Snapshot = Convert.ToHexString(SHA256.HashData(
+                JsonSerializer.SerializeToUtf8Bytes(new { order.Id, order.OrderRef, order.Status, lines }))) };
     }
 
-    public OrderMarkingExportResult Export(long orderId, DateTime generatedAt)
+    public OrderMarkingExportResult Export(long orderId, DateTime generatedAt,
+        IReadOnlyCollection<long>? selectedLineIds = null, string? expectedSnapshot = null)
     {
-        OrderMarkingExportResult? result = null;
-        try
-        {
-            _data.ExecuteInTransaction(scopedStore =>
-            {
-                if (!scopedStore.LockOrdersForUpdate(new[] { orderId }))
-                {
-                    result = OrderMarkingExportResult.Failure("Заказ не найден.");
-                    return;
-                }
-
-                result = new OrderMarkingExportService(scopedStore).ExportLocked(orderId, generatedAt);
-            });
-        }
-        catch (OrderMarkingExportRollbackException ex)
-        {
-            return OrderMarkingExportResult.Failure(ex.Message);
-        }
-
-        return result ?? OrderMarkingExportResult.Failure("Не удалось сформировать Excel ЧЗ.");
+        if (_data is IReadOnlySnapshotStore snapshots)
+            return snapshots.ReadSnapshot(store => new OrderMarkingExportService(store)
+                .ExportSnapshot(orderId, generatedAt, selectedLineIds, expectedSnapshot));
+        return ExportSnapshot(orderId, generatedAt, selectedLineIds, expectedSnapshot);
     }
 
-    private OrderMarkingExportResult ExportLocked(long orderId, DateTime generatedAt)
+    private OrderMarkingExportResult ExportSnapshot(long orderId, DateTime generatedAt,
+        IReadOnlyCollection<long>? selectedLineIds, string? expectedSnapshot)
     {
-        var order = _data.GetOrder(orderId);
-        if (order == null)
-        {
-            return OrderMarkingExportResult.Failure("Заказ не найден.");
-        }
-
-        if (order.Status == OrderStatus.Shipped)
-        {
-            return OrderMarkingExportResult.Failure("Нельзя формировать Excel ЧЗ для выполненного заказа.");
-        }
-
-        var lines = BuildLineSummaries(order).ToList();
-        if (lines.Count == 0)
-        {
-            return new OrderMarkingExportResult(
-                true,
-                "В заказе нет маркируемых строк.",
-                null,
-                string.Empty,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                Array.Empty<OrderMarkingExportLineSummary>());
-        }
-
-        var itemIds = lines.Select(line => line.ItemId).Distinct().ToArray();
-        var activeTasks = _data.GetMarkingOrdersByItemIds(itemIds)
-            .Where(task => task.ItemId.HasValue
-                           && !IsTerminalFailed(task.Status)
-                           && IsOrderLinkedTask(task, order.Id))
-            .ToList();
-        var tasksByItem = activeTasks
-            .GroupBy(task => task.ItemId!.Value)
-            .ToDictionary(group => group.Key, group => group.ToList());
-
-        var taskIdsToExport = new List<Guid>();
-        var taskIdsAvailableForReexport = new List<Guid>();
-        var createdCodeQty = 0d;
-        var reusedCodeQty = 0d;
-        var exportLineCount = 0;
-        var sequence = 1;
-
-        foreach (var group in lines.GroupBy(line => line.ItemId))
-        {
-            var itemRequiredQty = group.Sum(line => Math.Max(0, line.ExportQty + line.ExistingCodeQty));
-            if (itemRequiredQty <= QtyTolerance)
-            {
-                continue;
-            }
-
-            var itemTasks = tasksByItem.TryGetValue(group.Key, out var existing)
-                ? existing
-                : new List<MarkingOrder>();
-            var taskRequestedQty = itemTasks.Sum(task => Math.Max(0, task.RequestedQuantity));
-            var taskCodeQtyById = itemTasks.ToDictionary(task => task.Id, task => _data.CountMarkingCodesByMarkingOrder(task.Id));
-            var taskCodeQty = taskCodeQtyById.Sum(pair => pair.Value);
-            reusedCodeQty += Math.Min(itemRequiredQty, taskCodeQty);
-            taskIdsAvailableForReexport.AddRange(itemTasks
-                .Where(task => taskCodeQtyById.TryGetValue(task.Id, out var codes) && codes > 0)
-                .Select(task => task.Id));
-
-            foreach (var task in itemTasks.Where(task => taskCodeQtyById.TryGetValue(task.Id, out var codes)
-                                                         && codes + QtyTolerance < task.RequestedQuantity))
-            {
-                taskIdsToExport.Add(task.Id);
-                createdCodeQty += Math.Max(0, task.RequestedQuantity - taskCodeQtyById[task.Id]);
-            }
-
-            var missingTaskQty = Math.Max(0, itemRequiredQty - taskRequestedQty);
-            if (missingTaskQty <= QtyTolerance)
-            {
-                continue;
-            }
-
-            var line = group.First();
-            var requestedQty = (int)Math.Ceiling(missingTaskQty);
-            var newTask = CreateMarkingOrder(order, line, requestedQty, generatedAt, sequence++);
-            _data.AddMarkingOrder(newTask);
-            taskIdsToExport.Add(newTask.Id);
-            createdCodeQty += requestedQty;
-        }
-
-        taskIdsToExport = taskIdsToExport.Distinct().ToList();
-        if (taskIdsToExport.Count == 0)
-        {
-            taskIdsToExport = taskIdsAvailableForReexport
-                .Distinct()
-                .ToList();
-        }
-
-        MarkingExcelExportResult? excelResult = null;
-        if (taskIdsToExport.Count > 0)
-        {
-            excelResult = new MarkingExcelService(_data).Export(taskIdsToExport, Array.Empty<long>(), generatedAt);
-            if (!excelResult.IsSuccess || excelResult.FileBytes == null)
-            {
-                throw new OrderMarkingExportRollbackException(
-                    excelResult.Error ?? "Нет строк для формирования файла ЧЗ.");
-            }
-
-            exportLineCount = excelResult.Rows.Count;
-        }
-
-        var requiredQty = lines.Sum(line => line.RequiredQty);
-        var coveredQty = lines.Sum(line => line.CoveredQty) + reusedCodeQty + createdCodeQty;
-        var message = excelResult?.FileBytes != null
-            ? $"Excel ЧЗ сформирован из заказа. Строк: {lines.Count}, строк Excel: {exportLineCount}, кодов создано: {createdCodeQty:0.###}, переиспользовано: {reusedCodeQty:0.###}."
-            : "Маркировка по заказу уже проведена: новых кодов создавать не нужно.";
-
-        return new OrderMarkingExportResult(
-            true,
-            message,
-            excelResult?.FileBytes,
-            BuildFileName(order, generatedAt),
-            lines.Count,
-            exportLineCount,
-            requiredQty,
-            coveredQty,
-            createdCodeQty,
-            reusedCodeQty,
-            lines);
+        var preview = PreviewSnapshot(orderId);
+        if (!preview.IsSuccess) return OrderMarkingExportResult.Failure(preview.Message);
+        if (expectedSnapshot != null && expectedSnapshot != preview.Snapshot)
+            return OrderMarkingExportResult.Failure("Заказ изменился. Откройте предпросмотр повторно.");
+        var ids = selectedLineIds?.ToHashSet();
+        if (ids != null && (ids.Count == 0 || ids.Any(id => !preview.Lines.Any(line => line.OrderLineId == id))))
+            return OrderMarkingExportResult.Failure("Выберите существующие строки предпросмотра.");
+        var lines = preview.Lines.Where(line => ids == null || ids.Contains(line.OrderLineId)).ToArray();
+        if (lines.Length == 0) return OrderMarkingExportResult.Failure("Нет строк для формирования Excel ЧЗ.");
+        var rows = lines.Select(line => new MarkingExportRow
+            { ItemName = line.ItemName, Gtin = line.Gtin, Qty = line.Qty }).ToArray();
+        return new OrderMarkingExportResult(true, "Excel ЧЗ сформирован.",
+            OrderExcelWorkbook.Build(rows),
+            $"chestny_znak_order_{NormalizeFilePart(preview.OrderRef)}_{generatedAt:yyyyMMdd_HHmmss}.xlsx",
+            lines.Length, rows.Length, lines.Sum(line => line.Qty), 0, 0, 0,
+            lines.Select(line => new OrderMarkingExportLineSummary(line.OrderLineId, line.ItemId,
+                line.ItemName, line.Gtin, line.Qty, 0, 0, line.Qty)).ToArray());
     }
 
     private IEnumerable<OrderMarkingExportLineSummary> BuildLineSummaries(Order order)
@@ -237,17 +122,6 @@ public sealed class OrderMarkingExportService
             yield break;
         }
 
-        var itemIds = markableLines.Select(pair => pair.Line.ItemId).Distinct().ToArray();
-        var existingOrderCodesByItem = _data.GetMarkingOrdersByItemIds(itemIds)
-            .Where(task => task.ItemId.HasValue
-                           && !IsTerminalFailed(task.Status)
-                           && IsOrderLinkedTask(task, order.Id))
-            .GroupBy(task => task.ItemId!.Value)
-            .ToDictionary(
-                group => group.Key,
-                group => (double)group.Sum(task => _data.CountMarkingCodesByMarkingOrder(task.Id)));
-
-        var remainingCodeCoverByItem = new Dictionary<long, double>(existingOrderCodesByItem);
         foreach (var pair in markableLines)
         {
             var line = pair.Line;
@@ -266,13 +140,8 @@ public sealed class OrderMarkingExportService
                     : Math.Max(0, requiredQty - stockCoveredQty);
             }
 
-            remainingCodeCoverByItem.TryGetValue(line.ItemId, out var codeCover);
-            var codeCoveredQty = Math.Min(Math.Max(0, productionBaseQty), codeCover);
-            remainingCodeCoverByItem[line.ItemId] = Math.Max(0, codeCover - codeCoveredQty);
-            var coveredQty = stockCoveredQty + codeCoveredQty;
-            var exportQty = order.Type == OrderType.Internal
-                ? Math.Max(0, requiredQty - codeCoveredQty)
-                : Math.Max(0, productionBaseQty - codeCoveredQty);
+            var coveredQty = stockCoveredQty;
+            var exportQty = Math.Max(0, productionBaseQty);
 
             yield return new OrderMarkingExportLineSummary(
                 line.Id,
@@ -281,7 +150,7 @@ public sealed class OrderMarkingExportService
                 item.Gtin!.Trim(),
                 requiredQty,
                 coveredQty,
-                codeCoveredQty,
+                0,
                 exportQty);
         }
     }
@@ -380,57 +249,6 @@ public sealed class OrderMarkingExportService
             : qty;
     }
 
-    private static MarkingOrder CreateMarkingOrder(
-        Order order,
-        OrderMarkingExportLineSummary line,
-        int requestedQty,
-        DateTime generatedAt,
-        int sequence)
-    {
-        return new MarkingOrder
-        {
-            Id = Guid.NewGuid(),
-            OrderId = order.Id,
-            ItemId = line.ItemId,
-            Gtin = line.Gtin,
-            RequestedQuantity = requestedQty,
-            RequestNumber = BuildRequestNumber(order.Id, line.ItemId, generatedAt, sequence),
-            Status = MarkingOrderStatus.WaitingForCodes,
-            Notes = order.Type == OrderType.Internal
-                ? "Order-based ЧЗ для внутреннего производственного заказа."
-                : "Order-based ЧЗ для клиентского заказа.",
-            SourceType = MarkingNeedCreationService.ProductionOrderSourceType,
-            SourceOrderId = order.Id,
-            RequestedAt = generatedAt,
-            CreatedAt = generatedAt,
-            UpdatedAt = generatedAt
-        };
-    }
-
-    private static bool IsOrderLinkedTask(MarkingOrder task, long orderId)
-    {
-        return task.OrderId == orderId || task.SourceOrderId == orderId;
-    }
-
-    private static bool IsTerminalFailed(string? status)
-    {
-        return string.Equals(status, MarkingOrderStatus.Cancelled, StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, MarkingOrderStatus.Failed, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string BuildRequestNumber(long orderId, long itemId, DateTime generatedAt, int sequence)
-    {
-        return string.Create(
-            CultureInfo.InvariantCulture,
-            $"ORDER-{orderId}-{itemId}-{generatedAt:yyyyMMddHHmmssfff}-{sequence:000}");
-    }
-
-    private static string BuildFileName(Order order, DateTime generatedAt)
-    {
-        var normalizedRef = NormalizeFilePart(order.OrderRef);
-        return $"chestny_znak_order_{normalizedRef}_{generatedAt:yyyyMMdd_HHmmss}.xlsx";
-    }
-
     private static string NormalizeFilePart(string value)
     {
         var builder = new StringBuilder();
@@ -443,11 +261,4 @@ public sealed class OrderMarkingExportService
         return string.IsNullOrWhiteSpace(result) ? "order" : result;
     }
 
-    private sealed class OrderMarkingExportRollbackException : Exception
-    {
-        public OrderMarkingExportRollbackException(string message)
-            : base(message)
-        {
-        }
-    }
 }

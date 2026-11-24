@@ -23,11 +23,11 @@ public sealed class OrderDetailsPalletPlanUiSourceTests
     }
 
     [Fact]
-    public void PrintedPalletCleanup_KeepsExistingMarkingWarning()
+    public void PrintedPalletCleanup_HasNoMarkingWarning()
     {
         var source = ReadRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs");
 
-        Assert.Contains("if (dialog.SelectedRowsHaveMarkingWarning)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (dialog.SelectedRowsHaveMarkingWarning)", source, StringComparison.Ordinal);
     }
 
     private static string ReadRepoFile(params string[] parts)

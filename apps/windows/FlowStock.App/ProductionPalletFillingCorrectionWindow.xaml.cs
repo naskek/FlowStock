@@ -41,7 +41,6 @@ public partial class ProductionPalletFillingCorrectionWindow : Window
                 _ => "Коррекция недоступна"
             };
             SourceText.Text = $"Source PRD: {_preview.SourcePrdRef ?? "—"} (ID {_preview.SourcePrdDocId?.ToString() ?? "—"})";
-            MarkingText.Text = $"Кодов маркировки: {_preview.MarkingCodeCount}";
             LedgerText.Text = _preview.LedgerInversion.Count == 0
                 ? "Ledger-инверсия: не требуется"
                 : "Ledger-инверсия: " + string.Join(

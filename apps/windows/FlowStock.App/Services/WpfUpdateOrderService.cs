@@ -26,6 +26,20 @@ public sealed class WpfUpdateOrderService
         WpfUpdateOrderContext context,
         CancellationToken cancellationToken = default)
     {
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            return await UpdateOrderCoreAsync(context, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _logger.Info($"WPF update order completed order_id={context.OrderId} elapsed_ms={elapsed.ElapsedMilliseconds} caller_cancelled={cancellationToken.IsCancellationRequested}");
+        }
+    }
+
+    private async Task<WpfUpdateOrderResult> UpdateOrderCoreAsync(
+        WpfUpdateOrderContext context, CancellationToken cancellationToken)
+    {
         var configuration = LoadConfiguration();
         var request = new UpdateOrderApiRequest
         {
@@ -62,6 +76,7 @@ public sealed class WpfUpdateOrderService
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(configuration.RequestTimeoutSeconds));
+        _logger.Info($"WPF update order timeout_seconds={configuration.RequestTimeoutSeconds} order_id={context.OrderId}");
 
         UpdateOrderApiCallResult apiCall;
         try

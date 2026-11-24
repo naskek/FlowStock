@@ -287,11 +287,49 @@ public sealed class WpfCompatibilityTests
         if (!authorized) Assert.Equal("INVALID_SESSION", result.ErrorCode);
     }
 
+    [Fact]
+    public async Task HuManage_TimeoutAlsoBoundsBodyAfterSuccessfulHeaders()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        await using var app = builder.Build();
+        var headersSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBody = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        app.MapPost("/api/orders/hu-bindings/manage/apply-final", async context =>
+        {
+            context.Response.ContentType = "application/json";
+            await context.Response.StartAsync();
+            headersSent.TrySetResult();
+            await releaseBody.Task;
+            await context.Response.WriteAsync("{}");
+        });
+        await app.StartAsync();
+        try
+        {
+            var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+            using var temp = new TempSettingsScope(new Uri(address), true, timeoutSeconds: 1);
+            var service = new WpfReadApiService(new SettingsService(temp.SettingsPath), new FileLogger(temp.LogPath));
+            WpfHuBindingManageApplyError? error = null;
+            var call = Task.Run(() => service.TryApplyManageHuBindings(new WpfHuBindingManageApplyRequest(), out _, out error));
+            await headersSent.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            // Body is never released before the client returns: the previous code hangs here.
+            Assert.False(await call.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal("HU_BINDING_TIMEOUT", error?.ErrorCode);
+            Assert.Contains("проверьте фактическое состояние", error!.Message);
+            Assert.Contains("hu-bindings-manage-apply-final completed elapsed_ms=", File.ReadAllText(temp.LogPath));
+        }
+        finally
+        {
+            releaseBody.TrySetResult();
+            await app.StopAsync();
+        }
+    }
+
     private sealed class TempSettingsScope : IDisposable
     {
         private readonly string _dir;
 
-        public TempSettingsScope(Uri baseAddress, bool useServerUpdateOrder, string? machineKey = CloseDocumentHttpHost.WpfAdminApiKey)
+        public TempSettingsScope(Uri baseAddress, bool useServerUpdateOrder, string? machineKey = CloseDocumentHttpHost.WpfAdminApiKey, int timeoutSeconds = 10)
         {
             _dir = Path.Combine(Path.GetTempPath(), "FlowStock.Server.Tests", "UpdateOrderWpf", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_dir);
@@ -305,7 +343,7 @@ public sealed class WpfCompatibilityTests
                 {
                     UseServerUpdateOrder = useServerUpdateOrder,
                     BaseUrl = baseAddress.ToString().TrimEnd('/'),
-                    CloseTimeoutSeconds = 10,
+                    CloseTimeoutSeconds = timeoutSeconds,
                     AllowInvalidTls = false,
                     WpfAdminApiKey = machineKey
                 }

@@ -23,11 +23,7 @@ using Npgsql;
 var builder = WebApplication.CreateBuilder(args);
 
 var postgresConnectionString = BuildPostgresConnectionString(builder.Configuration);
-if (MarkingStatusBackfillCommand.TryRun(args, postgresConnectionString, out var markingMaintenanceExitCode))
-{
-    Environment.ExitCode = markingMaintenanceExitCode;
-    return;
-}
+
 
 if (OrderReservationBackfillCommand.TryRun(args, postgresConnectionString, out var maintenanceExitCode))
 {
@@ -109,7 +105,6 @@ builder.Services.AddSingleton(new PcWebSessionStore(postgresConnectionString));
 builder.Services.AddSingleton<IPcWebSessionResolver>(sp => sp.GetRequiredService<PcWebSessionStore>());
 builder.Services.AddSingleton(new WpfMachineAuthorization(wpfAdminApiKey));
 builder.Services.AddSingleton<CatalogAuthorization>();
-builder.Services.AddSingleton<FlowStock.Core.Abstractions.IMarkingCutoverPreflightStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.ITsdHuResolverStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IHuOperatorFactsStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString));
@@ -144,7 +139,6 @@ builder.Services.AddSingleton<PartnerRoleResolver>();
 builder.Services.AddSingleton<IPartnerRoleResolver>(sp => sp.GetRequiredService<PartnerRoleResolver>());
 builder.Services.AddSingleton<ImportService>();
 builder.Services.AddSingleton<ItemPackagingService>();
-builder.Services.AddSingleton<MarkingExcelService>();
 builder.Services.AddSingleton<LiveUpdateHub>();
 builder.Services.AddSingleton(discoveryOptions);
 builder.Services.AddSingleton(telegramNotifications);
@@ -178,7 +172,6 @@ OrderRedistributionEndpoint.Map(app);
 OrderProducedHuReservationEndpoint.Map(app);
 OrderAutoRedistributionEndpoint.Map(app);
 OrderMarkingExportEndpoint.Map(app);
-MarkingCutoverEndpoints.Map(app);
 OrderLinesEndpoint.Map(app);
 PartnerItemSalePriceEndpoints.Map(app);
 CommercialPriceListEndpoint.Map(app);
@@ -2580,115 +2573,6 @@ app.MapGet("/api/reports/production-need", (HttpRequest request, IDataStore stor
     return Results.Ok(rows);
 });
 
-app.MapGet("/api/marking/orders", (HttpRequest request, MarkingExcelService marking, IDataStore store) =>
-{
-    var includeCompleted = string.Equals(request.Query["include_completed"], "1", StringComparison.OrdinalIgnoreCase)
-                           || string.Equals(request.Query["include_completed"], "true", StringComparison.OrdinalIgnoreCase);
-    var queueRows = marking.GetOrderQueue(includeCompleted);
-    var orderIds = queueRows
-        .Where(row => row.OrderId.HasValue)
-        .Select(row => row.OrderId!.Value)
-        .Distinct()
-        .ToArray();
-    IReadOnlyDictionary<long, IReadOnlyList<OrderLine>> linesByOrderId = orderIds.Length == 0
-        ? new Dictionary<long, IReadOnlyList<OrderLine>>()
-        : store.GetOrderLinesByOrderIds(orderIds);
-    IReadOnlyDictionary<long, IReadOnlyDictionary<long, double>> shippedByOrderId = orderIds.Length == 0
-        ? new Dictionary<long, IReadOnlyDictionary<long, double>>()
-        : store.GetShippedTotalsByOrderIds(orderIds);
-    var ordersById = orderIds.Length == 0
-        ? new Dictionary<long, Order>()
-        : store.GetOrdersByIds(orderIds).ToDictionary(order => order.Id);
-    var progressByOrderId = orderIds.ToDictionary(
-        orderId => orderId,
-        orderId =>
-        {
-            var lines = linesByOrderId.GetValueOrDefault(orderId) ?? Array.Empty<OrderLine>();
-            var shippedByLine = shippedByOrderId.GetValueOrDefault(orderId)
-                                ?? new Dictionary<long, double>();
-            return new OrderShipmentProgress
-            {
-                OrderedQty = lines.Sum(line => Math.Max(0d, line.QtyOrdered)),
-                ShippedQty = lines.Sum(line => shippedByLine.GetValueOrDefault(line.Id)),
-                RemainingQty = lines.Sum(line => Math.Max(
-                    0d,
-                    line.QtyOrdered - shippedByLine.GetValueOrDefault(line.Id)))
-            };
-        });
-    var rows = queueRows
-        .Select(row =>
-        {
-            var orderType = row.OrderId.HasValue
-                            && ordersById.TryGetValue(row.OrderId.Value, out var order)
-                ? order.Type
-                : OrderType.Customer;
-            return new
-            {
-                marking_order_id = row.MarkingOrderId?.ToString("D"),
-                order_id = row.OrderId,
-                order_ref = row.OrderRef,
-                partner_name = row.PartnerName,
-                partner_code = row.PartnerCode,
-                partner_display = row.PartnerDisplay,
-                source_type = row.SourceType,
-                source_order_id = row.SourceOrderId,
-                item_id = row.ItemId,
-                item_name = row.ItemName,
-                gtin = row.Gtin,
-                item_display = row.ItemName,
-                requested_quantity = row.RequestedQuantity,
-                status = row.TaskStatus ?? MarkingStatusMapper.ToString(row.MarkingStatus),
-                codes_total = row.CodesTotal,
-                codes_free = row.CodesFree,
-                codes_bound = row.CodesBound,
-                display_source = row.DisplaySource ?? row.PartnerDisplay,
-                effective_status = row.EffectiveStatus ?? row.TaskStatus ?? MarkingStatusMapper.ToString(row.MarkingStatus),
-                display_status = row.DisplayStatus ?? row.TaskStatus ?? MarkingStatusMapper.ToDisplayName(row.MarkingStatus),
-                order_status = OrderStatusMapper.StatusToString(row.OrderStatus),
-                order_status_display = OrderStatusMapper.StatusToDisplayName(row.OrderStatus),
-                order_status_presentation = OrderOperatorStatusResolver.Resolve(
-                    row.OrderStatus,
-                    orderType,
-                    row.OrderId.HasValue ? progressByOrderId.GetValueOrDefault(row.OrderId.Value) : null),
-                due_date = row.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                marking_status = MarkingStatusMapper.ToString(row.MarkingStatus),
-                marking_effective_status = MarkingStatusMapper.ToString(row.MarkingStatus),
-                marking_status_display = MarkingStatusMapper.ToDisplayName(row.MarkingStatus),
-                marking_line_count = row.MarkingLineCount,
-                marking_code_count = row.MarkingCodeCount,
-                last_generated_at = row.LastGeneratedAt?.ToString("O", CultureInfo.InvariantCulture)
-            };
-        })
-        .ToList();
-    return Results.Ok(rows);
-});
-
-MarkingCreateFromProductionNeedsEndpoint.Map(app);
-
-app.MapPost("/api/marking/export", async (HttpRequest request, MarkingExcelService marking) =>
-{
-    var parsed = await ParseJsonBody<MarkingExportRequest>(request);
-    if (!parsed.IsSuccess)
-    {
-        return parsed.Error!;
-    }
-
-    var result = marking.Export(
-        parsed.Value?.MarkingOrderIds ?? (IReadOnlyCollection<Guid>)Array.Empty<Guid>(),
-        parsed.Value?.OrderIds ?? (IReadOnlyCollection<long>)Array.Empty<long>(),
-        DateTime.Now);
-    if (!result.IsSuccess || result.FileBytes == null)
-    {
-        return Results.BadRequest(new ApiResult(false, result.Error ?? "Нет строк для формирования файла ЧЗ."));
-    }
-
-    var fileName = $"chestny_znak_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
-    return Results.File(
-        result.FileBytes,
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        fileName);
-});
-
 app.MapGet("/api/stock/by-barcode/{barcode}", (string barcode, IDataStore store) =>
 {
     if (string.IsNullOrWhiteSpace(barcode))
@@ -2777,53 +2661,6 @@ app.MapGet("/api/hu-stock", (HttpRequest request, IDataStore store) =>
         if (item == null)
         {
             return Results.Ok(new List<object>());
-        }
-
-        if (item.IsMarked)
-        {
-            using var connection = OpenConnection(postgresConnectionString);
-            using var command = connection.CreateCommand();
-            command.CommandText = @"
-SELECT h.hu_code, c.location_id, COUNT(*)::double precision AS qty
-FROM km_code c
-JOIN hus h ON h.id = c.hu_id
-WHERE c.status = @status
-  AND c.hu_id IS NOT NULL
-  AND c.location_id IS NOT NULL
-  AND h.hu_code IS NOT NULL
-  AND (c.sku_id = @item_id OR (c.sku_id IS NULL AND @gtin14::text IS NOT NULL AND c.gtin14 = @gtin14::text))
-  AND (
-    c.order_id = @order_id::bigint
-    OR EXISTS (
-        SELECT 1
-        FROM km_code_batch b
-        WHERE b.id = c.batch_id AND b.order_id = @order_id::bigint
-    )
-  )
-GROUP BY h.hu_code, c.location_id
-ORDER BY h.hu_code;";
-            AddParam(command, "@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.OnHand));
-            AddParam(command, "@item_id", itemId);
-            AddParam(command, "@gtin14", string.IsNullOrWhiteSpace(item.Gtin) ? DBNull.Value : item.Gtin.Trim());
-            AddParam(command, "@order_id", orderId);
-            using var reader = command.ExecuteReader();
-            var list = new List<object>();
-            while (reader.Read())
-            {
-                if (reader.IsDBNull(0))
-                {
-                    continue;
-                }
-
-                list.Add(HuStockReadModelMapper.Map(
-                    itemId,
-                    reader.GetInt64(1),
-                    reader.GetString(0),
-                    reader.GetDouble(2),
-                    contextByKey));
-            }
-
-            return Results.Ok(list);
         }
 
         var filtered = store.GetHuStockRows()

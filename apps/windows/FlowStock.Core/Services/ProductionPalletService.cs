@@ -2126,9 +2126,6 @@ public sealed class ProductionPalletService
             .OrderBy(doc => doc.Id)
             .ToArray();
         var docsById = docs.ToDictionary(doc => doc.Id, doc => doc);
-        var markingGenerated = order.EffectiveMarkingStatus == MarkingStatus.Printed
-                               || order.MarkingExcelGeneratedAt.HasValue
-                               || order.MarkingPrintedAt.HasValue;
         var pallets = docs
             .SelectMany(doc => _data.GetProductionPalletsByDoc(doc.Id))
             .Where(pallet => pallet.OrderId == orderId)
@@ -2159,7 +2156,7 @@ public sealed class ProductionPalletService
                     IsSelectable = eligibility.IsEligible,
                     IsSelectedByDefault = eligibility.IsEligible,
                     DisabledReason = eligibility.DisabledReason,
-                    HasMarkingWarning = markingGenerated
+                    HasMarkingWarning = false
                                         && string.Equals(pallet.Status, ProductionPalletStatus.Printed, StringComparison.OrdinalIgnoreCase)
                 };
             })

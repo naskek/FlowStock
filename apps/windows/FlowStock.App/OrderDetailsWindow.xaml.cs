@@ -35,6 +35,7 @@ public partial class OrderDetailsWindow : Window
     private long? _orderId;
     private bool _isLoading;
     private bool _hasUnsavedChanges;
+    private bool _saveInProgress;
     private bool _allowCloseWithoutPrompt;
     private bool _suppressPartnerFilter;
     private bool _productionPalletHuLocked;
@@ -117,6 +118,7 @@ public partial class OrderDetailsWindow : Window
                && IsActive
                && !_isLoading
                && !_hasUnsavedChanges
+               && !_saveInProgress
                && !_isQtyPersistInProgress
                && !_liveRefreshInProgress
                && !IsOrderLinesGridInteracting();
@@ -380,15 +382,46 @@ public partial class OrderDetailsWindow : Window
         RestoreOrderLinesGridColumnWidthsDeferred(columnWidths);
     }
 
-    private void Save_Click(object sender, RoutedEventArgs e)
+    private async void Save_Click(object sender, RoutedEventArgs e)
     {
-        if (!TrySaveOrder(showFeedback: false))
-        {
+        if (_saveInProgress || !TryGetHeaderValues(false, out var orderRef, out var type, out var partnerId, out var dueDate, out var comment))
             return;
-        }
 
-        _allowCloseWithoutPrompt = true;
-        Close();
+        _saveInProgress = true;
+        var content = (UIElement)Content;
+        content.IsEnabled = false;
+        SaveStatusText.Text = "Сохранение…";
+        try
+        {
+            bool saved;
+            if (_orderId.HasValue)
+            {
+                var result = await _services.WpfUpdateOrders.UpdateOrderAsync(new WpfUpdateOrderContext(
+                    _orderId.Value, orderRef, type, partnerId, dueDate, OrderStatus.InProgress,
+                    comment, _lines.ToList(), false));
+                saved = ApplyUpdateOrderResult(result, showFeedback: false, reloadAfterPersist: false);
+            }
+            else
+            {
+                saved = TryCreateOrderViaServer(orderRef, type, partnerId, dueDate, comment, showFeedback: false);
+            }
+
+            if (saved)
+            {
+                _allowCloseWithoutPrompt = true;
+                Close();
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _saveInProgress = false;
+            content.IsEnabled = true;
+            SaveStatusText.Text = string.Empty;
+        }
     }
 
     private async void ExportMarking_Click(object sender, RoutedEventArgs e)
@@ -401,15 +434,7 @@ public partial class OrderDetailsWindow : Window
 
         if (!_orderId.HasValue || _hasUnsavedChanges)
         {
-            if (!TrySaveOrder(showFeedback: false))
-            {
-                return;
-            }
-        }
-
-        if (!_orderId.HasValue)
-        {
-            MessageBox.Show("Сначала сохраните заказ.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Сначала сохраните заказ. Excel формируется по сохранённым данным.", "Excel ЧЗ");
             return;
         }
 
@@ -438,7 +463,7 @@ public partial class OrderDetailsWindow : Window
                 return;
             }
 
-            var result = await _services.WpfMarkingApi.TryExportOrderAsync(_orderId.Value).ConfigureAwait(true);
+            var result = await _services.WpfMarkingApi.TryExportOrderAsync(_orderId.Value, selectedLineIds: previewDialog.SelectedLineIds, snapshot: preview.Snapshot).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
                 MessageBox.Show(result.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -457,13 +482,19 @@ public partial class OrderDetailsWindow : Window
                 };
                 if (dialog.ShowDialog(this) == true)
                 {
-                    File.WriteAllBytes(dialog.FileName, result.FileBytes);
+                    try { File.WriteAllBytes(dialog.FileName, result.FileBytes); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        MessageBox.Show("Не удалось сохранить файл. Данные не изменены; можно повторить формирование.\n" + ex.Message,
+                            "Excel ЧЗ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return;
+                    }
                 }
                 else
                 {
                     MessageBox.Show(
                         "Формирование Excel ЧЗ на сервере завершено, но локальный файл не сохранён. "
-                        + "Повторное формирование безопасно и не создаст новые коды.",
+                        + "Данные не изменены. Можно сформировать файл повторно.",
                         "Маркировка",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information);
@@ -973,19 +1004,7 @@ public partial class OrderDetailsWindow : Window
 
         _services.AppLogger.Info($"Selected production pallet delete for order_id={_orderId.Value}: pallet_ids={string.Join(",", selectedPalletIds)}");
 
-        if (dialog.SelectedRowsHaveMarkingWarning)
-        {
-            var confirmMarking = MessageBox.Show(
-                "Для выбранных PRINTED паллет уже могла быть сформирована ЧЗ/маркировка. После удаления плана старые этикетки и выгрузки нельзя использовать без проверки. Удалить выбранные паллеты?",
-                "Паллеты",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Warning,
-                MessageBoxResult.No);
-            if (confirmMarking != MessageBoxResult.Yes)
-            {
-                return;
-            }
-        }
+
 
         DeletePalletPlanButton.IsEnabled = false;
         PlanPalletsButton.IsEnabled = false;
@@ -1196,12 +1215,16 @@ public partial class OrderDetailsWindow : Window
         IReadOnlyList<OrderLineView>? linesOverride = null)
     {
         var result = UpdateOrderViaServerRaw(orderId, orderRef, type, partnerId, dueDate, comment, linesOverride);
+        return ApplyUpdateOrderResult(result, showFeedback);
+    }
 
+    private bool ApplyUpdateOrderResult(WpfUpdateOrderResult result, bool showFeedback, bool reloadAfterPersist = true)
+    {
         if (!result.IsSuccess)
         {
             if (OrderLineEditPrevalidation.ShouldReloadLineMetricsAfterFailedPersist(false))
             {
-                TryRefreshPersistedOrderLineMetricsFromApi(type);
+                TryRefreshPersistedOrderLineMetricsFromApi(GetSelectedOrderType());
             }
 
             ShowUpdateOrderError(result);
@@ -1216,7 +1239,10 @@ public partial class OrderDetailsWindow : Window
 
         _orderId = result.Response.OrderId;
 
-        ReloadCanonicalOrderStateAfterPersist(_selectedLine?.Id);
+        if (reloadAfterPersist)
+            ReloadCanonicalOrderStateAfterPersist(_selectedLine?.Id);
+        else
+            _hasUnsavedChanges = false;
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
@@ -3365,6 +3391,12 @@ public partial class OrderDetailsWindow : Window
 
     private void OrderDetailsWindow_Closing(object? sender, CancelEventArgs e)
     {
+        if (_saveInProgress && !_allowCloseWithoutPrompt)
+        {
+            e.Cancel = true;
+            return;
+        }
+
         if (_allowCloseWithoutPrompt)
         {
             return;

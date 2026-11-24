@@ -40,7 +40,7 @@ public sealed class WpfLiveRefreshSourceTests
 
         var loadStart = orderCode.IndexOf("private void LoadOrder(long? reselectLineId = null)", StringComparison.Ordinal);
         Assert.True(loadStart >= 0);
-        var loadEnd = orderCode.IndexOf("private void Save_Click", loadStart, StringComparison.Ordinal);
+        var loadEnd = orderCode.IndexOf("private async void Save_Click", loadStart, StringComparison.Ordinal);
         Assert.True(loadEnd > loadStart);
         var loadMethod = orderCode[loadStart..loadEnd];
 
@@ -145,7 +145,7 @@ public sealed class WpfLiveRefreshSourceTests
     {
         var code = File.ReadAllText(GetRepoFile("apps", "windows", "FlowStock.App", "OrderDetailsWindow.xaml.cs"));
         var resolve = SliceMethod(code, "private object? ResolveGridItemForLineId", "private void RestoreSelectedOrderLineById");
-        var load = SliceMethod(code, "private void LoadOrder(long? reselectLineId = null)", "private void Save_Click");
+        var load = SliceMethod(code, "private void LoadOrder(long? reselectLineId = null)", "private async void Save_Click");
 
         Assert.Contains("_huBinding.Lines.FirstOrDefault(row => row.Line.Id == lineId)", resolve, StringComparison.Ordinal);
         Assert.Contains("_lines.FirstOrDefault(line => line.Id == lineId)", resolve, StringComparison.Ordinal);
