@@ -2769,6 +2769,7 @@
       typeof restoredPending.body === "string"
       ? { key: restoredPending.key, body: restoredPending.body }
       : null;
+    var lockedSubmissionControls = null;
     var activeLineIndex = 0;
     var selectedPartnerId = 0;
     var activeSuggestIndex = -1;
@@ -3000,11 +3001,30 @@
       }
     }
 
+    function lockSubmissionControls() {
+      if (lockedSubmissionControls) return;
+      lockedSubmissionControls = [];
+      Array.prototype.forEach.call(modal.querySelectorAll("input, select, textarea, button"), function (element) {
+        if (element !== refs.submitBtn && element !== refs.closeBtn) {
+          lockedSubmissionControls.push({ element: element, wasDisabled: element.disabled });
+          element.disabled = true;
+        }
+      });
+    }
+
+    function unlockSubmissionControls() {
+      if (lockedSubmissionControls) {
+        lockedSubmissionControls.forEach(function (entry) {
+          entry.element.disabled = entry.wasDisabled;
+        });
+        lockedSubmissionControls = null;
+      }
+      if (refs.submitBtn) refs.submitBtn.textContent = "Отправить";
+    }
+
     function setUncertainSubmissionMode() {
       if (!pendingSubmission) return;
-      Array.prototype.forEach.call(modal.querySelectorAll("input, select, textarea, button"), function (element) {
-        if (element !== refs.submitBtn && element !== refs.closeBtn) element.disabled = true;
-      });
+      lockSubmissionControls();
       if (refs.submitBtn) refs.submitBtn.textContent = "Проверить отправку";
     }
 
@@ -3804,6 +3824,7 @@
           if (closed || !account) return null;
           if (!isRetry && !window.confirm("Полностью ли заполнен заказ?")) return null;
           pendingSubmission = submission;
+          lockSubmissionControls();
           persistActiveNewOrderDraft();
           setStatus(isRetry ? "Проверка результата отправки..." : "Отправка заявки...");
           return fetchJson("/api/orders/requests/create", {
@@ -3842,6 +3863,7 @@
           if (error && (error.status === 400 || error.status === 422)) {
             pendingSubmission = null;
             clearPersistedNewOrderDraft();
+            unlockSubmissionControls();
             setStatus("Заявка отклонена сервером: " + message);
             return;
           }
