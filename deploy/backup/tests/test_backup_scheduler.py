@@ -177,7 +177,7 @@ class SchedulerTests(unittest.TestCase):
         self.configure()
         self.tick()
         path = self.engine.folder / "state.json"
-        for payload in (None, "{broken", "{}"):
+        for payload in (None, "{broken", "{}", '{"schema_version":1,"failures":0,"job_state":"IDLE"}'):
             if payload is None:
                 path.unlink()
             else:
@@ -186,7 +186,7 @@ class SchedulerTests(unittest.TestCase):
             self.tick()
             self.assertEqual(item["backup_id"], self.state()["last_scheduled_backup_id"])
             self.assertEqual(1, len(self.engine.records()))
-        self.assertEqual(2, len(list(self.engine.folder.glob("*.invalid"))))
+        self.assertEqual(3, len(list(self.engine.folder.glob("*.invalid"))))
 
     def test_state_future_schema_and_corrupt_archive_fail_closed(self):
         item = self.seed()

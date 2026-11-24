@@ -254,6 +254,8 @@ class Scheduler:
         require(not self.store.paused(), "MAINTENANCE_PAUSED")
         require(not any(self.store.jobs.glob("*.json")), "BACKUP_BUSY")
         candidates, protected = self.plan(records, config)
+        if not candidates:
+            return {"pruned": [], "protected_over_limit": protected}
         keeper = self.present(records)[0] if self.present(records) else None
         # Preflight every candidate and the keeper before the first deletion.
         selected = {x["backup_id"] for x in candidates}
@@ -292,8 +294,17 @@ class Scheduler:
             value = core._read(path)
             require(isinstance(value, dict) and "schema_version" in value, "STATE_INVALID")
             require(type(value["schema_version"]) is int and value["schema_version"] == 1, "UNSUPPORTED_SCHEMA")
+            require({"failures", "job_state", "last_scheduled_success_at_utc", "last_scheduled_backup_id",
+                     "last_attempt_at_utc", "next_retry_at_utc", "observed_at_utc", "error_code"} <= value.keys(),
+                    "STATE_INVALID")
             require(type(value.get("failures")) is int and value["failures"] >= 0, "STATE_INVALID")
             require(value.get("job_state") in {"IDLE", "RUNNING", "RETRY_WAIT"}, "STATE_INVALID")
+            ident = value["last_scheduled_backup_id"]
+            require(ident is None or isinstance(ident, str) and core.UUID_NAME.fullmatch(ident), "STATE_INVALID")
+            require((ident is None) == (value["last_scheduled_success_at_utc"] is None), "STATE_INVALID")
+            require(value["observed_at_utc"] is not None, "STATE_INVALID")
+            require(value["error_code"] is None or isinstance(value["error_code"], str)
+                    and re.fullmatch(r"[A-Z_]+", value["error_code"]), "STATE_INVALID")
             for key in ("last_scheduled_success_at_utc", "last_attempt_at_utc", "next_retry_at_utc", "observed_at_utc"):
                 if value.get(key) is not None:
                     seconds(value[key])
