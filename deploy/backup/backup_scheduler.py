@@ -289,6 +289,13 @@ class Scheduler:
 
     def load_state(self, records):
         path = self.folder / "state.json"
+        scheduled = [r for r in self.present(records) if r["origin"] == "scheduled"]
+        latest = scheduled[0] if scheduled else None
+        # UUID ordering is not evidence of which success happened last.
+        if latest:
+            require(sum(seconds(r["completed_at_utc"]) == seconds(latest["completed_at_utc"])
+                        for r in scheduled) == 1, "CATALOG_AMBIGUOUS")
+            self.verify(latest)
         reset = False
         try:
             value = core._read(path)
@@ -308,6 +315,11 @@ class Scheduler:
             for key in ("last_scheduled_success_at_utc", "last_attempt_at_utc", "next_retry_at_utc", "observed_at_utc"):
                 if value.get(key) is not None:
                     seconds(value[key])
+            previous = value["last_scheduled_success_at_utc"]
+            if previous is not None:
+                require(latest is not None and seconds(previous) <= seconds(latest["completed_at_utc"])
+                        and any(r["origin"] == "scheduled" and r["backup_id"] == ident
+                                and r["completed_at_utc"] == previous for r in records), "STATE_INVALID")
         except Error as exc:
             if str(exc) != "STATE_INVALID":
                 raise
@@ -315,6 +327,10 @@ class Scheduler:
         except (FileNotFoundError, ValueError, KeyError, TypeError):
             reset = True
         if reset:
+            # Catalog/verification errors must not be mistaken for corrupt state.
+            # Reconstruct only after all surviving evidence has been verified.
+            for record in self.present(records):
+                self.verify(record, fresh=True)
             if path.exists() or path.is_symlink():
                 core._file(path)  # never follow or replace a symlink/cross-owner path
                 saved = self.folder / ("state-" + uuid.uuid4().hex + ".invalid")
@@ -327,10 +343,7 @@ class Scheduler:
             value = {"schema_version": 1, "failures": 0, "job_state": "IDLE", "last_attempt_at_utc": None,
                      "last_scheduled_success_at_utc": None, "last_scheduled_backup_id": None,
                      "next_retry_at_utc": None, "observed_at_utc": stamp(self.clock()), "error_code": None}
-        scheduled = [r for r in self.present(records) if r["origin"] == "scheduled"]
-        latest = scheduled[0] if scheduled else None
         if latest:
-            self.verify(latest)
             previous = value["last_scheduled_success_at_utc"]
             if previous is None or seconds(latest["completed_at_utc"]) > seconds(previous):
                 value.update(last_scheduled_success_at_utc=latest["completed_at_utc"],
@@ -408,7 +421,8 @@ class Scheduler:
             code = state.get("error_code") or ("RETENTION_PROTECTED" if retention["protected_over_limit"] else None)
             return self.observe(state, applied, "DEGRADED" if code else "HEALTHY", code, retention)
         except (Error, OSError, ValueError, KeyError, TypeError) as exc:
-            code = str(exc).split(":", 1)[0] if isinstance(exc, Error) else "STATE_INVALID"
+            code = (str(exc).split(":", 1)[0] if isinstance(exc, Error) else
+                    "STORAGE_IO_ERROR" if isinstance(exc, OSError) else "STATE_INVALID")
             return self.observe(None, applied, "DEGRADED", code)
 
     def observe(self, state, applied, health, error=None, retention=None):
@@ -504,7 +518,8 @@ def main():
                             result = scheduler.preview(config, scheduler.requested(applied)["revision"])
                 print(json.dumps(result, sort_keys=True), flush=True)
             except (Error, OSError, ValueError, KeyError, TypeError) as exc:
-                code = str(exc).split(":", 1)[0] if isinstance(exc, Error) else "STATE_INVALID"
+                code = (str(exc).split(":", 1)[0] if isinstance(exc, Error) else
+                        "STORAGE_IO_ERROR" if isinstance(exc, OSError) else "STATE_INVALID")
                 if args.operation != "run":
                     raise
                 print(json.dumps({"health": "DEGRADED", "error_code": code}), flush=True)
@@ -512,7 +527,8 @@ def main():
                 return 0
             time.sleep(30)  # config/pause and retry are observed independently of cadence
     except (Error, OSError, ValueError, KeyError, TypeError) as exc:
-        code = str(exc).split(":", 1)[0] if isinstance(exc, Error) else "STATE_INVALID"
+        code = (str(exc).split(":", 1)[0] if isinstance(exc, Error) else
+                "STORAGE_IO_ERROR" if isinstance(exc, OSError) else "STATE_INVALID")
         print(json.dumps({"ok": False, "error_code": code}), file=sys.stderr)
         return 1
 

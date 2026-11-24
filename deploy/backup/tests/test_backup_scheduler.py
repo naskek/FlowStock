@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Scheduler behavior with a fake UTC clock and isolated fault-injected tools."""
 import contextlib
+import errno
 import io
 import json
 import os
@@ -8,6 +9,7 @@ from pathlib import Path
 import signal
 import sys
 import unittest
+import uuid
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -159,6 +161,76 @@ class SchedulerTests(unittest.TestCase):
         self.tick()
         self.assertEqual(2, len(self.engine.records()))
 
+    def test_clock_jump_inside_dump_survives_restart_and_next_due_tick(self):
+        self.seed(age=25 * 3600)
+        self.configure()
+        started = self.now[0]
+        original = core._run
+
+        def rollback(args, **kwargs):
+            result = original(args, **kwargs)
+            if args[0] == "pg_dump" and "--version" not in args:
+                self.now[0] -= 48 * 3600
+            return result
+
+        with mock.patch.object(core, "_run", rollback):
+            self.assertEqual("HEALTHY", self.tick()["health"])
+        item = self.engine.present(self.engine.records())[0]
+        self.assertEqual(scheduler.stamp(started), item["created_at_utc"])
+        self.assertEqual(item["created_at_utc"], item["completed_at_utc"])
+        self.assertEqual(scheduler.stamp(self.now[0]), item["completed_observed_at_utc"])
+        self.assertEqual("CLOCK_ROLLBACK", item["clock_warning"])
+        deadline = started + 86400
+        self.assertEqual(deadline, scheduler.seconds(self.state()["next_run_at_utc"]))
+        self.engine = self.restart()
+        self.assertEqual("HEALTHY", self.tick()["health"])
+        self.assertEqual(2, len(self.engine.records()))
+        self.now[0] = deadline - 1
+        self.tick()
+        self.assertEqual(2, len(self.engine.records()))
+        self.now[0] = deadline
+        self.tick()
+        self.engine = self.restart()
+        self.assertEqual("HEALTHY", self.tick()["health"])
+        self.assertEqual(3, len(self.engine.records()))
+        self.assertNotEqual(item["backup_id"], self.state()["last_scheduled_backup_id"])
+
+    def test_recovered_publication_after_clock_rollback_keeps_valid_timestamps(self):
+        self.seed(age=25 * 3600)
+        self.configure()
+        started = self.now[0]
+        with mock.patch.object(self.store, "_publish", side_effect=OSError(errno.EIO, "injected")):
+            with self.assertRaises(OSError):
+                self.store.create("scheduled", 1024)
+        self.now[0] -= 48 * 3600
+        self.engine = self.restart()
+        self.assertEqual("HEALTHY", self.tick()["health"])
+        item = self.engine.present(self.engine.records())[0]
+        self.assertEqual(scheduler.stamp(started), item["completed_at_utc"])
+        self.assertEqual(scheduler.stamp(self.now[0]), item["completed_observed_at_utc"])
+        self.assertFalse(list(self.store.jobs.glob("*.json")))
+        self.now[0] = started + 86400
+        self.tick()
+        self.assertEqual(3, len(self.engine.records()))
+
+    def test_forward_jump_inside_dump_uses_observed_completion_once(self):
+        self.seed(age=25 * 3600)
+        self.configure()
+        original = core._run
+
+        def forward(args, **kwargs):
+            result = original(args, **kwargs)
+            if args[0] == "pg_dump" and "--version" not in args:
+                self.now[0] += 48 * 3600
+            return result
+
+        with mock.patch.object(core, "_run", forward):
+            self.assertEqual("HEALTHY", self.tick()["health"])
+        self.assertEqual(self.now[0] + 86400, scheduler.seconds(self.state()["next_run_at_utc"]))
+        self.engine = self.restart()
+        self.tick()
+        self.assertEqual(2, len(self.engine.records()))
+
     def test_pause_and_disabled_skip_then_reenable_one_overdue_attempt(self):
         self.seed(age=25 * 3600)
         self.configure()
@@ -199,6 +271,99 @@ class SchedulerTests(unittest.TestCase):
         self.archive(item).write_bytes(b"VALID:CHANGED:END")
         self.assertEqual("DEGRADED", self.tick()["health"])
         self.assertEqual(1, len(list(self.store.archives.iterdir())))
+
+    def test_semantic_state_corruption_preserves_bytes_and_rebuilds_then_runs_when_due(self):
+        item = self.seed(age=3600)
+        manual = self.seed(origin="manual")
+        self.configure()
+        self.tick()
+        path = self.engine.folder / "state.json"
+        original = self.state()
+        corruptions = (
+            {"last_scheduled_backup_id": uuid.uuid4().hex},
+            {"last_scheduled_backup_id": manual["backup_id"]},
+            {"last_scheduled_success_at_utc": scheduler.stamp(self.now[0] - 7200)},
+            {"last_scheduled_success_at_utc": scheduler.stamp(self.now[0] + 86400)},
+        )
+        for index, change in enumerate(corruptions, 1):
+            with self.subTest(change=change):
+                payload = (json.dumps(original | change, indent=3) + "\n\n").encode()
+                path.write_bytes(payload)
+                self.engine = self.restart()
+                self.assertEqual("HEALTHY", self.tick()["health"])
+                self.assertEqual(item["backup_id"], self.state()["last_scheduled_backup_id"])
+                self.assertEqual(item["completed_at_utc"], self.state()["last_scheduled_success_at_utc"])
+                saved = list(self.engine.folder.glob("*.invalid"))
+                self.assertEqual(index, len(saved))
+                self.assertIn(payload, [p.read_bytes() for p in saved])
+                self.engine = self.restart()
+                self.tick()
+                self.assertEqual(index, len(list(self.engine.folder.glob("*.invalid"))))
+                self.assertEqual(2, len(self.engine.records()))
+        self.now[0] = scheduler.seconds(item["completed_at_utc"]) + 86400
+        self.tick()
+        self.engine = self.restart()
+        self.assertEqual("HEALTHY", self.tick()["health"])
+        self.assertEqual(3, len(self.engine.records()))
+
+    def test_ambiguous_latest_catalog_does_not_rewrite_state_or_start_dump(self):
+        self.seed()
+        self.configure()
+        self.tick()
+        self.seed()  # equal UTC completions; UUID order cannot prove recency
+        path = self.engine.folder / "state.json"
+        payload = json.dumps(self.state() | {"last_scheduled_backup_id": uuid.uuid4().hex}).encode()
+        path.write_bytes(payload)
+        for _ in range(2):
+            self.engine = self.restart()
+            self.assertEqual("CATALOG_AMBIGUOUS", self.tick()["error_code"])
+            self.assertEqual(payload, path.read_bytes())
+            self.assertFalse(list(self.engine.folder.glob("*.invalid")))
+            self.assertEqual(2, len(list(self.store.archives.iterdir())))
+
+    def test_reconstruction_verifies_older_catalog_archives_before_replacing_state(self):
+        older = self.seed(age=7200)
+        self.seed(age=3600)
+        self.configure()
+        self.tick()
+        path = self.engine.folder / "state.json"
+        payload = json.dumps(self.state() | {"last_scheduled_backup_id": uuid.uuid4().hex}).encode()
+        path.write_bytes(payload)
+        self.archive(older).write_bytes(self.archive(older).read_bytes().replace(b"ROWS", b"LIES"))
+        for _ in range(2):
+            self.engine = self.restart()
+            self.assertEqual("CATALOG_INVALID", self.tick()["error_code"])
+            self.assertEqual(payload, path.read_bytes())
+            self.assertFalse(list(self.engine.folder.glob("*.invalid")))
+            self.assertEqual(2, len(list(self.store.archives.iterdir())))
+
+    def test_state_read_and_preservation_io_errors_are_not_corruption(self):
+        self.seed()
+        self.configure()
+        self.tick()
+        path = self.engine.folder / "state.json"
+        payload = path.read_bytes()
+        read = core._read
+
+        def fail_read(candidate):
+            if candidate == path:
+                raise OSError(errno.EIO, "injected read")
+            return read(candidate)
+
+        with mock.patch.object(core, "_read", fail_read):
+            with self.assertRaises(OSError):
+                self.engine.load_state(self.engine.records())
+            self.assertEqual("STORAGE_IO_ERROR", self.tick()["error_code"])
+        self.assertEqual(payload, path.read_bytes())
+        self.assertFalse(list(self.engine.folder.glob("*.invalid")))
+        path.write_bytes(b"{broken")
+        with mock.patch.object(scheduler.shutil, "copyfileobj", side_effect=OSError(errno.EIO, "injected copy")):
+            self.assertEqual("STORAGE_IO_ERROR", self.tick()["error_code"])
+        self.assertEqual(b"{broken", path.read_bytes())
+        self.assertEqual(1, len(self.engine.records()))
+        self.engine = self.restart()
+        self.assertEqual("HEALTHY", self.tick()["health"])
+        self.assertIn(b"{broken", [p.read_bytes() for p in self.engine.folder.glob("*.invalid")])
 
     def test_mtime_cannot_produce_a_fake_success(self):
         (self.root / "FlowStock_20260101_000000.dump").write_bytes(b"unknown")

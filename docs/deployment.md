@@ -796,6 +796,10 @@ docker run --rm --network none flowstock-remote-sftp:test
 
 ### Durable local scheduler и retention (#123)
 
+**Clock rollback внутри dump/publication:** `created_at_utc` сохраняет UTC начала job; `completed_at_utc = max(created_at_utc, observed completion UTC)` — консервативный anchor расписания и порядка catalog, не измерение длительности. При rollback исходное чтение часов сохраняется отдельно как `completed_observed_at_utc` и `clock_warning=CLOCK_ROLLBACK`. Правило применяется также при recovery ready job и для manual/safety/legacy imports. Следующий scheduled deadline остаётся `anchor + interval`: при неверных часах он может быть отложен до их восстановления; restart не ускоряет его, архив не создаёт постоянный `CATALOG_INVALID`. Forward jump/долгий dump используют наблюдаемый completion. Уже committed timestamps не переписываются.
+
+**Semantic state recovery:** несоответствие UUID/timestamp записи `origin=scheduled` в catalog обрабатывается как corrupt state наряду с malformed JSON. До замены проверяются surviving archives (payload/size/hash), последние scheduled timestamps должны однозначно определять latest (равенство даёт `CATALOG_AMBIGUOUS`, UUID не задаёт порядок времени). Исходные bytes сохраняются private/fsync-копией `state-*.invalid`; после reconstruction restart пропускает свежий success, следующий due tick создаёт одну копию. Catalog corruption/ambiguity оставляют state без замены и блокируют dump/retention; неизвестная schema не исправляется автоматически. Ошибки чтения/копирования/fsync распространяются, observation сообщает `STORAGE_IO_ERROR`, и замена state не продолжается. Отсутствие scheduled evidence по-прежнему не создаёт фиктивный success.
+
 `pg_backup.sh` проверяет совместимость image и запускает **один** `backup_scheduler.py run`. Старый startup dump/sleep loop удалён. Worker читает config каждые 30 секунд независимо от scheduled cadence, поэтому снятие pause не откладывает попытку на сутки. HTTP/WPF, remote adapter/queue/inventory и secrets provisioning не добавлены.
 
 Состояние хранится вне business DB/checkout, в прежнем volume:

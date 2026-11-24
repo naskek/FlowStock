@@ -250,6 +250,69 @@ assert len(engine.records()) == 2
 assert len(list(engine.folder.glob("*.invalid"))) == 1
 ''')
 
+    def test_clock_rollback_and_semantic_state_recovery_across_real_worker_restarts(self):
+        root = "/backups/clock-state-" + uuid.uuid4().hex
+        started = 1795000000.0
+        result = self.scheduler_python(root, '''
+now = [1795000000.0 - 25 * 3600]
+core.utc_now = lambda: backup_scheduler.stamp(now[0])
+store.create("scheduled", 1048576)
+now[0] = 1795000000.0
+engine.clock = lambda: now[0]
+config = engine.bootstrap()["config"]
+config["scheduler"]["enabled"] = True
+engine.configure(config, 0)
+original = core._run
+def rollback(args, **kwargs):
+    result = original(args, **kwargs)
+    if args[0] == "pg_dump" and "--version" not in args:
+        now[0] -= 48 * 3600
+    return result
+core._run = rollback
+result = engine.tick()
+assert result["health"] == "HEALTHY", result
+item = engine.present(engine.records())[0]
+assert item["created_at_utc"] == item["completed_at_utc"] == backup_scheduler.stamp(1795000000.0)
+assert item["completed_observed_at_utc"] == backup_scheduler.stamp(now[0])
+print(json.dumps(result))
+''')
+        original = json.loads(result.stdout.strip().splitlines()[-1])["schedule"]
+        # Each invocation is a new container/process using the same persistent root.
+        self.scheduler_python(root, '''
+assert engine.tick()["health"] == "HEALTHY"
+assert len(engine.records()) == 2
+path = engine.folder / "state.json"
+value = core._read(path)
+value["last_scheduled_backup_id"] = "a" * 32
+payload = (json.dumps(value, indent=3) + "\\n\\n").encode()
+path.write_bytes(payload)
+(engine.folder / "expected-invalid-bytes").write_bytes(payload)
+''', now=started - 48 * 3600)
+        result = self.scheduler_python(root, '''
+result = engine.tick()
+assert result["health"] == "HEALTHY", result
+saved = list(engine.folder.glob("*.invalid"))
+assert len(saved) == 1
+assert saved[0].read_bytes() == (engine.folder / "expected-invalid-bytes").read_bytes()
+assert len(engine.records()) == 2
+print(json.dumps(result))
+''', now=started - 48 * 3600)
+        recovered = json.loads(result.stdout.strip().splitlines()[-1])["schedule"]
+        self.assertEqual(original["last_scheduled_backup_id"], recovered["last_scheduled_backup_id"])
+        self.assertEqual(original["last_scheduled_success_at_utc"], recovered["last_scheduled_success_at_utc"])
+        self.scheduler_python(root, '''
+now = 1795000000.0 + 86400
+core.utc_now = lambda: backup_scheduler.stamp(now)
+result = engine.tick()
+assert result["health"] == "HEALTHY", result
+assert len(engine.records()) == 3
+''', now=started + 86400)
+        self.scheduler_python(root, '''
+assert engine.tick()["health"] == "HEALTHY"
+assert len(engine.records()) == 3
+assert len(list(engine.folder.glob("*.invalid"))) == 1
+''', now=started + 86400)
+
     def test_real_dump_failure_persists_retry_and_keeps_validated_archive(self):
         root = "/backups/failure-" + uuid.uuid4().hex
         result = self.scheduler_python(root, '''
