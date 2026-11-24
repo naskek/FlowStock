@@ -14,7 +14,7 @@ using NpgsqlTypes;
 
 namespace FlowStock.Data;
 
-public sealed partial class PostgresDataStore : IDataStore, IReadOnlySnapshotStore, IOrderRequestIdempotencyStore, IBusinessNotificationJournalStore, IOrderRequestManagementStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore, IPrePlanRelevantInternalOrdersStore
+public sealed partial class PostgresDataStore : IDataStore, IReadOnlySnapshotStore, IOrderRequestIdempotencyStore, IBusinessNotificationJournalStore, IOrderRequestManagementStore, ILedgerEntryIdStore, ILineScopedMarkingCodeStore, IProductionPalletFillingCorrectionStore, IMarkingCutoverPreflightStore, IOptimizedOrderReadModelStore, IOptimizedOrderListMetricsStore, IOptimizedWarehouseProductionStateStore, IOptimizedOrderLinesStore, IOptimizedOrderLineHuFateStore, IOptimizedOperationOrderCandidatesStore, IOptimizedHuReservationCandidatesStore, IReadyHuBindingSummaryStore, IRequestsSummaryStore, IProductionPalletSummaryBatchStore, IOrderOwnedPalletSummaryBatchStore, IOptimizedTsdOutboundPickingStore, ITsdHuResolverStore, IHuOperatorFactsStore, IOrderStatusDiagnosticsStore, IOverShippedOrderDiagnosticsStore, IProductionPlanConsistencyDiagnosticsStore, IHuBindingManagementReadStore, IPrePlanRelevantInternalOrdersStore, IOrderRefLookupStore
 {
     public sealed record OrderSqlDiagnostics(
         string Operation,
@@ -6421,6 +6421,50 @@ WHERE d.id = pp.prd_doc_id
             command.Parameters.AddWithValue("@printed_at", ToDbDate(printedAt));
             command.Parameters.AddWithValue("@pallet_ids", ids);
             return command.ExecuteNonQuery();
+        });
+    }
+
+    public bool HasOtherOrderWithRef(long excludedOrderId, string orderRef)
+    {
+        return WithConnection(connection =>
+        {
+            // Only read the reference column. GetOrders() materializes the entire
+            // HU/marking/production read model and is not appropriate for validation.
+            // Compare in .NET to preserve OrdinalIgnoreCase even for refs that
+            // PostgreSQL's locale-dependent LOWER() would fold differently.
+            using var command = CreateCommand(connection, @"
+SELECT order_ref
+FROM orders
+WHERE id <> @excluded_order_id;");
+            command.Parameters.AddWithValue("@excluded_order_id", excludedOrderId);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                if (string.Equals(reader.GetString(0), orderRef, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        });
+    }
+
+    public IReadOnlyList<string> GetAllOrderRefsForNextNumber()
+    {
+        return WithConnection(connection =>
+        {
+            // Rare collision path: read only raw refs so numeric parsing remains
+            // identical to GenerateNextOrderRef's existing .NET implementation.
+            using var command = CreateCommand(connection, "SELECT order_ref FROM orders;");
+            using var reader = command.ExecuteReader();
+            var refs = new List<string>();
+            while (reader.Read())
+            {
+                refs.Add(reader.GetString(0));
+            }
+
+            return refs;
         });
     }
 
