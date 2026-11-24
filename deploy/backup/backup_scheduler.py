@@ -315,11 +315,43 @@ class Scheduler:
             for key in ("last_scheduled_success_at_utc", "last_attempt_at_utc", "next_retry_at_utc", "observed_at_utc"):
                 if value.get(key) is not None:
                     seconds(value[key])
+            failures, job = value["failures"], value["job_state"]
+            retry, error, attempt = (value[k] for k in
+                                     ("next_retry_at_utc", "error_code", "last_attempt_at_utc"))
+            if job == "IDLE":
+                require(failures == 0 and retry is None and error is None and ident is not None,
+                        "STATE_INVALID")
+            elif job == "RETRY_WAIT":
+                require(failures > 0 and retry is not None and error is not None, "STATE_INVALID")
+                # Reconstruction without scheduled evidence is the only wait
+                # that has not attempted a dump yet.
+                require(attempt is not None or
+                        (ident is None and failures == 1 and error == "OPERATOR_ACTION_REQUIRED"),
+                        "STATE_INVALID")
+                if error == "OPERATOR_ACTION_REQUIRED":
+                    require(ident is None and failures == 1 and attempt is None, "STATE_INVALID")
+            else:
+                require(attempt is not None, "STATE_INVALID")
+                # Older schema-1 writers retained the previous failure while
+                # RUNNING a retry. Accept that snapshot as well as cleared fields.
+                require((retry is None and error is None) or
+                        (failures > 0 and retry is not None and error is not None), "STATE_INVALID")
+            if retry is not None:
+                # observed UTC is refreshed on every save. An overdue retry is
+                # valid; a wait longer than its persisted failure tier is not.
+                require(seconds(retry) <= seconds(value["observed_at_utc"]) + RETRIES[min(failures - 1, 2)],
+                        "STATE_INVALID")
+            # Do not order attempt/success/observation numerically: UTC can
+            # jump inside a failed or successful dump. Catalog identity below
+            # proves success; only the bounded retry may gate the next attempt.
             previous = value["last_scheduled_success_at_utc"]
             if previous is not None:
                 require(latest is not None and seconds(previous) <= seconds(latest["completed_at_utc"])
                         and any(r["origin"] == "scheduled" and r["backup_id"] == ident
                                 and r["completed_at_utc"] == previous for r in records), "STATE_INVALID")
+                if seconds(previous) == seconds(latest["completed_at_utc"]):
+                    require(ident == latest["backup_id"] and previous == latest["completed_at_utc"],
+                            "STATE_INVALID")
         except Error as exc:
             if str(exc) != "STATE_INVALID":
                 raise
@@ -349,11 +381,6 @@ class Scheduler:
                 value.update(last_scheduled_success_at_utc=latest["completed_at_utc"],
                              last_scheduled_backup_id=latest["backup_id"], failures=0,
                              next_retry_at_utc=None, job_state="IDLE", error_code=None)
-            else:
-                require(value["last_scheduled_backup_id"] == latest["backup_id"]
-                        and previous == latest["completed_at_utc"], "STATE_INVALID")
-        else:
-            require(value["last_scheduled_success_at_utc"] is None, "STATE_INVALID")
         if value["job_state"] == "RUNNING":
             self.failed(value, "INTERRUPTED")
         if reset and latest is None:
@@ -370,7 +397,14 @@ class Scheduler:
                      next_retry_at_utc=stamp(self.clock() + RETRIES[min(state["failures"] - 1, 2)]))
 
     def save_state(self, state):
-        state["observed_at_utc"] = stamp(self.clock())
+        now = self.clock()
+        retry = state["next_retry_at_utc"]
+        if retry is not None:
+            bound = now + RETRIES[min(state["failures"] - 1, 2)]
+            if seconds(retry) > bound:
+                # UTC may roll back between failed()/load_state() and this save.
+                state.update(next_retry_at_utc=stamp(bound), clock_warning="CLOCK_ROLLBACK")
+        state["observed_at_utc"] = stamp(now)
         replace(self.folder / "state.json", state)
 
     def tick(self):
@@ -397,7 +431,8 @@ class Scheduler:
             state["next_run_at_utc"] = stamp(deadline)
             retry = state["next_retry_at_utc"]
             if self.clock() >= deadline and (retry is None or self.clock() >= seconds(retry)):
-                state.update(job_state="RUNNING", last_attempt_at_utc=stamp(self.clock()))
+                state.update(job_state="RUNNING", last_attempt_at_utc=stamp(self.clock()),
+                             next_retry_at_utc=None, error_code=None)
                 self.save_state(state)  # crash never masquerades as success
                 try:
                     item = self.store.create("scheduled", self.expected_bytes)

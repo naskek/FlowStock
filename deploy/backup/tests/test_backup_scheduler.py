@@ -321,6 +321,227 @@ class SchedulerTests(unittest.TestCase):
             self.assertFalse(list(self.engine.folder.glob("*.invalid")))
             self.assertEqual(2, len(list(self.store.archives.iterdir())))
 
+    def check_semantic_recovery(self, change, *, elapsed=0):
+        original = self.state()
+        count = len(self.engine.records())
+        saved_count = len(list(self.engine.folder.glob("*.invalid")))
+        path = self.engine.folder / "state.json"
+        payload = (json.dumps(original | change, indent=3) + "\n\n").encode()
+        path.write_bytes(payload)
+        self.now[0] += elapsed
+        due = scheduler.seconds(original["last_scheduled_success_at_utc"]) + 86400
+        self.engine = self.restart()
+        self.assertEqual("HEALTHY", self.tick()["health"])
+        saved = list(self.engine.folder.glob("*.invalid"))
+        self.assertEqual(saved_count + 1, len(saved))
+        preserved = next(p for p in saved if p.read_bytes() == payload)
+        self.assertEqual(0o600, preserved.stat().st_mode & 0o777)
+        count += int(self.now[0] >= due)
+        self.assertEqual(count, len(self.engine.records()))
+        state = self.state()
+        self.assertEqual("IDLE", state["job_state"])
+        self.assertEqual(0, state["failures"])
+        self.assertIsNone(state["next_retry_at_utc"])
+        if self.now[0] < due:
+            self.assertEqual(original["last_scheduled_backup_id"], state["last_scheduled_backup_id"])
+        self.engine = self.restart()
+        self.assertEqual("HEALTHY", self.tick()["health"])
+        self.assertEqual(saved_count + 1, len(list(self.engine.folder.glob("*.invalid"))))
+        due = scheduler.seconds(state["last_scheduled_success_at_utc"]) + 86400
+        self.now[0] = due - 1
+        self.tick()
+        self.assertEqual(count, len(self.engine.records()))
+        self.now[0] = due
+        self.tick()
+        self.engine = self.restart()
+        self.assertEqual("HEALTHY", self.tick()["health"])
+        self.assertEqual(count + 1, len(self.engine.records()))
+
+    def test_idle_future_retry_recovers_at_restart_fresh_due_and_week_overdue(self):
+        self.seed()
+        self.configure(count=90, days=365)
+        self.tick()
+        for elapsed in (0, 86400, 7 * 86400):
+            with self.subTest(elapsed=elapsed):
+                self.check_semantic_recovery({"next_retry_at_utc": "2099-01-01T00:00:00Z"}, elapsed=elapsed)
+
+    def test_impossible_state_combinations_preserve_bytes_recover_and_run_next_due(self):
+        self.seed()
+        self.configure(count=90, days=365)
+        self.tick()
+        for name in ("idle_failures", "idle_error", "idle_without_success", "retry_zero_failures",
+                     "retry_missing_deadline", "retry_missing_error", "retry_missing_attempt", "retry_false_operator_wait",
+                     "retry_beyond_tier_1", "retry_beyond_tier_2", "retry_beyond_tier_3",
+                     "retry_beyond_capped_tier", "running_missing_attempt", "running_orphan_error",
+                     "running_orphan_retry", "running_zero_failures_with_retry", "running_unbounded_retry"):
+            with self.subTest(case=name):
+                retry = {"job_state": "RETRY_WAIT", "failures": 1, "error_code": "DUMP_FAILED",
+                         "last_attempt_at_utc": scheduler.stamp(self.now[0]),
+                         "next_retry_at_utc": scheduler.stamp(self.now[0] + 300)}
+                cases = {
+                    "idle_failures": {"failures": 1},
+                    "idle_error": {"error_code": "DUMP_FAILED"},
+                    "idle_without_success": {"last_scheduled_backup_id": None, "last_scheduled_success_at_utc": None},
+                    "retry_zero_failures": retry | {"failures": 0},
+                    "retry_missing_deadline": retry | {"next_retry_at_utc": None},
+                    "retry_missing_error": retry | {"error_code": None},
+                    "retry_missing_attempt": retry | {"last_attempt_at_utc": None},
+                    "retry_false_operator_wait": retry | {"error_code": "OPERATOR_ACTION_REQUIRED"},
+                    "running_missing_attempt": {"job_state": "RUNNING", "last_attempt_at_utc": None},
+                    "running_orphan_error": retry | {"job_state": "RUNNING", "next_retry_at_utc": None},
+                    "running_orphan_retry": retry | {"job_state": "RUNNING", "error_code": None},
+                    "running_zero_failures_with_retry": retry | {"job_state": "RUNNING", "failures": 0},
+                    "running_unbounded_retry": retry | {"job_state": "RUNNING", "next_retry_at_utc": "2099-01-01T00:00:00Z"},
+                }
+                for tier, failures, delay in (("1", 1, 300), ("2", 2, 900), ("3", 3, 3600), ("capped_tier", 9, 3600)):
+                    key = "retry_beyond_" + ("tier_" + tier if tier != "capped_tier" else tier)
+                    cases[key] = retry | {"failures": failures, "next_retry_at_utc": scheduler.stamp(self.now[0] + delay + 1)}
+                self.check_semantic_recovery(cases[name])
+
+    def test_valid_retry_tiers_survive_restart_disabled_pause_and_elapsed_observations(self):
+        first = self.seed(age=25 * 3600)
+        self.configure()
+        with mock.patch.dict(os.environ, {"DUMP_FAIL": "1"}):
+            for failures, delay in enumerate((300, 900, 3600, 3600), 1):
+                with self.subTest(failures=failures):
+                    self.tick()
+                    original = self.state()
+                    deadline = scheduler.seconds(original["next_retry_at_utc"])
+                    self.assertEqual(failures, original["failures"])
+                    self.assertEqual(self.now[0] + delay, deadline)
+                    self.configure(enabled=False)
+                    self.engine = self.restart()
+                    self.now[0] += delay / 2
+                    self.assertEqual("DISABLED", self.tick()["health"])
+                    self.configure()
+                    self.store.pause("retry-test")
+                    self.assertEqual("PAUSED", self.tick()["health"])
+                    self.store.resume()
+                    self.engine = self.restart()
+                    self.now[0] = deadline - 1
+                    result = self.tick()
+                    self.assertEqual("DEGRADED", result["health"])
+                    for key in ("last_attempt_at_utc", "last_scheduled_success_at_utc", "next_retry_at_utc", "failures"):
+                        self.assertEqual(original[key], self.state()[key])
+                    self.assertFalse(list(self.engine.folder.glob("*.invalid")))
+                    self.assertEqual(first["backup_id"], self.state()["last_scheduled_backup_id"])
+                    self.now[0] = deadline
+        self.tick()
+        self.engine = self.restart()
+        self.assertEqual("HEALTHY", self.tick()["health"])
+        self.assertEqual(2, len(self.engine.records()))
+
+    def test_failed_dump_clock_jumps_and_rollback_before_save_keep_bounded_retry(self):
+        self.seed(age=7 * 86400)
+        self.configure()
+        for jump, between_save in ((-10000, False), (10000, False), (-10000, True)):
+            with self.subTest(jump=jump, between_save=between_save):
+                failed = self.engine.failed
+                def fail(*args, **kwargs):
+                    if not between_save:
+                        self.now[0] += jump
+                    raise core.BackupError("DUMP_FAILED")
+                def fail_then_jump(*args):
+                    failed(*args)
+                    if between_save:
+                        self.now[0] += jump
+                with mock.patch.object(self.store, "create", fail), mock.patch.object(self.engine, "failed", fail_then_jump):
+                    result = self.tick()
+                self.assertEqual("DUMP_FAILED", result["error_code"])
+                state = self.state()
+                deadline = scheduler.seconds(state["next_retry_at_utc"])
+                self.assertEqual(self.now[0] + scheduler.RETRIES[min(state["failures"] - 1, 2)], deadline)
+                self.engine = self.restart()
+                self.tick()
+                self.assertEqual(deadline, scheduler.seconds(self.state()["next_retry_at_utc"]))
+                self.assertFalse(list(self.engine.folder.glob("*.invalid")))
+                self.now[0] = deadline
+
+    def test_running_first_attempt_and_legacy_retry_snapshots_recover_interrupted_backoff(self):
+        self.seed(age=25 * 3600)
+        self.configure()
+        self.configure(enabled=False)
+        self.tick()
+        for failures, legacy in ((0, False), (1, False), (1, True), (2, True), (9, True)):
+            with self.subTest(failures=failures, legacy=legacy):
+                value = self.state() | {"job_state": "RUNNING", "failures": failures,
+                                       "last_attempt_at_utc": scheduler.stamp(self.now[0]),
+                                       "observed_at_utc": scheduler.stamp(self.now[0]),
+                                       "error_code": "DUMP_FAILED" if legacy else None,
+                                       "next_retry_at_utc": scheduler.stamp(self.now[0] - 1) if legacy else None}
+                scheduler.replace(self.engine.folder / "state.json", value)
+                self.engine = self.restart()
+                self.tick()
+                state = self.state()
+                self.assertEqual("INTERRUPTED", state["error_code"])
+                self.assertEqual(failures + 1, state["failures"])
+                self.assertEqual(self.now[0] + scheduler.RETRIES[min(failures, 2)], scheduler.seconds(state["next_retry_at_utc"]))
+                self.assertFalse(list(self.engine.folder.glob("*.invalid")))
+
+    def test_invalid_retry_state_recovery_does_not_hide_ambiguity_or_preservation_io(self):
+        self.seed()
+        self.configure()
+        self.tick()
+        path = self.engine.folder / "state.json"
+        payload = json.dumps(self.state() | {"next_retry_at_utc": "2099-01-01T00:00:00Z"}).encode()
+        path.write_bytes(payload)
+        with mock.patch.object(scheduler.shutil, "copyfileobj", side_effect=OSError(errno.EIO, "injected copy")):
+            self.assertEqual("STORAGE_IO_ERROR", self.tick()["error_code"])
+        self.assertEqual(payload, path.read_bytes())
+        saved = {p: p.read_bytes() for p in self.engine.folder.glob("*.invalid")}
+        self.seed()  # equal completion timestamps must remain ambiguous
+        self.engine = self.restart()
+        self.assertEqual("CATALOG_AMBIGUOUS", self.tick()["error_code"])
+        self.assertEqual(payload, path.read_bytes())
+        self.assertEqual(saved, {p: p.read_bytes() for p in self.engine.folder.glob("*.invalid")})
+
+    def test_reconstructed_wait_without_scheduled_evidence_survives_restart_and_due(self):
+        self.configure()
+        self.tick()
+        original = self.state()
+        self.assertIsNone(original["last_attempt_at_utc"])
+        self.assertEqual("OPERATOR_ACTION_REQUIRED", original["error_code"])
+        self.now[0] += 299
+        self.engine = self.restart()
+        self.tick()
+        self.assertEqual(original["next_retry_at_utc"], self.state()["next_retry_at_utc"])
+        self.assertFalse(list(self.engine.folder.glob("*.invalid")))
+        self.now[0] += 1
+        self.tick()
+        self.assertEqual(1, len(self.engine.records()))
+        self.engine = self.restart()
+        self.assertEqual("HEALTHY", self.tick()["health"])
+
+    def test_elapsed_valid_retry_does_one_catchup_without_preserving_valid_state(self):
+        self.seed(age=25 * 3600)
+        self.configure()
+        with mock.patch.dict(os.environ, {"DUMP_FAIL": "1"}):
+            self.tick()
+        self.configure(enabled=False)
+        self.now[0] += 7 * 86400
+        self.engine = self.restart()
+        self.tick()
+        self.configure()
+        self.engine = self.restart()
+        self.assertEqual("HEALTHY", self.tick()["health"])
+        self.engine = self.restart()
+        self.tick()
+        self.assertEqual(2, len(self.engine.records()))
+        self.assertFalse(list(self.engine.folder.glob("*.invalid")))
+
+    def test_equal_time_pruned_reference_is_recoverable_state_corruption(self):
+        old = self.seed(age=3600)
+        latest = self.seed()
+        self.configure()
+        self.tick()
+        # A valid historical tombstone cannot identify the current latest success.
+        old.update(local_presence="PRUNED", completed_at_utc=latest["completed_at_utc"])
+        self.archive(old).unlink()
+        scheduler.replace(self.store.catalog / (old["backup_id"] + ".json"), old)
+        scheduler.replace(self.engine.prunes / (old["backup_id"] + ".json"), {
+            "schema_version": 1, "backup_id": old["backup_id"], "sha256": old["sha256"], "phase": "PRUNED"})
+        self.check_semantic_recovery({"last_scheduled_backup_id": old["backup_id"]})
+
     def test_reconstruction_verifies_older_catalog_archives_before_replacing_state(self):
         older = self.seed(age=7200)
         self.seed(age=3600)

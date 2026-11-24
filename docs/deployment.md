@@ -800,6 +800,15 @@ docker run --rm --network none flowstock-remote-sftp:test
 
 **Semantic state recovery:** несоответствие UUID/timestamp записи `origin=scheduled` в catalog обрабатывается как corrupt state наряду с malformed JSON. До замены проверяются surviving archives (payload/size/hash), последние scheduled timestamps должны однозначно определять latest (равенство даёт `CATALOG_AMBIGUOUS`, UUID не задаёт порядок времени). Исходные bytes сохраняются private/fsync-копией `state-*.invalid`; после reconstruction restart пропускает свежий success, следующий due tick создаёт одну копию. Catalog corruption/ambiguity оставляют state без замены и блокируют dump/retention; неизвестная schema не исправляется автоматически. Ошибки чтения/копирования/fsync распространяются, observation сообщает `STORAGE_IO_ERROR`, и замена state не продолжается. Отсутствие scheduled evidence по-прежнему не создаёт фиктивный success.
 
+Перед использованием retry проверяются совместные инварианты persisted state:
+
+- `IDLE`: доказанный scheduled success, `failures=0`, `next_retry_at_utc=null`, `error_code=null`. Last attempt может отсутствовать после reconstruction из catalog.
+- `RETRY_WAIT`: `failures>0`, непустые error/retry и last attempt. Единственное исключение без attempt — reconstruction без scheduled evidence: `OPERATOR_ACTION_REQUIRED`, failures=1, success отсутствует.
+- `RUNNING`: last attempt обязателен; новый writer очищает retry/error перед dump, сохраняя failures для следующей ступени backoff. Совместимы старые schema-1 snapshots с парой previous error/retry при положительных failures. После restart committed catalog success имеет приоритет, иначе записывается `INTERRUPTED` и следующая bounded ступень.
+- Любой сохранённый retry не позже `observed_at_utc + backoff(failures)` (300/900/3600, далее 3600 секунд). Просроченный retry допустим: observation обновляется и при disabled worker, restart его не продлевает. При UTC rollback pending retry переносится на bounded интервал от нового UTC, в том числе при скачке между назначением retry и сохранением snapshot.
+
+Нарушения проходят тот же verified-catalog recovery с сохранением исходных bytes. Однозначный свежий success исключает лишний dump; overdue даёт один catch-up. Нельзя безусловно требовать числовой порядок last attempt/success/observation: часы могли откатиться внутри dump. Success доказывается catalog, retry ограничивается observation; `next_run_at_utc` вычисляется заново из success/config и не является доверенным gate из state. Это не проверка подлинности всех полей при согласованной подмене metadata.
+
 `pg_backup.sh` проверяет совместимость image и запускает **один** `backup_scheduler.py run`. Старый startup dump/sleep loop удалён. Worker читает config каждые 30 секунд независимо от scheduled cadence, поэтому снятие pause не откладывает попытку на сутки. HTTP/WPF, remote adapter/queue/inventory и secrets provisioning не добавлены.
 
 Состояние хранится вне business DB/checkout, в прежнем volume:
