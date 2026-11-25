@@ -64,6 +64,7 @@ function fixture() {
   return {
     api, source, calls,
     open() { api.openOrderModal({ ...source }); },
+    markup: () => modal.innerHTML,
     checkbox: () => modal.querySelector("#partialOutboundPermission"),
     status: () => modal.querySelector("#partialOutboundPermissionStatus").textContent,
     change(value) { const box = this.checkbox(); box.checked = value; box.handlers.change(); },
@@ -90,6 +91,28 @@ async function run() {
 
   f.open(); await settle();
   assert.equal(f.checkbox().disabled, false);
+  assert.equal(f.checkbox().checked, false, "unchecked permission remains visible");
+  const actions = f.markup().match(/<div class="pc-order-modal-actions">([\s\S]*?)<\/div>/);
+  assert.ok(actions, "saved modal has header actions");
+  assert.match(actions[1], /id="orderExcelBtn"[\s\S]*id="modalCloseBtn"/);
+  assert.match(f.markup(), /id="partialOutboundPermissionWrap" class="pc-order-permission-panel"/);
+  assert.match(f.markup(), /id="partialOutboundPermissionWrap"[\s\S]*id="orderExcelPreview"[\s\S]*id="orderLinesWrap"/);
+
+  const internal = fixture(); internal.source.order_type = "INTERNAL";
+  internal.open(); await settle();
+  assert.equal(internal.checkbox(), null);
+  assert.match(internal.markup(), /id="orderExcelBtn"/);
+
+  const enabled = fixture(); enabled.source.allow_partial_outbound = true;
+  enabled.open(); await settle();
+  assert.equal(enabled.checkbox().checked, true);
+  assert.equal(enabled.checkbox().disabled, false);
+
+  const pending = fixture(); pending.source.is_pending_confirmation = true;
+  pending.open(); await settle();
+  assert.equal(pending.checkbox(), null);
+  assert.doesNotMatch(pending.markup(), /id="orderExcelBtn"|id="orderExcelPreview"/);
+  assert.match(pending.markup(), /id="modalCloseBtn"/);
   f.setConfirm(false); f.change(true);
   assert.equal(f.checkbox().checked, false);
   assert.equal(f.calls.length, 0);
