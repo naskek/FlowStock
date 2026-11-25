@@ -186,6 +186,11 @@
           if (wrap) {
             wrap.textContent = "Ошибка загрузки строк.";
           }
+          if (controller && controller === openOrderModalController &&
+              generation === controller.permissionGeneration && !controller.permissionLoaded) {
+            if (!controller.permissionMessage) controller.permissionMessage = "Не удалось загрузить разрешение. Обновите заказ.";
+            renderPartialOutboundPermission(modal, order);
+          }
         })
         .finally(function () {
           refreshInFlight = false;
@@ -483,9 +488,20 @@
     if (!wrap) return;
     var state = permissionState(order);
     var controller = openOrderModalController;
+    var summary = modal.querySelector("#partialOutboundPermissionSummary");
+    if (summary) {
+      var summaryText = !state.visible ? "" :
+        controller && controller.permissionBusy ? "Частичная отгрузка: сохранение…" :
+        !controller || !controller.permissionLoaded ?
+          (controller && controller.permissionMessage ? "Частичная отгрузка: проверьте состояние" : "Частичная отгрузка: загрузка…") :
+        !state.active ? "Частичная отгрузка: недоступна" :
+        state.checked ? "Частичная отгрузка: разрешена" : "Частичная отгрузка: выключена";
+      if (summary.textContent !== summaryText) summary.textContent = summaryText;
+    }
     wrap.innerHTML = state.visible
-      ? '<label class="pc-partial-outbound-permission"><input type="checkbox" id="partialOutboundPermission">' +
-        '<span>Разрешить отгрузку готовых паллет до полной готовности заказа</span></label>' +
+      ? '<label class="pc-partial-outbound-permission">' +
+        '<span>Частичная отгрузка</span>' +
+        '<input type="checkbox" role="switch" id="partialOutboundPermission" aria-label="Разрешить отгрузку готовых паллет до полной готовности заказа" title="Разрешить отгрузку готовых паллет до полной готовности заказа"></label>' +
         '<div class="pc-status" role="status" id="partialOutboundPermissionStatus"></div>'
       : "";
     var checkbox = wrap.querySelector("#partialOutboundPermission");
@@ -494,7 +510,8 @@
     checkbox.disabled = !state.active || !controller || !controller.permissionLoaded || controller.permissionBusy;
     var statusEl = wrap.querySelector("#partialOutboundPermissionStatus");
     statusEl.textContent = controller && controller.permissionMessage ||
-      (!state.active ? "Доступно только для активного сохранённого заказа." : "Изменение сохраняется сразу.");
+      (!controller || !controller.permissionLoaded ? "Загрузка разрешения…" :
+        !state.active ? "Доступно только для активного сохранённого заказа." : "Изменение сохраняется сразу.");
     checkbox.addEventListener("change", function () {
       changePartialOutboundPermission(modal, order, checkbox.checked);
     });
@@ -624,13 +641,15 @@
     var modal = document.createElement("div");
     modal.className = "pc-modal";
     modal.innerHTML =
-      '<div class="pc-modal-card pc-order-modal-card">' +
+      '<div class="pc-modal-card pc-order-modal-card pc-order-details-card">' +
       '  <div class="pc-modal-header">' +
       '    <div class="pc-modal-title">Заказ ' +
       escapeHtml(order.order_ref || "-") +
       ' <span id="orderReadinessBadge"></span></div>' +
       '    <button class="btn btn-outline" type="button" id="modalCloseBtn">Закрыть</button>' +
       "  </div>" +
+      '  <div class="pc-order-details-overview">' +
+      '    <div class="pc-order-details-meta">' +
       '  <div class="pc-status">Тип: ' +
       escapeHtml(getOrderTypeLabel(order.order_type)) +
       " · Контрагент: " +
@@ -653,8 +672,19 @@
         : "Статус формируется автоматически по выпуску и отгрузке.") +
       "</div>" +
       "  </div>" +
-      (!isPending ? '<button class="btn btn-outline" type="button" id="orderExcelBtn">Сформировать Excel ЧЗ</button><div id="orderExcelStatus" role="status"></div><div id="orderExcelPreview"></div>' : '') +
-      '  <div id="partialOutboundPermissionWrap"></div>' +
+      '    </div>' +
+      (!isPending
+        ? '    <details class="pc-order-management" id="orderManagementPanel" open>' +
+          '      <summary class="pc-order-management-toggle">Управление заказом' +
+          '        <span id="partialOutboundPermissionSummary" class="pc-order-permission-summary" role="status"></span></summary>' +
+          '      <div class="pc-order-management-body">' +
+          '        <button class="btn btn-outline" type="button" id="orderExcelBtn">Сформировать Excel ЧЗ</button>' +
+          '        <div id="partialOutboundPermissionWrap" class="pc-order-permission-panel"></div>' +
+          '      </div>' +
+          '    </details>'
+        : '') +
+      '  </div>' +
+      (!isPending ? '<div id="orderExcelStatus" class="pc-status pc-order-excel-status" role="status"></div><div id="orderExcelPreview" class="pc-order-excel-preview"></div>' : '') +
       '  <div id="orderLinesWrap" class="pc-status" style="margin-top:12px;">Загрузка строк...</div>' +
       (canManage
         ? '  <div class="pc-modal-footer">' +
@@ -757,6 +787,7 @@
     };
 
     bindExcelExport(modal, order);
+    renderPartialOutboundPermission(modal, order);
     refreshOrderModalContent();
   }
 
