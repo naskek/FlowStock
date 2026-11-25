@@ -505,8 +505,9 @@ def status(root):
     result.update(applied_revision=applied["revision"], requested_revision=requested["revision"],
                   apply_state="APPLIED" if requested == applied else "PENDING",
                   effective_config=applied["config"],
-                  observation_age_seconds=max(0, time.time() - seconds(result["observed_at_utc"])))
-    if result["observation_age_seconds"] > 90:
+                  observation_age_seconds=time.time() - seconds(result["observed_at_utc"]))
+    # A future heartbeat after UTC rollback cannot prove worker availability.
+    if not 0 <= result["observation_age_seconds"] <= 90:
         result.update(health="DEGRADED", error_code="WORKER_UNAVAILABLE")
     pause_path = path / "managed/maintenance/pause.json"
     core._directory(pause_path.parent)

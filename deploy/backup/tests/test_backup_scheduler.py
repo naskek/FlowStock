@@ -802,6 +802,52 @@ class SchedulerTests(unittest.TestCase):
         result = scheduler.status(str(self.root))
         self.assertEqual("WORKER_UNAVAILABLE", result["error_code"])
 
+    def test_stopped_worker_rollback_successive_status_reads_and_fresh_tick_recovery(self):
+        self.seed()
+        self.configure()
+        self.assertEqual("HEALTHY", self.tick()["health"])
+        observed = self.now[0]
+        before = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in self.store.managed.rglob("*") if p.is_file()}
+        # No worker ticks after rollback: repeated readers cannot refresh it.
+        for elapsed in (300, 86400 + 300):
+            with self.subTest(elapsed=elapsed):
+                self.now[0] = observed - 48 * 3600 + elapsed
+                with mock.patch.object(scheduler.time, "time", return_value=self.now[0]):
+                    result = scheduler.status(str(self.root))
+                self.assertEqual("DEGRADED", result["health"])
+                self.assertEqual("WORKER_UNAVAILABLE", result["error_code"])
+                self.assertEqual(self.now[0] - observed, result["observation_age_seconds"])
+        after = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in self.store.managed.rglob("*") if p.is_file()}
+        self.assertEqual(before, after)
+        self.assertEqual("HEALTHY", self.tick()["health"])
+        with mock.patch.object(scheduler.time, "time", return_value=self.now[0]):
+            result = scheduler.status(str(self.root))
+        self.assertEqual("HEALTHY", result["health"])
+        self.assertIsNone(result["error_code"])
+        self.assertEqual(0, result["observation_age_seconds"])
+        self.assertEqual(1, len(self.engine.records()))
+
+    def test_status_freshness_boundaries_preserve_snapshot_status_and_pause_precedence(self):
+        self.seed()
+        for health, error in (("HEALTHY", None), ("DISABLED", None), ("DEGRADED", "STORAGE_LOW")):
+            self.engine.observe(None, self.engine.bootstrap(), health, error)
+            for age in (-1, 0, 90, 91):
+                with self.subTest(health=health, age=age):
+                    with mock.patch.object(scheduler.time, "time", return_value=self.now[0] + age):
+                        result = scheduler.status(str(self.root))
+                    fresh = 0 <= age <= 90
+                    self.assertEqual(health if fresh else "DEGRADED", result["health"])
+                    self.assertEqual(error if fresh else "WORKER_UNAVAILABLE", result["error_code"])
+                    self.assertEqual(age, result["observation_age_seconds"])
+        self.store.pause("restore:test")
+        for age in (-1, 0, 90, 91):
+            with self.subTest(paused=True, age=age):
+                with mock.patch.object(scheduler.time, "time", return_value=self.now[0] + age):
+                    result = scheduler.status(str(self.root))
+                self.assertEqual("PAUSED", result["health"])
+                self.assertEqual("MAINTENANCE_PAUSED", result["error_code"])
+                self.assertEqual(age, result["observation_age_seconds"])
+
     def test_kill_after_catalog_before_success_snapshot_recovers_without_duplicate(self):
         self.seed(age=25 * 3600)
         self.configure()
