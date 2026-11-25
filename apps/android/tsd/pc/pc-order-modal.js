@@ -629,7 +629,10 @@
       '    <div class="pc-modal-title">Заказ ' +
       escapeHtml(order.order_ref || "-") +
       ' <span id="orderReadinessBadge"></span></div>' +
-      '    <button class="btn btn-outline" type="button" id="modalCloseBtn">Закрыть</button>' +
+      '    <div class="pc-order-modal-actions">' +
+      (!isPending ? '<button class="btn btn-outline" type="button" id="orderExcelBtn">Сформировать Excel ЧЗ</button>' : '') +
+      '      <button class="btn btn-outline" type="button" id="modalCloseBtn">Закрыть</button>' +
+      '    </div>' +
       "  </div>" +
       '  <div class="pc-status">Тип: ' +
       escapeHtml(getOrderTypeLabel(order.order_type)) +
@@ -653,8 +656,8 @@
         : "Статус формируется автоматически по выпуску и отгрузке.") +
       "</div>" +
       "  </div>" +
-      (!isPending ? '<button class="btn btn-outline" type="button" id="orderExcelBtn">Сформировать Excel ЧЗ</button><div id="orderExcelStatus" role="status"></div><div id="orderExcelPreview"></div>' : '') +
-      '  <div id="partialOutboundPermissionWrap"></div>' +
+      '  <div id="partialOutboundPermissionWrap" class="pc-order-permission-panel"></div>' +
+      (!isPending ? '<div id="orderExcelStatus" class="pc-status pc-order-excel-status" role="status"></div><div id="orderExcelPreview" class="pc-order-excel-preview"></div>' : '') +
       '  <div id="orderLinesWrap" class="pc-status" style="margin-top:12px;">Загрузка строк...</div>' +
       (canManage
         ? '  <div class="pc-modal-footer">' +
