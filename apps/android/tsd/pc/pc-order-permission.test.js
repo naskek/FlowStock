@@ -65,6 +65,8 @@ function fixture() {
     api, source, calls,
     open() { api.openOrderModal({ ...source }); },
     markup: () => modal.innerHTML,
+    summary: () => modal.querySelector("#partialOutboundPermissionSummary")?.textContent,
+    panel: () => modal.querySelector("#orderManagementPanel"),
     checkbox: () => modal.querySelector("#partialOutboundPermission"),
     status: () => modal.querySelector("#partialOutboundPermissionStatus").textContent,
     change(value) { const box = this.checkbox(); box.checked = value; box.handlers.change(); },
@@ -92,32 +94,53 @@ async function run() {
   f.open(); await settle();
   assert.equal(f.checkbox().disabled, false);
   assert.equal(f.checkbox().checked, false, "unchecked permission remains visible");
-  const actions = f.markup().match(/<div class="pc-order-modal-actions">([\s\S]*?)<\/div>/);
-  assert.ok(actions, "saved modal has header actions");
-  assert.match(actions[1], /id="orderExcelBtn"[\s\S]*id="modalCloseBtn"/);
-  assert.match(f.markup(), /id="partialOutboundPermissionWrap" class="pc-order-permission-panel"/);
-  assert.match(f.markup(), /id="partialOutboundPermissionWrap"[\s\S]*id="orderExcelPreview"[\s\S]*id="orderLinesWrap"/);
+  const header = f.markup().match(/<div class="pc-modal-header">([\s\S]*?)<div class="pc-order-details-overview">/);
+  assert.ok(header);
+  assert.match(header[1], /id="modalCloseBtn"/);
+  assert.doesNotMatch(header[1], /id="orderExcelBtn"/);
+  const panel = f.markup().match(/<details class="pc-order-management" id="orderManagementPanel" open>([\s\S]*?)<\/details>/);
+  assert.ok(panel, "saved modal has a default-open native disclosure");
+  assert.match(panel[1], /<summary[\s\S]*id="partialOutboundPermissionSummary"[\s\S]*id="orderExcelBtn"[\s\S]*id="partialOutboundPermissionWrap"/);
+  assert.match(f.markup(), /<\/details>[\s\S]*id="orderExcelPreview"[\s\S]*id="orderLinesWrap"/);
+  assert.match(f.summary(), /выключена/);
+  const originalPanel = f.panel();
+  originalPanel.open = false;
+  await f.api.getOpenOrderModalController().refresh();
+  assert.equal(f.panel(), originalPanel);
+  assert.equal(f.panel().open, false, "refresh must not reopen the disclosure");
+  assert.match(f.summary(), /выключена/);
+
+  const loading = fixture();
+  const initial = deferred(); loading.setReads(initial); loading.open();
+  assert.equal(loading.checkbox().disabled, true);
+  assert.match(loading.summary(), /загрузка/);
+  initial.reject(new Error("offline")); await settle();
+  assert.match(loading.summary(), /проверьте состояние/);
+  assert.equal(loading.checkbox().disabled, true);
 
   const internal = fixture(); internal.source.order_type = "INTERNAL";
   internal.open(); await settle();
   assert.equal(internal.checkbox(), null);
+  assert.equal(internal.summary(), "");
   assert.match(internal.markup(), /id="orderExcelBtn"/);
 
   const enabled = fixture(); enabled.source.allow_partial_outbound = true;
   enabled.open(); await settle();
   assert.equal(enabled.checkbox().checked, true);
   assert.equal(enabled.checkbox().disabled, false);
+  assert.match(enabled.summary(), /разрешена/);
 
   const pending = fixture(); pending.source.is_pending_confirmation = true;
   pending.open(); await settle();
   assert.equal(pending.checkbox(), null);
-  assert.doesNotMatch(pending.markup(), /id="orderExcelBtn"|id="orderExcelPreview"/);
+  assert.doesNotMatch(pending.markup(), /id="orderExcelBtn"|id="orderExcelPreview"|id="orderManagementPanel"/);
   assert.match(pending.markup(), /id="modalCloseBtn"/);
   f.setConfirm(false); f.change(true);
   assert.equal(f.checkbox().checked, false);
   assert.equal(f.calls.length, 0);
   f.setConfirm(true); f.change(true);
   assert.equal(f.checkbox().disabled, true);
+  assert.match(f.summary(), /сохранение/);
   f.change(true); assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].url, "/api/orders/42/partial-outbound-permission");
   assert.equal(f.calls[0].options.method, "PUT");
@@ -131,6 +154,7 @@ async function run() {
   g.change(true);
   first.resolve({ ok: true, order_id: 42, status: "ACCEPTED", allow_partial_outbound: true });
   await settle(); assert.equal(g.checkbox().checked, true);
+  assert.match(g.summary(), /разрешена/);
   stale.resolve({ ...g.source, allow_partial_outbound: false }); await poll;
   assert.equal(g.checkbox().checked, true, "late pre-command poll must not restore stale permission");
   assert.equal(g.api.getOpenOrderModalController().order.order_status, "ACCEPTED");
@@ -145,12 +169,14 @@ async function run() {
   failed.reject(new Error("offline")); await settle();
   assert.equal(g.checkbox().checked, true); assert.equal(g.checkbox().disabled, true);
   assert.match(g.status(), /фактическое значение/);
+  assert.match(g.summary(), /проверьте состояние/);
   await g.api.getOpenOrderModalController().refresh();
   assert.equal(g.checkbox().disabled, false); assert.equal(g.checkbox().checked, false);
 
   const forbidden = deferred(); g.setWrite(forbidden); g.change(true);
   forbidden.reject(Object.assign(new Error("ADMIN_REQUIRED"), { error: "ADMIN_REQUIRED", status: 403 }));
   await settle(); assert.equal(g.checkbox(), null);
+  assert.equal(g.summary(), "");
   const h = fixture(); h.open(); await settle();
   const unauthorized = deferred(); h.setWrite(unauthorized); h.change(true);
   unauthorized.reject(Object.assign(new Error("INVALID_SESSION"), { status: 401 }));
