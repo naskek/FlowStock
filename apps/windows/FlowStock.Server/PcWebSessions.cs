@@ -78,6 +78,7 @@ LIMIT 1;";
         }
 
         var accountId = reader.GetInt64(0);
+        long backupAuthVersion;
         var deviceId = reader.GetString(1);
         var storedLogin = reader.GetString(2);
         var salt = reader.GetString(3);
@@ -109,7 +110,7 @@ LIMIT 1;";
             lockAccount.Transaction = transaction;
             lockAccount.CommandText = @"
 SELECT device_id, login, password_salt, password_hash, password_iterations,
-       is_active, platform, access_role
+       is_active, platform, access_role, backup_auth_version
 FROM tsd_devices
 WHERE id = @id
 FOR UPDATE;";
@@ -121,6 +122,7 @@ FOR UPDATE;";
                 return PcWebLoginResult.Invalid("INVALID_CREDENTIALS");
             }
 
+            backupAuthVersion = current.GetInt64(8);
             deviceId = current.GetString(0);
             storedLogin = current.GetString(1);
             salt = current.GetString(2);
@@ -155,8 +157,9 @@ FOR UPDATE;";
         {
             insert.Transaction = transaction;
             insert.CommandText = @"
-INSERT INTO pc_web_sessions(account_id, token_hash, created_at, expires_at, revoked_at)
-VALUES(@account_id, @token_hash, @created_at, @expires_at, NULL);";
+INSERT INTO pc_web_sessions(account_id, token_hash, created_at, expires_at, revoked_at, backup_auth_version)
+VALUES(@account_id, @token_hash, @created_at, @expires_at, NULL, @backup_auth_version);";
+            AddParam(insert, "@backup_auth_version", backupAuthVersion);
             AddParam(insert, "@account_id", accountId);
             AddParam(insert, "@token_hash", HashToken(rawToken));
             AddParam(insert, "@created_at", now.UtcDateTime);
