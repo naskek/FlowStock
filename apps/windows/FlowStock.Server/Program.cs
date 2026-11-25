@@ -24,6 +24,11 @@ var builder = WebApplication.CreateBuilder(args);
 
 var postgresConnectionString = BuildPostgresConnectionString(builder.Configuration);
 
+if (BackupSecurityCommand.TryRun(args, postgresConnectionString, out var backupSecurityExitCode))
+{
+    Environment.ExitCode = backupSecurityExitCode;
+    return;
+}
 
 if (OrderReservationBackfillCommand.TryRun(args, postgresConnectionString, out var maintenanceExitCode))
 {
@@ -102,6 +107,9 @@ builder.Services.AddSingleton<PostgresDataStore>(sp =>
 });
 builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
 builder.Services.AddSingleton(new PcWebSessionStore(postgresConnectionString));
+builder.Services.AddSingleton(sp => new BackupAuthorization(postgresConnectionString,
+    sp.GetRequiredService<ILogger<BackupAuthorization>>()));
+builder.Services.AddSingleton(new BackupCredentialReferences(postgresConnectionString));
 builder.Services.AddSingleton<IPcWebSessionResolver>(sp => sp.GetRequiredService<PcWebSessionStore>());
 builder.Services.AddSingleton(new WpfMachineAuthorization(wpfAdminApiKey));
 builder.Services.AddSingleton<CatalogAuthorization>();
