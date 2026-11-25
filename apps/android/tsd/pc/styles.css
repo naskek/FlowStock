@@ -2089,13 +2089,14 @@ body.pc-modal-open {
   max-width: 988px;
 }
 
-.pc-order-modal-card > .pc-modal-header {
+.pc-order-details-card > .pc-modal-header {
   flex-wrap: wrap;
   gap: 10px;
 }
 
-.pc-order-modal-card > .pc-modal-header > .pc-modal-title {
+.pc-order-details-card > .pc-modal-header > .pc-modal-title {
   min-width: 0;
+  overflow-wrap: break-word;
   overflow-wrap: anywhere;
 }
 
@@ -2122,6 +2123,11 @@ body.pc-modal-open {
 
 .pc-order-permission-panel > .pc-status {
   margin: 4px 0 0 24px;
+  padding-bottom: 0;
+}
+
+.pc-order-excel-status {
+  padding-bottom: 0;
 }
 
 .pc-order-excel-status:not(:empty),
