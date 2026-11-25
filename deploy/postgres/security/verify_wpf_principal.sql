@@ -52,10 +52,12 @@ BEGIN
           AND has_function_privilege(principal, p.oid, 'EXECUTE')
     ) THEN RAISE EXCEPTION 'WPF_DB_UNSAFE_ROUTINE'; END IF;
     -- Не допускаем future grants от любого creator для WPF/PUBLIC на relations.
-    -- Для routines каждый доверенный creator обязан убрать global default PUBLIC EXECUTE.
+    -- Для routines запрещены также schema-specific PUBLIC grants: они добавляются
+    -- к global defaults, даже если global PUBLIC EXECUTE отозван.
     IF EXISTS (
         SELECT 1 FROM pg_default_acl d CROSS JOIN LATERAL aclexplode(d.defaclacl) a
-        WHERE (a.grantee = principal OR (a.grantee = 0 AND d.defaclobjtype <> 'f'))
+        WHERE (a.grantee = principal OR (a.grantee = 0 AND
+            (d.defaclobjtype <> 'f' OR d.defaclnamespace <> 0)))
     ) THEN RAISE EXCEPTION 'WPF_DB_UNSAFE_DEFAULT_ACL'; END IF;
     IF EXISTS (
         SELECT 1 FROM (
