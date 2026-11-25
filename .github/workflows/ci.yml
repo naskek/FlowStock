@@ -280,7 +280,8 @@ jobs:
               "FlowStock.Server.Tests.Catalog.CatalogCutoverPostgresTests",
               "FlowStock.Server.Tests.Catalog.UomCatalogPostgresTests",
               "FlowStock.Server.Tests.Commercial.CommercialCatalogPostgresConcurrencyTests",
-              "FlowStock.Server.Tests.Commercial.CommercialPriceShipmentConcurrencyPostgresTests"
+              "FlowStock.Server.Tests.Commercial.CommercialPriceShipmentConcurrencyPostgresTests",
+              "FlowStock.Server.Tests.Security.WpfPrincipalPostgresTests"
             ) `
             -RequireOnlyPassed
 

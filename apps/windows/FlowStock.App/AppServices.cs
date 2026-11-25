@@ -178,6 +178,7 @@ public sealed class AppServices
             {
                 startupStage?.Invoke("Подключение и проверка PostgreSQL…");
                 appLogger.Info("Startup: beginning PostgreSQL initialization.");
+                WpfDatabasePrincipal.Validate(connectionString);
                 dataStore.Initialize();
                 isDatabaseAvailable = true;
                 appLogger.Info($"Database provider: postgres {target}");

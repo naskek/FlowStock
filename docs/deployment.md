@@ -959,3 +959,12 @@ $DC restart nginx
 ## Сериализация номеров заказов
 
 Runtime writers номера используют общий transaction-level advisory lock, описанный в `spec_orders.md`. Это кооперативный протокол без нового unique constraint и без изменения исторических данных. Перед rollout проверить существующие дубли через `.NET StringComparer.OrdinalIgnoreCase` (SQL `lower` не эквивалентен), сохранить результат аудита и исключить параллельные старые writers/прямые SQL imports. Перезапуск сервера сам по себе не обновляет старые WPF-клиенты с прямой записью в БД. Rollback runtime возвращает прежний риск конкурентных дублей; очистка или переименование истории не выполняется. Canonical backup, isolated production-copy exact-tree smoke и отдельный deploy gate сохраняются.
+
+
+## Ограниченный PostgreSQL principal WPF
+
+Перед cutover выполнить [`runbook разграничения WPF`](../deploy/docs/operations/wpf-db-principal.md): inventory всех consumers общего `flowstock`, fresh backup, isolated exact-tree rehearsal, новый `flowstock_wpf`, проверка effective ACL, ротация ранее известного WPF superuser credential и закрытие старых sessions. Script в Git и зелёный CI не означают provisioning или разрешение production изменений. Server/migrator/backup остаются в доверенной операторской границе; BI сохраняет существующие права.
+
+`V0061__wpf_schema_readiness.sql` переносит прежние 30 implicit startup columns/nullability в явный migrator, с `ADD COLUMN IF NOT EXISTS` без изменения существующих значений. На canonical fresh chain до этой миграции отсутствовали два item-type flags; остальные определения сохраняют ранее поддерживаемые existing-schema сценарии. `V0060` зарезервирована backup security и не дублируется. Старый открытый #179 использует уже занятый active-main номер V0046; его migration нельзя механически добавлять в текущую цепочку. Его ветка не изменяется этим cutover.
+
+Ролевой provisioning намеренно не входит в автоматическую migration chain: создание LOGIN/ACL/defaults — только отдельный явный операторский gate. После каждого schema upgrade повторять verification, проверку migration creators/defaults и WPF smoke. `CREATE` через PUBLIC на старой схеме, неизвестный callable routine, default grant или ownership — повод остановить cutover и отдельно согласовать исправление; script не выполняет blanket REVOKE и не нормализует существующие роли.

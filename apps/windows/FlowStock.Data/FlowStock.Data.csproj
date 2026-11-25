@@ -13,5 +13,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FlowStock.Core\FlowStock.Core.csproj" />
+    <EmbeddedResource Include="..\..\..\deploy\postgres\security\verify_wpf_principal.sql" LogicalName="FlowStock.Data.verify_wpf_principal.sql" />
   </ItemGroup>
 </Project>

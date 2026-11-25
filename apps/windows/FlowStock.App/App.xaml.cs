@@ -203,39 +203,9 @@ public partial class App : Application
 
     private void TryRunAutoBackup(AppServices services)
     {
-        try
+        if (services.Settings.Load().BackupsEnabled)
         {
-            var settings = services.Settings.Load();
-            if (!settings.BackupsEnabled)
-            {
-                return;
-            }
-
-            var shouldBackup = settings.BackupMode == BackupMode.OnEveryStart;
-            if (settings.BackupMode == BackupMode.OnStartIfOlderThanHours)
-            {
-                var last = services.Backups.GetLastBackupTime();
-                if (!last.HasValue || DateTime.Now - last.Value > TimeSpan.FromHours(settings.BackupIfOlderThanHours))
-                {
-                    shouldBackup = true;
-                }
-            }
-
-            if (!shouldBackup)
-            {
-                return;
-            }
-
-            ReportStartupStage("Создание резервной копии PostgreSQL…");
-            services.Backups.CreateBackup(settings.BackupMode == BackupMode.OnEveryStart
-                ? "auto_on_start"
-                : "auto_on_start_if_older");
-            ReportStartupStage("Проверка хранения резервных копий…");
-            services.Backups.ApplyRetention(settings.KeepLastNBackups);
-        }
-        catch (Exception ex)
-        {
-            services.AppLogger.Error("Auto backup failed", ex);
+            services.AppLogger.Info("Локальный auto backup отключён: резервные копии выполняются серверным оператором.");
         }
     }
 

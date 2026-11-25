@@ -614,3 +614,14 @@ Preview/export не выполняют DB writes, не создают marking re
 Старые таблицы `km_code_batch`, `km_code`, `marking_order`, `marking_code_import`, `marking_code`, `marking_import_batch`, print/audit/cutover таблицы и marking поля сохранены без destructive cleanup. Они не участвуют в рабочих расчётах и не изменяются Excel, PRD Close или коррекцией HU. Рабочие marking endpoints, очереди, backfill и ENFORCED cutover не включены. Любое последующее архивирование требует отдельной безопасной процедуры с backup.
 
 Исторические operational marking hooks отключаются миграцией V0059 без изменения данных. Контракт совместимости — в `spec_orders.md`, порядок применения и rollback gate — в `deployment.md`.
+
+
+## Граница прямого PostgreSQL доступа WPF
+
+Normal WPF использует отдельный LOGIN `flowstock_wpf`: без ownership, memberships, SUPERUSER/CREATEROLE/CREATEDB/REPLICATION/BYPASSRLS и DDL. Startup и проверка подключения отклоняют другой/небезопасный principal без fallback. Effective-ACL policy встроена из `deploy/postgres/security/verify_wpf_principal.sql`; оператор применяет provisioning и verification одной транзакцией отдельно от deployment. PUBLIC, column/default grants, sequences, callable routines, rewrite/definer triggers, foreign access и каскады в authority tables входят в gate. Trust boundary — сервер/migrator/operator; защита не ограничивает доверенного DBA, меняющего policy или schema после проверки.
+
+Schema readiness только читает каталоги и историю миграций; metadata visibility не требует SELECT на `tsd_devices`. Все прежние implicit startup columns и nullable `marking_order.order_id` задаёт migrator. Missing schema/columns/constraint/nullability блокируют запуск, WPF не предлагает административный credential для repairs. PostgreSQL КМ import изменяет у существующего товара только `is_marked`, сохраняя остальные поля.
+
+Прямой allowlist сохраняет legacy КМ, `api_docs` mapping и заполнение черновика отгрузки. Для row locks необходимы только column UPDATE на `docs.comment`/`orders.comment`; status, IDs, quantities и ledger не доступны для прямой записи. Полный desktop `pg_dump`/auto backup отключён; существующие локальные архивы не удаляются. До отдельного backup API полные backup выполняются оператором на сервере.
+
+`tsd_devices`, `pc_web_sessions`, backup grants/auth versions/credential refs/security audit и их sequences не входят в allowlist. Shared machine key и PC ADMIN не становятся backup authority. Существующий BI не изменяется. Inventory, rollout, отзыв ранее известного superuser credential, координация consumers и rollback — [`deploy/docs/operations/wpf-db-principal.md`](../deploy/docs/operations/wpf-db-principal.md). Изменение WPF username само по себе не закрывает прежний credential.

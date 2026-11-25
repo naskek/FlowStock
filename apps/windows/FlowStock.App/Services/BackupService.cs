@@ -23,17 +23,8 @@ public sealed class BackupService
 
     public string CreateBackup(string reason)
     {
-        lock (_sync)
-        {
-            Directory.CreateDirectory(_backupsDir);
-            var fileName = $"FlowStock_{DateTime.Now:yyyyMMdd_HHmmss}.dump";
-            var targetPath = Path.Combine(_backupsDir, fileName);
-            RunPgDump(targetPath);
-
-            var size = new FileInfo(targetPath).Length;
-            _logger.Info($"Backup created ({reason}) path={targetPath} size={size}");
-            return targetPath;
-        }
+        throw new NotSupportedException("Полная резервная копия выполняется серверным оператором. "
+            + "Ограниченный WPF credential не предназначен для pg_dump всей БД.");
     }
 
     public List<BackupInfo> ListBackups()
