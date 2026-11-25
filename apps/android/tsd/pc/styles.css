@@ -2089,6 +2089,50 @@ body.pc-modal-open {
   max-width: 988px;
 }
 
+.pc-order-modal-card > .pc-modal-header {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.pc-order-modal-card > .pc-modal-header > .pc-modal-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pc-order-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  max-width: 100%;
+}
+
+.pc-order-permission-panel:not(:empty) {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--pc-border);
+  border-radius: 8px;
+}
+
+.pc-order-permission-panel .pc-partial-outbound-permission {
+  margin-top: 0;
+}
+
+.pc-order-permission-panel > .pc-status {
+  margin: 4px 0 0 24px;
+}
+
+.pc-order-excel-status:not(:empty),
+.pc-order-excel-preview:not(:empty) {
+  margin-top: 10px;
+}
+
+.pc-order-excel-preview {
+  overflow-x: auto;
+}
+
 .pc-product-card {
   max-width: 700px;
 }
