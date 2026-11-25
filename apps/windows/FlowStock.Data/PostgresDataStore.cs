@@ -17563,62 +17563,35 @@ ORDER BY pll.production_pallet_id, pll.id;
         };
     }
 
-    private static void EnsureColumn(NpgsqlConnection connection, string tableName, string columnName, string definition)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = $"ALTER TABLE {tableName} ADD COLUMN IF NOT EXISTS {columnName} {definition};";
-        command.ExecuteNonQuery();
-    }
-
-    private static void EnsureNullable(NpgsqlConnection connection, string tableName, string columnName)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = @"
-SELECT is_nullable
-FROM information_schema.columns
-WHERE table_schema = current_schema()
-  AND table_name = @table_name
-  AND column_name = @column_name
-LIMIT 1;";
-        command.Parameters.AddWithValue("@table_name", tableName.ToLowerInvariant());
-        command.Parameters.AddWithValue("@column_name", columnName.ToLowerInvariant());
-        var isNullable = command.ExecuteScalar() as string;
-        if (string.Equals(isNullable, "YES", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        using var alter = connection.CreateCommand();
-        alter.CommandText = $"ALTER TABLE {tableName} ALTER COLUMN {columnName} DROP NOT NULL;";
-        alter.ExecuteNonQuery();
-    }
-
     private static bool ColumnExists(NpgsqlConnection connection, string tableName, string columnName)
     {
         using var command = connection.CreateCommand();
         command.CommandText = @"
-SELECT 1
-FROM information_schema.columns
-WHERE table_schema = current_schema()
-  AND table_name = @table_name
-  AND column_name = @column_name
-LIMIT 1;";
+SELECT 1 FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND c.relname = @table_name
+  AND a.attname = @column_name AND a.attnum > 0 AND NOT a.attisdropped LIMIT 1;";
         command.Parameters.AddWithValue("@table_name", tableName.ToLowerInvariant());
         command.Parameters.AddWithValue("@column_name", columnName.ToLowerInvariant());
         return command.ExecuteScalar() != null;
+    }
+
+    private static bool IsColumnNullable(NpgsqlConnection connection, string tableName, string columnName)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT NOT attnotnull FROM pg_attribute WHERE attrelid = to_regclass('public.' || quote_ident(@table)) AND attname = @column AND NOT attisdropped";
+        command.Parameters.AddWithValue("@table", tableName);
+        command.Parameters.AddWithValue("@column", columnName);
+        return command.ExecuteScalar() is true;
     }
 
     private static bool TableExists(NpgsqlConnection connection, string tableName)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = @"
-SELECT 1
-FROM information_schema.tables
-WHERE table_schema = current_schema()
-  AND table_name = @name
-LIMIT 1;";
+        command.CommandText = "SELECT to_regclass('public.' || quote_ident(@name)) IS NOT NULL";
         command.Parameters.AddWithValue("@name", tableName.ToLowerInvariant());
-        return command.ExecuteScalar() != null;
+        return command.ExecuteScalar() is true;
     }
 
     private static bool ConstraintExists(NpgsqlConnection connection, string tableName, string constraintName)
@@ -17688,38 +17661,6 @@ LIMIT 1;";
             }
         }
 
-        EnsureColumn(connection, "item_types", "min_stock_uses_order_binding", "BOOLEAN NOT NULL DEFAULT FALSE");
-        EnsureColumn(connection, "item_types", "enable_order_reservation", "BOOLEAN NOT NULL DEFAULT FALSE");
-        EnsureColumn(connection, "item_types", "enable_marking", "BOOLEAN NOT NULL DEFAULT FALSE");
-        EnsureColumn(connection, "orders", "marking_status", "TEXT NOT NULL DEFAULT 'NOT_REQUIRED'");
-        EnsureColumn(connection, "orders", "marking_excel_generated_at", "TEXT NULL");
-        EnsureColumn(connection, "orders", "marking_printed_at", "TEXT NULL");
-        EnsureColumn(connection, "orders", "marking_responsibility", "TEXT NOT NULL DEFAULT 'FLOWSTOCK'");
-        EnsureColumn(connection, "order_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
-        EnsureColumn(connection, "order_lines", "production_pallet_group", "TEXT NULL");
-        EnsureColumn(connection, "order_lines", "cancelled_at", "TEXT NULL");
-        EnsureColumn(connection, "order_lines", "cancelled_by_actor", "TEXT NULL");
-        EnsureColumn(connection, "order_lines", "cancelled_by_device_id", "TEXT NULL");
-        EnsureColumn(connection, "order_lines", "cancel_reason", "TEXT NULL");
-        EnsureColumn(connection, "order_lines", "revision", "BIGINT NOT NULL DEFAULT 0");
-        EnsureColumn(connection, "doc_lines", "production_purpose", "TEXT NOT NULL DEFAULT 'INTERNAL_STOCK'");
-        EnsureColumn(connection, "production_pallets", "pallet_no", "INTEGER NOT NULL DEFAULT 0");
-        EnsureColumn(connection, "production_pallets", "pallet_count", "INTEGER NOT NULL DEFAULT 0");
-        EnsureColumn(connection, "production_pallets", "printed_at", "TEXT NULL");
-        EnsureColumn(connection, "production_pallets", "cancel_reason", "TEXT NULL");
-        EnsureColumn(connection, "production_pallets", "cancelled_at", "TEXT NULL");
-        EnsureColumn(connection, "production_pallet_lines", "filled_at", "TEXT NULL");
-        EnsureNullable(connection, "marking_order", "order_id");
-        EnsureColumn(connection, "marking_order", "order_line_id", "BIGINT NULL");
-        EnsureColumn(connection, "marking_order", "request_status", "TEXT NOT NULL DEFAULT 'NotRequested'");
-        EnsureColumn(connection, "marking_order", "last_excel_requested_at", "TEXT NULL");
-        EnsureColumn(connection, "marking_order", "last_excel_request_hash", "TEXT NULL");
-        EnsureColumn(connection, "marking_order", "source_type", "TEXT NULL");
-        EnsureColumn(connection, "marking_order", "source_order_id", "BIGINT NULL");
-        EnsureColumn(connection, "marking_code", "origin", "TEXT NOT NULL DEFAULT 'HistoricalUnknown'");
-        EnsureColumn(connection, "marking_code", "receipt_doc_id", "BIGINT NULL");
-        EnsureColumn(connection, "marking_code", "receipt_line_id", "BIGINT NULL");
-
         if (!ColumnExists(connection, "orders", "order_type")
             || !ColumnExists(connection, "orders", "notification_revision")
             || !ColumnExists(connection, "business_notifications", "payload")
@@ -17758,17 +17699,23 @@ LIMIT 1;";
             || !ColumnExists(connection, "marking_code", "origin")
             || !ColumnExists(connection, "production_pallets", "cancel_reason")
             || !ColumnExists(connection, "production_pallets", "cancelled_at")
-            || !ColumnExists(connection, "production_pallet_lines", "filled_at"))
+            || !ColumnExists(connection, "production_pallet_lines", "filled_at")
+            || !ColumnExists(connection, "order_lines", "cancelled_by_actor")
+            || !ColumnExists(connection, "order_lines", "cancelled_by_device_id")
+            || !ColumnExists(connection, "order_lines", "cancel_reason")
+            || !ColumnExists(connection, "production_pallets", "pallet_no")
+            || !ColumnExists(connection, "production_pallets", "pallet_count")
+            || !ColumnExists(connection, "production_pallets", "printed_at")
+            || !ColumnExists(connection, "marking_order", "last_excel_requested_at")
+            || !ColumnExists(connection, "marking_order", "last_excel_request_hash")
+            || !ColumnExists(connection, "marking_order", "source_type")
+            || !ColumnExists(connection, "marking_order", "source_order_id")
+            || !ColumnExists(connection, "marking_code", "receipt_doc_id")
+            || !ColumnExists(connection, "marking_code", "receipt_line_id")
+            || !IsColumnNullable(connection, "marking_order", "order_id"))
         {
             throw new InvalidOperationException("Database schema is outdated. Run deploy/scripts/migrate.sh before starting FlowStock.");
         }
-    }
-
-    private static void EnsureIndex(NpgsqlConnection connection, string indexName, string indexDefinition)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = $"CREATE INDEX IF NOT EXISTS {indexName} ON {indexDefinition};";
-        command.ExecuteNonQuery();
     }
 
     private static void BackfillPartnerCreatedAt(NpgsqlConnection connection)

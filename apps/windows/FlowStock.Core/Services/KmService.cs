@@ -407,6 +407,12 @@ public sealed class KmService
             return;
         }
 
+        if (store is IItemMarkingFlagStore markingFlags)
+        {
+            markingFlags.MarkItem(itemId);
+            return;
+        }
+
         store.UpdateItem(new Item
         {
             Id = item.Id,

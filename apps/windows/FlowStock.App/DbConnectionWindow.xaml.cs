@@ -279,71 +279,12 @@ public partial class DbConnectionWindow : Window
         }
     }
 
-    private async void ApplyMigrations_Click(object sender, RoutedEventArgs e)
+    private void ApplyMigrations_Click(object sender, RoutedEventArgs e)
     {
         if (IsUiPreview) return;
-
-        if (!TryReadInput(out var input))
-        {
-            return;
-        }
-
-        var confirm = MessageBox.Show(
-            "Будут применены недостающие SQL-миграции FlowStock к выбранной базе.\n"
-            + "Существующие данные не удаляются, но перед production-миграцией рекомендуется сделать backup.\n\n"
-            + "Продолжить?",
-            "Инициализация / миграции БД",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Question,
-            MessageBoxResult.No);
-        if (confirm != MessageBoxResult.Yes)
-        {
-            return;
-        }
-
-        if (!TryBuildConnectionString(input, out var connectionString))
-        {
-            return;
-        }
-
-        ApplyMigrationsButton.IsEnabled = false;
-        try
-        {
-            var result = await Task.Run(() => ApplySchemaMigrations(connectionString));
-            ValidateFlowStockSchema(connectionString);
-            AddRecentConnection(input);
-
-            var summary = new StringBuilder();
-            summary.AppendLine("Миграции применены успешно.");
-            summary.AppendLine($"Каталог миграций: {result.MigrationsDirectory}");
-            summary.AppendLine($"Применено: {result.AppliedVersions.Count}");
-            summary.AppendLine($"Пропущено (уже в БД): {result.SkippedVersions.Count}");
-            if (result.AppliedVersions.Count > 0)
-            {
-                summary.AppendLine();
-                summary.AppendLine("Новые версии:");
-                summary.AppendLine(string.Join(", ", result.AppliedVersions));
-            }
-
-            summary.AppendLine();
-            summary.AppendLine("Схема FlowStock: OK.");
-            summary.AppendLine("Перезапустите WPF/Server, чтобы подхватить изменения.");
-
-            MessageBox.Show(
-                summary.ToString(),
-                "Инициализация / миграции БД",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error("db_migration_failed", ex);
-            ShowConnectionError($"Не удалось применить миграции: {ex.Message}", ex.ToString());
-        }
-        finally
-        {
-            ApplyMigrationsButton.IsEnabled = true;
-        }
+        MessageBox.Show("Миграции выполняет оператор на сервере через deploy/scripts/run_migrations.sh. "
+            + "WPF не принимает административный credential и не изменяет схему.",
+            "Миграции БД", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private async void ScanConnections_Click(object sender, RoutedEventArgs e)
@@ -679,73 +620,6 @@ public partial class DbConnectionWindow : Window
         }
     }
 
-    private static MigrationApplyResult ApplySchemaMigrations(string connectionString)
-    {
-        if (!TryResolveMigrationsDirectory(out var migrationsDirectory))
-        {
-            throw new InvalidOperationException(
-                "Каталог миграций не найден. Ожидался путь deploy/postgres/migrations рядом с репозиторием FlowStock.");
-        }
-
-        var migrationFiles = Directory.GetFiles(migrationsDirectory, "V*.sql", SearchOption.TopDirectoryOnly)
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (migrationFiles.Count == 0)
-        {
-            throw new InvalidOperationException($"В каталоге {migrationsDirectory} не найдено файлов миграций V*.sql.");
-        }
-
-        var appliedVersions = new List<string>();
-        var skippedVersions = new List<string>();
-
-        using var connection = new NpgsqlConnection(connectionString);
-        connection.Open();
-
-        using (var bootstrap = connection.CreateCommand())
-        {
-            bootstrap.CommandText = @"
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version TEXT PRIMARY KEY,
-    filename TEXT NOT NULL UNIQUE,
-    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);";
-            bootstrap.ExecuteNonQuery();
-        }
-
-        foreach (var migrationPath in migrationFiles)
-        {
-            var filename = Path.GetFileName(migrationPath);
-            var version = GetMigrationVersion(filename);
-
-            using (var exists = connection.CreateCommand())
-            {
-                exists.CommandText = "SELECT 1 FROM schema_migrations WHERE version = @version LIMIT 1;";
-                exists.Parameters.AddWithValue("@version", version);
-                var alreadyApplied = exists.ExecuteScalar() != null;
-                if (alreadyApplied)
-                {
-                    skippedVersions.Add(version);
-                    continue;
-                }
-            }
-
-            var sql = File.ReadAllText(migrationPath);
-            using var apply = connection.CreateCommand();
-            apply.CommandText = $@"
-BEGIN;
-{sql}
-INSERT INTO schema_migrations(version, filename, applied_at)
-VALUES (@version, @filename, NOW());
-COMMIT;";
-            apply.Parameters.AddWithValue("@version", version);
-            apply.Parameters.AddWithValue("@filename", filename);
-            apply.ExecuteNonQuery();
-            appliedVersions.Add(version);
-        }
-
-        return new MigrationApplyResult(migrationsDirectory, appliedVersions, skippedVersions);
-    }
-
     private static SchemaVersionCheckResult CheckSchemaVersion(string connectionString)
     {
         var availableVersions = new List<string>();
@@ -882,11 +756,6 @@ LIMIT 1;";
     }
 
     private sealed record ConnectionInput(string Host, int Port, string Database, string Username, string Password);
-
-    private sealed record MigrationApplyResult(
-        string MigrationsDirectory,
-        IReadOnlyList<string> AppliedVersions,
-        IReadOnlyList<string> SkippedVersions);
 
     private sealed record SchemaVersionCheckResult(
         string MigrationsDirectory,
@@ -1180,6 +1049,7 @@ LIMIT 1;";
 
     private static void ValidateFlowStockSchema(string connectionString)
     {
+        WpfDatabasePrincipal.Validate(connectionString);
         var store = new PostgresDataStore(connectionString);
         store.Initialize();
     }
