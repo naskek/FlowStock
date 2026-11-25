@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""FlowStock managed PostgreSQL 16 dump primitive (not wired into production callers).
+"""FlowStock managed PostgreSQL 16 dump primitive.
 
 Requires Python 3 on the execution host plus PostgreSQL 16 pg_dump, pg_restore,
-and (optionally) psql. Runtime packaging/wiring into pgbackup is Issue #122.
-No business DB, HTTP API, scheduler, retention deletion or remote I/O.
+and (optionally) psql. Shared by worker and operator/deploy/restore callers.
+No HTTP API, scheduler, retention deletion or remote I/O.
 """
 from __future__ import annotations
 
@@ -303,17 +303,27 @@ class Store:
             if saved.get("sha256") != digest or saved.get("size_bytes") != size:
                 raise BackupError("STORAGE_UNSAFE: catalog/archive mismatch")
         else:
+            observed = utc_now()
+            # UTC is not monotonic. Keep the scheduling/retention anchor at
+            # least at job creation, preserving the actual wall-clock reading
+            # separately. Never publish an inverted interval, including recovery.
+            rollback = (dt.datetime.fromisoformat(observed.replace("Z", "+00:00"))
+                        < dt.datetime.fromisoformat(item["created_at_utc"].replace("Z", "+00:00")))
             record = {
                 "schema_version": VERSION, "backup_id": ident,
                 "origin": item["origin"], "created_at_utc": item["created_at_utc"],
-                "completed_at_utc": utc_now(), "archive_key": ident,
+                "completed_at_utc": item["created_at_utc"] if rollback else observed, "archive_key": ident,
                 "size_bytes": size, "sha256": digest,
                 "pg_major": 16, "schema_migrations_fingerprint": ready["schema_migrations_fingerprint"],
                 "schema_migrations_state": ready["schema_migrations_state"],
                 "structural_validated": True, "restore_test_at_utc": None,
-                "local_state": "LOCAL_VALID", "remote_state": "DISABLED",
+                "local_state": "LOCAL_VALID", "local_presence": "PRESENT",
+                "pins": ["safety"] if item["origin"] in {"pre_deploy", "pre_restore"} else [],
+                "remote_state": "DISABLED",
                 "destination_revision": None,
                 "legacy_source": item.get("legacy_source")}
+            if rollback:
+                record.update(completed_observed_at_utc=observed, clock_warning="CLOCK_ROLLBACK")
             _write_new(record_path, record)
         _remove_own(self.jobs / (ident + ".json"))
         _remove_own(self.jobs / (ident + ".ready"))
