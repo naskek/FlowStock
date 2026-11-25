@@ -41,8 +41,13 @@ BEGIN
     -- остаётся ограничен ACL вызывающего principal.
     IF EXISTS (
         SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname NOT IN ('pg_catalog','information_schema')
-          AND n.nspname !~ '^pg_(temp|toast)'
+        WHERE (n.nspname NOT IN ('pg_catalog','information_schema') OR p.oid >= 16384)
+          AND n.nspname !~ '^pg_temp_[0-9]+$'
+          -- Только штатные language handlers plpgsql, не произвольные extensions
+          -- или user routines, установленные в pg_catalog/information_schema.
+          AND NOT EXISTS (SELECT 1 FROM pg_depend d JOIN pg_extension e ON e.oid=d.refobjid
+              WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid
+                AND d.refclassid='pg_extension'::regclass AND d.deptype='e' AND e.extname='plpgsql')
           AND (p.prorettype <> 'trigger'::regtype OR p.prosecdef)
           AND has_function_privilege(principal, p.oid, 'EXECUTE')
     ) THEN RAISE EXCEPTION 'WPF_DB_UNSAFE_ROUTINE'; END IF;
@@ -55,9 +60,9 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM (
             SELECT c.relowner AS owner FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname !~ '^pg_(temp|toast)'
+            WHERE (n.nspname NOT IN ('pg_catalog','information_schema') OR c.oid >= 16384) AND n.nspname !~ '^pg_(temp|toast)'
             UNION SELECT p.proowner FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-            WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname !~ '^pg_(temp|toast)'
+            WHERE (n.nspname NOT IN ('pg_catalog','information_schema') OR p.oid >= 16384) AND n.nspname !~ '^pg_(temp|toast)'
         ) creators
         LEFT JOIN pg_default_acl d ON d.defaclrole = creators.owner
             AND d.defaclnamespace = 0 AND d.defaclobjtype = 'f'
@@ -80,7 +85,7 @@ BEGIN
     FOR relation IN
         SELECT c.oid, c.relname, c.relkind, n.nspname
         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname !~ '^pg_(temp|toast)'
+        WHERE (n.nspname NOT IN ('pg_catalog','information_schema') OR c.oid >= 16384) AND n.nspname !~ '^pg_(temp|toast)'
           AND c.relkind IN ('r','p','v','m','f','S')
     LOOP
         IF relation.relkind = 'S' THEN

@@ -215,6 +215,7 @@ public sealed class WpfPrincipalPostgresTests
             ,("CREATE RULE escalation AS ON INSERT TO km_code_batch DO ALSO DELETE FROM pc_web_sessions", "DROP RULE escalation ON km_code_batch")
             ,("CREATE FOREIGN DATA WRAPPER probe; CREATE SERVER probe FOREIGN DATA WRAPPER probe; GRANT USAGE ON FOREIGN SERVER probe TO PUBLIC", "DROP SERVER probe; DROP FOREIGN DATA WRAPPER probe")
             ,("GRANT UPDATE(relowner) ON pg_class TO flowstock_wpf", "REVOKE UPDATE(relowner) ON pg_class FROM flowstock_wpf")
+            ,("CREATE FUNCTION pg_catalog.wpf245_escape() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'; GRANT EXECUTE ON FUNCTION pg_catalog.wpf245_escape() TO PUBLIC", "DROP FUNCTION pg_catalog.wpf245_escape()")
         };
         foreach (var (introduce, remove) in cases)
         {
