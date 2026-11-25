@@ -624,7 +624,7 @@
     var modal = document.createElement("div");
     modal.className = "pc-modal";
     modal.innerHTML =
-      '<div class="pc-modal-card pc-order-modal-card">' +
+      '<div class="pc-modal-card pc-order-modal-card pc-order-details-card">' +
       '  <div class="pc-modal-header">' +
       '    <div class="pc-modal-title">Заказ ' +
       escapeHtml(order.order_ref || "-") +
